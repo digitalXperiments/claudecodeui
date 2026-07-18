@@ -19,6 +19,23 @@
 
 ---
 
+## 🍴 About this fork
+
+This is a fork of [siteboon/claudecodeui](https://github.com/siteboon/claudecodeui) that adds two more CLI vendors as full, first-class providers — not UI decoration, actually wired into chat, sessions, MCP, and permissions:
+
+- **[Grok Build](https://x.ai)** (xAI) — full provider integration (auth, models, sessions, MCP, skills), with a real Permissions settings tab wired to Grok's genuine `--allow`/`--deny` rule flags, and live per-turn token usage.
+- **[Kimi](https://github.com/MoonshotAI/kimi-code)** (Moonshot AI) — built on Kimi's real [Agent Client Protocol](https://agentclientprotocol.com) (`kimi acp`) rather than one-shot CLI spawning: a persistent session per chat with genuine interactive permission approval (the model actually pauses and asks before running risky tool calls, rather than silently auto-approving everything).
+
+Also includes a handful of fixes found while building this that apply to every provider, not just the new ones:
+- MCP servers no longer double-list when a project's path is your home directory.
+- The shell/terminal tab now opens the actually-selected provider's CLI instead of silently falling back to Claude.
+- Live "thinking" output streams as one growing block instead of one bubble per token.
+- Grok and Kimi CLI spawns have bounded timeouts with SIGTERM→SIGKILL escalation, so a hung subprocess can't wedge the whole server.
+
+Everything from upstream still works as-is — this only adds on top.
+
+---
+
 ## Screenshots
 
 <div align="center">
