@@ -32,6 +32,14 @@ import {
     abortCursorSession,
 } from './cursor-cli.js';
 import {
+    spawnGrok,
+    abortGrokSession,
+} from './grok-cli.js';
+import {
+    spawnKimi,
+    abortKimiSession,
+} from './kimi-cli.js';
+import {
     queryCodex,
     abortCodexSession,
 } from './openai-codex.js';
@@ -114,12 +122,16 @@ const wss = createWebSocketServer(server, {
             cursor: spawnCursor,
             codex: queryCodex,
             opencode: spawnOpenCode,
+            grok: spawnGrok,
+            kimi: spawnKimi,
         },
         abortFns: {
             claude: abortClaudeSDKSession,
             cursor: abortCursorSession,
             codex: abortCodexSession,
             opencode: abortOpenCodeSession,
+            grok: abortGrokSession,
+            kimi: abortKimiSession,
         },
         resolveToolApproval,
         getPendingApprovalsForSession,
@@ -1231,6 +1243,136 @@ app.get('/api/projects/:projectId/sessions/:sessionId/token-usage', authenticate
                     // Skip lines that can't be parsed
                     continue;
                 }
+            }
+
+            return res.json({
+                used: totalTokens,
+                total: contextWindow,
+                inputTokens,
+                outputTokens,
+                breakdown: {
+                    input: inputTokens,
+                    output: outputTokens
+                }
+            });
+        }
+
+        // Handle Kimi sessions - not exposed on the live ACP wire (verified:
+        // no session/update notification ever carries usage/token data), but
+        // genuinely recorded to disk per turn-step as `usage.record` entries
+        // in `~/.kimi-code/sessions/wd_*/<sessionId>/agents/main/wire.jsonl`,
+        // e.g. {"type":"usage.record","usage":{"inputOther":2160,"output":51,
+        // "inputCacheRead":17920,"inputCacheCreation":0},"usageScope":"turn"}.
+        // Sum across all such entries for the session-cumulative total, same
+        // approach as Grok's per-turn turn_completed events below.
+        if (provider === 'kimi') {
+            const kimiSessionsRoot = path.join(homeDir, '.kimi-code', 'sessions');
+            let kimiSessionDir = null;
+            try {
+                const workDirs = await fsPromises.readdir(kimiSessionsRoot);
+                for (const workDir of workDirs) {
+                    const candidate = path.join(kimiSessionsRoot, workDir, providerNativeSessionId);
+                    if (fs.existsSync(candidate)) {
+                        kimiSessionDir = candidate;
+                        break;
+                    }
+                }
+            } catch (error) {
+                if (error.code !== 'ENOENT') throw error;
+            }
+
+            if (!kimiSessionDir) {
+                return res.status(404).json({ error: 'Kimi session not found', sessionId: safeSessionId });
+            }
+
+            let inputTokens = 0;
+            let outputTokens = 0;
+            try {
+                const wireContent = await fsPromises.readFile(path.join(kimiSessionDir, 'agents', 'main', 'wire.jsonl'), 'utf8');
+                for (const line of wireContent.trim().split('\n')) {
+                    if (!line) continue;
+                    try {
+                        const entry = JSON.parse(line);
+                        if (entry?.type === 'usage.record' && entry.usage) {
+                            const usage = entry.usage;
+                            inputTokens += Number(usage.inputOther || 0)
+                                + Number(usage.inputCacheRead || 0)
+                                + Number(usage.inputCacheCreation || 0);
+                            outputTokens += Number(usage.output || 0);
+                        }
+                    } catch (parseError) {
+                        continue;
+                    }
+                }
+            } catch (error) {
+                if (error.code !== 'ENOENT') throw error;
+            }
+
+            return res.json({
+                used: inputTokens + outputTokens,
+                total: 0,
+                inputTokens,
+                outputTokens,
+                breakdown: {
+                    input: inputTokens,
+                    output: outputTokens
+                }
+            });
+        }
+
+        // Handle Grok sessions - `~/.grok/sessions/<encoded-cwd>/<sessionId>/`
+        // has a signals.json (contextTokensUsed/contextWindowTokens, i.e.
+        // context-window occupancy) and an updates.jsonl with one
+        // `turn_completed` update per turn, each carrying that turn's own
+        // usage - so the session-cumulative input/output token spend has to
+        // be summed across every turn_completed line, unlike Codex's running
+        // cumulative total_token_usage where only the latest line is needed.
+        if (provider === 'grok') {
+            const grokProjectPath = await projectsDb.getProjectPathById(projectId);
+            if (!grokProjectPath) {
+                return res.status(404).json({ error: 'Project not found' });
+            }
+
+            const grokSessionDir = path.join(
+                homeDir,
+                '.grok',
+                'sessions',
+                encodeURIComponent(grokProjectPath),
+                providerNativeSessionId
+            );
+
+            let contextWindow = 0;
+            try {
+                const signals = JSON.parse(await fsPromises.readFile(path.join(grokSessionDir, 'signals.json'), 'utf8'));
+                contextWindow = Number(signals.contextWindowTokens || 0);
+            } catch (error) {
+                if (error.code !== 'ENOENT') throw error;
+            }
+
+            let inputTokens = 0;
+            let outputTokens = 0;
+            let totalTokens = 0;
+            try {
+                const updatesContent = await fsPromises.readFile(path.join(grokSessionDir, 'updates.jsonl'), 'utf8');
+                for (const line of updatesContent.trim().split('\n')) {
+                    if (!line) continue;
+                    try {
+                        const entry = JSON.parse(line);
+                        const usage = entry?.params?.update?.usage;
+                        if (entry?.params?.update?.sessionUpdate === 'turn_completed' && usage) {
+                            inputTokens += Number(usage.inputTokens || 0);
+                            outputTokens += Number(usage.outputTokens || 0);
+                            totalTokens += Number(usage.totalTokens || 0);
+                        }
+                    } catch (parseError) {
+                        continue;
+                    }
+                }
+            } catch (error) {
+                if (error.code === 'ENOENT') {
+                    return res.status(404).json({ error: 'Grok session not found', sessionId: safeSessionId });
+                }
+                throw error;
             }
 
             return res.json({

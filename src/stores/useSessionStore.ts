@@ -721,6 +721,58 @@ export function useSessionStore() {
   }, [notify]);
 
   /**
+   * Mirrors updateStreaming, but for a live `thinking` burst instead of the
+   * assistant reply text. Providers that stream reasoning token-by-token
+   * (Grok's `thought` events, Kimi ACP's `agent_thought_chunk`) emit one
+   * NormalizedMessage per token with no accumulation of their own - without
+   * this, every single token would render as its own separate "Thought for a
+   * few seconds" block instead of one growing block per reasoning burst.
+   */
+  const updateThinkingStream = useCallback((sessionId: string, accumulatedText: string, msgProvider: LLMProvider) => {
+    const slot = getSlot(sessionId);
+    const streamId = `__thinking_stream_${sessionId}`;
+    const msg: NormalizedMessage = {
+      id: streamId,
+      sessionId,
+      timestamp: new Date().toISOString(),
+      provider: msgProvider,
+      kind: 'thinking',
+      content: accumulatedText,
+    };
+    const idx = slot.realtimeMessages.findIndex(m => m.id === streamId);
+    if (idx >= 0) {
+      slot.realtimeMessages = [...slot.realtimeMessages];
+      slot.realtimeMessages[idx] = msg;
+    } else {
+      slot.realtimeMessages = [...slot.realtimeMessages, msg];
+    }
+    recomputeMergedIfNeeded(slot);
+    notify(sessionId);
+  }, [getSlot, notify]);
+
+  /**
+   * Finalize a live thinking burst: give the well-known streaming id a
+   * permanent unique one so a subsequent burst (e.g. after the next tool
+   * call) starts a fresh block instead of continuing to grow this one.
+   */
+  const finalizeThinkingStream = useCallback((sessionId: string) => {
+    const slot = storeRef.current.get(sessionId);
+    if (!slot) return;
+    const streamId = `__thinking_stream_${sessionId}`;
+    const idx = slot.realtimeMessages.findIndex(m => m.id === streamId);
+    if (idx >= 0) {
+      const stream = slot.realtimeMessages[idx];
+      slot.realtimeMessages = [...slot.realtimeMessages];
+      slot.realtimeMessages[idx] = {
+        ...stream,
+        id: `thinking_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      };
+      recomputeMergedIfNeeded(slot);
+      notify(sessionId);
+    }
+  }, [notify]);
+
+  /**
    * Clear realtime messages for a session (e.g., after stream completes and server fetch catches up).
    */
   const clearRealtime = useCallback((sessionId: string) => {
@@ -759,6 +811,8 @@ export function useSessionStore() {
     isStale,
     updateStreaming,
     finalizeStreaming,
+    updateThinkingStream,
+    finalizeThinkingStream,
     clearRealtime,
     getMessages,
     getSessionSlot,
@@ -766,6 +820,7 @@ export function useSessionStore() {
     getSlot, has, fetchFromServer, fetchMore,
     appendRealtime, appendRealtimeBatch, refreshFromServer,
     setActiveSession, setStatus, isStale, updateStreaming, finalizeStreaming,
+    updateThinkingStream, finalizeThinkingStream,
     clearRealtime, getMessages, getSessionSlot,
   ]);
 }

@@ -15,6 +15,8 @@ export default function AgentCategoryContentSection({
   onClaudePermissionsChange,
   cursorPermissions,
   onCursorPermissionsChange,
+  grokPermissions,
+  onGrokPermissionsChange,
   codexPermissionMode,
   onCodexPermissionModeChange,
   projects,
@@ -70,6 +72,24 @@ export default function AgentCategoryContentSection({
           agent="codex"
           permissionMode={codexPermissionMode}
           onPermissionModeChange={onCodexPermissionModeChange}
+        />
+      )}
+
+      {selectedCategory === 'permissions' && selectedAgent === 'grok' && (
+        <PermissionsContent
+          agent="grok"
+          skipPermissions={grokPermissions.skipPermissions}
+          onSkipPermissionsChange={(value) => {
+            onGrokPermissionsChange({ ...grokPermissions, skipPermissions: value });
+          }}
+          allowedCommands={grokPermissions.allowedCommands}
+          onAllowedCommandsChange={(value) => {
+            onGrokPermissionsChange({ ...grokPermissions, allowedCommands: value });
+          }}
+          disallowedCommands={grokPermissions.disallowedCommands}
+          onDisallowedCommandsChange={(value) => {
+            onGrokPermissionsChange({ ...grokPermissions, disallowedCommands: value });
+          }}
         />
       )}
 

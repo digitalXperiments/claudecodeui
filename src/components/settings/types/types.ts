@@ -45,6 +45,12 @@ export type CursorPermissionsState = {
   skipPermissions: boolean;
 };
 
+export type GrokPermissionsState = {
+  allowedCommands: string[];
+  disallowedCommands: string[];
+  skipPermissions: boolean;
+};
+
 export type CodeEditorSettingsState = {
   wordWrap: boolean;
   showMinimap: boolean;
@@ -56,6 +62,7 @@ export type SettingsStoragePayload = {
   claude: ClaudePermissionsState & { projectSortOrder: ProjectSortOrder; lastUpdated: string };
   cursor: CursorPermissionsState & { lastUpdated: string };
   codex: { permissionMode: CodexPermissionMode; lastUpdated: string };
+  grok: GrokPermissionsState & { lastUpdated: string };
 };
 
 export type SettingsProps = {

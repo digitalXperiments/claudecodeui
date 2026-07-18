@@ -28,6 +28,8 @@ const PROVIDER_META: { id: LLMProvider; name: string }[] = [
   { id: "codex", name: "OpenAI" },
   { id: "cursor", name: "Cursor" },
   { id: "opencode", name: "OpenCode" },
+  { id: "grok", name: "xAI" },
+  { id: "kimi", name: "Moonshot AI" },
 ];
 
 const MOD_KEY =
@@ -58,6 +60,10 @@ type ProviderSelectionEmptyStateProps = {
   setCodexModel: (model: string) => void;
   opencodeModel: string;
   setOpenCodeModel: (model: string) => void;
+  grokModel: string;
+  setGrokModel: (model: string) => void;
+  kimiModel: string;
+  setKimiModel: (model: string) => void;
   providerModelCatalog: Partial<Record<LLMProvider, ProviderModelsDefinition>>;
   providerModelsLoading: boolean;
   tasksEnabled: boolean;
@@ -86,10 +92,14 @@ function getCurrentModel(
   cu: string,
   co: string,
   o: string,
+  g: string,
+  k: string,
 ) {
   if (p === "claude") return c;
   if (p === "codex") return co;
   if (p === "opencode") return o;
+  if (p === "grok") return g;
+  if (p === "kimi") return k;
   return cu;
 }
 
@@ -98,6 +108,8 @@ function getProviderDisplayName(p: LLMProvider) {
   if (p === "cursor") return "Cursor";
   if (p === "codex") return "Codex";
   if (p === "opencode") return "OpenCode";
+  if (p === "grok") return "Grok Build";
+  if (p === "kimi") return "Kimi";
   return "Claude";
 }
 
@@ -115,6 +127,10 @@ export default function ProviderSelectionEmptyState({
   setCodexModel,
   opencodeModel,
   setOpenCodeModel,
+  grokModel,
+  setGrokModel,
+  kimiModel,
+  setKimiModel,
   providerModelCatalog,
   providerModelsLoading,
   tasksEnabled,
@@ -143,6 +159,8 @@ export default function ProviderSelectionEmptyState({
     cursorModel,
     codexModel,
     opencodeModel,
+    grokModel,
+    kimiModel,
   );
 
   const currentModelLabel = useMemo(() => {
@@ -164,12 +182,15 @@ export default function ProviderSelectionEmptyState({
       } else if (providerId === "opencode") {
         setOpenCodeModel(modelValue);
         localStorage.setItem("opencode-model", modelValue);
+      } else if (providerId === "kimi") {
+        setKimiModel(modelValue);
+        localStorage.setItem("kimi-model", modelValue);
       } else {
         setCursorModel(modelValue);
         localStorage.setItem("cursor-model", modelValue);
       }
     },
-    [setClaudeModel, setCursorModel, setCodexModel, setOpenCodeModel],
+    [setClaudeModel, setCursorModel, setCodexModel, setOpenCodeModel, setKimiModel],
   );
 
   const handleModelSelect = useCallback(
@@ -315,6 +336,14 @@ export default function ProviderSelectionEmptyState({
                 opencode: t("providerSelection.readyPrompt.opencode", {
                   model: opencodeModel,
                   defaultValue: "Ready with OpenCode {{model}}",
+                }),
+                grok: t("providerSelection.readyPrompt.grok", {
+                  model: grokModel,
+                  defaultValue: "Ready with Grok Build {{model}}",
+                }),
+                kimi: t("providerSelection.readyPrompt.kimi", {
+                  model: kimiModel,
+                  defaultValue: "Ready with Kimi {{model}}",
                 }),
               }[provider]
             }

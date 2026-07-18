@@ -218,8 +218,8 @@
       "httpRequiresUrl": "{{type}} type requires a url field",
       "invalidJson": "Invalid JSON format",
       "jsonHelp": "Paste your MCP server configuration in JSON format. Example formats:",
-      "jsonExampleStdio": "• stdio: {\"type\":\"stdio\",\"command\":\"npx\",\"args\":[\"@upstash/context7-mcp\"]}",
-      "jsonExampleHttp": "• http/sse: {\"type\":\"http\",\"url\":\"https://api.example.com/mcp\"}"
+      "jsonExampleStdio": "\u2022 stdio: {\"type\":\"stdio\",\"command\":\"npx\",\"args\":[\"@upstash/context7-mcp\"]}",
+      "jsonExampleHttp": "\u2022 http/sse: {\"type\":\"http\",\"url\":\"https://api.example.com/mcp\"}"
     },
     "configDetails": "Configuration Details (from {{configFile}})",
     "projectPath": "Path: {{path}}",
@@ -262,7 +262,7 @@
     "title": "API Keys",
     "description": "Generate API keys to access the external API from other applications.",
     "newKey": {
-      "alertTitle": "⚠️ Save Your API Key",
+      "alertTitle": "\u26a0\ufe0f Save Your API Key",
       "alertMessage": "This is the only time you'll see this key. Store it securely.",
       "iveSavedIt": "I've saved it"
     },
@@ -293,7 +293,7 @@
         "descriptionPlaceholder": "Description (optional)",
         "addButton": "Add Token",
         "cancelButton": "Cancel",
-        "howToCreate": "How to create a GitHub Personal Access Token →"
+        "howToCreate": "How to create a GitHub Personal Access Token \u2192"
       },
       "empty": "No GitHub tokens added yet.",
       "added": "Added:",
@@ -303,7 +303,7 @@
     "documentation": {
       "title": "External API Documentation",
       "description": "Learn how to use the external API to trigger Claude/Cursor sessions from your applications.",
-      "viewLink": "View API Documentation →"
+      "viewLink": "View API Documentation \u2192"
     },
     "loading": "Loading...",
     "version": {
@@ -369,7 +369,8 @@
     "skipPermissions": {
       "label": "Skip permission prompts (use with caution)",
       "claudeDescription": "Equivalent to --dangerously-skip-permissions flag",
-      "cursorDescription": "Equivalent to -f flag in Cursor CLI"
+      "cursorDescription": "Equivalent to -f flag in Cursor CLI",
+      "grokDescription": "Equivalent to --permission-mode bypassPermissions (full auto-approve, no prompts)"
     },
     "allowedTools": {
       "title": "Allowed Tools",
@@ -389,13 +390,18 @@
       "description": "Shell commands that are automatically allowed without prompting",
       "placeholder": "e.g., \"Shell(ls)\" or \"Shell(git status)\"",
       "quickAdd": "Quick add common commands:",
-      "empty": "No allowed commands configured"
+      "empty": "No allowed commands configured",
+      "grokDescription": "Rules that auto-approve matching tool calls without prompting (passed as --allow flags)",
+      "grokPlaceholder": "e.g., \"Bash(npm*)\" or \"Bash(git*)\"",
+      "grokQuickAdd": "Quick add common rules:"
     },
     "blockedCommands": {
       "title": "Blocked Shell Commands",
       "description": "Shell commands that are automatically blocked",
       "placeholder": "e.g., \"Shell(rm -rf)\" or \"Shell(sudo)\"",
-      "empty": "No blocked commands configured"
+      "empty": "No blocked commands configured",
+      "grokDescription": "Rules that always deny matching tool calls, even if also allowed (passed as --deny flags; deny takes precedence)",
+      "grokPlaceholder": "e.g., \"Bash(sudo*)\" or \"Bash(rm*)\""
     },
     "toolExamples": {
       "title": "Tool Pattern Examples:",
@@ -438,6 +444,13 @@
     },
     "actions": {
       "add": "Add"
+    },
+    "grokExamples": {
+      "title": "Grok Rule Examples:",
+      "bashNpm": "- Allow all npm commands",
+      "bashGit": "- Allow all git commands",
+      "bashSudo": "- Block all sudo commands (dangerous)",
+      "bashRm": "- Block all rm commands (dangerous)"
     }
   },
   "mcpServers": {
@@ -484,12 +497,12 @@
     "description": "Extend the interface with custom plugins. Install from git or drop a folder in ~/.claude-code-ui/plugins/",
     "installPlaceholder": "https://github.com/user/my-plugin",
     "installButton": "Install",
-    "installing": "Installing…",
+    "installing": "Installing\u2026",
     "securityWarning": "Only install plugins whose source code you have reviewed or from authors you trust.",
-    "scanningPlugins": "Scanning plugins…",
+    "scanningPlugins": "Scanning plugins\u2026",
     "noPluginsInstalled": "No plugins installed",
     "pullLatest": "Pull latest from git",
-    "noGitRemote": "No git remote — update not available",
+    "noGitRemote": "No git remote \u2014 update not available",
     "uninstallPlugin": "Uninstall plugin",
     "confirmUninstall": "Click again to confirm",
     "confirmUninstallMessage": "Remove {{name}}? This cannot be undone.",

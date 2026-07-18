@@ -1,3 +1,4 @@
+import os from 'node:os';
 import path from 'node:path';
 
 import type { IProviderMcp } from '@/shared/interfaces.js';
@@ -6,6 +7,21 @@ import { AppError } from '@/shared/utils.js';
 
 const resolveWorkspacePath = (workspacePath?: string): string =>
   path.resolve(workspacePath ?? process.cwd());
+
+/**
+ * Every provider that stores config in a plain file resolves its "user"
+ * scope to `~/.<vendor>/...` and its "project" scope to
+ * `<workspacePath>/.<vendor>/...` (see cursor-mcp.provider.ts,
+ * codex-mcp.provider.ts, grok-mcp.provider.ts). Whenever the workspace being
+ * viewed IS the user's home directory - a real, common case: cloudcli lets
+ * the whole home directory be registered as a project (e.g. a "Rams
+ * Macbook" project with path `/Users/rammanohar`) - those two paths become
+ * literally the same file, so listing both scopes shows every server twice
+ * under different scope badges. Suppressing "project" in that case is
+ * correct for any such provider, not a per-provider special case.
+ */
+const isHomeDirectoryWorkspace = (workspacePath: string): boolean =>
+  path.resolve(workspacePath) === path.resolve(os.homedir());
 
 const normalizeServerName = (name: string): string => {
   const normalized = name.trim();
@@ -60,6 +76,10 @@ export abstract class McpProvider implements IProviderMcp {
     }
 
     const workspacePath = resolveWorkspacePath(options?.workspacePath);
+    if (scope === 'project' && isHomeDirectoryWorkspace(workspacePath)) {
+      return [];
+    }
+
     const scopedServers = await this.readScopedServers(scope, workspacePath);
     return Object.entries(scopedServers)
       .map(([name, rawConfig]) => this.normalizeServerConfig(scope, name, rawConfig))

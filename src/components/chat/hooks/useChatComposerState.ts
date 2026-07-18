@@ -46,6 +46,8 @@ interface UseChatComposerStateArgs {
   codexModel: string;
   currentProviderEffort: string;
   opencodeModel: string;
+  grokModel: string;
+  kimiModel: string;
   isLoading: boolean;
   canAbortSession: boolean;
   tokenBudget: Record<string, unknown> | null;
@@ -198,6 +200,8 @@ export function useChatComposerState({
   codexModel,
   currentProviderEffort,
   opencodeModel,
+  grokModel,
+  kimiModel,
   isLoading,
   canAbortSession,
   tokenBudget,
@@ -375,7 +379,11 @@ export function useChatComposerState({
               ? codexModel
               : provider === 'opencode'
                   ? opencodeModel
-                  : claudeModel,
+                  : provider === 'grok'
+                    ? grokModel
+                    : provider === 'kimi'
+                      ? kimiModel
+                      : claudeModel,
           tokenUsage: tokenBudget,
         };
 
@@ -429,6 +437,8 @@ export function useChatComposerState({
       currentSessionId,
       cursorModel,
       opencodeModel,
+      grokModel,
+      kimiModel,
       handleBuiltInCommand,
       handleCustomCommand,
       input,
@@ -597,6 +607,8 @@ export function useChatComposerState({
               ? 'codex-settings'
               : provider === 'opencode'
                   ? 'opencode-settings'
+                : provider === 'grok'
+                  ? 'grok-tools-settings'
                 : 'claude-settings';
         const savedSettings = safeLocalStorage.getItem(settingsKey);
         if (savedSettings) {
@@ -621,7 +633,11 @@ export function useChatComposerState({
           ? codexModel
           : provider === 'opencode'
             ? opencodeModel
-            : claudeModel;
+            : provider === 'grok'
+              ? grokModel
+              : provider === 'kimi'
+                ? kimiModel
+                : claudeModel;
 
     return {
       model,
@@ -637,6 +653,8 @@ export function useChatComposerState({
     currentProviderEffort,
     cursorModel,
     opencodeModel,
+    grokModel,
+    kimiModel,
     permissionMode,
     provider,
     resolvePermissionModeForProvider,

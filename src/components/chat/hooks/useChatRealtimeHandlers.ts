@@ -27,6 +27,8 @@ interface UseChatRealtimeHandlersArgs {
   setPendingPermissionRequests: Dispatch<SetStateAction<PendingPermissionRequest[]>>;
   streamTimerRef: MutableRefObject<number | null>;
   accumulatedStreamRef: MutableRefObject<string>;
+  thinkingTimerRef: MutableRefObject<number | null>;
+  accumulatedThinkingRef: MutableRefObject<string>;
   /**
    * Highest live `seq` observed per session. Essential for reconnect catch-up:
    * `chat.subscribe` sends this value as `lastSeq` so the server replays only
@@ -65,6 +67,8 @@ export function useChatRealtimeHandlers({
   setPendingPermissionRequests,
   streamTimerRef,
   accumulatedStreamRef,
+  thinkingTimerRef,
+  accumulatedThinkingRef,
   lastSeqRef,
   statusCheckSentAtRef,
   onSessionProcessing,
@@ -171,6 +175,41 @@ export function useChatRealtimeHandlers({
       /* -------------------------------------------------------------- */
       /*  Provider NormalizedMessage handling                            */
       /* -------------------------------------------------------------- */
+
+      // A live `thinking` burst (see below) ends the moment any other kind
+      // of message arrives - a tool call starting, the reply text starting,
+      // or the turn completing. Close it out first so the next event starts
+      // its own fresh block rather than silently extending this one.
+      if (msg.kind !== 'thinking' && accumulatedThinkingRef.current) {
+        if (thinkingTimerRef.current) {
+          clearTimeout(thinkingTimerRef.current);
+          thinkingTimerRef.current = null;
+        }
+        if (sid) {
+          sessionStore.updateThinkingStream(sid, accumulatedThinkingRef.current, provider);
+          sessionStore.finalizeThinkingStream(sid);
+        }
+        accumulatedThinkingRef.current = '';
+      }
+
+      // --- Thinking: buffer token-by-token reasoning into one growing block ---
+      if (msg.kind === 'thinking') {
+        const text = (msg.content as string) || '';
+        if (!text) return;
+        accumulatedThinkingRef.current += text;
+        if (!thinkingTimerRef.current) {
+          thinkingTimerRef.current = window.setTimeout(() => {
+            thinkingTimerRef.current = null;
+            if (sid) {
+              sessionStore.updateThinkingStream(sid, accumulatedThinkingRef.current, provider);
+            }
+          }, 100);
+        }
+        if (sid && sid !== activeViewSessionId) {
+          sessionStore.appendRealtime(sid, msg as unknown as NormalizedMessage);
+        }
+        return;
+      }
 
       // --- Streaming: buffer for performance ---
       if (msg.kind === 'stream_delta') {

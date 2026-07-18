@@ -75,6 +75,58 @@ const PROVIDER_CAPABILITIES: Record<LLMProvider, ProviderCapabilities> = {
     supportsTokenUsage: true,
     supportsEffort: true,
   },
+  grok: {
+    provider: 'grok',
+    // grok's `--permission-mode` accepts default/acceptEdits/auto/dontAsk/
+    // bypassPermissions/plan, and grok-cli.js passes the selected mode
+    // straight through, BUT only `auto` and `bypassPermissions` actually run
+    // to completion headlessly (verified live): default/acceptEdits/dontAsk/
+    // plan all block waiting for an interactive approval grok has no way to
+    // deliver in a spawned, non-interactive process (confirmed by killing a
+    // hung `--permission-mode default` run awaiting approval to delete a
+    // file — it never proceeds on its own). Only expose the two that don't
+    // silently hang until grok gets an approval-request channel wired up.
+    permissionModes: ['auto', 'bypassPermissions'],
+    defaultPermissionMode: 'bypassPermissions',
+    supportsImages: false,
+    supportsAbort: true,
+    supportsPermissionRequests: false,
+    // Real per-turn usage lives in the session's updates.jsonl
+    // (turn_completed events) and is summed by the /token-usage route.
+    supportsTokenUsage: true,
+    supportsEffort: true,
+  },
+  kimi: {
+    provider: 'kimi',
+    // Rewritten onto Kimi's real Agent Client Protocol (`kimi acp`), not the
+    // old one-shot `-p` mode. Verified live (2026-07-18): `session/new`
+    // exposes a real "mode" configOption (default/plan/auto/yolo) settable
+    // via `session/set_config_option`, and `default`/`plan` genuinely pause
+    // and send a `session/request_permission` request that must be answered
+    // before the tool proceeds — confirmed by killing an unanswered request
+    // and seeing the target file survive, then answering it and seeing the
+    // tool actually run. There is no direct equivalent of cloudcli's
+    // "acceptEdits" in Kimi's mode vocabulary, so only these 4 (not 5) are
+    // exposed, each a genuine 1:1 mapping (bypassPermissions -> Kimi "yolo").
+    permissionModes: ['default', 'plan', 'auto', 'bypassPermissions'],
+    defaultPermissionMode: 'bypassPermissions',
+    supportsImages: false,
+    supportsAbort: true,
+    // The permission bridge reuses the same pendingToolApprovals mechanism
+    // as Claude's SDK integration (waitForToolApproval/resolveToolApproval,
+    // exported from claude-sdk.js) - see kimi-cli.js.
+    supportsPermissionRequests: true,
+    // No structured usage event exists on the live ACP wire, but real
+    // per-turn usage IS persisted to disk as `usage.record` entries in the
+    // session's agents/main/wire.jsonl - summed by the /token-usage route.
+    supportsTokenUsage: true,
+    // The "thinking" configOption only ever showed a single "on" value in
+    // live testing, even after switching to the k3 model (whose catalog
+    // entry separately advertises supportEfforts low/high/max) - no working
+    // per-invocation effort control was found via ACP, so left false rather
+    // than claiming unverified support.
+    supportsEffort: false,
+  },
 };
 
 /**

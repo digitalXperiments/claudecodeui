@@ -3,6 +3,8 @@ import ClaudeLogo from './ClaudeLogo';
 import CodexLogo from './CodexLogo';
 import CursorLogo from './CursorLogo';
 import OpenCodeLogo from './OpenCodeLogo';
+import GrokLogo from './GrokLogo';
+import KimiLogo from './KimiLogo';
 
 type SessionProviderLogoProps = {
   provider?: LLMProvider | string | null;
@@ -23,6 +25,14 @@ export default function SessionProviderLogo({
 
   if (provider === 'opencode') {
     return <OpenCodeLogo className={className} />;
+  }
+
+  if (provider === 'grok') {
+    return <GrokLogo className={className} />;
+  }
+
+  if (provider === 'kimi') {
+    return <KimiLogo className={className} />;
   }
 
   return <ClaudeLogo className={className} />;

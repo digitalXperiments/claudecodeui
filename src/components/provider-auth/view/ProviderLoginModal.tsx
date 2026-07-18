@@ -41,6 +41,14 @@ const getProviderCommand = ({
     return 'opencode auth login';
   }
 
+  if (provider === 'grok') {
+    return 'grok login';
+  }
+
+  if (provider === 'kimi') {
+    return 'kimi login';
+  }
+
   return 'claude --dangerously-skip-permissions /login';
 };
 
@@ -49,6 +57,8 @@ const getProviderTitle = (provider: LLMProvider) => {
   if (provider === 'cursor') return 'Cursor CLI Login';
   if (provider === 'codex') return 'Codex CLI Login';
   if (provider === 'opencode') return 'OpenCode CLI Login';
+  if (provider === 'grok') return 'Grok Build CLI Login';
+  if (provider === 'kimi') return 'Kimi CLI Login';
   return 'Claude CLI Login';
 };
 

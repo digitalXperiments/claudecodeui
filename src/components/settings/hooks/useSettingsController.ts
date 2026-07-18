@@ -7,6 +7,7 @@ import { useProviderAuthStatus } from '../../provider-auth/hooks/useProviderAuth
 import {
   DEFAULT_CODE_EDITOR_SETTINGS,
   DEFAULT_CURSOR_PERMISSIONS,
+  DEFAULT_GROK_PERMISSIONS,
 } from '../constants/constants';
 import type {
   AgentProvider,
@@ -14,6 +15,7 @@ import type {
   CodeEditorSettingsState,
   CodexPermissionMode,
   CursorPermissionsState,
+  GrokPermissionsState,
   NotificationPreferencesState,
   ProjectSortOrder,
   SettingsMainTab,
@@ -37,6 +39,12 @@ type ClaudeSettingsStorage = {
 };
 
 type CursorSettingsStorage = {
+  allowedCommands?: string[];
+  disallowedCommands?: string[];
+  skipPermissions?: boolean;
+};
+
+type GrokSettingsStorage = {
   allowedCommands?: string[];
   disallowedCommands?: string[];
   skipPermissions?: boolean;
@@ -103,6 +111,10 @@ const createEmptyCursorPermissions = (): CursorPermissionsState => ({
   ...DEFAULT_CURSOR_PERMISSIONS,
 });
 
+const createEmptyGrokPermissions = (): GrokPermissionsState => ({
+  ...DEFAULT_GROK_PERMISSIONS,
+});
+
 const createDefaultNotificationPreferences = (): NotificationPreferencesState => ({
   channels: {
     inApp: true,
@@ -154,6 +166,9 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
   const [cursorPermissions, setCursorPermissions] = useState<CursorPermissionsState>(() => (
     createEmptyCursorPermissions()
   ));
+  const [grokPermissions, setGrokPermissions] = useState<GrokPermissionsState>(() => (
+    createEmptyGrokPermissions()
+  ));
   const [notificationPreferences, setNotificationPreferences] = useState<NotificationPreferencesState>(() => (
     createDefaultNotificationPreferences()
   ));
@@ -190,6 +205,16 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
         skipPermissions: Boolean(savedCursorSettings.skipPermissions),
       });
 
+      const savedGrokSettings = parseJson<GrokSettingsStorage>(
+        localStorage.getItem('grok-tools-settings'),
+        {},
+      );
+      setGrokPermissions({
+        allowedCommands: savedGrokSettings.allowedCommands || [],
+        disallowedCommands: savedGrokSettings.disallowedCommands || [],
+        skipPermissions: Boolean(savedGrokSettings.skipPermissions),
+      });
+
       const savedCodexSettings = parseJson<CodexSettingsStorage>(
         localStorage.getItem('codex-settings'),
         {},
@@ -216,6 +241,7 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
       console.error('Error loading settings:', error);
       setClaudePermissions(createEmptyClaudePermissions());
       setCursorPermissions(createEmptyCursorPermissions());
+      setGrokPermissions(createEmptyGrokPermissions());
       setNotificationPreferences(createDefaultNotificationPreferences());
       setCodexPermissionMode('default');
       setProjectSortOrder('name');
@@ -263,6 +289,13 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
         lastUpdated: now,
       }));
 
+      localStorage.setItem('grok-tools-settings', JSON.stringify({
+        allowedCommands: grokPermissions.allowedCommands,
+        disallowedCommands: grokPermissions.disallowedCommands,
+        skipPermissions: grokPermissions.skipPermissions,
+        lastUpdated: now,
+      }));
+
       localStorage.setItem('codex-settings', JSON.stringify({
         permissionMode: codexPermissionMode,
         lastUpdated: now,
@@ -289,6 +322,9 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
     cursorPermissions.allowedCommands,
     cursorPermissions.disallowedCommands,
     cursorPermissions.skipPermissions,
+    grokPermissions.allowedCommands,
+    grokPermissions.disallowedCommands,
+    grokPermissions.skipPermissions,
     notificationPreferences,
     projectSortOrder,
   ]);
@@ -390,6 +426,8 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
     setClaudePermissions,
     cursorPermissions,
     setCursorPermissions,
+    grokPermissions,
+    setGrokPermissions,
     notificationPreferences,
     setNotificationPreferences,
     codexPermissionMode,

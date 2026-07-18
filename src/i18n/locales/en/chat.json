@@ -18,7 +18,9 @@
     "claude": "Claude",
     "cursor": "Cursor",
     "codex": "Codex",
-    "opencode": "OpenCode"
+    "opencode": "OpenCode",
+    "grok": "Grok Build",
+    "kimi": "Kimi"
   },
   "tools": {
     "settings": "Tool Settings",

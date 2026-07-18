@@ -14,20 +14,28 @@ export default function AgentsSettingsTab({
   onClaudePermissionsChange,
   cursorPermissions,
   onCursorPermissionsChange,
+  grokPermissions,
+  onGrokPermissionsChange,
   codexPermissionMode,
   onCodexPermissionModeChange,
   projects,
 }: AgentsSettingsTabProps) {
   const [selectedAgent, setSelectedAgent] = useState<AgentProvider>('claude');
   const [selectedCategory, setSelectedCategory] = useState<AgentCategory>('account');
-  const visibleCategories = useMemo<AgentCategory[]>(() => (
-    selectedAgent === 'opencode'
+  const visibleCategories = useMemo<AgentCategory[]>(() => {
+    // Kimi has no fine-grained allow/deny rule mechanism (its ACP approval
+    // flow is per-session mode, not per-rule settings), so there's nothing
+    // real to show here - hide the tab rather than render it blank.
+    if (selectedAgent === 'kimi') {
+      return ['account', 'mcp', 'skills'];
+    }
+    return selectedAgent === 'opencode'
       ? ['account', 'permissions', 'mcp']
-      : ['account', 'permissions', 'mcp', 'skills']
-  ), [selectedAgent]);
+      : ['account', 'permissions', 'mcp', 'skills'];
+  }, [selectedAgent]);
 
   const visibleAgents = useMemo<AgentProvider[]>(() => {
-    return ['claude', 'cursor', 'codex', 'opencode'];
+    return ['claude', 'cursor', 'codex', 'opencode', 'grok', 'kimi'];
   }, []);
 
   const agentContextById = useMemo<Record<AgentProvider, AgentContext>>(() => ({
@@ -47,12 +55,22 @@ export default function AgentsSettingsTab({
       authStatus: providerAuthStatus.opencode,
       onLogin: () => onProviderLogin('opencode'),
     },
+    grok: {
+      authStatus: providerAuthStatus.grok,
+      onLogin: () => onProviderLogin('grok'),
+    },
+    kimi: {
+      authStatus: providerAuthStatus.kimi,
+      onLogin: () => onProviderLogin('kimi'),
+    },
   }), [
     onProviderLogin,
     providerAuthStatus.claude,
     providerAuthStatus.codex,
     providerAuthStatus.cursor,
     providerAuthStatus.opencode,
+    providerAuthStatus.grok,
+    providerAuthStatus.kimi,
   ]);
 
   useEffect(() => {
@@ -86,6 +104,8 @@ export default function AgentsSettingsTab({
           onClaudePermissionsChange={onClaudePermissionsChange}
           cursorPermissions={cursorPermissions}
           onCursorPermissionsChange={onCursorPermissionsChange}
+          grokPermissions={grokPermissions}
+          onGrokPermissionsChange={onGrokPermissionsChange}
           codexPermissionMode={codexPermissionMode}
           onCodexPermissionModeChange={onCodexPermissionModeChange}
           projects={projects}

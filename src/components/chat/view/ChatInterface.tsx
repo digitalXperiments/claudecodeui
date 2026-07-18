@@ -44,6 +44,8 @@ function ChatInterface({
   const sessionStore = useSessionStore();
   const streamTimerRef = useRef<number | null>(null);
   const accumulatedStreamRef = useRef('');
+  const thinkingTimerRef = useRef<number | null>(null);
+  const accumulatedThinkingRef = useRef('');
   // When each session's `chat.subscribe` was last sent; idle acks older than
   // a later local request are discarded as stale.
   const statusCheckSentAtRef = useRef(new Map<string, number>());
@@ -58,6 +60,11 @@ function ChatInterface({
       streamTimerRef.current = null;
     }
     accumulatedStreamRef.current = '';
+    if (thinkingTimerRef.current) {
+      clearTimeout(thinkingTimerRef.current);
+      thinkingTimerRef.current = null;
+    }
+    accumulatedThinkingRef.current = '';
   }, []);
 
   const {
@@ -73,6 +80,10 @@ function ChatInterface({
     currentProviderEffortOptions,
     opencodeModel,
     setOpenCodeModel,
+    grokModel,
+    setGrokModel,
+    kimiModel,
+    setKimiModel,
     permissionMode,
     pendingPermissionRequests,
     setPendingPermissionRequests,
@@ -203,6 +214,8 @@ function ChatInterface({
     codexModel,
     currentProviderEffort,
     opencodeModel,
+    grokModel,
+    kimiModel,
     isLoading: isProcessing,
     canAbortSession,
     tokenBudget,
@@ -247,6 +260,8 @@ function ChatInterface({
     setPendingPermissionRequests,
     streamTimerRef,
     accumulatedStreamRef,
+    thinkingTimerRef,
+    accumulatedThinkingRef,
     lastSeqRef,
     statusCheckSentAtRef,
     onSessionProcessing,
@@ -339,6 +354,10 @@ function ChatInterface({
           setCodexModel={setCodexModel}
           opencodeModel={opencodeModel}
           setOpenCodeModel={setOpenCodeModel}
+          grokModel={grokModel}
+          setGrokModel={setGrokModel}
+          kimiModel={kimiModel}
+          setKimiModel={setKimiModel}
           providerModelCatalog={providerModelCatalog}
           providerModelsLoading={providerModelsLoading}
           tasksEnabled={tasksEnabled}
@@ -446,7 +465,11 @@ function ChatInterface({
                   ? t('messageTypes.codex')
                   : provider === 'opencode'
                       ? t('messageTypes.opencode', { defaultValue: 'OpenCode' })
-                    : t('messageTypes.claude'),
+                    : provider === 'grok'
+                      ? t('messageTypes.grok', { defaultValue: 'Grok Build' })
+                      : provider === 'kimi'
+                        ? t('messageTypes.kimi', { defaultValue: 'Kimi' })
+                        : t('messageTypes.claude'),
           })}
           isTextareaExpanded={isTextareaExpanded}
           sendByCtrlEnter={sendByCtrlEnter}
