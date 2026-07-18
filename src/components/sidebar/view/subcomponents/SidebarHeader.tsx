@@ -28,6 +28,7 @@ type SidebarHeaderProps = {
   onRefresh: () => void;
   isRefreshing: boolean;
   onCreateProject: () => void;
+  onCreateCategory: () => void;
   onCollapseSidebar: () => void;
   t: TFunction;
 };
@@ -48,6 +49,7 @@ export default function SidebarHeader({
   onRefresh,
   isRefreshing,
   onCreateProject,
+  onCreateCategory,
   onCollapseSidebar,
   t,
 }: SidebarHeaderProps) {
@@ -120,6 +122,15 @@ export default function SidebarHeader({
               title={t('tooltips.createProject')}
             >
               <Plus className="h-3.5 w-3.5" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 w-7 rounded-lg p-0 text-muted-foreground hover:bg-accent/80 hover:text-foreground"
+              onClick={onCreateCategory}
+              title={t('tooltips.newCategory', 'New category')}
+            >
+              <FolderPlus className="h-3.5 w-3.5" />
             </Button>
             <Button
               variant="ghost"

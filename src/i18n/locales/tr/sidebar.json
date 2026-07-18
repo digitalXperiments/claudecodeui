@@ -50,7 +50,11 @@
     "cancel": "İptal",
     "clearSearch": "Aramayı temizle",
     "openCommandPalette": "Komut paletini aç",
-    "attentionRequiredIndicator": "Oturum ilgi bekliyor"
+    "attentionRequiredIndicator": "Oturum ilgi bekliyor",
+    "newCategory": "Yeni kategori",
+    "moveToCategory": "Kategoriye taşı",
+    "editCategory": "Kategoriyi düzenle",
+    "deleteCategory": "Kategoriyi sil"
   },
   "navigation": {
     "chat": "Sohbet",
@@ -141,5 +145,25 @@
     "deleteAllData": "Tüm veriyi kalıcı olarak sil",
     "allConversationsDeleted": "Proje kenar çubuğundan kaldırılacak. Dosyaların, bellek verilerin ve oturum verilerin korunacak.",
     "cannotUndo": "Projeyi sonra tekrar ekleyebilirsin."
+  },
+  "categories": {
+    "uncategorized": "Kategorisiz",
+    "newCategory": "Yeni kategori",
+    "editCategory": "Kategoriyi düzenle",
+    "moveToCategory": "Kategoriye taşı",
+    "nameLabel": "Ad",
+    "namePlaceholder": "Kategori adı",
+    "colorLabel": "Renk",
+    "noColor": "Renk yok",
+    "createAction": "Kategori oluştur",
+    "deleteTitle": "Kategoriyi sil",
+    "deleteMessage": "\"{{name}}\" silinsin mi? Bu kategorideki projeler kategorisiz olur.",
+    "deleteAction": "Kategoriyi sil",
+    "deleteProjectCount_one": "Bu kategoride {{count}} proje var.",
+    "deleteProjectCount_other": "Bu kategoride {{count}} proje var.",
+    "nameRequired": "Bir kategori adı girin.",
+    "saveError": "Kategori kaydedilemedi. Lütfen tekrar deneyin.",
+    "deleteError": "Kategori silinemedi. Lütfen tekrar deneyin.",
+    "assignError": "Proje taşınamadı. Lütfen tekrar deneyin."
   }
 }

@@ -1,7 +1,12 @@
 import type { TFunction } from 'i18next';
 
-import type { LLMProvider, Project, ProjectSession } from '../../../types/app';
-import type { ProjectSortOrder, SettingsProject, SessionViewModel, SessionWithProvider } from '../types/types';
+import type { LLMProvider, Project, ProjectCategory, ProjectSession } from '../../../types/app';
+import type { ProjectCategoryGroup, ProjectSortOrder, SettingsProject, SessionViewModel, SessionWithProvider } from '../types/types';
+
+// Native HTML5 drag-and-drop payloads used to drag projects onto category
+// headers (assignment) and category headers onto each other (reordering).
+export const PROJECT_DRAG_MIME = 'application/x-cloudcli-project-id';
+export const CATEGORY_DRAG_MIME = 'application/x-cloudcli-category-id';
 
 export const readProjectSortOrder = (): ProjectSortOrder => {
   try {
@@ -159,6 +164,84 @@ export const filterProjects = (projects: Project[], searchFilter: string): Proje
     const searchPath = (project.path || project.fullPath || '').toLowerCase();
     return displayName.includes(normalizedSearch) || searchPath.includes(normalizedSearch);
   });
+};
+
+/**
+ * Buckets an already-sorted project list into category groups for sidebar
+ * rendering. Category order follows `categories` (server `sortOrder`);
+ * projects keep their incoming (sorted) order inside each group. Projects
+ * pointing at an unknown category fall back to "Uncategorized" (the
+ * `category: null` group), which is always rendered last. Empty categories
+ * are kept unless `hideEmpty` is set (active search/running views), so users
+ * still have drop targets when dragging projects into a fresh category.
+ */
+export const groupProjectsByCategory = (
+  projects: Project[],
+  categories: ProjectCategory[],
+  { hideEmpty = false }: { hideEmpty?: boolean } = {},
+): ProjectCategoryGroup[] => {
+  const knownCategoryIds = new Set(categories.map((category) => category.categoryId));
+  const projectsByCategoryId = new Map<string | null, Project[]>();
+
+  for (const project of projects) {
+    const categoryId =
+      typeof project.categoryId === 'string' && knownCategoryIds.has(project.categoryId)
+        ? project.categoryId
+        : null;
+    const bucket = projectsByCategoryId.get(categoryId) ?? [];
+    bucket.push(project);
+    projectsByCategoryId.set(categoryId, bucket);
+  }
+
+  const groups: ProjectCategoryGroup[] = [];
+  for (const category of categories) {
+    const categoryProjects = projectsByCategoryId.get(category.categoryId) ?? [];
+    if (hideEmpty && categoryProjects.length === 0) {
+      continue;
+    }
+    groups.push({ category, projects: categoryProjects });
+  }
+
+  const uncategorizedProjects = projectsByCategoryId.get(null) ?? [];
+  if (uncategorizedProjects.length > 0) {
+    groups.push({ category: null, projects: uncategorizedProjects });
+  }
+
+  return groups;
+};
+
+const COLLAPSED_CATEGORIES_STORAGE_KEY = 'sidebarCollapsedCategories';
+
+/**
+ * Reads collapsed sidebar category ids from localStorage. The pseudo-id
+ * 'uncategorized' covers the uncategorized group.
+ */
+export const readCollapsedCategoryIds = (): string[] => {
+  try {
+    const saved = localStorage.getItem(COLLAPSED_CATEGORIES_STORAGE_KEY);
+    if (!saved) {
+      return [];
+    }
+
+    const parsed = JSON.parse(saved) as unknown;
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+
+    return parsed
+      .map((value) => String(value).trim())
+      .filter((value) => value.length > 0);
+  } catch {
+    return [];
+  }
+};
+
+export const writeCollapsedCategoryIds = (categoryIds: string[]) => {
+  try {
+    localStorage.setItem(COLLAPSED_CATEGORIES_STORAGE_KEY, JSON.stringify(categoryIds));
+  } catch {
+    // Keep UI responsive even if storage is unavailable.
+  }
 };
 
 export const getTaskIndicatorStatus = (

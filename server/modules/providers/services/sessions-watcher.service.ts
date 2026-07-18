@@ -161,6 +161,7 @@ async function buildSessionUpsertedEvent(updatedProviderSessionId: string): Prom
         fullPath: project.project_path,
         displayName,
         isStarred: Boolean(project.isStarred),
+        categoryId: project.category_id ?? null,
       }
       : null,
     timestamp: new Date().toISOString(),

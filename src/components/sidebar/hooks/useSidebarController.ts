@@ -3,11 +3,13 @@ import type { TFunction } from 'i18next';
 
 import { api } from '../../../utils/api';
 import { usePaletteOps } from '../../../contexts/PaletteOpsContext';
-import type { Project, ProjectSession, LLMProvider } from '../../../types/app';
+import type { Project, ProjectCategory, ProjectSession, LLMProvider } from '../../../types/app';
 import type { SessionActivityMap } from '../../../hooks/useSessionProtection';
 import type {
   ArchivedProjectListItem,
   ArchivedSessionListItem,
+  CategoryEditorState,
+  DeleteCategoryConfirmation,
   DeleteProjectConfirmation,
   ProjectSortOrder,
   SidebarSearchMode,
@@ -18,9 +20,12 @@ import {
   clearLegacyStarredProjectIds,
   filterProjects,
   getAllSessions,
+  groupProjectsByCategory,
+  readCollapsedCategoryIds,
   readLegacyStarredProjectIds,
   readProjectSortOrder,
   sortProjects,
+  writeCollapsedCategoryIds,
 } from '../utils/utils';
 
 type SnippetHighlight = {
@@ -142,6 +147,17 @@ export function useSidebarController({
   const [debouncedSearchQuery, setDebouncedSearchQuery] = useState('');
   const [optimisticStarByProjectId, setOptimisticStarByProjectId] = useState<Map<string, boolean>>(new Map());
   const [loadingMoreProjects, setLoadingMoreProjects] = useState<Set<string>>(new Set());
+  // Category state: server-owned list plus optimistic per-project overrides
+  // (same pattern as stars) so assignment feels instant and self-heals once
+  // the projects prop catches up.
+  const [categories, setCategories] = useState<ProjectCategory[]>([]);
+  const [optimisticCategoryByProjectId, setOptimisticCategoryByProjectId] = useState<Map<string, string | null>>(new Map());
+  const [collapsedCategoryIds, setCollapsedCategoryIds] = useState<Set<string>>(
+    () => new Set(readCollapsedCategoryIds()),
+  );
+  const [categoryEditor, setCategoryEditor] = useState<CategoryEditorState | null>(null);
+  const [categoryDeleteConfirmation, setCategoryDeleteConfirmation] = useState<DeleteCategoryConfirmation | null>(null);
+  const [moveToCategoryProject, setMoveToCategoryProject] = useState<Project | null>(null);
   const searchSeqRef = useRef(0);
   const eventSourceRef = useRef<EventSource | null>(null);
   const starToggleSequenceByProjectRef = useRef<Map<string, number>>(new Map());
@@ -318,6 +334,53 @@ export function useSidebarController({
         }
 
         if (Boolean(project.isStarred) === optimisticValue) {
+          next.delete(projectId);
+          changed = true;
+        }
+      }
+
+      return changed ? next : previous;
+    });
+  }, [projects]);
+
+  const fetchCategories = useCallback(async () => {
+    try {
+      const response = await api.listCategories();
+      if (!response.ok) {
+        throw new Error(`Failed to load categories: ${response.status}`);
+      }
+
+      const payload = (await response.json()) as { categories?: ProjectCategory[] };
+      setCategories(Array.isArray(payload.categories) ? payload.categories : []);
+    } catch (error) {
+      console.error('[Sidebar] Failed to load categories:', error);
+    }
+  }, []);
+
+  useEffect(() => {
+    void fetchCategories();
+  }, [fetchCategories]);
+
+  // Drop optimistic category overrides once the projects prop reflects them
+  // (or once the project disappears), mirroring the star-resolution effect.
+  useEffect(() => {
+    setOptimisticCategoryByProjectId((previous) => {
+      if (previous.size === 0) {
+        return previous;
+      }
+
+      const next = new Map(previous);
+      let changed = false;
+
+      for (const [projectId, optimisticValue] of previous.entries()) {
+        const project = projects.find((candidate) => candidate.projectId === projectId);
+        if (!project) {
+          next.delete(projectId);
+          changed = true;
+          continue;
+        }
+
+        if ((project.categoryId ?? null) === optimisticValue) {
           next.delete(projectId);
           changed = true;
         }
@@ -522,6 +585,182 @@ export function useSidebarController({
     [resolveProjectStarState],
   );
 
+  const toggleCategoryCollapsed = useCallback((categoryKey: string) => {
+    setCollapsedCategoryIds((previous) => {
+      const next = new Set(previous);
+      if (next.has(categoryKey)) {
+        next.delete(categoryKey);
+      } else {
+        next.add(categoryKey);
+      }
+      writeCollapsedCategoryIds([...next]);
+      return next;
+    });
+  }, []);
+
+  const assignProjectToCategory = useCallback(
+    (projectId: string, categoryId: string | null) => {
+      const previousProject = projects.find((candidate) => candidate.projectId === projectId);
+      const previousCategoryId =
+        optimisticCategoryByProjectId.get(projectId) ?? previousProject?.categoryId ?? null;
+      if (previousCategoryId === categoryId) {
+        setMoveToCategoryProject(null);
+        return;
+      }
+
+      setOptimisticCategoryByProjectId((previous) => {
+        const next = new Map(previous);
+        next.set(projectId, categoryId);
+        return next;
+      });
+      setMoveToCategoryProject(null);
+
+      const updateCategory = async () => {
+        try {
+          const response = await api.setProjectCategory(projectId, categoryId);
+          if (!response.ok) {
+            throw new Error(`Failed to update project category: ${response.status}`);
+          }
+        } catch (error) {
+          setOptimisticCategoryByProjectId((previous) => {
+            const next = new Map(previous);
+            next.set(projectId, previousCategoryId);
+            return next;
+          });
+          console.error('[Sidebar] Failed to update project category:', error);
+          alert(t('categories.assignError', 'Could not move the project. Please try again.'));
+        }
+      };
+
+      void updateCategory();
+    },
+    [optimisticCategoryByProjectId, projects, t],
+  );
+
+  // Returns null on success or an error message for the editor modal to show.
+  const saveCategory = useCallback(
+    async (name: string, color: string | null): Promise<string | null> => {
+      if (!categoryEditor) {
+        return null;
+      }
+
+      try {
+        const response =
+          categoryEditor.mode === 'create'
+            ? await api.createCategory(name, color)
+            : await api.updateCategory(categoryEditor.category.categoryId, { name, color });
+
+        if (!response.ok) {
+          const payload = (await response.json().catch(() => ({}))) as {
+            error?: string | { message?: string };
+          };
+          const errorPayload = payload.error;
+          return typeof errorPayload === 'string'
+            ? errorPayload
+            : errorPayload && typeof errorPayload === 'object' && errorPayload.message
+              ? errorPayload.message
+              : t('categories.saveError', 'Could not save the category. Please try again.');
+        }
+
+        await fetchCategories();
+        setCategoryEditor(null);
+        return null;
+      } catch (error) {
+        console.error('[Sidebar] Failed to save category:', error);
+        return t('categories.saveError', 'Could not save the category. Please try again.');
+      }
+    },
+    [categoryEditor, fetchCategories, t],
+  );
+
+  const requestDeleteCategory = useCallback(
+    (category: ProjectCategory) => {
+      const projectCount = projects.filter((project) => project.categoryId === category.categoryId).length;
+      setCategoryDeleteConfirmation({ category, projectCount });
+    },
+    [projects],
+  );
+
+  const confirmDeleteCategory = useCallback(() => {
+    if (!categoryDeleteConfirmation) {
+      return;
+    }
+
+    const { category } = categoryDeleteConfirmation;
+    setCategoryDeleteConfirmation(null);
+
+    const deleteCategory = async () => {
+      try {
+        const response = await api.deleteCategory(category.categoryId);
+        if (!response.ok) {
+          throw new Error(`Failed to delete category: ${response.status}`);
+        }
+
+        // Member projects become uncategorized server-side; mirror that
+        // optimistically so the list regroups without a full refresh.
+        setOptimisticCategoryByProjectId((previous) => {
+          const next = new Map(previous);
+          for (const project of projects) {
+            if (project.categoryId === category.categoryId) {
+              next.set(project.projectId, null);
+            }
+          }
+          return next;
+        });
+        await fetchCategories();
+      } catch (error) {
+        console.error('[Sidebar] Failed to delete category:', error);
+        alert(t('categories.deleteError', 'Could not delete the category. Please try again.'));
+      }
+    };
+
+    void deleteCategory();
+  }, [categoryDeleteConfirmation, fetchCategories, projects, t]);
+
+  // Reorders categories by dragging `draggedCategoryId` onto the position of
+  // `targetCategoryId`. Optimistic; refetches from the server on failure.
+  const reorderCategoriesByDrag = useCallback(
+    (draggedCategoryId: string, targetCategoryId: string) => {
+      if (draggedCategoryId === targetCategoryId) {
+        return;
+      }
+
+      const currentOrder = categories.map((category) => category.categoryId);
+      const fromIndex = currentOrder.indexOf(draggedCategoryId);
+      const toIndex = currentOrder.indexOf(targetCategoryId);
+      if (fromIndex === -1 || toIndex === -1) {
+        return;
+      }
+
+      const nextOrder = [...currentOrder];
+      nextOrder.splice(fromIndex, 1);
+      nextOrder.splice(toIndex, 0, draggedCategoryId);
+
+      const sortOrderById = new Map(nextOrder.map((categoryId, index) => [categoryId, index]));
+      setCategories((previous) =>
+        [...previous].sort(
+          (categoryA, categoryB) =>
+            (sortOrderById.get(categoryA.categoryId) ?? 0) - (sortOrderById.get(categoryB.categoryId) ?? 0),
+        ),
+      );
+
+      const persistOrder = async () => {
+        try {
+          const response = await api.reorderCategories(nextOrder);
+          if (!response.ok) {
+            throw new Error(`Failed to reorder categories: ${response.status}`);
+          }
+        } catch (error) {
+          console.error('[Sidebar] Failed to reorder categories:', error);
+          await fetchCategories();
+        }
+      };
+
+      void persistOrder();
+    },
+    [categories, fetchCategories],
+  );
+
   const getProjectSessions = useCallback((project: Project) => getAllSessions(project), []);
 
   const loadMoreSessionsForProject = useCallback(async (projectId: string) => {
@@ -582,9 +821,31 @@ export function useSidebarController({
     });
   }, [optimisticStarByProjectId, projects]);
 
+  const projectsWithResolvedCategory = useMemo(() => {
+    if (optimisticCategoryByProjectId.size === 0) {
+      return projectsWithResolvedStarState;
+    }
+
+    return projectsWithResolvedStarState.map((project) => {
+      if (!optimisticCategoryByProjectId.has(project.projectId)) {
+        return project;
+      }
+
+      const optimisticCategoryId = optimisticCategoryByProjectId.get(project.projectId) ?? null;
+      if ((project.categoryId ?? null) === optimisticCategoryId) {
+        return project;
+      }
+
+      return {
+        ...project,
+        categoryId: optimisticCategoryId,
+      };
+    });
+  }, [optimisticCategoryByProjectId, projectsWithResolvedStarState]);
+
   const sortedProjects = useMemo(
-    () => sortProjects(projectsWithResolvedStarState, projectSortOrder),
-    [projectSortOrder, projectsWithResolvedStarState],
+    () => sortProjects(projectsWithResolvedCategory, projectSortOrder),
+    [projectSortOrder, projectsWithResolvedCategory],
   );
 
   const runningProjects = useMemo(() => {
@@ -616,6 +877,16 @@ export function useSidebarController({
   const filteredProjects = useMemo(
     () => filterProjects(searchMode === 'running' ? runningProjects : sortedProjects, debouncedSearchQuery),
     [debouncedSearchQuery, runningProjects, searchMode, sortedProjects],
+  );
+
+  // Grouped view of the same filtered list. While searching (or in the
+  // running view) empty categories are hidden so only matches show.
+  const groupedProjects = useMemo(
+    () =>
+      groupProjectsByCategory(filteredProjects, categories, {
+        hideEmpty: debouncedSearchQuery.length > 0 || searchMode === 'running',
+      }),
+    [categories, debouncedSearchQuery, filteredProjects, searchMode],
   );
 
   const filteredArchivedSessions = useMemo(() => {
@@ -945,6 +1216,12 @@ export function useSidebarController({
     sessionDeleteConfirmation,
     showVersionModal,
     filteredProjects,
+    groupedProjects,
+    categories,
+    collapsedCategoryIds,
+    categoryEditor,
+    categoryDeleteConfirmation,
+    moveToCategoryProject,
     runningSessionsCount,
     archivedProjects: filteredArchivedProjects,
     archivedSessions: filteredArchivedSessions,
@@ -954,6 +1231,15 @@ export function useSidebarController({
     handleSessionClick,
     toggleStarProject,
     isProjectStarred,
+    toggleCategoryCollapsed,
+    assignProjectToCategory,
+    saveCategory,
+    requestDeleteCategory,
+    confirmDeleteCategory,
+    reorderCategoriesByDrag,
+    setCategoryEditor,
+    setCategoryDeleteConfirmation,
+    setMoveToCategoryProject,
     getProjectSessions,
     loadMoreSessionsForProject,
     startEditing,

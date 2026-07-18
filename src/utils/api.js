@@ -149,6 +149,33 @@ export const api = {
     authenticatedFetch(`/api/projects/${encodeURIComponent(projectId)}/toggle-star`, {
       method: 'POST',
     }),
+  // Project categories (sidebar grouping). Categories are server-side rows;
+  // a project points at one via `categoryId` (null = uncategorized).
+  listCategories: () => authenticatedFetch('/api/projects/categories'),
+  createCategory: (name, color) =>
+    authenticatedFetch('/api/projects/categories', {
+      method: 'POST',
+      body: JSON.stringify({ name, color }),
+    }),
+  updateCategory: (categoryId, updates) =>
+    authenticatedFetch(`/api/projects/categories/${encodeURIComponent(categoryId)}`, {
+      method: 'PUT',
+      body: JSON.stringify(updates),
+    }),
+  deleteCategory: (categoryId) =>
+    authenticatedFetch(`/api/projects/categories/${encodeURIComponent(categoryId)}`, {
+      method: 'DELETE',
+    }),
+  reorderCategories: (categoryIds) =>
+    authenticatedFetch('/api/projects/categories/reorder', {
+      method: 'PUT',
+      body: JSON.stringify({ categoryIds }),
+    }),
+  setProjectCategory: (projectId, categoryId) =>
+    authenticatedFetch(`/api/projects/${encodeURIComponent(projectId)}/category`, {
+      method: 'PUT',
+      body: JSON.stringify({ categoryId }),
+    }),
   readFile: (projectId, filePath) =>
     authenticatedFetch(`/api/projects/${projectId}/file?filePath=${encodeURIComponent(filePath)}`),
   readFileBlob: (projectId, filePath) =>

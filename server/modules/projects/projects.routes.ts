@@ -7,6 +7,14 @@ import { AppError, asyncHandler, createApiSuccessResponse } from '@/shared/utils
 import { getArchivedProjectsWithSessions, getProjectSessionsPage, getProjectsWithSessions } from '@/modules/projects/services/projects-with-sessions-fetch.service.js';
 import { deleteOrArchiveProject, restoreArchivedProject } from '@/modules/projects/services/project-delete.service.js';
 import { applyLegacyStarredProjectIds, toggleProjectStar } from '@/modules/projects/services/project-star.service.js';
+import {
+  createCategory,
+  deleteCategory,
+  listCategories,
+  reorderCategories,
+  setProjectCategory,
+  updateCategory,
+} from '@/modules/projects/services/project-categories.service.js';
 
 const router = express.Router();
 
@@ -87,6 +95,56 @@ router.get(
   asyncHandler(async (_req, res) => {
     const projects = await getArchivedProjectsWithSessions();
     res.json(createApiSuccessResponse({ projects }));
+  }),
+);
+
+router.get(
+  '/categories',
+  asyncHandler(async (_req, res) => {
+    const categories = listCategories();
+    res.json({ success: true, categories });
+  }),
+);
+
+router.post(
+  '/categories',
+  asyncHandler(async (req, res) => {
+    const requestBody = req.body as Record<string, unknown>;
+    const category = createCategory(requestBody.name, requestBody.color);
+    res.status(201).json({ success: true, category });
+  }),
+);
+
+// Registered before PUT /categories/:categoryId so the literal 'reorder'
+// segment is not captured by the param route.
+router.put(
+  '/categories/reorder',
+  asyncHandler(async (req, res) => {
+    const requestBody = req.body as Record<string, unknown>;
+    const categories = reorderCategories(requestBody.categoryIds);
+    res.json({ success: true, categories });
+  }),
+);
+
+router.put(
+  '/categories/:categoryId',
+  asyncHandler(async (req, res) => {
+    const categoryId = typeof req.params.categoryId === 'string' ? req.params.categoryId : '';
+    const requestBody = req.body as Record<string, unknown>;
+    const category = updateCategory(categoryId, {
+      name: requestBody.name,
+      color: requestBody.color,
+    });
+    res.json({ success: true, category });
+  }),
+);
+
+router.delete(
+  '/categories/:categoryId',
+  asyncHandler(async (req, res) => {
+    const categoryId = typeof req.params.categoryId === 'string' ? req.params.categoryId : '';
+    deleteCategory(categoryId);
+    res.json({ success: true });
   }),
 );
 
@@ -244,6 +302,19 @@ router.post(
     const projectId = typeof req.params.projectId === 'string' ? req.params.projectId : '';
     const { isStarred } = toggleProjectStar(projectId);
     res.json({ success: true, isStarred });
+  }),
+);
+
+router.put(
+  '/:projectId/category',
+  asyncHandler(async (req, res) => {
+    const projectId = typeof req.params.projectId === 'string' ? req.params.projectId : '';
+    const { categoryId: rawCategoryId } = req.body as { categoryId?: unknown };
+    const categoryId = rawCategoryId === null || rawCategoryId === undefined
+      ? null
+      : String(rawCategoryId);
+    const result = setProjectCategory(projectId, categoryId);
+    res.json({ success: true, categoryId: result.categoryId });
   }),
 );
 

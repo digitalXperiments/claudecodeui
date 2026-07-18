@@ -49,7 +49,11 @@
     "save": "保存",
     "cancel": "キャンセル",
     "openCommandPalette": "コマンドパレットを開く",
-    "attentionRequiredIndicator": "セッションが対応を必要としています"
+    "attentionRequiredIndicator": "セッションが対応を必要としています",
+    "newCategory": "新しいカテゴリ",
+    "moveToCategory": "カテゴリに移動",
+    "editCategory": "カテゴリを編集",
+    "deleteCategory": "カテゴリを削除"
   },
   "navigation": {
     "chat": "チャット",
@@ -127,5 +131,24 @@
     "deleteAllData": "すべてのデータを完全に削除",
     "allConversationsDeleted": "プロジェクトはサイドバーから除去されます。ファイル、メモリ、セッションデータは保持されます。",
     "cannotUndo": "後からプロジェクトを再追加できます。"
+  },
+  "categories": {
+    "uncategorized": "未分類",
+    "newCategory": "新しいカテゴリ",
+    "editCategory": "カテゴリを編集",
+    "moveToCategory": "カテゴリに移動",
+    "nameLabel": "名前",
+    "namePlaceholder": "カテゴリ名",
+    "colorLabel": "色",
+    "noColor": "色なし",
+    "createAction": "カテゴリを作成",
+    "deleteTitle": "カテゴリを削除",
+    "deleteMessage": "「{{name}}」を削除しますか？このカテゴリのプロジェクトは未分類になります。",
+    "deleteAction": "カテゴリを削除",
+    "deleteProjectCount_other": "このカテゴリには {{count}} 件のプロジェクトがあります。",
+    "nameRequired": "カテゴリ名を入力してください。",
+    "saveError": "カテゴリを保存できませんでした。もう一度お試しください。",
+    "deleteError": "カテゴリを削除できませんでした。もう一度お試しください。",
+    "assignError": "プロジェクトを移動できませんでした。もう一度お試しください。"
   }
 }

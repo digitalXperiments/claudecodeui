@@ -544,6 +544,21 @@ export type ProjectRepositoryRow = {
   custom_project_name: string | null;
   isStarred: number;
   isArchived: number;
+  category_id: string | null;
+};
+
+/**
+ * Canonical category row shape returned by the categories repository.
+ *
+ * A project references at most one category through `projects.category_id`;
+ * uncategorized projects store NULL there.
+ */
+export type CategoryRepositoryRow = {
+  category_id: string;
+  name: string;
+  color: string | null;
+  sort_order: number;
+  created_at: string;
 };
 
 /**

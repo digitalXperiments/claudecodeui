@@ -1,16 +1,20 @@
 import { useEffect } from 'react';
 import type { TFunction } from 'i18next';
 
-import type { LoadingProgress, Project, ProjectSession, LLMProvider } from '../../../../types/app';
+import type { LoadingProgress, Project, ProjectCategory, ProjectSession, LLMProvider } from '../../../../types/app';
 import type { SessionActivityMap } from '../../../../hooks/useSessionProtection';
-import type { MCPServerStatus, SessionWithProvider } from '../../types/types';
+import type { MCPServerStatus, ProjectCategoryGroup, SessionWithProvider } from '../../types/types';
 
+import SidebarCategoryHeader from './SidebarCategoryHeader';
 import SidebarProjectItem from './SidebarProjectItem';
 import SidebarProjectsState from './SidebarProjectsState';
 
 export type SidebarProjectListProps = {
   projects: Project[];
   filteredProjects: Project[];
+  groupedProjects: ProjectCategoryGroup[];
+  categories: ProjectCategory[];
+  collapsedCategoryIds: Set<string>;
   selectedProject: Project | null;
   selectedSession: ProjectSession | null;
   isLoading: boolean;
@@ -40,6 +44,12 @@ export type SidebarProjectListProps = {
   onCancelEditingProject: () => void;
   onSaveProjectName: (projectName: string) => void;
   onDeleteProject: (project: Project) => void;
+  onMoveToCategory: (project: Project) => void;
+  onToggleCategory: (categoryKey: string) => void;
+  onEditCategory: (category: ProjectCategory) => void;
+  onDeleteCategory: (category: ProjectCategory) => void;
+  onDropProjectOnCategory: (projectId: string, categoryId: string | null) => void;
+  onReorderCategory: (draggedCategoryId: string, targetCategoryId: string) => void;
   onSessionSelect: (session: SessionWithProvider, projectName: string) => void;
   onDeleteSession: (
     projectName: string,
@@ -58,6 +68,9 @@ export type SidebarProjectListProps = {
 export default function SidebarProjectList({
   projects,
   filteredProjects,
+  groupedProjects,
+  categories,
+  collapsedCategoryIds,
   selectedProject,
   selectedSession,
   isLoading,
@@ -87,6 +100,12 @@ export default function SidebarProjectList({
   onCancelEditingProject,
   onSaveProjectName,
   onDeleteProject,
+  onMoveToCategory,
+  onToggleCategory,
+  onEditCategory,
+  onDeleteCategory,
+  onDropProjectOnCategory,
+  onReorderCategory,
   onSessionSelect,
   onDeleteSession,
   onNewSession,
@@ -117,52 +136,84 @@ export default function SidebarProjectList({
 
   const showProjects = !isLoading && projects.length > 0 && filteredProjects.length > 0;
 
+  const renderProjectItem = (project: Project) => (
+    // React key + per-project state lookups all use the DB `projectId`
+    // so they remain stable across renames and session changes.
+    <SidebarProjectItem
+      key={project.projectId}
+      project={project}
+      selectedProject={selectedProject}
+      selectedSession={selectedSession}
+      isExpanded={forceExpanded || expandedProjects.has(project.projectId)}
+      isDeleting={deletingProjects.has(project.projectId)}
+      isStarred={isProjectStarred(project.projectId)}
+      editingProject={editingProject}
+      editingName={editingName}
+      sessions={getProjectSessions(project)}
+      initialSessionsLoaded={initialSessionsLoaded.has(project.projectId)}
+      isLoadingMoreSessions={loadingMoreProjects.has(project.projectId)}
+      currentTime={currentTime}
+      editingSession={editingSession}
+      editingSessionName={editingSessionName}
+      tasksEnabled={tasksEnabled}
+      mcpServerStatus={mcpServerStatus}
+      onEditingNameChange={onEditingNameChange}
+      onToggleProject={onToggleProject}
+      onProjectSelect={onProjectSelect}
+      onToggleStarProject={onToggleStarProject}
+      onStartEditingProject={onStartEditingProject}
+      onCancelEditingProject={onCancelEditingProject}
+      onSaveProjectName={onSaveProjectName}
+      onDeleteProject={onDeleteProject}
+      onMoveToCategory={onMoveToCategory}
+      onSessionSelect={onSessionSelect}
+      onDeleteSession={onDeleteSession}
+      onLoadMoreSessions={onLoadMoreSessions}
+      activeSessions={activeSessions}
+      attentionSessionIds={attentionSessionIds}
+      onNewSession={onNewSession}
+      onEditingSessionNameChange={onEditingSessionNameChange}
+      onStartEditingSession={onStartEditingSession}
+      onCancelEditingSession={onCancelEditingSession}
+      onSaveEditingSession={onSaveEditingSession}
+      t={t}
+    />
+  );
+
+  // Without categories the sidebar renders the classic flat project list.
+  if (categories.length === 0) {
+    return (
+      <div className="pb-safe-area-inset-bottom md:space-y-1">
+        {!showProjects ? state : filteredProjects.map(renderProjectItem)}
+      </div>
+    );
+  }
+
   return (
     <div className="pb-safe-area-inset-bottom md:space-y-1">
       {!showProjects
         ? state
-        : filteredProjects.map((project) => (
-            // React key + per-project state lookups all use the DB `projectId`
-            // so they remain stable across renames and session changes.
-            <SidebarProjectItem
-              key={project.projectId}
-              project={project}
-              selectedProject={selectedProject}
-              selectedSession={selectedSession}
-              isExpanded={forceExpanded || expandedProjects.has(project.projectId)}
-              isDeleting={deletingProjects.has(project.projectId)}
-              isStarred={isProjectStarred(project.projectId)}
-              editingProject={editingProject}
-              editingName={editingName}
-              sessions={getProjectSessions(project)}
-              initialSessionsLoaded={initialSessionsLoaded.has(project.projectId)}
-              isLoadingMoreSessions={loadingMoreProjects.has(project.projectId)}
-              currentTime={currentTime}
-              editingSession={editingSession}
-              editingSessionName={editingSessionName}
-              tasksEnabled={tasksEnabled}
-              mcpServerStatus={mcpServerStatus}
-              onEditingNameChange={onEditingNameChange}
-              onToggleProject={onToggleProject}
-              onProjectSelect={onProjectSelect}
-              onToggleStarProject={onToggleStarProject}
-              onStartEditingProject={onStartEditingProject}
-              onCancelEditingProject={onCancelEditingProject}
-              onSaveProjectName={onSaveProjectName}
-              onDeleteProject={onDeleteProject}
-              onSessionSelect={onSessionSelect}
-              onDeleteSession={onDeleteSession}
-              onLoadMoreSessions={onLoadMoreSessions}
-              activeSessions={activeSessions}
-              attentionSessionIds={attentionSessionIds}
-              onNewSession={onNewSession}
-              onEditingSessionNameChange={onEditingSessionNameChange}
-              onStartEditingSession={onStartEditingSession}
-              onCancelEditingSession={onCancelEditingSession}
-              onSaveEditingSession={onSaveEditingSession}
-              t={t}
-            />
-          ))}
+        : groupedProjects.map((group) => {
+            const categoryKey = group.category?.categoryId ?? 'uncategorized';
+            const isCollapsed = collapsedCategoryIds.has(categoryKey);
+
+            return (
+              <div key={categoryKey} className="md:space-y-1">
+                <SidebarCategoryHeader
+                  category={group.category}
+                  projectCount={group.projects.length}
+                  isCollapsed={isCollapsed}
+                  onToggle={onToggleCategory}
+                  onEditCategory={onEditCategory}
+                  onDeleteCategory={onDeleteCategory}
+                  onDropProject={onDropProjectOnCategory}
+                  onReorderCategory={onReorderCategory}
+                  t={t}
+                />
+                {!isCollapsed && group.projects.map(renderProjectItem)}
+              </div>
+            );
+          })}
     </div>
   );
 }

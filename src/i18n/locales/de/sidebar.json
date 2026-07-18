@@ -50,7 +50,11 @@
     "cancel": "Abbrechen",
     "clearSearch": "Suche leeren",
     "openCommandPalette": "Befehlspalette öffnen",
-    "attentionRequiredIndicator": "Sitzung erfordert Aufmerksamkeit"
+    "attentionRequiredIndicator": "Sitzung erfordert Aufmerksamkeit",
+    "newCategory": "Neue Kategorie",
+    "moveToCategory": "In Kategorie verschieben",
+    "editCategory": "Kategorie bearbeiten",
+    "deleteCategory": "Kategorie löschen"
   },
   "navigation": {
     "chat": "Chat",
@@ -141,5 +145,25 @@
     "deleteAllData": "Alle Daten dauerhaft löschen",
     "allConversationsDeleted": "Das Projekt wird aus der Seitenleiste entfernt. Deine Dateien, Erinnerungen und Sitzungsdaten bleiben erhalten.",
     "cannotUndo": "Du kannst das Projekt später erneut hinzufügen."
+  },
+  "categories": {
+    "uncategorized": "Nicht kategorisiert",
+    "newCategory": "Neue Kategorie",
+    "editCategory": "Kategorie bearbeiten",
+    "moveToCategory": "In Kategorie verschieben",
+    "nameLabel": "Name",
+    "namePlaceholder": "Kategoriename",
+    "colorLabel": "Farbe",
+    "noColor": "Keine Farbe",
+    "createAction": "Kategorie erstellen",
+    "deleteTitle": "Kategorie löschen",
+    "deleteMessage": "\"{{name}}\" löschen? Projekte in dieser Kategorie werden nicht kategorisiert.",
+    "deleteAction": "Kategorie löschen",
+    "deleteProjectCount_one": "Diese Kategorie enthält {{count}} Projekt.",
+    "deleteProjectCount_other": "Diese Kategorie enthält {{count}} Projekte.",
+    "nameRequired": "Geben Sie einen Kategorienamen ein.",
+    "saveError": "Die Kategorie konnte nicht gespeichert werden. Bitte versuchen Sie es erneut.",
+    "deleteError": "Die Kategorie konnte nicht gelöscht werden. Bitte versuchen Sie es erneut.",
+    "assignError": "Das Projekt konnte nicht verschoben werden. Bitte versuchen Sie es erneut."
   }
 }

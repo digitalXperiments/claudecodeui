@@ -49,7 +49,11 @@
     "save": "저장",
     "cancel": "취소",
     "openCommandPalette": "명령 팔레트 열기",
-    "attentionRequiredIndicator": "세션에 주의가 필요합니다"
+    "attentionRequiredIndicator": "세션에 주의가 필요합니다",
+    "newCategory": "새 카테고리",
+    "moveToCategory": "카테고리로 이동",
+    "editCategory": "카테고리 편집",
+    "deleteCategory": "카테고리 삭제"
   },
   "navigation": {
     "chat": "채팅",
@@ -128,5 +132,24 @@
     "deleteAllData": "모든 데이터 영구 삭제",
     "allConversationsDeleted": "프로젝트가 사이드바에서 제거됩니다. 파일, 메모리 및 세션 데이터는 보존됩니다.",
     "cannotUndo": "나중에 프로젝트를 다시 추가할 수 있습니다."
+  },
+  "categories": {
+    "uncategorized": "분류되지 않음",
+    "newCategory": "새 카테고리",
+    "editCategory": "카테고리 편집",
+    "moveToCategory": "카테고리로 이동",
+    "nameLabel": "이름",
+    "namePlaceholder": "카테고리 이름",
+    "colorLabel": "색상",
+    "noColor": "색상 없음",
+    "createAction": "카테고리 만들기",
+    "deleteTitle": "카테고리 삭제",
+    "deleteMessage": "\"{{name}}\"을(를) 삭제하시겠습니까? 이 카테고리의 프로젝트는 분류되지 않음으로 변경됩니다.",
+    "deleteAction": "카테고리 삭제",
+    "deleteProjectCount_other": "이 카테고리에는 프로젝트 {{count}}개가 있습니다.",
+    "nameRequired": "카테고리 이름을 입력하세요.",
+    "saveError": "카테고리를 저장하지 못했습니다. 다시 시도하세요.",
+    "deleteError": "카테고리를 삭제하지 못했습니다. 다시 시도하세요.",
+    "assignError": "프로젝트를 이동하지 못했습니다. 다시 시도하세요."
   }
 }

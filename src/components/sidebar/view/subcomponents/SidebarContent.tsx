@@ -139,6 +139,7 @@ type SidebarContentProps = {
   onRefresh: () => void;
   isRefreshing: boolean;
   onCreateProject: () => void;
+  onCreateCategory: () => void;
   onCollapseSidebar: () => void;
   updateAvailable: boolean;
   restartRequired: boolean;
@@ -177,6 +178,7 @@ export default function SidebarContent({
   onRefresh,
   isRefreshing,
   onCreateProject,
+  onCreateCategory,
   onCollapseSidebar,
   updateAvailable,
   restartRequired,
@@ -213,6 +215,7 @@ export default function SidebarContent({
         onRefresh={onRefresh}
         isRefreshing={isRefreshing}
         onCreateProject={onCreateProject}
+        onCreateCategory={onCreateCategory}
         onCollapseSidebar={onCollapseSidebar}
         t={t}
       />

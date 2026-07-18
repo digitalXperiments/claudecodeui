@@ -1,9 +1,24 @@
-import type { LoadingProgress, Project, ProjectSession, LLMProvider } from '../../../types/app';
+import type { LoadingProgress, Project, ProjectCategory, ProjectSession, LLMProvider } from '../../../types/app';
 import type { SessionActivityMap } from '../../../hooks/useSessionProtection';
 
 export type ProjectSortOrder = 'name' | 'date';
 export type SidebarSearchMode = 'projects' | 'conversations' | 'running' | 'archived';
 export type ArchivedProjectListItem = Project & { isArchived: true };
+
+// `null` category represents the implicit "Uncategorized" group.
+export type ProjectCategoryGroup = {
+  category: ProjectCategory | null;
+  projects: Project[];
+};
+
+export type CategoryEditorState =
+  | { mode: 'create' }
+  | { mode: 'edit'; category: ProjectCategory };
+
+export type DeleteCategoryConfirmation = {
+  category: ProjectCategory;
+  projectCount: number;
+};
 
 export type SessionWithProvider = ProjectSession & {
   __provider: LLMProvider;

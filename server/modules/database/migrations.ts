@@ -2,6 +2,7 @@ import { Database } from 'better-sqlite3';
 
 import {
   APP_CONFIG_TABLE_SCHEMA_SQL,
+  CATEGORIES_TABLE_SCHEMA_SQL,
   LAST_SCANNED_AT_SQL,
   NOTIFICATION_CHANNEL_ENDPOINTS_TABLE_SCHEMA_SQL,
   PROJECTS_TABLE_SCHEMA_SQL,
@@ -402,6 +403,23 @@ const addProviderSessionIdMapping = (db: Database): void => {
   `);
 };
 
+/**
+ * Creates the categories table and links projects to it.
+ *
+ * Must run after the projects table has been rebuilt into its final
+ * `project_id` primary-key shape, because the rebuild drops any column the
+ * hardcoded replacement schema does not list.
+ */
+const ensureCategoriesSchema = (db: Database): void => {
+  db.exec(CATEGORIES_TABLE_SCHEMA_SQL);
+
+  const projectsTableInfo = getTableInfo(db, 'projects');
+  const columnNames = projectsTableInfo.map((column) => column.name);
+  addColumnToTableIfNotExists(db, 'projects', columnNames, 'category_id', 'TEXT DEFAULT NULL');
+
+  db.exec('CREATE INDEX IF NOT EXISTS idx_projects_category_id ON projects(category_id)');
+};
+
 const ensureProjectsForSessionPaths = (db: Database): void => {
   if (!tableExists(db, 'sessions')) {
     return;
@@ -449,6 +467,7 @@ export const runMigrations = (db: Database) => {
     rebuildProjectsTableWithPrimaryKeySchema(db);
 
     migrateLegacyWorkspaceTableIntoProjects(db);
+    ensureCategoriesSchema(db);
     rebuildSessionsTableWithProjectSchema(db);
     migrateLegacySessionNames(db);
     addProviderSessionIdMapping(db);

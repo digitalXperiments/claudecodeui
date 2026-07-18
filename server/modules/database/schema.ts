@@ -92,7 +92,18 @@ CREATE TABLE IF NOT EXISTS projects (
     project_path TEXT NOT NULL UNIQUE,
     custom_project_name TEXT DEFAULT NULL,
     isStarred BOOLEAN DEFAULT 0,
-    isArchived BOOLEAN DEFAULT 0
+    isArchived BOOLEAN DEFAULT 0,
+    category_id TEXT DEFAULT NULL
+);
+`;
+
+export const CATEGORIES_TABLE_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS categories (
+    category_id TEXT PRIMARY KEY NOT NULL,
+    name TEXT NOT NULL UNIQUE,
+    color TEXT DEFAULT NULL,
+    sort_order INTEGER DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 `;
 
@@ -168,6 +179,8 @@ CREATE INDEX IF NOT EXISTS idx_notification_channel_endpoints_enabled ON notific
 ${PROJECTS_TABLE_SCHEMA_SQL}
 -- NOTE: These indexes are created in migrations after legacy table-shape repairs.
 -- Creating them here can fail on upgraded installs where projects lacks those columns.
+
+${CATEGORIES_TABLE_SCHEMA_SQL}
 
 ${SESSIONS_TABLE_SCHEMA_SQL}
 CREATE INDEX IF NOT EXISTS idx_session_ids_lookup ON sessions(session_id);

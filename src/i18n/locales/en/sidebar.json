@@ -50,7 +50,11 @@
     "cancel": "Cancel",
     "clearSearch": "Clear search",
     "openCommandPalette": "Open command palette",
-    "attentionRequiredIndicator": "Session needs attention"
+    "attentionRequiredIndicator": "Session needs attention",
+    "newCategory": "New category",
+    "moveToCategory": "Move to category",
+    "editCategory": "Edit category",
+    "deleteCategory": "Delete category"
   },
   "navigation": {
     "chat": "Chat",
@@ -141,5 +145,25 @@
     "deleteAllData": "Delete all data permanently",
     "allConversationsDeleted": "The project will be removed from the sidebar. Your files, memories, and session data will be preserved.",
     "cannotUndo": "You can re-add the project later."
+  },
+  "categories": {
+    "uncategorized": "Uncategorized",
+    "newCategory": "New category",
+    "editCategory": "Edit category",
+    "moveToCategory": "Move to category",
+    "nameLabel": "Name",
+    "namePlaceholder": "Category name",
+    "colorLabel": "Color",
+    "noColor": "No color",
+    "createAction": "Create category",
+    "deleteTitle": "Delete category",
+    "deleteMessage": "Delete \"{{name}}\"? Projects in this category will become uncategorized.",
+    "deleteAction": "Delete category",
+    "deleteProjectCount_one": "This category contains {{count}} project.",
+    "deleteProjectCount_other": "This category contains {{count}} projects.",
+    "nameRequired": "Enter a category name.",
+    "saveError": "Could not save the category. Please try again.",
+    "deleteError": "Could not delete the category. Please try again.",
+    "assignError": "Could not move the project. Please try again."
   }
 }

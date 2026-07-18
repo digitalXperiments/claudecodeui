@@ -92,6 +92,7 @@ async function broadcastCanonicalSessionUpsert(appSessionId: string): Promise<vo
         fullPath: project.project_path,
         displayName,
         isStarred: Boolean(project.isStarred),
+        categoryId: project.category_id ?? null,
       }
       : null,
     timestamp: new Date().toISOString(),

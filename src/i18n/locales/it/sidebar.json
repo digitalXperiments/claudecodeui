@@ -50,7 +50,11 @@
     "cancel": "Annulla",
     "clearSearch": "Cancella ricerca",
     "openCommandPalette": "Apri tavolozza comandi",
-    "attentionRequiredIndicator": "La sessione richiede attenzione"
+    "attentionRequiredIndicator": "La sessione richiede attenzione",
+    "newCategory": "Nuova categoria",
+    "moveToCategory": "Sposta in categoria",
+    "editCategory": "Modifica categoria",
+    "deleteCategory": "Elimina categoria"
   },
   "navigation": {
     "chat": "Chat",
@@ -141,5 +145,25 @@
     "deleteAllData": "Elimina tutti i dati permanentemente",
     "allConversationsDeleted": "Il progetto verrà rimosso dalla barra laterale. I tuoi file, memorie e dati delle sessioni verranno preservati.",
     "cannotUndo": "Puoi riaggiungerlo in seguito."
+  },
+  "categories": {
+    "uncategorized": "Senza categoria",
+    "newCategory": "Nuova categoria",
+    "editCategory": "Modifica categoria",
+    "moveToCategory": "Sposta in categoria",
+    "nameLabel": "Nome",
+    "namePlaceholder": "Nome della categoria",
+    "colorLabel": "Colore",
+    "noColor": "Nessun colore",
+    "createAction": "Crea categoria",
+    "deleteTitle": "Elimina categoria",
+    "deleteMessage": "Eliminare \"{{name}}\"? I progetti in questa categoria diventeranno senza categoria.",
+    "deleteAction": "Elimina categoria",
+    "deleteProjectCount_one": "Questa categoria contiene {{count}} progetto.",
+    "deleteProjectCount_other": "Questa categoria contiene {{count}} progetti.",
+    "nameRequired": "Inserisci un nome per la categoria.",
+    "saveError": "Impossibile salvare la categoria. Riprova.",
+    "deleteError": "Impossibile eliminare la categoria. Riprova.",
+    "assignError": "Impossibile spostare il progetto. Riprova."
   }
 }

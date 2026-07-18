@@ -67,10 +67,20 @@ export interface Project {
   fullPath: string;
   path?: string;
   isStarred?: boolean;
+  categoryId?: string | null;
   sessions?: ProjectSession[];
   sessionMeta?: ProjectSessionMeta;
   taskmaster?: ProjectTaskmasterInfo;
   [key: string]: unknown;
+}
+
+// Sidebar grouping entity persisted server-side in the `categories` table.
+// A project belongs to at most one category (`Project.categoryId`).
+export interface ProjectCategory {
+  categoryId: string;
+  name: string;
+  color: string | null;
+  sortOrder: number;
 }
 
 export interface LoadingProgress {

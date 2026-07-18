@@ -1,4 +1,4 @@
-import { Check, ChevronDown, ChevronRight, Edit3, Star, Trash2, X } from 'lucide-react';
+import { Check, ChevronDown, ChevronRight, Edit3, FolderInput, Star, Trash2, X } from 'lucide-react';
 import type { TFunction } from 'i18next';
 
 import { Button } from '../../../../shared/view/ui';
@@ -6,7 +6,7 @@ import { cn } from '../../../../lib/utils';
 import type { Project, ProjectSession, LLMProvider } from '../../../../types/app';
 import type { SessionActivityMap } from '../../../../hooks/useSessionProtection';
 import type { MCPServerStatus, SessionWithProvider } from '../../types/types';
-import { getTaskIndicatorStatus } from '../../utils/utils';
+import { getTaskIndicatorStatus, PROJECT_DRAG_MIME } from '../../utils/utils';
 
 import TaskIndicator from './TaskIndicator';
 import SidebarProjectSessions from './SidebarProjectSessions';
@@ -36,6 +36,7 @@ type SidebarProjectItemProps = {
   onCancelEditingProject: () => void;
   onSaveProjectName: (projectName: string) => void;
   onDeleteProject: (project: Project) => void;
+  onMoveToCategory: (project: Project) => void;
   onSessionSelect: (session: SessionWithProvider, projectName: string) => void;
   onDeleteSession: (
     projectName: string,
@@ -84,6 +85,7 @@ export default function SidebarProjectItem({
   onCancelEditingProject,
   onSaveProjectName,
   onDeleteProject,
+  onMoveToCategory,
   onSessionSelect,
   onDeleteSession,
   onLoadMoreSessions,
@@ -107,6 +109,17 @@ export default function SidebarProjectItem({
 
   const toggleProject = () => onToggleProject(project.projectId);
   const toggleStarProject = () => onToggleStarProject(project.projectId);
+
+  // Native HTML5 drag source: category headers accept this payload to assign
+  // the project. Disabled while renaming so text selection still works.
+  const handleProjectDragStart = (event: React.DragEvent<HTMLElement>) => {
+    if (isEditing) {
+      event.preventDefault();
+      return;
+    }
+    event.dataTransfer.setData(PROJECT_DRAG_MIME, project.projectId);
+    event.dataTransfer.effectAllowed = 'move';
+  };
 
   const saveProjectName = () => {
     onSaveProjectName(project.projectId);
@@ -228,6 +241,17 @@ export default function SidebarProjectItem({
                 ) : (
                   <>
                     <button
+                      className="flex h-8 w-8 items-center justify-center rounded-lg border border-border bg-muted/50 active:scale-90 dark:border-border dark:bg-muted/30"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onMoveToCategory(project);
+                      }}
+                      title={t('tooltips.moveToCategory', 'Move to category')}
+                    >
+                      <FolderInput className="h-4 w-4 text-muted-foreground" />
+                    </button>
+
+                    <button
                       className="flex h-8 w-8 items-center justify-center rounded-lg border border-red-200 bg-red-500/10 active:scale-90 dark:border-red-800 dark:bg-red-900/30"
                       onClick={(event) => {
                         event.stopPropagation();
@@ -263,6 +287,8 @@ export default function SidebarProjectItem({
 
         <Button
           variant="ghost"
+          draggable={!isEditing}
+          onDragStart={handleProjectDragStart}
           className={cn(
             'hidden md:flex w-full justify-between p-2 h-auto font-normal hover:bg-accent/50',
             isSelected && 'bg-accent text-accent-foreground',
@@ -361,6 +387,16 @@ export default function SidebarProjectItem({
               </>
             ) : (
               <>
+                <div
+                  className="touch:opacity-100 flex h-6 w-6 cursor-pointer items-center justify-center rounded opacity-0 transition-all duration-200 hover:bg-accent group-hover:opacity-100"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onMoveToCategory(project);
+                  }}
+                  title={t('tooltips.moveToCategory', 'Move to category')}
+                >
+                  <FolderInput className="h-3 w-3" />
+                </div>
                 <div
                   className="touch:opacity-100 flex h-6 w-6 cursor-pointer items-center justify-center rounded opacity-0 transition-all duration-200 hover:bg-accent group-hover:opacity-100"
                   onClick={(event) => {

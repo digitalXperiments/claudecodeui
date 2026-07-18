@@ -8,7 +8,7 @@ import { useSidebarController } from '../hooks/useSidebarController';
 import { useTaskMaster } from '../../../contexts/TaskMasterContext';
 import { usePaletteOps } from '../../../contexts/PaletteOpsContext';
 import { useTasksSettings } from '../../../contexts/TasksSettingsContext';
-import type { Project, LLMProvider } from '../../../types/app';
+import type { Project, ProjectCategory, LLMProvider } from '../../../types/app';
 import type { MCPServerStatus, SidebarProps } from '../types/types';
 
 import SidebarCollapsed from './subcomponents/SidebarCollapsed';
@@ -78,6 +78,12 @@ function Sidebar({
     sessionDeleteConfirmation,
     showVersionModal,
     filteredProjects,
+    groupedProjects,
+    categories,
+    collapsedCategoryIds,
+    categoryEditor,
+    categoryDeleteConfirmation,
+    moveToCategoryProject,
     archivedProjects,
     archivedSessions,
     archivedSessionsCount,
@@ -86,6 +92,15 @@ function Sidebar({
     handleSessionClick,
     toggleStarProject,
     isProjectStarred,
+    toggleCategoryCollapsed,
+    assignProjectToCategory,
+    saveCategory,
+    requestDeleteCategory,
+    confirmDeleteCategory,
+    reorderCategoriesByDrag,
+    setCategoryEditor,
+    setCategoryDeleteConfirmation,
+    setMoveToCategoryProject,
     getProjectSessions,
     loadingMoreProjects,
     loadMoreSessionsForProject,
@@ -147,6 +162,9 @@ function Sidebar({
   const projectListProps: SidebarProjectListProps = {
     projects,
     filteredProjects,
+    groupedProjects,
+    categories,
+    collapsedCategoryIds,
     selectedProject,
     selectedSession,
     isLoading,
@@ -177,6 +195,13 @@ function Sidebar({
       void saveProjectName(projectName);
     },
     onDeleteProject: requestProjectDelete,
+    onMoveToCategory: (project: Project) => setMoveToCategoryProject(project),
+    onToggleCategory: toggleCategoryCollapsed,
+    onEditCategory: (category: ProjectCategory) =>
+      setCategoryEditor({ mode: 'edit', category }),
+    onDeleteCategory: requestDeleteCategory,
+    onDropProjectOnCategory: assignProjectToCategory,
+    onReorderCategory: reorderCategoriesByDrag,
     onSessionSelect: handleSessionClick,
     onDeleteSession: showDeleteSessionConfirmation,
     onLoadMoreSessions: loadMoreSessionsForProject,
@@ -212,6 +237,17 @@ function Sidebar({
         sessionDeleteConfirmation={sessionDeleteConfirmation}
         onCancelDeleteSession={() => setSessionDeleteConfirmation(null)}
         onConfirmDeleteSession={confirmDeleteSession}
+        categories={categories}
+        categoryEditor={categoryEditor}
+        onCloseCategoryEditor={() => setCategoryEditor(null)}
+        onSaveCategory={saveCategory}
+        categoryDeleteConfirmation={categoryDeleteConfirmation}
+        onCancelDeleteCategory={() => setCategoryDeleteConfirmation(null)}
+        onConfirmDeleteCategory={confirmDeleteCategory}
+        moveToCategoryProject={moveToCategoryProject}
+        onCloseMoveToCategory={() => setMoveToCategoryProject(null)}
+        onAssignProjectToCategory={assignProjectToCategory}
+        onCreateCategoryFromMove={() => setCategoryEditor({ mode: 'create' })}
         showVersionModal={showVersionModal}
         onCloseVersionModal={() => setShowVersionModal(false)}
         releaseInfo={releaseInfo}
@@ -297,6 +333,7 @@ function Sidebar({
             }}
             isRefreshing={isRefreshing}
             onCreateProject={() => setShowNewProject(true)}
+            onCreateCategory={() => setCategoryEditor({ mode: 'create' })}
             onCollapseSidebar={handleCollapseSidebar}
             updateAvailable={updateAvailable}
             restartRequired={restartRequired}

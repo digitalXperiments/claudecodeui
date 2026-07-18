@@ -50,7 +50,11 @@
     "cancel": "Отмена",
     "clearSearch": "Очистить поиск",
     "openCommandPalette": "Открыть палитру команд",
-    "attentionRequiredIndicator": "Сессия требует внимания"
+    "attentionRequiredIndicator": "Сессия требует внимания",
+    "newCategory": "Новая категория",
+    "moveToCategory": "Переместить в категорию",
+    "editCategory": "Изменить категорию",
+    "deleteCategory": "Удалить категорию"
   },
   "navigation": {
     "chat": "Чат",
@@ -147,5 +151,27 @@
     "deleteAllData": "Удалить все данные навсегда",
     "allConversationsDeleted": "Проект будет убран из боковой панели. Ваши файлы, воспоминания и данные сеансов сохранятся.",
     "cannotUndo": "Вы сможете добавить проект позже."
+  },
+  "categories": {
+    "uncategorized": "Без категории",
+    "newCategory": "Новая категория",
+    "editCategory": "Изменить категорию",
+    "moveToCategory": "Переместить в категорию",
+    "nameLabel": "Название",
+    "namePlaceholder": "Название категории",
+    "colorLabel": "Цвет",
+    "noColor": "Без цвета",
+    "createAction": "Создать категорию",
+    "deleteTitle": "Удалить категорию",
+    "deleteMessage": "Удалить «{{name}}»? Проекты в этой категории станут без категории.",
+    "deleteAction": "Удалить категорию",
+    "deleteProjectCount_one": "В этой категории {{count}} проект.",
+    "deleteProjectCount_few": "В этой категории {{count}} проекта.",
+    "deleteProjectCount_many": "В этой категории {{count}} проектов.",
+    "deleteProjectCount_other": "В этой категории {{count}} проекта.",
+    "nameRequired": "Введите название категории.",
+    "saveError": "Не удалось сохранить категорию. Повторите попытку.",
+    "deleteError": "Не удалось удалить категорию. Повторите попытку.",
+    "assignError": "Не удалось переместить проект. Повторите попытку."
   }
 }
