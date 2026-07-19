@@ -75,7 +75,7 @@ import browserUseRoutes from './modules/browser-use/browser-use.routes.js';
 import { assetsRoutes } from './modules/assets/index.js';
 import browserUseMcpRoutes from './modules/browser-use/browser-use-mcp.routes.js';
 import kanbanRoutes from './modules/kanban/kanban.routes.js';
-import { configureKanbanRuntimes, initKanbanAutomation } from './modules/kanban/index.js';
+import { configureKanbanRuntimes, initKanbanAutomation, reconcileKanbanOnBoot } from './modules/kanban/index.js';
 import { browserUseService } from './modules/browser-use/browser-use.service.js';
 import { startEnabledPluginServers, stopAllPlugins, getPluginPort } from './utils/plugin-process-manager.js';
 import { initializeDatabase, projectsDb, sessionsDb } from './modules/database/index.js';
@@ -1786,6 +1786,13 @@ async function startServer() {
     try {
         // Initialize authentication database
         await initializeDatabase();
+
+        // Fail any kanban runs left "running" by a previous process (crash/restart).
+        try {
+            reconcileKanbanOnBoot();
+        } catch (error) {
+            console.error('[Kanban] boot reconcile failed:', error.message);
+        }
 
         // Configure Web Push (VAPID keys)
         configureWebPush();

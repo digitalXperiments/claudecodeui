@@ -5,5 +5,7 @@ export {
   initKanbanAutomation,
   stopKanbanAutomation,
   handleRunCompletion,
+  reconcileKanbanOnBoot,
+  setOnTaskDone,
 } from '@/modules/kanban/kanban-automation.service.js';
 export * from '@/modules/kanban/kanban.types.js';
