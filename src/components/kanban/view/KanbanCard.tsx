@@ -1,6 +1,6 @@
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import { Clock, GitBranch, Loader2 } from 'lucide-react';
+import { Clock, FolderGit2, GitBranch, Loader2 } from 'lucide-react';
 
 import { Badge } from '../../../shared/view/ui';
 import { cn } from '../../../lib/utils';
@@ -25,9 +25,11 @@ function providerLabel(provider: KanbanTask['assignee_provider']): string | null
 type KanbanCardProps = {
   task: KanbanTask;
   onOpen: (task: KanbanTask) => void;
+  /** Project name to badge on the card (global board only). */
+  projectName?: string | null;
 };
 
-export default function KanbanCard({ task, onOpen }: KanbanCardProps) {
+export default function KanbanCard({ task, onOpen, projectName = null }: KanbanCardProps) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: task.task_id,
     data: { type: 'task', columnId: task.column_id },
@@ -65,15 +67,21 @@ export default function KanbanCard({ task, onOpen }: KanbanCardProps) {
       ) : null}
 
       <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
+        {projectName ? (
+          <Badge variant="outline" className="gap-1 font-normal">
+            <FolderGit2 className="h-3 w-3" />
+            {projectName}
+          </Badge>
+        ) : null}
         {provider ? (
           <Badge variant="outline" className="font-normal">
             {provider}
           </Badge>
         ) : null}
-        {task.dependsOn.length > 0 ? (
+        {(task.dependsOn?.length ?? 0) > 0 ? (
           <span className="inline-flex items-center gap-0.5">
             <GitBranch className="h-3 w-3" />
-            {task.dependsOn.length}
+            {task.dependsOn?.length ?? 0}
           </span>
         ) : null}
         {task.schedule_cron ? (

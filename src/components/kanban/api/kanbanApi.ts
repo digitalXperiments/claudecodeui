@@ -1,5 +1,13 @@
 import { authenticatedFetch } from '../../../utils/api';
-import type { KanbanBoard, KanbanColumn, KanbanRun, KanbanTask, KanbanTaskStatus, KanbanTaskTools } from '../types';
+import type {
+  KanbanBoard,
+  KanbanColumn,
+  KanbanRun,
+  KanbanTask,
+  KanbanTaskStatus,
+  KanbanTaskTools,
+  ProjectRef,
+} from '../types';
 import type { LLMProvider } from '../../../types/app';
 
 const BASE = '/api/kanban';
@@ -25,6 +33,7 @@ export type TaskPatch = {
   title?: string;
   description?: string;
   prompt?: string;
+  projectId?: string;
   columnId?: string;
   position?: number;
   assigneeProvider?: LLMProvider | null;
@@ -55,6 +64,26 @@ export const kanbanApi = {
     return parse<{ board: KanbanBoard; tasks: KanbanTask[] }>(res);
   },
 
+  async getGlobalBoard(): Promise<{ board: KanbanBoard; tasks: KanbanTask[] }> {
+    const res = await authenticatedFetch(`${BASE}/global`);
+    return parse<{ board: KanbanBoard; tasks: KanbanTask[] }>(res);
+  },
+
+  async listProjects(): Promise<ProjectRef[]> {
+    const res = await authenticatedFetch('/api/projects?skipSync=1');
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      return [];
+    }
+    const raw = Array.isArray(payload) ? payload : (payload?.projects ?? []);
+    return (raw as Record<string, unknown>[])
+      .map((p) => ({
+        projectId: String(p.projectId ?? p.project_id ?? ''),
+        displayName: String(p.displayName ?? p.custom_project_name ?? p.projectId ?? 'Project'),
+      }))
+      .filter((p) => p.projectId);
+  },
+
   async updateBoard(boardId: string, patch: { name?: string; columns?: KanbanColumn[] }): Promise<KanbanBoard> {
     const res = await authenticatedFetch(`${BASE}/boards/${boardId}`, {
       method: 'PUT',
@@ -71,6 +100,7 @@ export const kanbanApi = {
 
   async createTask(input: {
     boardId: string;
+    projectId?: string;
     title: string;
     description?: string;
     prompt?: string;

@@ -208,7 +208,9 @@ function MainContent({
 
           {activeTab === 'kanban' && (
             <div className="h-full overflow-hidden">
-              <KanbanView selectedProject={selectedProject} isVisible={activeTab === 'kanban'} />
+              <ErrorBoundary showDetails>
+                <KanbanView selectedProject={selectedProject} isVisible={activeTab === 'kanban'} />
+              </ErrorBoundary>
             </div>
           )}
 

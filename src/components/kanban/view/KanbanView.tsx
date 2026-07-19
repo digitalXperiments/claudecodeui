@@ -9,9 +9,10 @@ import {
   type DragEndEvent,
   type DragStartEvent,
 } from '@dnd-kit/core';
-import { AlertTriangle, Loader2, Plus, RefreshCw, SquareKanban, Table2 } from 'lucide-react';
+import { AlertTriangle, Globe, Loader2, Plus, RefreshCw, SquareKanban, Table2 } from 'lucide-react';
 
 import { Button } from '../../../shared/view/ui';
+import { cn } from '../../../lib/utils';
 import type { Project } from '../../../types/app';
 import { useKanbanBoard } from '../hooks/useKanbanBoard';
 import { kanbanApi } from '../api/kanbanApi';
@@ -37,7 +38,9 @@ function columnIdFromOver(overId: string, tasks: KanbanTask[]): string | null {
 
 export default function KanbanView({ selectedProject, isVisible }: KanbanViewProps) {
   const projectId = selectedProject?.projectId ?? null;
-  const board = useKanbanBoard(projectId);
+  const [scope, setScope] = useState<'project' | 'global'>('project');
+  const board = useKanbanBoard(projectId, scope);
+  const isGlobal = scope === 'global';
 
   const [editorOpen, setEditorOpen] = useState(false);
   const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
@@ -65,6 +68,15 @@ export default function KanbanView({ selectedProject, isVisible }: KanbanViewPro
     return map;
   }, [board.tasks]);
 
+  // projectId -> display name, for the global board's per-card project badges.
+  const projectNameById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const project of board.projects) {
+      map.set(project.projectId, project.displayName);
+    }
+    return map;
+  }, [board.projects]);
+
   // While a run is in flight, poll the board so status/output transitions land.
   useEffect(() => {
     if (!anyRunning || !isVisible) {
@@ -81,11 +93,16 @@ export default function KanbanView({ selectedProject, isVisible }: KanbanViewPro
     return null;
   }
 
-  if (!selectedProject) {
+  // The global board works without a selected project; the project board needs one.
+  if (!selectedProject && !isGlobal) {
     return (
       <div className="flex h-full w-full flex-col items-center justify-center gap-3 text-center text-muted-foreground">
         <SquareKanban className="h-10 w-10 opacity-60" />
         <div className="text-sm">Select a project to open its Kanban board.</div>
+        <Button variant="outline" size="sm" onClick={() => setScope('global')}>
+          <Globe className="h-4 w-4" />
+          Open the global board
+        </Button>
       </div>
     );
   }
@@ -159,9 +176,33 @@ export default function KanbanView({ selectedProject, isVisible }: KanbanViewPro
       <div className="flex items-center justify-between gap-2 border-b border-border px-4 py-2">
         <div className="flex items-center gap-2 text-sm font-semibold">
           <SquareKanban className="h-4 w-4" />
-          {board.board?.name ?? 'Kanban'}
+          {isGlobal ? 'Global board' : (selectedProject?.displayName ?? board.board?.name ?? 'Kanban')}
         </div>
         <div className="flex items-center gap-2">
+          <div className="mr-1 flex items-center rounded-md border border-border p-0.5 text-xs">
+            <button
+              type="button"
+              className={cn(
+                'rounded px-2 py-1 transition-colors',
+                !isGlobal ? 'bg-secondary text-secondary-foreground' : 'text-muted-foreground',
+              )}
+              onClick={() => setScope('project')}
+              disabled={!selectedProject}
+            >
+              Project
+            </button>
+            <button
+              type="button"
+              className={cn(
+                'inline-flex items-center gap-1 rounded px-2 py-1 transition-colors',
+                isGlobal ? 'bg-secondary text-secondary-foreground' : 'text-muted-foreground',
+              )}
+              onClick={() => setScope('global')}
+            >
+              <Globe className="h-3 w-3" />
+              Global
+            </button>
+          </div>
           <Button
             variant={view === 'matrix' ? 'secondary' : 'ghost'}
             size="icon"
@@ -217,6 +258,7 @@ export default function KanbanView({ selectedProject, isVisible }: KanbanViewPro
                 onOpenTask={openEditTask}
                 onAddTask={openNewTask}
                 onToggleRunOnEnter={board.setColumnRunOnEnter}
+                projectNameById={isGlobal ? projectNameById : null}
               />
             ))}
           </div>
@@ -232,6 +274,9 @@ export default function KanbanView({ selectedProject, isVisible }: KanbanViewPro
         draft={draftColumnId ? { columnId: draftColumnId } : null}
         columns={columns}
         allTasks={board.tasks}
+        projects={board.projects}
+        requireProject={isGlobal}
+        projectNameById={isGlobal ? projectNameById : null}
         onClose={() => setEditorOpen(false)}
         onCreate={async (input) => {
           if (!board.board) {

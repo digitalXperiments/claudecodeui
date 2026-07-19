@@ -50,6 +50,19 @@ Automated runs go through a queue with a concurrency cap (default **3**
 simultaneous runs) to prevent runaway fan-out. Tasks waiting for a slot show as
 **queued**.
 
+## Global board (cross-project)
+
+The **Project / Global** toggle in the header switches between the current
+project's board and a single **global board** shared across all projects:
+
+- The global board works even with no project selected.
+- Each task on it belongs to a project you pick in the task editor; cards show a
+  project badge so you can tell them apart.
+- Dependencies can cross project boundaries — a task in project A can depend on a
+  task in project B. The dependency picker labels each task with its project.
+- Runs still execute in the task's own project directory, so an automated global
+  workflow can orchestrate work spanning multiple repos.
+
 ## Permission matrix
 
 The table icon (top-right) switches to a board-wide **agents × tasks** view:

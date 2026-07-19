@@ -52,11 +52,24 @@ export const kanbanDb = {
     const db = getConnection();
     const boardId = randomUUID();
     const columns = input.columns && input.columns.length > 0 ? input.columns : DEFAULT_COLUMNS;
+    const scope = input.scope ?? 'project';
     db.prepare(
-      `INSERT INTO kanban_boards (board_id, project_id, name, columns_json)
-       VALUES (?, ?, ?, ?)`,
-    ).run(boardId, input.projectId, input.name, JSON.stringify(columns));
+      `INSERT INTO kanban_boards (board_id, project_id, name, columns_json, scope)
+       VALUES (?, ?, ?, ?, ?)`,
+    ).run(boardId, input.projectId, input.name, JSON.stringify(columns), scope);
     return kanbanDb.getBoard(boardId)!;
+  },
+
+  /** Fetch the single global board, creating it on first access. */
+  getOrCreateGlobalBoard(): KanbanBoard {
+    const db = getConnection();
+    const row = db
+      .prepare(`SELECT * FROM kanban_boards WHERE scope = 'global' ORDER BY created_at ASC LIMIT 1`)
+      .get() as KanbanBoardRow | undefined;
+    if (row) {
+      return mapBoard(row);
+    }
+    return kanbanDb.createBoard({ projectId: null, name: 'Global', scope: 'global' });
   },
 
   getBoard(boardId: string): KanbanBoard | null {
@@ -170,6 +183,7 @@ export const kanbanDb = {
       title: patch.title ?? existing.title,
       description: patch.description ?? existing.description,
       prompt: patch.prompt ?? existing.prompt,
+      project_id: patch.projectId ?? existing.project_id,
       column_id: patch.columnId ?? existing.column_id,
       position: patch.position ?? existing.position,
       assignee_provider:
@@ -183,7 +197,7 @@ export const kanbanDb = {
 
     db.prepare(
       `UPDATE kanban_tasks SET
-         title = ?, description = ?, prompt = ?, column_id = ?, position = ?,
+         title = ?, description = ?, prompt = ?, project_id = ?, column_id = ?, position = ?,
          assignee_provider = ?, permission_mode = ?, tools_json = ?, schedule_cron = ?,
          status = ?, updated_at = CURRENT_TIMESTAMP
        WHERE task_id = ?`,
@@ -191,6 +205,7 @@ export const kanbanDb = {
       next.title,
       next.description,
       next.prompt,
+      next.project_id,
       next.column_id,
       next.position,
       next.assignee_provider,

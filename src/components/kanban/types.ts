@@ -18,13 +18,22 @@ export type KanbanTaskTools = {
   [key: string]: unknown;
 };
 
+export type KanbanBoardScope = 'project' | 'global';
+
 export type KanbanBoard = {
   board_id: string;
-  project_id: string;
+  project_id: string | null;
   name: string;
   columns: KanbanColumn[];
+  scope: KanbanBoardScope;
   created_at: string;
   updated_at: string;
+};
+
+/** Minimal project reference for the global board's project badges/selector. */
+export type ProjectRef = {
+  projectId: string;
+  displayName: string;
 };
 
 export type KanbanTask = {

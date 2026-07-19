@@ -118,6 +118,18 @@ router.get(
   }),
 );
 
+// --- Global board ---------------------------------------------------------
+// The single cross-project board: tasks may belong to different projects and
+// depend on one another across project boundaries.
+router.get(
+  '/global',
+  asyncHandler(async (_req, res) => {
+    const board = kanbanDb.getOrCreateGlobalBoard();
+    const tasks = kanbanDb.listTasksByBoard(board.board_id);
+    res.json({ success: true, board, tasks });
+  }),
+);
+
 // --- Boards ---------------------------------------------------------------
 router.get(
   '/boards',
@@ -218,9 +230,19 @@ router.post(
       throw new AppError('title is required', { code: 'KANBAN_TITLE_REQUIRED', statusCode: 400 });
     }
     const board = requireBoard(boardId);
+    // Project-scoped boards inherit their project; global boards require the
+    // caller to pick which project each task belongs to.
+    const projectId =
+      board.scope === 'global' ? readString(body.projectId).trim() : board.project_id;
+    if (!projectId) {
+      throw new AppError('projectId is required for tasks on a global board', {
+        code: 'KANBAN_PROJECT_ID_REQUIRED',
+        statusCode: 400,
+      });
+    }
     const task = kanbanDb.createTask({
       boardId,
-      projectId: board.project_id,
+      projectId,
       title,
       description: readOptionalString(body.description),
       prompt: readOptionalString(body.prompt),
@@ -258,6 +280,7 @@ router.put(
       title: readOptionalString(body.title),
       description: readOptionalString(body.description),
       prompt: readOptionalString(body.prompt),
+      projectId: readOptionalString(body.projectId),
       columnId: requestedColumnId,
       position: typeof body.position === 'number' ? body.position : undefined,
       assigneeProvider: validateAssignee(body.assigneeProvider),

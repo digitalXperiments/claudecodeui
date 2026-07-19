@@ -14,6 +14,7 @@ type KanbanColumnProps = {
   onOpenTask: (task: KanbanTask) => void;
   onAddTask: (columnId: string) => void;
   onToggleRunOnEnter: (columnId: string, runOnEnter: boolean) => void;
+  projectNameById: Map<string, string> | null;
 };
 
 export default function KanbanColumn({
@@ -22,6 +23,7 @@ export default function KanbanColumn({
   onOpenTask,
   onAddTask,
   onToggleRunOnEnter,
+  projectNameById,
 }: KanbanColumnProps) {
   const { setNodeRef, isOver } = useDroppable({
     id: `column:${column.id}`,
@@ -80,7 +82,12 @@ export default function KanbanColumn({
       >
         <SortableContext items={sortedTasks.map((t) => t.task_id)} strategy={verticalListSortingStrategy}>
           {sortedTasks.map((task) => (
-            <KanbanCard key={task.task_id} task={task} onOpen={onOpenTask} />
+            <KanbanCard
+              key={task.task_id}
+              task={task}
+              onOpen={onOpenTask}
+              projectName={projectNameById ? projectNameById.get(task.project_id) ?? null : null}
+            />
           ))}
         </SortableContext>
         {sortedTasks.length === 0 ? (

@@ -9,6 +9,7 @@ import {
   KANBAN_PROVIDERS,
   type KanbanColumn,
   type KanbanTask,
+  type ProjectRef,
 } from '../types';
 import type { TaskPatch } from '../api/kanbanApi';
 
@@ -24,9 +25,15 @@ type TaskEditorProps = {
   draft: TaskDraft | null;
   columns: KanbanColumn[];
   allTasks: KanbanTask[];
+  /** Available projects; when `requireProject`, the task must pick one. */
+  projects: ProjectRef[];
+  requireProject: boolean;
+  /** projectId -> display name, for labelling cross-project dependencies. */
+  projectNameById: Map<string, string> | null;
   onClose: () => void;
   onCreate: (input: {
     columnId?: string;
+    projectId?: string;
     title: string;
     description?: string;
     prompt?: string;
@@ -60,12 +67,14 @@ function arrayToLines(value: string[] | undefined): string {
 }
 
 export default function TaskEditor(props: TaskEditorProps) {
-  const { open, task, draft, columns, allTasks, onClose } = props;
+  const { open, task, draft, columns, allTasks, projects, requireProject, projectNameById, onClose } =
+    props;
   const isEdit = Boolean(task);
 
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [prompt, setPrompt] = useState('');
+  const [projectId, setProjectId] = useState('');
   const [columnId, setColumnId] = useState('');
   const [assignee, setAssignee] = useState<LLMProvider | ''>('');
   const [permissionMode, setPermissionMode] = useState('default');
@@ -86,6 +95,7 @@ export default function TaskEditor(props: TaskEditorProps) {
       setTitle(task.title);
       setDescription(task.description ?? '');
       setPrompt(task.prompt ?? '');
+      setProjectId(task.project_id ?? '');
       setColumnId(task.column_id);
       setAssignee(task.assignee_provider ?? '');
       setPermissionMode(task.permission_mode || 'default');
@@ -96,6 +106,7 @@ export default function TaskEditor(props: TaskEditorProps) {
       setTitle('');
       setDescription('');
       setPrompt('');
+      setProjectId(projects.length === 1 ? projects[0].projectId : '');
       setColumnId(draft?.columnId ?? columns[0]?.id ?? '');
       setAssignee('');
       setPermissionMode('default');
@@ -103,7 +114,7 @@ export default function TaskEditor(props: TaskEditorProps) {
       setDisallowed('');
       setScheduleCron('');
     }
-  }, [open, task, draft, columns]);
+  }, [open, task, draft, columns, projects]);
 
   const dependencyOptions = useMemo(
     () => allTasks.filter((t) => t.task_id !== task?.task_id),
@@ -128,6 +139,10 @@ export default function TaskEditor(props: TaskEditorProps) {
       setError('Title is required');
       return;
     }
+    if (requireProject && !projectId) {
+      setError('Pick a project for this task');
+      return;
+    }
     setSaving(true);
     setError(null);
     try {
@@ -139,6 +154,7 @@ export default function TaskEditor(props: TaskEditorProps) {
         permissionMode,
         tools: buildTools(),
         scheduleCron: scheduleCron.trim() ? scheduleCron.trim() : null,
+        ...(projectId ? { projectId } : {}),
       };
       if (task) {
         await props.onUpdate(task.task_id, { ...common, columnId });
@@ -254,6 +270,27 @@ export default function TaskEditor(props: TaskEditorProps) {
               />
             </div>
 
+            {requireProject ? (
+              <div className="flex flex-col gap-1">
+                <label className={labelClass} htmlFor="kanban-project">
+                  Project
+                </label>
+                <select
+                  id="kanban-project"
+                  className={selectClass}
+                  value={projectId}
+                  onChange={(e) => setProjectId(e.target.value)}
+                >
+                  <option value="">Select a project…</option>
+                  {projects.map((project) => (
+                    <option key={project.projectId} value={project.projectId}>
+                      {project.displayName}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            ) : null}
+
             <div className="grid grid-cols-2 gap-3">
               <div className="flex flex-col gap-1">
                 <label className={labelClass} htmlFor="kanban-column">
@@ -362,7 +399,7 @@ export default function TaskEditor(props: TaskEditorProps) {
                 ) : (
                   <div className="max-h-32 overflow-y-auto rounded-md border border-border p-2">
                     {dependencyOptions.map((option) => {
-                      const checked = task?.dependsOn.includes(option.task_id) ?? false;
+                      const checked = task?.dependsOn?.includes(option.task_id) ?? false;
                       return (
                         <label
                           key={option.task_id}
@@ -374,6 +411,11 @@ export default function TaskEditor(props: TaskEditorProps) {
                             onChange={(e) => toggleDependency(option.task_id, e.target.checked)}
                           />
                           <span className="truncate">{option.title}</span>
+                          {projectNameById && projectNameById.get(option.project_id) ? (
+                            <span className="ml-auto shrink-0 text-xs text-muted-foreground">
+                              {projectNameById.get(option.project_id)}
+                            </span>
+                          ) : null}
                         </label>
                       );
                     })}

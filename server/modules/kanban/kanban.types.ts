@@ -46,12 +46,15 @@ export type KanbanTaskTools = {
   [key: string]: unknown;
 };
 
+export type KanbanBoardScope = 'project' | 'global';
+
 /** Raw board row as stored in SQLite. */
 export type KanbanBoardRow = {
   board_id: string;
-  project_id: string;
+  project_id: string | null;
   name: string;
   columns_json: string;
+  scope: KanbanBoardScope;
   created_at: string;
   updated_at: string;
 };
@@ -102,9 +105,10 @@ export type KanbanRunRow = {
 };
 
 export type CreateBoardInput = {
-  projectId: string;
+  projectId: string | null;
   name: string;
   columns?: KanbanColumn[];
+  scope?: KanbanBoardScope;
 };
 
 export type CreateTaskInput = {
@@ -125,6 +129,7 @@ export type UpdateTaskInput = {
   title?: string;
   description?: string;
   prompt?: string;
+  projectId?: string;
   columnId?: string;
   position?: number;
   assigneeProvider?: LLMProvider | null;

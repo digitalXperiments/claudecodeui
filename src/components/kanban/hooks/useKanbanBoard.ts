@@ -1,64 +1,80 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { kanbanApi, type TaskPatch } from '../api/kanbanApi';
-import type { KanbanBoard, KanbanTask } from '../types';
+import type { KanbanBoard, KanbanBoardScope, KanbanTask, ProjectRef } from '../types';
 
 type BoardState = {
   board: KanbanBoard | null;
   tasks: KanbanTask[];
+  projects: ProjectRef[];
   loading: boolean;
   error: string | null;
 };
 
-/**
- * Loads (or lazily creates) the first Kanban board for a project and exposes
- * task mutations. Moves are applied optimistically and reverted on failure.
- */
-export function useKanbanBoard(projectId: string | null) {
-  const [state, setState] = useState<BoardState>({
-    board: null,
-    tasks: [],
-    loading: false,
-    error: null,
-  });
-  // Guards against races when the project changes mid-request.
-  const activeProjectRef = useRef<string | null>(null);
+const EMPTY_STATE: BoardState = {
+  board: null,
+  tasks: [],
+  projects: [],
+  loading: false,
+  error: null,
+};
 
-  const load = useCallback(async (targetProjectId: string) => {
-    activeProjectRef.current = targetProjectId;
+/**
+ * Loads (or lazily creates) a Kanban board and exposes task mutations. In
+ * `project` scope it loads the project's board; in `global` scope it loads the
+ * single cross-project board and the project list (for badges + task assignment).
+ * Moves are applied optimistically and reverted on failure.
+ */
+export function useKanbanBoard(projectId: string | null, scope: KanbanBoardScope = 'project') {
+  const [state, setState] = useState<BoardState>(EMPTY_STATE);
+  // Guards against races when the target (project or scope) changes mid-request.
+  const loadKeyRef = useRef<string>('');
+
+  const load = useCallback(async (targetScope: KanbanBoardScope, targetProjectId: string | null) => {
+    const key = `${targetScope}:${targetProjectId ?? ''}`;
+    loadKeyRef.current = key;
     setState((prev) => ({ ...prev, loading: true, error: null }));
     try {
-      let boards = await kanbanApi.listBoards(targetProjectId);
-      if (boards.length === 0) {
-        const created = await kanbanApi.createBoard(targetProjectId, 'Board');
-        boards = [created];
+      let board: KanbanBoard;
+      let tasks: KanbanTask[];
+      if (targetScope === 'global') {
+        const result = await kanbanApi.getGlobalBoard();
+        board = result.board;
+        tasks = result.tasks;
+      } else {
+        let boards = await kanbanApi.listBoards(targetProjectId as string);
+        if (boards.length === 0) {
+          boards = [await kanbanApi.createBoard(targetProjectId as string, 'Board')];
+        }
+        const result = await kanbanApi.getBoard(boards[0].board_id);
+        board = result.board;
+        tasks = result.tasks;
       }
-      const { board, tasks } = await kanbanApi.getBoard(boards[0].board_id);
-      if (activeProjectRef.current !== targetProjectId) {
+      // The project list powers global-board badges + the per-task project picker.
+      const projects = targetScope === 'global' ? await kanbanApi.listProjects() : [];
+      if (loadKeyRef.current !== key) {
         return;
       }
-      setState({ board, tasks, loading: false, error: null });
+      setState({ board, tasks, projects, loading: false, error: null });
     } catch (error) {
-      if (activeProjectRef.current !== targetProjectId) {
+      if (loadKeyRef.current !== key) {
         return;
       }
       setState({
-        board: null,
-        tasks: [],
-        loading: false,
+        ...EMPTY_STATE,
         error: error instanceof Error ? error.message : 'Failed to load board',
       });
     }
   }, []);
 
   useEffect(() => {
-    if (!projectId) {
-      activeProjectRef.current = null;
-      setState({ board: null, tasks: [], loading: false, error: null });
+    if (scope === 'project' && !projectId) {
+      loadKeyRef.current = '';
+      setState(EMPTY_STATE);
       return;
     }
-    void load(projectId);
-  }, [projectId, load]);
+    void load(scope, projectId);
+  }, [projectId, scope, load]);
 
   const refreshTasks = useCallback(async () => {
     const boardId = state.board?.board_id;
@@ -208,7 +224,8 @@ export function useKanbanBoard(projectId: string | null) {
 
   return {
     ...state,
-    reload: () => (projectId ? load(projectId) : Promise.resolve()),
+    reload: () =>
+      scope === 'global' || projectId ? load(scope, projectId) : Promise.resolve(),
     refreshTasks,
     createTask,
     updateTask,

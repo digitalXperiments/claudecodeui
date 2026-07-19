@@ -440,6 +440,55 @@ const ensureProjectsForSessionPaths = (db: Database): void => {
   `);
 };
 
+/**
+ * Adds global (cross-project) board support: makes `kanban_boards.project_id`
+ * nullable and introduces a `scope` column. Existing boards become `project`.
+ * Idempotent — a no-op once the `scope` column exists.
+ */
+const ensureKanbanGlobalBoardSchema = (db: Database): void => {
+  if (!tableExists(db, 'kanban_boards')) {
+    return;
+  }
+  const columnNames = getTableInfo(db, 'kanban_boards').map((column) => column.name);
+  if (!columnNames.includes('scope')) {
+    console.log('Running migration: adding global-board support to kanban_boards');
+    db.exec('PRAGMA foreign_keys = OFF');
+    try {
+      db.exec('BEGIN TRANSACTION');
+      db.exec('DROP TABLE IF EXISTS kanban_boards__new');
+      db.exec(`
+        CREATE TABLE kanban_boards__new (
+          board_id     TEXT PRIMARY KEY NOT NULL,
+          project_id   TEXT,
+          name         TEXT NOT NULL,
+          columns_json TEXT NOT NULL,
+          scope        TEXT NOT NULL DEFAULT 'project',
+          created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+          updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (project_id) REFERENCES projects(project_id) ON DELETE CASCADE
+        )
+      `);
+      db.exec(`
+        INSERT INTO kanban_boards__new (board_id, project_id, name, columns_json, scope, created_at, updated_at)
+        SELECT board_id, project_id, name, columns_json, 'project', created_at, updated_at
+        FROM kanban_boards
+      `);
+      db.exec('DROP TABLE kanban_boards');
+      db.exec('ALTER TABLE kanban_boards__new RENAME TO kanban_boards');
+      db.exec('COMMIT');
+    } catch (migrationError) {
+      db.exec('ROLLBACK');
+      db.exec('PRAGMA foreign_keys = ON');
+      throw migrationError;
+    }
+    db.exec('PRAGMA foreign_keys = ON');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_kanban_boards_project ON kanban_boards(project_id)');
+  }
+
+  // Safe for both fresh installs (scope already present) and post-rebuild.
+  db.exec('CREATE INDEX IF NOT EXISTS idx_kanban_boards_scope ON kanban_boards(scope)');
+};
+
 export const runMigrations = (db: Database) => {
   try {
     const usersTableInfo = db.prepare('PRAGMA table_info(users)').all() as { name: string }[];
@@ -495,6 +544,7 @@ export const runMigrations = (db: Database) => {
 
     // Kanban orchestration tables (additive; safe to re-exec via IF NOT EXISTS).
     db.exec(KANBAN_SCHEMA_SQL);
+    ensureKanbanGlobalBoardSchema(db);
 
     console.log('Database migrations completed successfully');
   } catch (error: any) {

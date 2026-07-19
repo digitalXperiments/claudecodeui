@@ -151,9 +151,10 @@ CREATE TABLE IF NOT EXISTS app_config (
 export const KANBAN_BOARDS_TABLE_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS kanban_boards (
     board_id     TEXT PRIMARY KEY NOT NULL,
-    project_id   TEXT NOT NULL,
+    project_id   TEXT,                    -- NULL for a global (cross-project) board
     name         TEXT NOT NULL,
     columns_json TEXT NOT NULL,          -- [{id,name,order,runOnEnter?:bool,permissionMode?}]
+    scope        TEXT NOT NULL DEFAULT 'project', -- 'project' | 'global'
     created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (project_id) REFERENCES projects(project_id) ON DELETE CASCADE
@@ -212,6 +213,8 @@ CREATE TABLE IF NOT EXISTS kanban_runs (
 export const KANBAN_SCHEMA_SQL = `
 ${KANBAN_BOARDS_TABLE_SCHEMA_SQL}
 CREATE INDEX IF NOT EXISTS idx_kanban_boards_project ON kanban_boards(project_id);
+-- NOTE: idx_kanban_boards_scope is created in migrations, after the boards
+-- table is rebuilt to add the scope column on upgraded installs.
 
 ${KANBAN_TASKS_TABLE_SCHEMA_SQL}
 CREATE INDEX IF NOT EXISTS idx_kanban_tasks_board ON kanban_tasks(board_id);
