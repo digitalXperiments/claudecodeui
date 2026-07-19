@@ -12,6 +12,32 @@ import type { LLMProvider } from '../../../types/app';
 
 const BASE = '/api/kanban';
 
+// Defensive normalizers: the UI reads `.length`/iterates these fields, so we
+// coerce anything the API returns (or a stale server omits) into safe shapes.
+function normalizeBoard(board: KanbanBoard): KanbanBoard {
+  return {
+    ...board,
+    columns: Array.isArray(board?.columns) ? board.columns : [],
+    scope: board?.scope === 'global' ? 'global' : 'project',
+  };
+}
+
+function normalizeBoards(boards: KanbanBoard[] | undefined): KanbanBoard[] {
+  return Array.isArray(boards) ? boards.map(normalizeBoard) : [];
+}
+
+function normalizeTask(task: KanbanTask): KanbanTask {
+  return {
+    ...task,
+    tools: task?.tools && typeof task.tools === 'object' ? task.tools : {},
+    dependsOn: Array.isArray(task?.dependsOn) ? task.dependsOn : [],
+  };
+}
+
+function normalizeTasks(tasks: KanbanTask[] | undefined): KanbanTask[] {
+  return Array.isArray(tasks) ? tasks.map(normalizeTask) : [];
+}
+
 async function parse<T>(response: Response): Promise<T> {
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
@@ -46,8 +72,8 @@ export type TaskPatch = {
 export const kanbanApi = {
   async listBoards(projectId: string): Promise<KanbanBoard[]> {
     const res = await authenticatedFetch(`${BASE}/boards?projectId=${encodeURIComponent(projectId)}`);
-    const data = await parse<{ boards: KanbanBoard[] }>(res);
-    return data.boards;
+    const data = await parse<{ boards?: KanbanBoard[] }>(res);
+    return normalizeBoards(data.boards);
   },
 
   async createBoard(projectId: string, name: string, columns?: KanbanColumn[]): Promise<KanbanBoard> {
@@ -56,17 +82,19 @@ export const kanbanApi = {
       body: JSON.stringify({ projectId, name, columns }),
     });
     const data = await parse<{ board: KanbanBoard }>(res);
-    return data.board;
+    return normalizeBoard(data.board);
   },
 
   async getBoard(boardId: string): Promise<{ board: KanbanBoard; tasks: KanbanTask[] }> {
     const res = await authenticatedFetch(`${BASE}/boards/${boardId}`);
-    return parse<{ board: KanbanBoard; tasks: KanbanTask[] }>(res);
+    const data = await parse<{ board: KanbanBoard; tasks?: KanbanTask[] }>(res);
+    return { board: normalizeBoard(data.board), tasks: normalizeTasks(data.tasks) };
   },
 
   async getGlobalBoard(): Promise<{ board: KanbanBoard; tasks: KanbanTask[] }> {
     const res = await authenticatedFetch(`${BASE}/global`);
-    return parse<{ board: KanbanBoard; tasks: KanbanTask[] }>(res);
+    const data = await parse<{ board: KanbanBoard; tasks?: KanbanTask[] }>(res);
+    return { board: normalizeBoard(data.board), tasks: normalizeTasks(data.tasks) };
   },
 
   async listProjects(): Promise<ProjectRef[]> {
@@ -90,7 +118,7 @@ export const kanbanApi = {
       body: JSON.stringify(patch),
     });
     const data = await parse<{ board: KanbanBoard }>(res);
-    return data.board;
+    return normalizeBoard(data.board);
   },
 
   async deleteBoard(boardId: string): Promise<void> {
@@ -115,7 +143,7 @@ export const kanbanApi = {
       body: JSON.stringify(input),
     });
     const data = await parse<{ task: KanbanTask }>(res);
-    return data.task;
+    return normalizeTask(data.task);
   },
 
   async getTask(taskId: string): Promise<{ task: KanbanTask; runs: KanbanRun[] }> {
@@ -129,7 +157,7 @@ export const kanbanApi = {
       body: JSON.stringify(patch),
     });
     const data = await parse<{ task: KanbanTask }>(res);
-    return data.task;
+    return normalizeTask(data.task);
   },
 
   async deleteTask(taskId: string): Promise<void> {
@@ -143,7 +171,7 @@ export const kanbanApi = {
       body: JSON.stringify({ dependsOnTaskId }),
     });
     const data = await parse<{ task: KanbanTask }>(res);
-    return data.task;
+    return normalizeTask(data.task);
   },
 
   async removeDependency(taskId: string, dependsOnTaskId: string): Promise<KanbanTask> {
@@ -151,7 +179,7 @@ export const kanbanApi = {
       method: 'DELETE',
     });
     const data = await parse<{ task: KanbanTask }>(res);
-    return data.task;
+    return normalizeTask(data.task);
   },
 
   async listRuns(taskId: string): Promise<KanbanRun[]> {

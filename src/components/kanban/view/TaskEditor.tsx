@@ -72,9 +72,23 @@ function coerceAgyMode(mode: string): AgyPermissionMode {
 }
 
 export default function TaskEditor(props: TaskEditorProps) {
-  const { open, task, draft, columns, allTasks, projects, requireProject, projectNameById, onClose } =
-    props;
+  const {
+    open,
+    task,
+    draft,
+    columns: columnsProp,
+    allTasks: allTasksProp,
+    projects: projectsProp,
+    requireProject,
+    projectNameById,
+    onClose,
+  } = props;
   const isEdit = Boolean(task);
+  // Defensive defaults — these feed `.length`/`.map`/`.filter` in render and
+  // hook deps; memoized so a nullish prop can't churn effects every render.
+  const columns = useMemo(() => columnsProp ?? [], [columnsProp]);
+  const allTasks = useMemo(() => allTasksProp ?? [], [allTasksProp]);
+  const projects = useMemo(() => projectsProp ?? [], [projectsProp]);
 
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');

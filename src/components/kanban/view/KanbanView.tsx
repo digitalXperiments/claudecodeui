@@ -48,11 +48,12 @@ export default function KanbanView({ selectedProject, isVisible }: KanbanViewPro
   const [activeTask, setActiveTask] = useState<KanbanTask | null>(null);
   const [view, setView] = useState<'board' | 'matrix'>('board');
 
+  const boardTasks = useMemo(() => board.tasks ?? [], [board.tasks]);
   // Derive the edited task from live board state so run status/output refresh.
   const editingTask = editingTaskId
-    ? board.tasks.find((t) => t.task_id === editingTaskId) ?? null
+    ? boardTasks.find((t) => t.task_id === editingTaskId) ?? null
     : null;
-  const anyRunning = board.tasks.some((t) => t.status === 'running');
+  const anyRunning = boardTasks.some((t) => t.status === 'running');
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
@@ -60,18 +61,18 @@ export default function KanbanView({ selectedProject, isVisible }: KanbanViewPro
 
   const tasksByColumn = useMemo(() => {
     const map = new Map<string, KanbanTask[]>();
-    for (const task of board.tasks) {
+    for (const task of boardTasks) {
       const list = map.get(task.column_id) ?? [];
       list.push(task);
       map.set(task.column_id, list);
     }
     return map;
-  }, [board.tasks]);
+  }, [boardTasks]);
 
   // projectId -> display name, for the global board's per-card project badges.
   const projectNameById = useMemo(() => {
     const map = new Map<string, string>();
-    for (const project of board.projects) {
+    for (const project of board.projects ?? []) {
       map.set(project.projectId, project.displayName);
     }
     return map;
@@ -120,7 +121,7 @@ export default function KanbanView({ selectedProject, isVisible }: KanbanViewPro
   };
 
   const handleDragStart = (event: DragStartEvent) => {
-    const task = board.tasks.find((t) => t.task_id === event.active.id);
+    const task = boardTasks.find((t) => t.task_id === event.active.id);
     setActiveTask(task ?? null);
   };
 
@@ -132,12 +133,12 @@ export default function KanbanView({ selectedProject, isVisible }: KanbanViewPro
     }
     const activeId = String(active.id);
     const overId = String(over.id);
-    const targetColumnId = columnIdFromOver(overId, board.tasks);
+    const targetColumnId = columnIdFromOver(overId, boardTasks);
     if (!targetColumnId) {
       return;
     }
 
-    const activeTaskItem = board.tasks.find((t) => t.task_id === activeId);
+    const activeTaskItem = boardTasks.find((t) => t.task_id === activeId);
     if (!activeTaskItem) {
       return;
     }
@@ -241,7 +242,7 @@ export default function KanbanView({ selectedProject, isVisible }: KanbanViewPro
           <Loader2 className="h-6 w-6 animate-spin" />
         </div>
       ) : view === 'matrix' ? (
-        <PermissionMatrix tasks={board.tasks} onOpenTask={openEditTask} />
+        <PermissionMatrix tasks={boardTasks} onOpenTask={openEditTask} />
       ) : (
         <DndContext
           sensors={sensors}
@@ -273,7 +274,7 @@ export default function KanbanView({ selectedProject, isVisible }: KanbanViewPro
         task={editingTask}
         draft={draftColumnId ? { columnId: draftColumnId } : null}
         columns={columns}
-        allTasks={board.tasks}
+        allTasks={boardTasks}
         projects={board.projects}
         requireProject={isGlobal}
         projectNameById={isGlobal ? projectNameById : null}
