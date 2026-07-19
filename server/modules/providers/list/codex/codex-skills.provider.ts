@@ -65,4 +65,12 @@ export class CodexSkillsProvider extends SkillsProvider {
       commandPrefix: '$',
     };
   }
+
+  async getProjectSkillTarget(workspacePath: string): Promise<ProviderSkillSource> {
+    return {
+      scope: 'repo',
+      rootDir: path.join(workspacePath, '.agents', 'skills'),
+      commandPrefix: '$',
+    };
+  }
 }

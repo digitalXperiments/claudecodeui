@@ -43,6 +43,31 @@ export type ProviderSkillsResponse = {
   skills: Array<Partial<ProviderSkill>>;
 };
 
+/**
+ * One cross-agent project skill. Authored once and fanned out to every agent's
+ * project skill folder. `providers` are the agents that received a copy;
+ * `conflicts` are agents whose folder already held a non-managed skill of the
+ * same name and were left untouched.
+ */
+export type ProjectSkill = {
+  name: string;
+  description: string;
+  directoryName: string;
+  sourcePath: string;
+  providers: SkillsProvider[];
+  conflicts: SkillsProvider[];
+};
+
+export type ProjectSkillCreatePayload = {
+  workspacePath: string;
+  entries: ProviderSkillCreateEntryPayload[];
+};
+
+export type ProjectSkillsResponse = {
+  workspacePath: string;
+  skills: Array<Partial<ProjectSkill>>;
+};
+
 export type ApiSuccessResponse<T> = {
   success: true;
   data: T;

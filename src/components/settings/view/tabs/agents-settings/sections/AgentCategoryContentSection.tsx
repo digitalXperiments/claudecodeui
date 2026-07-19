@@ -2,7 +2,7 @@ import type { AgentCategoryContentSectionProps } from '../types';
 import type { McpProject } from '../../../../../mcp/types';
 import { McpServers } from '../../../../../mcp';
 import type { SkillsProject } from '../../../../../skills/types';
-import { ProviderSkills } from '../../../../../skills';
+import { ProjectSkills, ProviderSkills } from '../../../../../skills';
 
 import AccountContent from './content/AccountContent';
 import PermissionsContent from './content/PermissionsContent';
@@ -118,15 +118,26 @@ export default function AgentCategoryContentSection({
       )}
 
       {selectedCategory === 'skills' && selectedAgent !== 'opencode' && (
-        <ProviderSkills
-          selectedProvider={selectedAgent}
-          currentProjects={projects.map<SkillsProject>((project) => ({
-            projectId: project.name,
-            displayName: project.displayName,
-            fullPath: project.fullPath,
-            path: project.path,
-          }))}
-        />
+        <div className="space-y-8">
+          <ProjectSkills
+            currentProjects={projects.map<SkillsProject>((project) => ({
+              projectId: project.name,
+              displayName: project.displayName,
+              fullPath: project.fullPath,
+              path: project.path,
+            }))}
+          />
+          <div className="border-t border-border/60" />
+          <ProviderSkills
+            selectedProvider={selectedAgent}
+            currentProjects={projects.map<SkillsProject>((project) => ({
+              projectId: project.name,
+              displayName: project.displayName,
+              fullPath: project.fullPath,
+              path: project.path,
+            }))}
+          />
+        </div>
       )}
     </div>
   );

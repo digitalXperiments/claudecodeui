@@ -31,4 +31,12 @@ export class KimiSkillsProvider extends SkillsProvider {
       commandPrefix: '/',
     };
   }
+
+  async getProjectSkillTarget(workspacePath: string): Promise<ProviderSkillSource> {
+    return {
+      scope: 'project',
+      rootDir: path.join(workspacePath, '.kimi-code', 'skills'),
+      commandPrefix: '/',
+    };
+  }
 }
