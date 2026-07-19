@@ -6,6 +6,7 @@ import {
   KANBAN_SCHEMA_SQL,
   LAST_SCANNED_AT_SQL,
   NOTIFICATION_CHANNEL_ENDPOINTS_TABLE_SCHEMA_SQL,
+  PROJECT_MEMORY_TABLE_SCHEMA_SQL,
   PROJECTS_TABLE_SCHEMA_SQL,
   PUSH_SUBSCRIPTIONS_TABLE_SCHEMA_SQL,
   SESSIONS_TABLE_SCHEMA_SQL,
@@ -549,6 +550,17 @@ const ensureKanbanAgentWorkflowSchema = (db: Database): void => {
   }
 };
 
+/**
+ * Creates the per-project memory table linking a project path to its Obsidian
+ * vault folder. Additive and idempotent (guarded by IF NOT EXISTS), so it is
+ * safe on both fresh installs and upgrades. Must run after the projects table
+ * has been rebuilt into its final `project_path` shape because of the FK.
+ */
+const ensureProjectMemorySchema = (db: Database): void => {
+  db.exec(PROJECT_MEMORY_TABLE_SCHEMA_SQL);
+  db.exec('CREATE INDEX IF NOT EXISTS idx_project_memory_enabled ON project_memory(enabled)');
+};
+
 export const runMigrations = (db: Database) => {
   try {
     const usersTableInfo = db.prepare('PRAGMA table_info(users)').all() as { name: string }[];
@@ -601,6 +613,9 @@ export const runMigrations = (db: Database) => {
     }
 
     db.exec(LAST_SCANNED_AT_SQL);
+
+    // Per-project Obsidian memory mapping (additive; runs after projects rebuild).
+    ensureProjectMemorySchema(db);
 
     // Kanban orchestration tables (additive; safe to re-exec via IF NOT EXISTS).
     db.exec(KANBAN_SCHEMA_SQL);

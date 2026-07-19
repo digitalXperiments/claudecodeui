@@ -97,6 +97,19 @@ CREATE TABLE IF NOT EXISTS projects (
 );
 `;
 
+export const PROJECT_MEMORY_TABLE_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS project_memory (
+    project_path TEXT PRIMARY KEY NOT NULL,
+    enabled BOOLEAN DEFAULT 1,
+    vault_folder TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (project_path) REFERENCES projects(project_path)
+    ON DELETE CASCADE
+    ON UPDATE CASCADE
+);
+`;
+
 export const CATEGORIES_TABLE_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS categories (
     category_id TEXT PRIMARY KEY NOT NULL,
@@ -294,6 +307,8 @@ CREATE INDEX IF NOT EXISTS idx_session_ids_lookup ON sessions(session_id);
 ${LAST_SCANNED_AT_SQL}
 
 ${APP_CONFIG_TABLE_SCHEMA_SQL}
+
+${PROJECT_MEMORY_TABLE_SCHEMA_SQL}
 
 ${KANBAN_SCHEMA_SQL}
 `;

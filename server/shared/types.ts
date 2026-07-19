@@ -533,6 +533,73 @@ export type UpsertProviderMcpServerInput = {
 };
 
 // ---------------------------
+// ----------------- PROJECT MEMORY (Obsidian) TYPES ------------
+/**
+ * Global Obsidian connection settings, shared across all projects and stored in
+ * the `app_config` key-value table. `vaultPath` is the absolute path to the
+ * vault on disk (used for server-side scaffolding, which writes markdown
+ * directly and does not require Obsidian to be running). The `rest*` fields
+ * configure the community `mcp-obsidian` server that agents talk to at runtime
+ * via the Obsidian Local REST API plugin.
+ */
+export type ObsidianMemorySettings = {
+  vaultPath: string;
+  restProtocol: 'http' | 'https';
+  restHost: string;
+  restPort: number;
+  restApiKey: string;
+};
+
+/**
+ * Whether global Obsidian settings are complete enough to enable memory.
+ */
+export type ObsidianMemorySettingsStatus = ObsidianMemorySettings & {
+  configured: boolean;
+};
+
+/**
+ * Raw `project_memory` row shape.
+ */
+export type ProjectMemoryRow = {
+  project_path: string;
+  enabled: number;
+  vault_folder: string;
+  created_at: string;
+  updated_at: string;
+};
+
+/**
+ * Per-project memory configuration input.
+ */
+export type ProjectMemoryConfigInput = {
+  workspacePath: string;
+  enabled: boolean;
+  vaultFolder: string;
+};
+
+/**
+ * Result of installing/removing the Obsidian MCP server for one provider.
+ */
+export type ProjectMemoryProviderResult = {
+  provider: LLMProvider;
+  ok: boolean;
+  error?: string;
+};
+
+/**
+ * Normalized per-project memory status returned to the frontend.
+ */
+export type ProjectMemoryStatus = {
+  workspacePath: string;
+  enabled: boolean;
+  vaultFolder: string;
+  vaultPath: string | null;
+  settingsConfigured: boolean;
+  providers: LLMProvider[];
+  skillInstalled: boolean;
+};
+
+// ---------------------------
 //----------------- PROVIDER AUTH TYPES ------------
 /**
  * Authentication status result returned by provider health checks.

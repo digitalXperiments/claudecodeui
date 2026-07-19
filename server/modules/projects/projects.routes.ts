@@ -1,6 +1,7 @@
 import express from 'express';
 
 import { createProject, updateProjectDisplayName } from '@/modules/projects/services/project-management.service.js';
+import { projectMemoryService } from '@/modules/providers/index.js';
 import { startCloneProject } from '@/modules/projects/services/project-clone.service.js';
 import { getProjectTaskMaster } from '@/modules/projects/services/projects-has-taskmaster.service.js';
 import { AppError, asyncHandler, createApiSuccessResponse } from '@/shared/utils.js';
@@ -186,9 +187,29 @@ router.post(
       customName,
     });
 
+    // Optionally provision an Obsidian memory folder for the new project. This
+    // is best-effort: a memory failure must not fail project creation itself.
+    const memoryRequest = (requestBody.memory ?? null) as Record<string, unknown> | null;
+    let memoryStatus: unknown = null;
+    let memoryError: string | null = null;
+    if (memoryRequest && memoryRequest.enabled === true) {
+      try {
+        const result = await projectMemoryService.enableMemory({
+          workspacePath: projectCreationResult.project.fullPath,
+          vaultFolder: typeof memoryRequest.vaultFolder === 'string' ? memoryRequest.vaultFolder : '',
+          enabled: true,
+        });
+        memoryStatus = result.status;
+      } catch (error) {
+        memoryError = error instanceof Error ? error.message : 'Failed to enable project memory';
+      }
+    }
+
     res.json({
       success: true,
       project: projectCreationResult.project,
+      memory: memoryStatus,
+      memoryError,
       message:
         projectCreationResult.outcome === 'reactivated_archived'
           ? 'Archived project path reused successfully'
