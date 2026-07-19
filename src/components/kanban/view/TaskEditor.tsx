@@ -4,6 +4,8 @@ import { Loader2, Play, Trash2 } from 'lucide-react';
 import { Button, Dialog, DialogContent, DialogTitle, Input } from '../../../shared/view/ui';
 import { cn } from '../../../lib/utils';
 import type { LLMProvider } from '../../../types/app';
+import PermissionsContent from '../../settings/view/tabs/agents-settings/sections/content/PermissionsContent';
+import type { AgyPermissionMode, CodexPermissionMode } from '../../settings/types/types';
 import {
   KANBAN_PERMISSION_MODES,
   KANBAN_PROVIDERS,
@@ -55,15 +57,18 @@ const selectClass =
 const textareaClass =
   'w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring';
 
-function linesToArray(value: string): string[] {
-  return value
-    .split('\n')
-    .map((line) => line.trim())
-    .filter(Boolean);
+const CODEX_MODES: CodexPermissionMode[] = ['default', 'acceptEdits', 'bypassPermissions'];
+const AGY_MODES: AgyPermissionMode[] = ['plan', 'acceptEdits', 'bypassPermissions'];
+
+/** Providers with a dedicated allow/deny editor (share the settings UI). */
+const ALLOW_DENY_PROVIDERS: LLMProvider[] = ['claude', 'cursor', 'grok'];
+
+function coerceCodexMode(mode: string): CodexPermissionMode {
+  return CODEX_MODES.includes(mode as CodexPermissionMode) ? (mode as CodexPermissionMode) : 'default';
 }
 
-function arrayToLines(value: string[] | undefined): string {
-  return (value ?? []).join('\n');
+function coerceAgyMode(mode: string): AgyPermissionMode {
+  return AGY_MODES.includes(mode as AgyPermissionMode) ? (mode as AgyPermissionMode) : 'bypassPermissions';
 }
 
 export default function TaskEditor(props: TaskEditorProps) {
@@ -78,8 +83,9 @@ export default function TaskEditor(props: TaskEditorProps) {
   const [columnId, setColumnId] = useState('');
   const [assignee, setAssignee] = useState<LLMProvider | ''>('');
   const [permissionMode, setPermissionMode] = useState('default');
-  const [allowed, setAllowed] = useState('');
-  const [disallowed, setDisallowed] = useState('');
+  const [skipPermissions, setSkipPermissions] = useState(false);
+  const [allowed, setAllowed] = useState<string[]>([]);
+  const [disallowed, setDisallowed] = useState<string[]>([]);
   const [scheduleCron, setScheduleCron] = useState('');
   const [saving, setSaving] = useState(false);
   const [running, setRunning] = useState(false);
@@ -99,8 +105,9 @@ export default function TaskEditor(props: TaskEditorProps) {
       setColumnId(task.column_id);
       setAssignee(task.assignee_provider ?? '');
       setPermissionMode(task.permission_mode || 'default');
-      setAllowed(arrayToLines(task.tools?.allowedCommands));
-      setDisallowed(arrayToLines(task.tools?.disallowedCommands));
+      setSkipPermissions((task.permission_mode || 'default') === 'bypassPermissions');
+      setAllowed(task.tools?.allowedCommands ?? []);
+      setDisallowed(task.tools?.disallowedCommands ?? []);
       setScheduleCron(task.schedule_cron ?? '');
     } else {
       setTitle('');
@@ -110,8 +117,9 @@ export default function TaskEditor(props: TaskEditorProps) {
       setColumnId(draft?.columnId ?? columns[0]?.id ?? '');
       setAssignee('');
       setPermissionMode('default');
-      setAllowed('');
-      setDisallowed('');
+      setSkipPermissions(false);
+      setAllowed([]);
+      setDisallowed([]);
       setScheduleCron('');
     }
   }, [open, task, draft, columns, projects]);
@@ -121,17 +129,86 @@ export default function TaskEditor(props: TaskEditorProps) {
     [allTasks, task?.task_id],
   );
 
+  const usesAllowDeny = assignee !== '' && ALLOW_DENY_PROVIDERS.includes(assignee);
+
   const buildTools = () => {
-    const allowedCommands = linesToArray(allowed);
-    const disallowedCommands = linesToArray(disallowed);
     const tools: { allowedCommands?: string[]; disallowedCommands?: string[] } = {};
-    if (allowedCommands.length > 0) {
-      tools.allowedCommands = allowedCommands;
+    if (allowed.length > 0) {
+      tools.allowedCommands = allowed;
     }
-    if (disallowedCommands.length > 0) {
-      tools.disallowedCommands = disallowedCommands;
+    if (disallowed.length > 0) {
+      tools.disallowedCommands = disallowed;
     }
     return tools;
+  };
+
+  // Resolve the stored permission_mode from the provider-appropriate control:
+  // allow/deny providers derive it from the skip toggle; others use the mode value.
+  const resolvePermissionMode = (): string =>
+    usesAllowDeny ? (skipPermissions ? 'bypassPermissions' : 'default') : permissionMode;
+
+  // Provider-aware permission editor: reuses the settings PermissionsContent for
+  // claude/cursor/grok (allow+deny) and codex/agy (mode); falls back to a generic
+  // mode select for kimi/opencode/unassigned (which take only a permission mode).
+  const renderPermissions = () => {
+    if (assignee === 'claude') {
+      return (
+        <PermissionsContent
+          agent="claude"
+          skipPermissions={skipPermissions}
+          onSkipPermissionsChange={setSkipPermissions}
+          allowedTools={allowed}
+          onAllowedToolsChange={setAllowed}
+          disallowedTools={disallowed}
+          onDisallowedToolsChange={setDisallowed}
+        />
+      );
+    }
+    if (assignee === 'cursor' || assignee === 'grok') {
+      return (
+        <PermissionsContent
+          agent={assignee}
+          skipPermissions={skipPermissions}
+          onSkipPermissionsChange={setSkipPermissions}
+          allowedCommands={allowed}
+          onAllowedCommandsChange={setAllowed}
+          disallowedCommands={disallowed}
+          onDisallowedCommandsChange={setDisallowed}
+        />
+      );
+    }
+    if (assignee === 'codex') {
+      return (
+        <PermissionsContent
+          agent="codex"
+          permissionMode={coerceCodexMode(permissionMode)}
+          onPermissionModeChange={(value) => setPermissionMode(value)}
+        />
+      );
+    }
+    if (assignee === 'agy') {
+      return (
+        <PermissionsContent
+          agent="agy"
+          permissionMode={coerceAgyMode(permissionMode)}
+          onPermissionModeChange={(value) => setPermissionMode(value)}
+        />
+      );
+    }
+    return (
+      <select
+        className={selectClass}
+        value={permissionMode}
+        onChange={(e) => setPermissionMode(e.target.value)}
+        aria-label="Permission mode"
+      >
+        {KANBAN_PERMISSION_MODES.map((mode) => (
+          <option key={mode.value} value={mode.value}>
+            {mode.label}
+          </option>
+        ))}
+      </select>
+    );
   };
 
   const handleSave = async () => {
@@ -151,7 +228,7 @@ export default function TaskEditor(props: TaskEditorProps) {
         description,
         prompt,
         assigneeProvider: assignee === '' ? null : assignee,
-        permissionMode,
+        permissionMode: resolvePermissionMode(),
         tools: buildTools(),
         scheduleCron: scheduleCron.trim() ? scheduleCron.trim() : null,
         ...(projectId ? { projectId } : {}),
@@ -330,65 +407,23 @@ export default function TaskEditor(props: TaskEditorProps) {
               </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
-              <div className="flex flex-col gap-1">
-                <label className={labelClass} htmlFor="kanban-permission">
-                  Permission mode
-                </label>
-                <select
-                  id="kanban-permission"
-                  className={selectClass}
-                  value={permissionMode}
-                  onChange={(e) => setPermissionMode(e.target.value)}
-                >
-                  {KANBAN_PERMISSION_MODES.map((mode) => (
-                    <option key={mode.value} value={mode.value}>
-                      {mode.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="flex flex-col gap-1">
-                <label className={labelClass} htmlFor="kanban-cron">
-                  Schedule (cron)
-                </label>
-                <Input
-                  id="kanban-cron"
-                  value={scheduleCron}
-                  onChange={(e) => setScheduleCron(e.target.value)}
-                  placeholder="e.g. 0 9 * * 1"
-                />
-              </div>
+            <div className="flex flex-col gap-1">
+              <label className={labelClass} htmlFor="kanban-cron">
+                Schedule (cron)
+              </label>
+              <Input
+                id="kanban-cron"
+                value={scheduleCron}
+                onChange={(e) => setScheduleCron(e.target.value)}
+                placeholder="e.g. 0 9 * * 1"
+              />
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
-              <div className="flex flex-col gap-1">
-                <label className={labelClass} htmlFor="kanban-allowed">
-                  Allowed commands (one per line)
-                </label>
-                <textarea
-                  id="kanban-allowed"
-                  className={textareaClass}
-                  rows={3}
-                  value={allowed}
-                  onChange={(e) => setAllowed(e.target.value)}
-                  placeholder="Bash(ls)"
-                />
-              </div>
-              <div className="flex flex-col gap-1">
-                <label className={labelClass} htmlFor="kanban-disallowed">
-                  Disallowed commands (one per line)
-                </label>
-                <textarea
-                  id="kanban-disallowed"
-                  className={textareaClass}
-                  rows={3}
-                  value={disallowed}
-                  onChange={(e) => setDisallowed(e.target.value)}
-                  placeholder="Bash(rm)"
-                />
-              </div>
+            <div className="flex flex-col gap-2 rounded-md border border-border p-3">
+              <span className={labelClass}>
+                Permissions{assignee ? ` — ${assignee}` : ''}
+              </span>
+              {renderPermissions()}
             </div>
 
             {isEdit ? (
