@@ -145,6 +145,92 @@ CREATE TABLE IF NOT EXISTS app_config (
 );
 `;
 
+// --- Kanban orchestration -------------------------------------------------
+// App-facing ids are TEXT UUIDs to match projects/sessions conventions.
+
+export const KANBAN_BOARDS_TABLE_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS kanban_boards (
+    board_id     TEXT PRIMARY KEY NOT NULL,
+    project_id   TEXT,                    -- NULL for a global (cross-project) board
+    name         TEXT NOT NULL,
+    columns_json TEXT NOT NULL,          -- [{id,name,order,runOnEnter?:bool,permissionMode?}]
+    scope        TEXT NOT NULL DEFAULT 'project', -- 'project' | 'global'
+    created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (project_id) REFERENCES projects(project_id) ON DELETE CASCADE
+);
+`;
+
+export const KANBAN_TASKS_TABLE_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS kanban_tasks (
+    task_id           TEXT PRIMARY KEY NOT NULL,
+    board_id          TEXT NOT NULL,
+    project_id        TEXT NOT NULL,
+    title             TEXT NOT NULL,
+    description       TEXT DEFAULT '',
+    prompt            TEXT DEFAULT '',   -- instruction sent to the agent on run
+    column_id         TEXT NOT NULL,
+    position          INTEGER DEFAULT 0, -- ordering within a column
+    assignee_provider TEXT,              -- LLMProvider | NULL
+    permission_mode   TEXT DEFAULT 'default',
+    tools_json        TEXT DEFAULT '{}', -- {allowedCommands:[], disallowedCommands:[]}
+    schedule_cron     TEXT,              -- NULL = not scheduled
+    status            TEXT DEFAULT 'todo', -- todo|queued|running|done|failed|blocked
+    app_session_id    TEXT,              -- links to sessions(session_id) once run
+    last_run_at       DATETIME,
+    last_exit_code    INTEGER,
+    created_at        DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at        DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (board_id) REFERENCES kanban_boards(board_id) ON DELETE CASCADE
+);
+`;
+
+export const KANBAN_TASK_DEPS_TABLE_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS kanban_task_deps (
+    task_id            TEXT NOT NULL,
+    depends_on_task_id TEXT NOT NULL,
+    PRIMARY KEY (task_id, depends_on_task_id),
+    FOREIGN KEY (task_id) REFERENCES kanban_tasks(task_id) ON DELETE CASCADE,
+    FOREIGN KEY (depends_on_task_id) REFERENCES kanban_tasks(task_id) ON DELETE CASCADE
+);
+`;
+
+export const KANBAN_RUNS_TABLE_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS kanban_runs (
+    run_id         TEXT PRIMARY KEY NOT NULL,
+    task_id        TEXT NOT NULL,
+    app_session_id TEXT,
+    provider       TEXT,
+    trigger        TEXT,                 -- manual|schedule|column_move|dependency
+    status         TEXT DEFAULT 'running', -- running|done|failed|aborted
+    exit_code      INTEGER,
+    started_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
+    finished_at    DATETIME,
+    FOREIGN KEY (task_id) REFERENCES kanban_tasks(task_id) ON DELETE CASCADE
+);
+`;
+
+export const KANBAN_SCHEMA_SQL = `
+${KANBAN_BOARDS_TABLE_SCHEMA_SQL}
+CREATE INDEX IF NOT EXISTS idx_kanban_boards_project ON kanban_boards(project_id);
+-- NOTE: idx_kanban_boards_scope is created in migrations, after the boards
+-- table is rebuilt to add the scope column on upgraded installs.
+
+${KANBAN_TASKS_TABLE_SCHEMA_SQL}
+CREATE INDEX IF NOT EXISTS idx_kanban_tasks_board ON kanban_tasks(board_id);
+CREATE INDEX IF NOT EXISTS idx_kanban_tasks_project ON kanban_tasks(project_id);
+CREATE INDEX IF NOT EXISTS idx_kanban_tasks_column ON kanban_tasks(column_id);
+CREATE INDEX IF NOT EXISTS idx_kanban_tasks_status ON kanban_tasks(status);
+CREATE INDEX IF NOT EXISTS idx_kanban_tasks_session ON kanban_tasks(app_session_id);
+
+${KANBAN_TASK_DEPS_TABLE_SCHEMA_SQL}
+CREATE INDEX IF NOT EXISTS idx_kanban_task_deps_depends_on ON kanban_task_deps(depends_on_task_id);
+
+${KANBAN_RUNS_TABLE_SCHEMA_SQL}
+CREATE INDEX IF NOT EXISTS idx_kanban_runs_task ON kanban_runs(task_id);
+CREATE INDEX IF NOT EXISTS idx_kanban_runs_status ON kanban_runs(status);
+`;
+
 export const INIT_SCHEMA_SQL = `
 -- Initialize authentication database
 PRAGMA foreign_keys = ON;
@@ -190,4 +276,6 @@ CREATE INDEX IF NOT EXISTS idx_session_ids_lookup ON sessions(session_id);
 ${LAST_SCANNED_AT_SQL}
 
 ${APP_CONFIG_TABLE_SCHEMA_SQL}
+
+${KANBAN_SCHEMA_SQL}
 `;

@@ -12,7 +12,7 @@ type AgentListItemProps = {
 
 type AgentConfig = {
   name: string;
-  color: 'blue' | 'purple' | 'gray' | 'zinc' | 'amber' | 'emerald';
+  color: 'blue' | 'purple' | 'gray' | 'zinc' | 'amber' | 'emerald' | 'sky';
 };
 
 const agentConfig: Record<AgentProvider, AgentConfig> = {
@@ -40,6 +40,10 @@ const agentConfig: Record<AgentProvider, AgentConfig> = {
     name: 'Kimi',
     color: 'emerald',
   },
+  agy: {
+    name: 'Antigravity',
+    color: 'sky',
+  },
 };
 
 const colorClasses = {
@@ -60,6 +64,9 @@ const colorClasses = {
   },
   emerald: {
     dot: 'bg-emerald-500',
+  },
+  sky: {
+    dot: 'bg-sky-500',
   },
 } as const;
 

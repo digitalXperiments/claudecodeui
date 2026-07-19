@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { authenticatedFetch } from '../../../utils/api';
+import { useAgentVisibility } from '../../../hooks/useAgentVisibility';
 import type { PendingPermissionRequest, PermissionMode } from '../types/types';
 import type {
   ProjectSession,
@@ -23,9 +24,10 @@ const FALLBACK_DEFAULT_MODEL: Record<LLMProvider, string> = {
   opencode: 'anthropic/claude-sonnet-4-5',
   grok: 'grok-4.5',
   kimi: 'kimi-code/kimi-for-coding',
+  agy: 'Gemini 3.5 Flash (Medium)',
 };
 
-const PROVIDERS: LLMProvider[] = ['claude', 'cursor', 'codex', 'opencode', 'grok', 'kimi'];
+const PROVIDERS: LLMProvider[] = ['claude', 'cursor', 'codex', 'opencode', 'grok', 'kimi', 'agy'];
 
 const readStoredProvider = (): LLMProvider => {
   const storedProvider = localStorage.getItem('selected-provider');
@@ -47,6 +49,7 @@ const FALLBACK_PERMISSION_MODES: Record<LLMProvider, PermissionMode[]> = {
   opencode: ['default', 'acceptEdits', 'bypassPermissions', 'plan'],
   grok: ['auto', 'bypassPermissions'],
   kimi: ['default', 'plan', 'auto', 'bypassPermissions'],
+  agy: ['plan', 'acceptEdits', 'bypassPermissions'],
 };
 
 type ProviderCapabilities = {
@@ -92,9 +95,13 @@ type ChangeActiveModelApiResponse = {
 };
 
 export function useChatProviderState({ selectedSession, selectedProject: _selectedProject }: UseChatProviderStateArgs) {
+  const { enabledProviders, isAgentEnabled } = useAgentVisibility();
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('default');
   const [pendingPermissionRequests, setPendingPermissionRequests] = useState<PendingPermissionRequest[]>([]);
-  const [provider, setProvider] = useState<LLMProvider>(readStoredProvider);
+  const [provider, setProvider] = useState<LLMProvider>(() => {
+    const storedProvider = readStoredProvider();
+    return isAgentEnabled(storedProvider) ? storedProvider : enabledProviders[0];
+  });
   const [cursorModel, setCursorModel] = useState<string>(() => {
     return localStorage.getItem('cursor-model') || FALLBACK_DEFAULT_MODEL.cursor;
   });
@@ -118,6 +125,9 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
   });
   const [kimiModel, setKimiModel] = useState<string>(() => {
     return localStorage.getItem('kimi-model') || FALLBACK_DEFAULT_MODEL.kimi;
+  });
+  const [agyModel, setAgyModel] = useState<string>(() => {
+    return localStorage.getItem('agy-model') || FALLBACK_DEFAULT_MODEL.agy;
   });
 
   /**
@@ -173,6 +183,12 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
       return;
     }
 
+    if (targetProvider === 'agy') {
+      setAgyModel(model);
+      localStorage.setItem('agy-model', model);
+      return;
+    }
+
     setOpenCodeModel(model);
     localStorage.setItem('opencode-model', model);
   }, []);
@@ -199,7 +215,7 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
 
     try {
       const results = await Promise.all(
-        PROVIDERS.map(async (p) => {
+        enabledProviders.map(async (p) => {
           const params = new URLSearchParams();
           if (options.bypassCache) {
             params.set('bypassCache', 'true');
@@ -223,7 +239,7 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
       const nextCatalog: Partial<Record<LLMProvider, ProviderModelsDefinition>> = {};
       const nextCacheCatalog: Partial<Record<LLMProvider, ProviderModelsCacheInfo>> = {};
 
-      PROVIDERS.forEach((p, i) => {
+      enabledProviders.forEach((p, i) => {
         const entry = results[i];
         if (!entry) {
           return;
@@ -243,7 +259,7 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
         setProviderModelsRefreshing(false);
       }
     }
-  }, []);
+  }, [enabledProviders]);
 
   useEffect(() => {
     void loadProviderModels();
@@ -379,7 +395,8 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     opencode: opencodeModel,
     grok: grokModel,
     kimi: kimiModel,
-  }), [claudeModel, cursorModel, codexModel, opencodeModel, grokModel, kimiModel]);
+    agy: agyModel,
+  }), [claudeModel, cursorModel, codexModel, opencodeModel, grokModel, kimiModel, agyModel]);
 
   useEffect(() => {
     const claude = providerModelCatalog.claude;
@@ -460,6 +477,19 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
   }, [providerModelCatalog.kimi, kimiModel]);
 
   useEffect(() => {
+    const agy = providerModelCatalog.agy;
+    if (agy) {
+      const next = pickStoredOrCurrent('agy-model', agyModel, agy);
+      if (next !== agyModel) {
+        setAgyModel(next);
+      }
+      if (localStorage.getItem('agy-model') !== next) {
+        localStorage.setItem('agy-model', next);
+      }
+    }
+  }, [providerModelCatalog.agy, agyModel]);
+
+  useEffect(() => {
     const nextEfforts: Partial<Record<LLMProvider, string>> = {};
     let hasUpdates = false;
 
@@ -501,9 +531,27 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
       return;
     }
 
+    // Never adopt a disabled provider from an old session - the guard below
+    // would immediately flip it back, and the two effects would fight.
+    if (!isAgentEnabled(selectedSession.__provider)) {
+      return;
+    }
+
     setProvider(selectedSession.__provider);
     localStorage.setItem('selected-provider', selectedSession.__provider);
-  }, [provider, selectedSession]);
+  }, [provider, selectedSession, isAgentEnabled]);
+
+  // When the active provider gets disabled in Settings, fall back to the
+  // first enabled one so chat never sits on a hidden provider.
+  useEffect(() => {
+    if (isAgentEnabled(provider)) {
+      return;
+    }
+
+    const fallbackProvider = enabledProviders[0];
+    setProvider(fallbackProvider);
+    localStorage.setItem('selected-provider', fallbackProvider);
+  }, [provider, isAgentEnabled, enabledProviders]);
 
   // Permission prompts belong to a session, not to the transient provider
   // selection that is synchronized after navigation.
@@ -625,6 +673,8 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     setGrokModel,
     kimiModel,
     setKimiModel,
+    agyModel,
+    setAgyModel,
     permissionMode,
     setPermissionMode,
     pendingPermissionRequests,

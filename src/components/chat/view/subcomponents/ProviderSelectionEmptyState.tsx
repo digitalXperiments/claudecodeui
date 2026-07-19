@@ -7,6 +7,7 @@ import type {
   LLMProvider,
   ProviderModelsDefinition,
 } from "../../../../types/app";
+import { useAgentVisibility } from "../../../../hooks/useAgentVisibility";
 import SessionProviderLogo from "../../../llm-logo-provider/SessionProviderLogo";
 import { NextTaskBanner } from "../../../task-master";
 import {
@@ -30,6 +31,7 @@ const PROVIDER_META: { id: LLMProvider; name: string }[] = [
   { id: "opencode", name: "OpenCode" },
   { id: "grok", name: "xAI" },
   { id: "kimi", name: "Moonshot AI" },
+  { id: "agy", name: "Google Antigravity" },
 ];
 
 const MOD_KEY =
@@ -64,6 +66,8 @@ type ProviderSelectionEmptyStateProps = {
   setGrokModel: (model: string) => void;
   kimiModel: string;
   setKimiModel: (model: string) => void;
+  agyModel: string;
+  setAgyModel: (model: string) => void;
   providerModelCatalog: Partial<Record<LLMProvider, ProviderModelsDefinition>>;
   providerModelsLoading: boolean;
   tasksEnabled: boolean;
@@ -94,12 +98,14 @@ function getCurrentModel(
   o: string,
   g: string,
   k: string,
+  a: string,
 ) {
   if (p === "claude") return c;
   if (p === "codex") return co;
   if (p === "opencode") return o;
   if (p === "grok") return g;
   if (p === "kimi") return k;
+  if (p === "agy") return a;
   return cu;
 }
 
@@ -110,6 +116,7 @@ function getProviderDisplayName(p: LLMProvider) {
   if (p === "opencode") return "OpenCode";
   if (p === "grok") return "Grok Build";
   if (p === "kimi") return "Kimi";
+  if (p === "agy") return "Antigravity";
   return "Claude";
 }
 
@@ -131,6 +138,8 @@ export default function ProviderSelectionEmptyState({
   setGrokModel,
   kimiModel,
   setKimiModel,
+  agyModel,
+  setAgyModel,
   providerModelCatalog,
   providerModelsLoading,
   tasksEnabled,
@@ -140,14 +149,15 @@ export default function ProviderSelectionEmptyState({
 }: ProviderSelectionEmptyStateProps) {
   const { t } = useTranslation("chat");
   const [dialogOpen, setDialogOpen] = useState(false);
+  const { isAgentEnabled } = useAgentVisibility();
 
   const visibleProviderGroups = useMemo<ProviderGroup[]>(() => {
-    return PROVIDER_META.map((p) => ({
+    return PROVIDER_META.filter((p) => isAgentEnabled(p.id)).map((p) => ({
       id: p.id,
       name: p.name,
       models: providerModelCatalog[p.id]?.OPTIONS ?? [],
     }));
-  }, [providerModelCatalog]);
+  }, [providerModelCatalog, isAgentEnabled]);
 
   const nextTaskPrompt = t("tasks.nextTaskPrompt", {
     defaultValue: "Start the next task",
@@ -161,6 +171,7 @@ export default function ProviderSelectionEmptyState({
     opencodeModel,
     grokModel,
     kimiModel,
+    agyModel,
   );
 
   const currentModelLabel = useMemo(() => {
@@ -185,12 +196,15 @@ export default function ProviderSelectionEmptyState({
       } else if (providerId === "kimi") {
         setKimiModel(modelValue);
         localStorage.setItem("kimi-model", modelValue);
+      } else if (providerId === "agy") {
+        setAgyModel(modelValue);
+        localStorage.setItem("agy-model", modelValue);
       } else {
         setCursorModel(modelValue);
         localStorage.setItem("cursor-model", modelValue);
       }
     },
-    [setClaudeModel, setCursorModel, setCodexModel, setOpenCodeModel, setKimiModel],
+    [setClaudeModel, setCursorModel, setCodexModel, setOpenCodeModel, setKimiModel, setAgyModel],
   );
 
   const handleModelSelect = useCallback(
@@ -344,6 +358,10 @@ export default function ProviderSelectionEmptyState({
                 kimi: t("providerSelection.readyPrompt.kimi", {
                   model: kimiModel,
                   defaultValue: "Ready with Kimi {{model}}",
+                }),
+                agy: t("providerSelection.readyPrompt.agy", {
+                  model: agyModel,
+                  defaultValue: "Ready with Antigravity {{model}}",
                 }),
               }[provider]
             }

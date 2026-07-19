@@ -1,4 +1,4 @@
-export type LLMProvider = 'claude' | 'cursor' | 'codex' | 'opencode' | 'grok' | 'kimi';
+export type LLMProvider = 'claude' | 'cursor' | 'codex' | 'opencode' | 'grok' | 'kimi' | 'agy';
 
 export type ProviderModelOption = {
   value: string;
@@ -24,7 +24,7 @@ export type ProviderModelsCacheInfo = {
   source: 'memory' | 'disk' | 'fresh';
 };
 
-export type AppTab = 'chat' | 'files' | 'shell' | 'git' | 'tasks' | 'browser' | `plugin:${string}`;
+export type AppTab = 'chat' | 'files' | 'shell' | 'git' | 'tasks' | 'browser' | 'kanban' | `plugin:${string}`;
 
 export interface ProjectSession {
   id: string;

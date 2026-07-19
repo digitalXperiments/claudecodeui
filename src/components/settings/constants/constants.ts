@@ -40,7 +40,16 @@ export const SETTINGS_MAIN_TABS: SettingsMainTabMeta[] = [
   { id: 'about', label: 'About', keywords: 'about version info', icon: Info },
 ];
 
-export const AGENT_PROVIDERS: AgentProvider[] = ['claude', 'cursor', 'codex', 'opencode', 'grok', 'kimi'];
+export const AGENT_PROVIDERS: AgentProvider[] = ['claude', 'cursor', 'codex', 'opencode', 'grok', 'kimi', 'agy'];
+export const AGENT_NAMES: Record<AgentProvider, string> = {
+  claude: 'Claude',
+  cursor: 'Cursor',
+  codex: 'Codex',
+  opencode: 'OpenCode',
+  grok: 'Grok Build',
+  kimi: 'Kimi',
+  agy: 'Antigravity',
+};
 export const AGENT_CATEGORIES: AgentCategory[] = ['account', 'permissions', 'mcp'];
 
 export const DEFAULT_PROJECT_SORT_ORDER: ProjectSortOrder = 'name';

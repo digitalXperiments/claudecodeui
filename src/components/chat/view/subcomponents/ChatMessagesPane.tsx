@@ -44,6 +44,8 @@ interface ChatMessagesPaneProps {
   setGrokModel: (model: string) => void;
   kimiModel: string;
   setKimiModel: (model: string) => void;
+  agyModel: string;
+  setAgyModel: (model: string) => void;
   providerModelCatalog: Partial<Record<LLMProvider, ProviderModelsDefinition>>;
   providerModelsLoading: boolean;
   tasksEnabled: boolean;
@@ -96,6 +98,8 @@ function ChatMessagesPane({
   setGrokModel,
   kimiModel,
   setKimiModel,
+  agyModel,
+  setAgyModel,
   providerModelCatalog,
   providerModelsLoading,
   tasksEnabled,
@@ -199,6 +203,8 @@ function ChatMessagesPane({
           setGrokModel={setGrokModel}
           kimiModel={kimiModel}
           setKimiModel={setKimiModel}
+          agyModel={agyModel}
+          setAgyModel={setAgyModel}
           providerModelCatalog={providerModelCatalog}
           providerModelsLoading={providerModelsLoading}
           tasksEnabled={tasksEnabled}

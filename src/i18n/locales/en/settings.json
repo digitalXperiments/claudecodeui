@@ -362,7 +362,12 @@
       "button": "Login",
       "reLoginButton": "Re-login"
     },
-    "error": "Error: {{error}}"
+    "error": "Error: {{error}}",
+    "visibility": {
+      "label": "Show {{agent}} in chat",
+      "description": "When disabled, {{agent}} and its models are hidden from the chat model picker.",
+      "lastEnabledHint": "At least one agent must stay enabled for chat."
+    }
   },
   "permissions": {
     "title": "Permission Settings",

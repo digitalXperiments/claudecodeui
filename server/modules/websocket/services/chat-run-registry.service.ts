@@ -62,6 +62,50 @@ const MAX_BUFFERED_EVENTS_PER_RUN = 5000;
  */
 const runs = new Map<string, ChatRun>();
 
+/**
+ * Terminal run outcome, delivered to `onRunComplete` subscribers exactly once
+ * per run (right as the run flips to `completed`). This is the automation seam:
+ * the kanban module hooks it to reconcile task/run status without knowing
+ * anything about the websocket transport.
+ */
+export type RunCompletionEvent = {
+  appSessionId: string;
+  provider: LLMProvider;
+  exitCode: number | null;
+  success: boolean;
+  aborted: boolean;
+};
+
+type RunCompletionListener = (event: RunCompletionEvent) => void;
+
+const completionListeners = new Set<RunCompletionListener>();
+
+function emitRunCompletion(run: ChatRun, message: NormalizedMessage): void {
+  const record = message as unknown as {
+    exitCode?: number | null;
+    success?: boolean;
+    aborted?: boolean;
+  };
+  const event: RunCompletionEvent = {
+    appSessionId: run.appSessionId,
+    provider: run.provider,
+    exitCode: typeof record.exitCode === 'number' ? record.exitCode : null,
+    success: Boolean(record.success),
+    aborted: Boolean(record.aborted),
+  };
+  for (const listener of completionListeners) {
+    try {
+      listener(event);
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      console.error('[ChatRunRegistry] run completion listener threw', {
+        appSessionId: run.appSessionId,
+        error: errorMessage,
+      });
+    }
+  }
+}
+
 async function broadcastCanonicalSessionUpsert(appSessionId: string): Promise<void> {
   const row = sessionsDb.getSessionById(appSessionId);
   if (!row || row.isArchived) {
@@ -150,6 +194,7 @@ function decorateAndRecordEvent(run: ChatRun, message: NormalizedMessage): Norma
     outbound.actualSessionId = run.appSessionId;
     run.status = 'completed';
     run.completedAt = Date.now();
+    emitRunCompletion(run, message);
     evictRunLater(run.appSessionId);
   }
 
@@ -333,6 +378,15 @@ export const chatRunRegistry = {
     }
 
     run.writer.sendComplete(opts);
+  },
+
+  /**
+   * Subscribe to terminal run completions. Returns an unsubscribe function.
+   * Listeners fire exactly once per run, synchronously, as the run completes.
+   */
+  onRunComplete(listener: RunCompletionListener): () => void {
+    completionListeners.add(listener);
+    return () => completionListeners.delete(listener);
   },
 
   /**

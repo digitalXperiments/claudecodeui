@@ -160,7 +160,9 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
                                 ? t('messageTypes.grok', { defaultValue: 'Grok Build' })
                                 : provider === 'kimi'
                                   ? t('messageTypes.kimi', { defaultValue: 'Kimi' })
-                                  : t('messageTypes.claude'))}
+                                  : provider === 'agy'
+                                    ? t('messageTypes.agy', { defaultValue: 'Antigravity' })
+                                    : t('messageTypes.claude'))}
               </div>
             </div>
           )}

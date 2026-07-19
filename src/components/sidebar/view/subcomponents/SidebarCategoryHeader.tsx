@@ -82,7 +82,7 @@ export default function SidebarCategoryHeader({
   return (
     <div
       className={cn(
-        'md:group mx-3 flex items-center gap-2 rounded-lg px-2 py-2 transition-colors md:mx-1 md:px-1.5 md:py-1',
+        'group mx-3 flex items-center gap-2 rounded-lg px-2 py-2 transition-colors md:mx-1 md:px-1.5 md:py-1',
         isDragOver && 'bg-primary/5 ring-1 ring-primary/40',
       )}
       draggable={category !== null}
