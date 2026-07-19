@@ -373,6 +373,54 @@ export type ProviderSkillRemoveInput = {
 };
 
 /**
+ * Input for listing cross-agent project skills in one workspace.
+ */
+export type ProjectSkillListOptions = {
+  workspacePath: string;
+};
+
+/**
+ * Input for installing one or more cross-agent project skills. Each entry is
+ * fanned out into every installed agent's project-scoped skill directory for
+ * `workspacePath` so any agent run in that workspace can use the skill.
+ */
+export type ProjectSkillCreateInput = {
+  workspacePath: string;
+  entries: ProviderSkillCreateEntry[];
+};
+
+export type ProjectSkillRemoveInput = {
+  workspacePath: string;
+  directoryName: string;
+};
+
+/**
+ * One provider's writable project-scoped skill directory for a workspace.
+ */
+export type ProjectSkillProviderTarget = {
+  provider: LLMProvider;
+  rootDir: string;
+};
+
+/**
+ * Normalized record for one cross-agent project skill.
+ *
+ * `directoryName` is the on-disk folder name of the skill. `sourcePath` points
+ * at the canonical authored `SKILL.md` under the workspace's managed folder.
+ * `providers` lists the agents whose project skill folders received a copy, and
+ * `conflicts` lists agent folders skipped because a non-managed skill of the
+ * same name already existed there.
+ */
+export type ProjectSkill = {
+  name: string;
+  description: string;
+  directoryName: string;
+  sourcePath: string;
+  providers: LLMProvider[];
+  conflicts: LLMProvider[];
+};
+
+/**
  * Normalized skill record returned by provider skill adapters.
  *
  * The `command` value is the exact invocation text the selected provider expects

@@ -14,6 +14,7 @@ import type {
   ProviderSessionActiveModelChange,
   ProviderSkillCreateInput,
   ProviderSkillRemoveInput,
+  ProviderSkillSource,
   UpsertProviderMcpServerInput,
 } from '@/shared/types.js';
 
@@ -116,6 +117,17 @@ export interface IProviderSkills {
   removeSkill(
     input: ProviderSkillRemoveInput,
   ): Promise<{ removed: boolean; provider: LLMProvider; directoryName: string }>;
+
+  /**
+   * Returns the single writable project-scoped skill directory this provider's
+   * CLI reads for a given workspace, or `null` when the provider has no
+   * project-scoped skill support.
+   *
+   * The cross-agent project skills service uses this to fan one authored skill
+   * out into every agent's project skill folder so any agent run inside the
+   * workspace can use it.
+   */
+  getProjectSkillTarget(workspacePath: string): Promise<ProviderSkillSource | null>;
 }
 
 // ---------------------------
