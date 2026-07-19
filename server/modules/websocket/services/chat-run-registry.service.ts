@@ -86,12 +86,20 @@ function emitRunCompletion(run: ChatRun, message: NormalizedMessage): void {
     success?: boolean;
     aborted?: boolean;
   };
+  const aborted = Boolean(record.aborted);
+  const exitCode = typeof record.exitCode === 'number' ? record.exitCode : null;
+  // Providers sometimes emit `complete` with only exitCode (no success flag).
+  // Match createCompleteMessage: exit 0 and not aborted === success.
+  const success =
+    typeof record.success === 'boolean'
+      ? record.success
+      : exitCode === 0 && !aborted;
   const event: RunCompletionEvent = {
     appSessionId: run.appSessionId,
     provider: run.provider,
-    exitCode: typeof record.exitCode === 'number' ? record.exitCode : null,
-    success: Boolean(record.success),
-    aborted: Boolean(record.aborted),
+    exitCode,
+    success,
+    aborted,
   };
   for (const listener of completionListeners) {
     try {

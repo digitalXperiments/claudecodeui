@@ -29,6 +29,10 @@ export function useKanbanBoard(projectId: string | null, scope: KanbanBoardScope
   const [state, setState] = useState<BoardState>(EMPTY_STATE);
   // Guards against races when the target (project or scope) changes mid-request.
   const loadKeyRef = useRef<string>('');
+  // Number of drag/move persists currently in flight. While > 0 the background
+  // poll must not overwrite optimistic state with stale server data — that race
+  // is what made a freshly-dropped card visibly snap back to its old column.
+  const pendingWritesRef = useRef(0);
 
   const load = useCallback(async (targetScope: KanbanBoardScope, targetProjectId: string | null) => {
     const key = `${targetScope}:${targetProjectId ?? ''}`;
@@ -81,7 +85,14 @@ export function useKanbanBoard(projectId: string | null, scope: KanbanBoardScope
     if (!boardId) {
       return;
     }
+    // Don't clobber an optimistic drag that hasn't finished persisting yet.
+    if (pendingWritesRef.current > 0) {
+      return;
+    }
     const { board, tasks } = await kanbanApi.getBoard(boardId);
+    if (pendingWritesRef.current > 0) {
+      return;
+    }
     setState((prev) => ({ ...prev, board, tasks }));
   }, [state.board?.board_id]);
 
@@ -148,11 +159,17 @@ export function useKanbanBoard(projectId: string | null, scope: KanbanBoardScope
 
   /**
    * Apply a drag result: `orderedIds` is the full task order for `columnId`
-   * after the move. Renumbers positions locally, then persists every affected
-   * task. On failure the previous list is restored.
+   * after the move, and `movedTaskId` is the card the user actually dragged.
+   *
+   * Renumbers positions locally, then persists every affected task with
+   * `allSettled` and reconciles each server response (so a card that the server
+   * flips to `queued`/`running` on entering a run-on-enter column reflects that
+   * immediately instead of after the next poll). We only roll the drag back if
+   * the *dragged* card itself failed to persist — a failed sibling re-number
+   * shouldn't yank the card the user just moved back to its old column.
    */
   const reorderColumn = useCallback(
-    async (columnId: string, orderedIds: string[]) => {
+    async (columnId: string, orderedIds: string[], movedTaskId?: string) => {
       let snapshot: KanbanTask[] = [];
       setState((prev) => {
         snapshot = prev.tasks;
@@ -164,16 +181,44 @@ export function useKanbanBoard(projectId: string | null, scope: KanbanBoardScope
         );
         return { ...prev, tasks };
       });
+      pendingWritesRef.current += 1;
       try {
-        await Promise.all(
+        const results = await Promise.allSettled(
           orderedIds.map((id, index) => kanbanApi.updateTask(id, { columnId, position: index })),
         );
-      } catch (error) {
-        setState((prev) => ({
-          ...prev,
-          tasks: snapshot,
-          error: error instanceof Error ? error.message : 'Failed to reorder tasks',
-        }));
+
+        const movedIndex = movedTaskId ? orderedIds.indexOf(movedTaskId) : -1;
+        const movedFailed =
+          movedIndex >= 0 && results[movedIndex]?.status === 'rejected';
+
+        if (movedFailed) {
+          const reason = (results[movedIndex] as PromiseRejectedResult).reason;
+          setState((prev) => ({
+            ...prev,
+            tasks: snapshot,
+            error: reason instanceof Error ? reason.message : 'Failed to move task',
+          }));
+          return;
+        }
+
+        // Reconcile with the server's returned rows (status/column/position).
+        const fulfilled = results
+          .filter((r): r is PromiseFulfilledResult<KanbanTask> => r.status === 'fulfilled')
+          .map((r) => r.value);
+        if (fulfilled.length > 0) {
+          setState((prev) => {
+            const byId = new Map(fulfilled.map((t) => [t.task_id, t]));
+            const tasks = prev.tasks.map((t) => byId.get(t.task_id) ?? t);
+            return { ...prev, tasks };
+          });
+        }
+
+        // Surface a soft error if a sibling re-number failed, but keep the move.
+        if (results.some((r) => r.status === 'rejected')) {
+          setState((prev) => ({ ...prev, error: 'Some card positions failed to save' }));
+        }
+      } finally {
+        pendingWritesRef.current = Math.max(0, pendingWritesRef.current - 1);
       }
     },
     [],

@@ -2,7 +2,13 @@ import { projectsDb, sessionsDb } from '@/modules/database/index.js';
 import { sessionsService } from '@/modules/providers/index.js';
 import { DETACHED_CONNECTION, startProviderRun, type ProviderSpawnFn } from '@/modules/websocket/index.js';
 import { kanbanDb } from '@/modules/kanban/kanban.repository.js';
-import { isKanbanProvider, type KanbanRunTrigger, type KanbanTask } from '@/modules/kanban/kanban.types.js';
+import {
+  COLUMN_REVIEW,
+  isKanbanProvider,
+  type KanbanRunRole,
+  type KanbanRunTrigger,
+  type KanbanTask,
+} from '@/modules/kanban/kanban.types.js';
 import type { AnyRecord, LLMProvider } from '@/shared/types.js';
 import { AppError } from '@/shared/utils.js';
 
@@ -59,10 +65,89 @@ function buildRuntimeOptions(task: KanbanTask, provider: LLMProvider): AnyRecord
   return options;
 }
 
+/**
+ * Resolve which agent role a run should use from the trigger + current column.
+ * Review triggers / review column always use the review agent; everything else
+ * uses the implementation agent.
+ */
+export function resolveRunRole(task: KanbanTask, trigger: KanbanRunTrigger): KanbanRunRole {
+  if (trigger === 'review' || task.column_id === COLUMN_REVIEW) {
+    return 'review';
+  }
+  return 'implement';
+}
+
+/**
+ * Pick the provider for a role. Review falls back to the implementation agent
+ * only when no dedicated review agent is set (caller still decides whether to
+ * run a review phase at all).
+ */
+export function resolveProviderForRole(task: KanbanTask, role: KanbanRunRole): LLMProvider | null {
+  if (role === 'review') {
+    const review = task.review_provider;
+    if (review && isKanbanProvider(review)) {
+      return review;
+    }
+    // No dedicated review agent — cannot run a review phase.
+    return null;
+  }
+  const implement = task.assignee_provider;
+  return implement && isKanbanProvider(implement) ? implement : null;
+}
+
+/**
+ * Build the instruction string handed to the provider. Review runs get a
+ * structured brief that includes the original task + implementation prompt and,
+ * when available, the tail of the implementation agent's own output, so the
+ * review agent can inspect both the work product (git diff, files) and the
+ * implementation summary.
+ */
+export function buildRunPrompt(
+  task: KanbanTask,
+  role: KanbanRunRole,
+  implementOutput?: string | null,
+): string {
+  if (role === 'review') {
+    const parts = [
+      'You are the review agent for a Kanban task whose implementation phase has finished.',
+      '',
+      '## Task',
+      `Title: ${task.title}`,
+    ];
+    if (task.description?.trim()) {
+      parts.push(`Description: ${task.description.trim()}`);
+    }
+    parts.push(
+      '',
+      '## Original implementation instructions',
+      (task.prompt || task.title).trim(),
+    );
+    if (implementOutput?.trim()) {
+      parts.push(
+        '',
+        '## Implementation agent output (tail)',
+        implementOutput.trim(),
+      );
+    }
+    parts.push(
+      '',
+      '## Your job',
+      '1. Inspect the current git status and diff in this project.',
+      '2. Verify the changes match the task requirements.',
+      '3. Call out bugs, missing pieces, or risky changes with file references.',
+      '4. If issues are trivial and clearly in scope, fix them; otherwise report what still needs work.',
+      '5. End with a clear verdict line: `VERDICT: APPROVED` or `VERDICT: CHANGES REQUESTED`, plus a short summary.',
+    );
+    return parts.join('\n');
+  }
+  return (task.prompt || task.title).trim();
+}
+
 export type RunTaskResult = {
   runId: string;
   appSessionId: string;
   provider: LLMProvider;
+  role: KanbanRunRole;
 };
 
 export const kanbanRunner = {
@@ -71,24 +156,28 @@ export const kanbanRunner = {
    * row, flip the task to `running`, and dispatch through the shared provider
    * run starter. Manual and automated runs share this one path.
    */
-  async runTask(taskId: string, trigger: KanbanRunTrigger): Promise<RunTaskResult> {
+  async runTask(
+    taskId: string,
+    trigger: KanbanRunTrigger,
+    context?: { implementOutput?: string | null },
+  ): Promise<RunTaskResult> {
     const task = kanbanDb.getTask(taskId);
     if (!task) {
       throw new AppError('Task not found', { code: 'KANBAN_TASK_NOT_FOUND', statusCode: 404 });
     }
 
-    const provider = task.assignee_provider;
+    const role = resolveRunRole(task, trigger);
+    const provider = resolveProviderForRole(task, role);
     if (!provider) {
-      throw new AppError('Task has no assigned agent', {
-        code: 'KANBAN_NO_ASSIGNEE',
-        statusCode: 400,
-      });
-    }
-    if (!isKanbanProvider(provider)) {
-      throw new AppError(`Task has an invalid assigned agent: ${provider}`, {
-        code: 'KANBAN_INVALID_PROVIDER',
-        statusCode: 400,
-      });
+      throw new AppError(
+        role === 'review'
+          ? 'Task has no review agent assigned'
+          : 'Task has no implementation agent assigned',
+        {
+          code: role === 'review' ? 'KANBAN_NO_REVIEW_AGENT' : 'KANBAN_NO_ASSIGNEE',
+          statusCode: 400,
+        },
+      );
     }
 
     const spawnFn = runtimeSpawnFns[provider];
@@ -114,10 +203,12 @@ export const kanbanRunner = {
       });
     }
 
-    // Reuse the task's existing session if present, otherwise mint one.
+    // Reuse the task's existing session only when it belongs to the same
+    // provider. Switching implement → review (or changing agents) needs a
+    // fresh session so we don't resume the wrong CLI/SDK conversation.
     let appSessionId = task.app_session_id;
     let session = appSessionId ? sessionsDb.getSessionById(appSessionId) : null;
-    if (!session) {
+    if (!session || session.provider !== provider) {
       const created = sessionsService.createAppSession(provider, projectPath);
       appSessionId = created.sessionId;
       kanbanDb.setTaskSession(task.task_id, appSessionId);
@@ -130,6 +221,7 @@ export const kanbanRunner = {
       appSessionId: resolvedSessionId,
       provider,
       trigger,
+      role,
     });
     kanbanDb.setTaskStatus(task.task_id, 'running');
 
@@ -139,7 +231,7 @@ export const kanbanRunner = {
       providerSessionId: session?.provider_session_id ?? null,
       projectPath,
       spawnFn,
-      content: task.prompt || task.title,
+      content: buildRunPrompt(task, role, role === 'review' ? context?.implementOutput : null),
       options: buildRuntimeOptions(task, provider),
       connection: DETACHED_CONNECTION,
       userId: null,
@@ -155,6 +247,6 @@ export const kanbanRunner = {
       });
     }
 
-    return { runId: run.run_id, appSessionId: resolvedSessionId, provider };
+    return { runId: run.run_id, appSessionId: resolvedSessionId, provider, role };
   },
 };

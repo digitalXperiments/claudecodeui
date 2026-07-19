@@ -8,6 +8,7 @@ export {
   reconcileKanbanOnBoot,
   setOnTaskDone,
   setOnRunSettled,
+  setOnEnqueue,
 } from '@/modules/kanban/kanban-automation.service.js';
 export {
   initKanbanQueue,

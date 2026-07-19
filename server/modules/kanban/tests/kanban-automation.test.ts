@@ -69,3 +69,104 @@ test('handleRunCompletion ignores sessions with no kanban run', async () => {
     );
   });
 });
+
+test('handleRunCompletion treats exitCode 0 as success even without success flag', async () => {
+  await withDb((projectId) => {
+    const board = kanbanDb.createBoard({ projectId, name: 'Board' });
+    const task = kanbanDb.createTask({
+      boardId: board.board_id,
+      projectId,
+      title: 'Exit zero',
+      assigneeProvider: 'claude',
+    });
+    const run = kanbanDb.createRun({
+      taskId: task.task_id,
+      appSessionId: 'sess-exit0',
+      provider: 'claude',
+      trigger: 'manual',
+      role: 'implement',
+    });
+    kanbanDb.setTaskStatus(task.task_id, 'running');
+
+    handleRunCompletion({
+      appSessionId: 'sess-exit0',
+      provider: 'claude',
+      exitCode: 0,
+      success: false, // provider omitted real success; exitCode still 0
+      aborted: false,
+    });
+
+    assert.equal(kanbanDb.getRun(run.run_id)?.status, 'done');
+    assert.equal(kanbanDb.getTask(task.task_id)?.column_id, 'done');
+    assert.equal(kanbanDb.getTask(task.task_id)?.status, 'done');
+  });
+});
+
+test('handleRunCompletion implement success with review agent moves to review', async () => {
+  await withDb((projectId) => {
+    const board = kanbanDb.createBoard({ projectId, name: 'Board' });
+    const task = kanbanDb.createTask({
+      boardId: board.board_id,
+      projectId,
+      title: 'With review',
+      assigneeProvider: 'claude',
+      reviewProvider: 'codex',
+    });
+    kanbanDb.createRun({
+      taskId: task.task_id,
+      appSessionId: 'sess-impl',
+      provider: 'claude',
+      trigger: 'manual',
+      role: 'implement',
+    });
+    kanbanDb.setTaskStatus(task.task_id, 'running');
+    kanbanDb.setTaskSession(task.task_id, 'sess-impl');
+
+    handleRunCompletion({
+      appSessionId: 'sess-impl',
+      provider: 'claude',
+      exitCode: 0,
+      success: true,
+      aborted: false,
+    });
+
+    const updated = kanbanDb.getTask(task.task_id);
+    assert.equal(updated?.column_id, 'review');
+    assert.equal(updated?.status, 'todo');
+    assert.equal(updated?.app_session_id, null);
+  });
+});
+
+test('handleRunCompletion review success moves to done', async () => {
+  await withDb((projectId) => {
+    const board = kanbanDb.createBoard({ projectId, name: 'Board' });
+    const task = kanbanDb.createTask({
+      boardId: board.board_id,
+      projectId,
+      title: 'In review',
+      columnId: 'review',
+      assigneeProvider: 'claude',
+      reviewProvider: 'codex',
+    });
+    kanbanDb.createRun({
+      taskId: task.task_id,
+      appSessionId: 'sess-rev',
+      provider: 'codex',
+      trigger: 'review',
+      role: 'review',
+    });
+    kanbanDb.setTaskStatus(task.task_id, 'running');
+
+    handleRunCompletion({
+      appSessionId: 'sess-rev',
+      provider: 'codex',
+      exitCode: 0,
+      success: true,
+      aborted: false,
+    });
+
+    const updated = kanbanDb.getTask(task.task_id);
+    assert.equal(updated?.column_id, 'done');
+    assert.equal(updated?.status, 'done');
+  });
+});

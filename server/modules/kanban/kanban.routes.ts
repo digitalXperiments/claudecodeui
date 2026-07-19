@@ -6,6 +6,8 @@ import { kanbanRunner } from '@/modules/kanban/kanban-runner.service.js';
 import { enqueueTask } from '@/modules/kanban/kanban-queue.service.js';
 import { syncSchedules } from '@/modules/kanban/kanban-scheduler.service.js';
 import {
+  COLUMN_IN_PROGRESS,
+  COLUMN_REVIEW,
   isKanbanProvider,
   KANBAN_TASK_STATUSES,
   type KanbanColumn,
@@ -40,20 +42,31 @@ function requireTask(taskId: string) {
   return task;
 }
 
-function validateAssignee(value: unknown): LLMProvider | null | undefined {
+function validateProviderField(
+  value: unknown,
+  fieldName: string,
+): LLMProvider | null | undefined {
   if (value === undefined) {
     return undefined;
   }
-  if (value === null) {
+  if (value === null || value === '') {
     return null;
   }
   if (!isKanbanProvider(value)) {
-    throw new AppError(`Invalid assignee_provider: ${String(value)}`, {
+    throw new AppError(`Invalid ${fieldName}: ${String(value)}`, {
       code: 'KANBAN_INVALID_PROVIDER',
       statusCode: 400,
     });
   }
   return value;
+}
+
+function validateAssignee(value: unknown): LLMProvider | null | undefined {
+  return validateProviderField(value, 'assignee_provider');
+}
+
+function validateReviewProvider(value: unknown): LLMProvider | null | undefined {
+  return validateProviderField(value, 'review_provider');
 }
 
 function validateColumns(value: unknown): KanbanColumn[] | undefined {
@@ -97,6 +110,30 @@ function validateStatus(value: unknown): KanbanTaskStatus | undefined {
     });
   }
   return value as KanbanTaskStatus;
+}
+
+/**
+ * Recompute a task's `blocked` state from its dependencies. A task with any
+ * dependency that isn't `done` is marked `blocked`; when the last blocker
+ * clears it drops back to `todo`. Tasks that are actively running/queued/done
+ * are left untouched — their lifecycle owns the status.
+ */
+function refreshBlockedState(taskId: string): void {
+  const task = kanbanDb.getTask(taskId);
+  if (!task) {
+    return;
+  }
+  if (task.status === 'running' || task.status === 'queued' || task.status === 'done') {
+    return;
+  }
+  const hasOpenDep = task.dependsOn.some(
+    (depId) => kanbanDb.getTask(depId)?.status !== 'done',
+  );
+  if (hasOpenDep && task.status !== 'blocked') {
+    kanbanDb.setTaskStatus(taskId, 'blocked');
+  } else if (!hasOpenDep && task.status === 'blocked') {
+    kanbanDb.setTaskStatus(taskId, 'todo');
+  }
 }
 
 function mapCycleError<T>(fn: () => T): T {
@@ -248,6 +285,7 @@ router.post(
       prompt: readOptionalString(body.prompt),
       columnId: readOptionalString(body.columnId),
       assigneeProvider: validateAssignee(body.assigneeProvider),
+      reviewProvider: validateReviewProvider(body.reviewProvider),
       permissionMode: readOptionalString(body.permissionMode),
       tools: (body.tools as KanbanTaskTools) ?? undefined,
       scheduleCron:
@@ -284,6 +322,7 @@ router.put(
       columnId: requestedColumnId,
       position: typeof body.position === 'number' ? body.position : undefined,
       assigneeProvider: validateAssignee(body.assigneeProvider),
+      reviewProvider: validateReviewProvider(body.reviewProvider),
       permissionMode: readOptionalString(body.permissionMode),
       tools: (body.tools as KanbanTaskTools) ?? undefined,
       scheduleCron:
@@ -295,13 +334,23 @@ router.put(
       syncSchedules();
     }
 
-    // Column-move trigger: entering a `runOnEnter` column enqueues a run. Guard
-    // on an actual column change so re-saves in the same column don't re-fire.
+    // Column-move trigger: auto-pick up work when a card enters In Progress
+    // (implementation agent) or Review (review agent). Also honor runOnEnter
+    // on custom columns (uses the implementation agent). Guard on an actual
+    // column change so re-saves in the same column don't re-fire.
     if (task && task.column_id !== previous.column_id) {
       const board = kanbanDb.getBoard(task.board_id);
       const enteredColumn = board?.columns.find((col) => col.id === task.column_id);
-      if (enteredColumn?.runOnEnter && task.assignee_provider) {
-        enqueueTask(task.task_id, 'column_move');
+      const enteredId = task.column_id;
+
+      if (enteredId === COLUMN_REVIEW) {
+        if (task.review_provider) {
+          enqueueTask(task.task_id, 'review');
+        }
+      } else if (enteredId === COLUMN_IN_PROGRESS || enteredColumn?.runOnEnter) {
+        if (task.assignee_provider) {
+          enqueueTask(task.task_id, 'column_move');
+        }
       }
     }
 
@@ -337,6 +386,7 @@ router.post(
       });
     }
     mapCycleError(() => kanbanDb.addDependency(taskId, dependsOnTaskId));
+    refreshBlockedState(taskId);
     const task = kanbanDb.getTask(taskId);
     res.status(201).json({ success: true, task });
   }),
@@ -348,6 +398,7 @@ router.delete(
     const taskId = readString(req.params.taskId);
     const dependsOnTaskId = readString(req.params.dependsOnTaskId);
     kanbanDb.removeDependency(taskId, dependsOnTaskId);
+    refreshBlockedState(taskId);
     const task = kanbanDb.getTask(taskId);
     res.json({ success: true, task });
   }),
@@ -374,6 +425,51 @@ router.get(
     requireTask(taskId);
     const runs = kanbanDb.listRunsByTask(taskId);
     res.json({ success: true, runs });
+  }),
+);
+
+// --- Comments (activity trail) --------------------------------------------
+router.get(
+  '/tasks/:taskId/comments',
+  asyncHandler(async (req, res) => {
+    const taskId = readString(req.params.taskId);
+    requireTask(taskId);
+    const comments = kanbanDb.listCommentsByTask(taskId);
+    res.json({ success: true, comments });
+  }),
+);
+
+router.post(
+  '/tasks/:taskId/comments',
+  asyncHandler(async (req, res) => {
+    const taskId = readString(req.params.taskId);
+    requireTask(taskId);
+    const body = req.body as Record<string, unknown>;
+    const text = readString(body.body).trim();
+    if (!text) {
+      throw new AppError('body is required', { code: 'KANBAN_COMMENT_REQUIRED', statusCode: 400 });
+    }
+    const comment = kanbanDb.addComment({
+      taskId,
+      authorType: 'human',
+      author: readOptionalString(body.author)?.trim() || null,
+      body: text,
+    });
+    res.status(201).json({ success: true, comment });
+  }),
+);
+
+router.delete(
+  '/tasks/:taskId/comments/:commentId',
+  asyncHandler(async (req, res) => {
+    const deleted = kanbanDb.deleteComment(readString(req.params.commentId));
+    if (!deleted) {
+      throw new AppError('Comment not found', {
+        code: 'KANBAN_COMMENT_NOT_FOUND',
+        statusCode: 404,
+      });
+    }
+    res.json({ success: true });
   }),
 );
 

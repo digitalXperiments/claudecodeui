@@ -4,6 +4,7 @@ import type {
   KanbanColumn,
   KanbanRun,
   KanbanTask,
+  KanbanTaskComment,
   KanbanTaskStatus,
   KanbanTaskTools,
   ProjectRef,
@@ -31,6 +32,7 @@ function normalizeTask(task: KanbanTask): KanbanTask {
     ...task,
     tools: task?.tools && typeof task.tools === 'object' ? task.tools : {},
     dependsOn: Array.isArray(task?.dependsOn) ? task.dependsOn : [],
+    review_provider: task?.review_provider ?? null,
   };
 }
 
@@ -63,6 +65,7 @@ export type TaskPatch = {
   columnId?: string;
   position?: number;
   assigneeProvider?: LLMProvider | null;
+  reviewProvider?: LLMProvider | null;
   permissionMode?: string;
   tools?: KanbanTaskTools;
   scheduleCron?: string | null;
@@ -134,6 +137,7 @@ export const kanbanApi = {
     prompt?: string;
     columnId?: string;
     assigneeProvider?: LLMProvider | null;
+    reviewProvider?: LLMProvider | null;
     permissionMode?: string;
     tools?: KanbanTaskTools;
     scheduleCron?: string | null;
@@ -191,5 +195,27 @@ export const kanbanApi = {
   async runTask(taskId: string): Promise<{ run: KanbanRun; task: KanbanTask }> {
     const res = await authenticatedFetch(`${BASE}/tasks/${taskId}/run`, { method: 'POST' });
     return parse<{ run: KanbanRun; task: KanbanTask }>(res);
+  },
+
+  async listComments(taskId: string): Promise<KanbanTaskComment[]> {
+    const res = await authenticatedFetch(`${BASE}/tasks/${taskId}/comments`);
+    const data = await parse<{ comments: KanbanTaskComment[] }>(res);
+    return Array.isArray(data.comments) ? data.comments : [];
+  },
+
+  async addComment(taskId: string, body: string, author?: string | null): Promise<KanbanTaskComment> {
+    const res = await authenticatedFetch(`${BASE}/tasks/${taskId}/comments`, {
+      method: 'POST',
+      body: JSON.stringify({ body, author: author ?? undefined }),
+    });
+    const data = await parse<{ comment: KanbanTaskComment }>(res);
+    return data.comment;
+  },
+
+  async deleteComment(taskId: string, commentId: string): Promise<void> {
+    const res = await authenticatedFetch(`${BASE}/tasks/${taskId}/comments/${commentId}`, {
+      method: 'DELETE',
+    });
+    await parse(res);
   },
 };

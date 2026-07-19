@@ -33,7 +33,7 @@ async function withIsolatedDatabase(runTest: (projectId: string) => void | Promi
   }
 }
 
-test('createBoard seeds default columns', async () => {
+test('createBoard seeds default columns with runOnEnter on in_progress/review', async () => {
   await withIsolatedDatabase((projectId) => {
     const board = kanbanDb.createBoard({ projectId, name: 'Sprint 1' });
     assert.equal(board.name, 'Sprint 1');
@@ -41,12 +41,14 @@ test('createBoard seeds default columns', async () => {
       board.columns.map((c) => c.name),
       ['Backlog', 'In Progress', 'Review', 'Done'],
     );
+    assert.equal(board.columns.find((c) => c.id === 'in_progress')?.runOnEnter, true);
+    assert.equal(board.columns.find((c) => c.id === 'review')?.runOnEnter, true);
     const fetched = kanbanDb.getBoard(board.board_id);
     assert.equal(fetched?.board_id, board.board_id);
   });
 });
 
-test('task round-trips with tools + dependency list', async () => {
+test('task round-trips with tools + dual agents + dependency list', async () => {
   await withIsolatedDatabase((projectId) => {
     const board = kanbanDb.createBoard({ projectId, name: 'Board' });
     const task = kanbanDb.createTask({
@@ -55,15 +57,18 @@ test('task round-trips with tools + dependency list', async () => {
       title: 'Do the thing',
       prompt: 'Refactor the module',
       assigneeProvider: 'claude',
+      reviewProvider: 'codex',
       tools: { allowedCommands: ['Bash(ls)'], disallowedCommands: ['Bash(rm)'] },
     });
     assert.equal(task.status, 'todo');
     assert.equal(task.assignee_provider, 'claude');
+    assert.equal(task.review_provider, 'codex');
     assert.equal(task.column_id, 'backlog');
 
     const fetched = kanbanDb.getTask(task.task_id);
     assert.deepEqual(fetched?.tools.allowedCommands, ['Bash(ls)']);
     assert.deepEqual(fetched?.dependsOn, []);
+    assert.equal(fetched?.review_provider, 'codex');
   });
 });
 

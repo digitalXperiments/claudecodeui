@@ -4,14 +4,17 @@ import { getConnection } from '@/modules/database/index.js';
 import {
   DEFAULT_COLUMNS,
   type CreateBoardInput,
+  type CreateCommentInput,
   type CreateTaskInput,
   type KanbanBoard,
   type KanbanBoardRow,
   type KanbanColumn,
+  type KanbanRunRole,
   type KanbanRunRow,
   type KanbanRunStatus,
   type KanbanRunTrigger,
   type KanbanTask,
+  type KanbanTaskCommentRow,
   type KanbanTaskRow,
   type KanbanTaskStatus,
   type KanbanTaskTools,
@@ -43,7 +46,20 @@ function mapBoard(row: KanbanBoardRow): KanbanBoard {
 
 function mapTask(row: KanbanTaskRow, dependsOn: string[]): KanbanTask {
   const { tools_json, ...rest } = row;
-  return { ...rest, tools: parseTools(tools_json), dependsOn };
+  return {
+    ...rest,
+    // Older DBs may not have review_provider until migration; coerce to null.
+    review_provider: rest.review_provider ?? null,
+    tools: parseTools(tools_json),
+    dependsOn,
+  };
+}
+
+function mapRun(row: KanbanRunRow): KanbanRunRow {
+  return {
+    ...row,
+    role: row.role === 'review' ? 'review' : 'implement',
+  };
 }
 
 export const kanbanDb = {
@@ -130,8 +146,8 @@ export const kanbanDb = {
     db.prepare(
       `INSERT INTO kanban_tasks (
          task_id, board_id, project_id, title, description, prompt, column_id, position,
-         assignee_provider, permission_mode, tools_json, schedule_cron, status
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         assignee_provider, review_provider, permission_mode, tools_json, schedule_cron, status
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       taskId,
       input.boardId,
@@ -142,6 +158,7 @@ export const kanbanDb = {
       columnId,
       nextPosition,
       input.assigneeProvider ?? null,
+      input.reviewProvider ?? null,
       input.permissionMode ?? 'default',
       JSON.stringify(input.tools ?? {}),
       input.scheduleCron ?? null,
@@ -188,6 +205,10 @@ export const kanbanDb = {
       position: patch.position ?? existing.position,
       assignee_provider:
         patch.assigneeProvider !== undefined ? patch.assigneeProvider : existing.assignee_provider,
+      review_provider:
+        patch.reviewProvider !== undefined
+          ? patch.reviewProvider
+          : ((existing as KanbanTaskRow).review_provider ?? null),
       permission_mode: patch.permissionMode ?? existing.permission_mode,
       tools_json: patch.tools !== undefined ? JSON.stringify(patch.tools) : existing.tools_json,
       schedule_cron:
@@ -198,8 +219,8 @@ export const kanbanDb = {
     db.prepare(
       `UPDATE kanban_tasks SET
          title = ?, description = ?, prompt = ?, project_id = ?, column_id = ?, position = ?,
-         assignee_provider = ?, permission_mode = ?, tools_json = ?, schedule_cron = ?,
-         status = ?, updated_at = CURRENT_TIMESTAMP
+         assignee_provider = ?, review_provider = ?, permission_mode = ?, tools_json = ?,
+         schedule_cron = ?, status = ?, updated_at = CURRENT_TIMESTAMP
        WHERE task_id = ?`,
     ).run(
       next.title,
@@ -209,6 +230,7 @@ export const kanbanDb = {
       next.column_id,
       next.position,
       next.assignee_provider,
+      next.review_provider,
       next.permission_mode,
       next.tools_json,
       next.schedule_cron,
@@ -225,11 +247,36 @@ export const kanbanDb = {
     ).run(status, taskId);
   },
 
-  setTaskSession(taskId: string, appSessionId: string): void {
+  setTaskSession(taskId: string, appSessionId: string | null): void {
     const db = getConnection();
     db.prepare(
       `UPDATE kanban_tasks SET app_session_id = ?, updated_at = CURRENT_TIMESTAMP WHERE task_id = ?`,
     ).run(appSessionId, taskId);
+  },
+
+  /**
+   * Move a task into a column (appended at the end) and set its lifecycle status.
+   * Used by the implement → review → done automation path.
+   */
+  moveTaskToColumn(taskId: string, columnId: string, status: KanbanTaskStatus): void {
+    const db = getConnection();
+    const task = kanbanDb.getTask(taskId);
+    if (!task) {
+      return;
+    }
+    const nextPosition = (
+      db
+        .prepare(
+          `SELECT COALESCE(MAX(position), -1) + 1 AS next
+           FROM kanban_tasks WHERE board_id = ? AND column_id = ? AND task_id != ?`,
+        )
+        .get(task.board_id, columnId, taskId) as { next: number }
+    ).next;
+    db.prepare(
+      `UPDATE kanban_tasks
+       SET column_id = ?, position = ?, status = ?, updated_at = CURRENT_TIMESTAMP
+       WHERE task_id = ?`,
+    ).run(columnId, nextPosition, status, taskId);
   },
 
   recordTaskRunResult(taskId: string, exitCode: number | null): void {
@@ -374,13 +421,15 @@ export const kanbanDb = {
     appSessionId: string | null;
     provider: string | null;
     trigger: KanbanRunTrigger;
+    role?: KanbanRunRole;
   }): KanbanRunRow {
     const db = getConnection();
     const runId = randomUUID();
+    const role: KanbanRunRole = input.role ?? 'implement';
     db.prepare(
-      `INSERT INTO kanban_runs (run_id, task_id, app_session_id, provider, trigger, status)
-       VALUES (?, ?, ?, ?, ?, 'running')`,
-    ).run(runId, input.taskId, input.appSessionId, input.provider, input.trigger);
+      `INSERT INTO kanban_runs (run_id, task_id, app_session_id, provider, trigger, role, status)
+       VALUES (?, ?, ?, ?, ?, ?, 'running')`,
+    ).run(runId, input.taskId, input.appSessionId, input.provider, input.trigger, role);
     return kanbanDb.getRun(runId)!;
   },
 
@@ -389,7 +438,7 @@ export const kanbanDb = {
     const row = db.prepare(`SELECT * FROM kanban_runs WHERE run_id = ?`).get(runId) as
       | KanbanRunRow
       | undefined;
-    return row ?? null;
+    return row ? mapRun(row) : null;
   },
 
   finishRun(runId: string, status: KanbanRunStatus, exitCode: number | null): void {
@@ -401,14 +450,18 @@ export const kanbanDb = {
 
   listRunsByTask(taskId: string, limit = 50): KanbanRunRow[] {
     const db = getConnection();
-    return db
+    const rows = db
       .prepare(`SELECT * FROM kanban_runs WHERE task_id = ? ORDER BY started_at DESC LIMIT ?`)
       .all(taskId, limit) as KanbanRunRow[];
+    return rows.map(mapRun);
   },
 
   listRunningRuns(): KanbanRunRow[] {
     const db = getConnection();
-    return db.prepare(`SELECT * FROM kanban_runs WHERE status = 'running'`).all() as KanbanRunRow[];
+    const rows = db
+      .prepare(`SELECT * FROM kanban_runs WHERE status = 'running'`)
+      .all() as KanbanRunRow[];
+    return rows.map(mapRun);
   },
 
   /** The in-flight run for a given app session, if any (used at completion). */
@@ -419,7 +472,7 @@ export const kanbanDb = {
         `SELECT * FROM kanban_runs WHERE app_session_id = ? AND status = 'running' ORDER BY started_at DESC LIMIT 1`,
       )
       .get(appSessionId) as KanbanRunRow | undefined;
-    return row ?? null;
+    return row ? mapRun(row) : null;
   },
 
   /** Latest run for a task (any status), or null. */
@@ -428,7 +481,44 @@ export const kanbanDb = {
     const row = db
       .prepare(`SELECT * FROM kanban_runs WHERE task_id = ? ORDER BY started_at DESC LIMIT 1`)
       .get(taskId) as KanbanRunRow | undefined;
-    return row ?? null;
+    return row ? mapRun(row) : null;
+  },
+
+  // --- Comments (activity trail) -----------------------------------------
+  addComment(input: CreateCommentInput): KanbanTaskCommentRow {
+    const db = getConnection();
+    const commentId = randomUUID();
+    db.prepare(
+      `INSERT INTO kanban_task_comments (comment_id, task_id, author_type, author, body, run_id)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(
+      commentId,
+      input.taskId,
+      input.authorType,
+      input.author ?? null,
+      input.body,
+      input.runId ?? null,
+    );
+    return db
+      .prepare(`SELECT * FROM kanban_task_comments WHERE comment_id = ?`)
+      .get(commentId) as KanbanTaskCommentRow;
+  },
+
+  listCommentsByTask(taskId: string, limit = 200): KanbanTaskCommentRow[] {
+    const db = getConnection();
+    return db
+      .prepare(
+        `SELECT * FROM kanban_task_comments WHERE task_id = ? ORDER BY created_at ASC, rowid ASC LIMIT ?`,
+      )
+      .all(taskId, limit) as KanbanTaskCommentRow[];
+  },
+
+  deleteComment(commentId: string): boolean {
+    const db = getConnection();
+    const result = db
+      .prepare(`DELETE FROM kanban_task_comments WHERE comment_id = ?`)
+      .run(commentId);
+    return result.changes > 0;
   },
 };
 

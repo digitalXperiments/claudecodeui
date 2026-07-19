@@ -489,6 +489,66 @@ const ensureKanbanGlobalBoardSchema = (db: Database): void => {
   db.exec('CREATE INDEX IF NOT EXISTS idx_kanban_boards_scope ON kanban_boards(scope)');
 };
 
+/**
+ * Additive kanban columns for implement/review agents + run role, and enable
+ * auto-run on the default In Progress / Review columns for existing boards.
+ */
+const ensureKanbanAgentWorkflowSchema = (db: Database): void => {
+  if (tableExists(db, 'kanban_tasks')) {
+    const taskColumns = getTableInfo(db, 'kanban_tasks').map((column) => column.name);
+    addColumnToTableIfNotExists(db, 'kanban_tasks', taskColumns, 'review_provider', 'TEXT');
+  }
+
+  if (tableExists(db, 'kanban_runs')) {
+    const runColumns = getTableInfo(db, 'kanban_runs').map((column) => column.name);
+    addColumnToTableIfNotExists(db, 'kanban_runs', runColumns, 'role', "TEXT DEFAULT 'implement'");
+  }
+
+  if (!tableExists(db, 'kanban_boards')) {
+    return;
+  }
+
+  // Ensure default lifecycle columns auto-run on existing boards that were
+  // created before runOnEnter was the default for in_progress / review.
+  const boards = db
+    .prepare(`SELECT board_id, columns_json FROM kanban_boards`)
+    .all() as { board_id: string; columns_json: string }[];
+
+  const update = db.prepare(
+    `UPDATE kanban_boards SET columns_json = ?, updated_at = CURRENT_TIMESTAMP WHERE board_id = ?`,
+  );
+
+  for (const board of boards) {
+    let columns: Array<{ id?: string; runOnEnter?: boolean; [key: string]: unknown }>;
+    try {
+      const parsed = JSON.parse(board.columns_json);
+      if (!Array.isArray(parsed)) {
+        continue;
+      }
+      columns = parsed;
+    } catch {
+      continue;
+    }
+
+    let changed = false;
+    const next = columns.map((col) => {
+      if (col.id === 'in_progress' && col.runOnEnter !== true) {
+        changed = true;
+        return { ...col, runOnEnter: true };
+      }
+      if (col.id === 'review' && col.runOnEnter !== true) {
+        changed = true;
+        return { ...col, runOnEnter: true };
+      }
+      return col;
+    });
+
+    if (changed) {
+      update.run(JSON.stringify(next), board.board_id);
+    }
+  }
+};
+
 export const runMigrations = (db: Database) => {
   try {
     const usersTableInfo = db.prepare('PRAGMA table_info(users)').all() as { name: string }[];
@@ -545,6 +605,7 @@ export const runMigrations = (db: Database) => {
     // Kanban orchestration tables (additive; safe to re-exec via IF NOT EXISTS).
     db.exec(KANBAN_SCHEMA_SQL);
     ensureKanbanGlobalBoardSchema(db);
+    ensureKanbanAgentWorkflowSchema(db);
 
     console.log('Database migrations completed successfully');
   } catch (error: any) {

@@ -60,7 +60,7 @@ async function withRunner(
   }
 }
 
-test('runTask drives a successful run to done and records the kanban_run', async () => {
+test('runTask drives a successful implement run to Done when no review agent', async () => {
   await withRunner(
     (writer) => {
       writer.send({ kind: 'complete', provider: 'claude', exitCode: 0, success: true });
@@ -79,6 +79,7 @@ test('runTask drives a successful run to done and records the kanban_run', async
       // The stub emits `complete` synchronously, so status has settled already.
       const updated = kanbanDb.getTask(task.task_id);
       assert.equal(updated?.status, 'done');
+      assert.equal(updated?.column_id, 'done');
       assert.equal(updated?.app_session_id, result.appSessionId);
       assert.equal(updated?.last_exit_code, 0);
 
@@ -86,6 +87,33 @@ test('runTask drives a successful run to done and records the kanban_run', async
       assert.equal(run?.status, 'done');
       assert.equal(run?.exit_code, 0);
       assert.equal(run?.trigger, 'manual');
+      assert.equal(run?.role, 'implement');
+    },
+  );
+});
+
+test('successful implement with review agent moves to Review', async () => {
+  await withRunner(
+    (writer) => {
+      writer.send({ kind: 'complete', provider: 'claude', exitCode: 0, success: true });
+    },
+    async ({ projectId }) => {
+      const board = kanbanDb.createBoard({ projectId, name: 'Board' });
+      const task = kanbanDb.createTask({
+        boardId: board.board_id,
+        projectId,
+        title: 'Needs review',
+        prompt: 'implement feature',
+        assigneeProvider: 'claude',
+        reviewProvider: 'codex',
+      });
+
+      await kanbanRunner.runTask(task.task_id, 'manual');
+      const updated = kanbanDb.getTask(task.task_id);
+      assert.equal(updated?.column_id, 'review');
+      // Status is todo until review is enqueued (queue not wired in this test).
+      assert.ok(updated?.status === 'todo' || updated?.status === 'queued');
+      assert.equal(updated?.app_session_id, null);
     },
   );
 });
@@ -117,7 +145,10 @@ test('runTask rejects a task with no assignee', async () => {
     async ({ projectId }) => {
       const board = kanbanDb.createBoard({ projectId, name: 'Board' });
       const task = kanbanDb.createTask({ boardId: board.board_id, projectId, title: 'Orphan' });
-      await assert.rejects(() => kanbanRunner.runTask(task.task_id, 'manual'), /no assigned agent/i);
+      await assert.rejects(
+        () => kanbanRunner.runTask(task.task_id, 'manual'),
+        /no implementation agent/i,
+      );
     },
   );
 });
