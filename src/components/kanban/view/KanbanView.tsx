@@ -203,6 +203,7 @@ export default function KanbanView({ selectedProject, isVisible }: KanbanViewPro
                 tasks={tasksByColumn.get(column.id) ?? []}
                 onOpenTask={openEditTask}
                 onAddTask={openNewTask}
+                onToggleRunOnEnter={board.setColumnRunOnEnter}
               />
             ))}
           </div>

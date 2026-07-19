@@ -13,9 +13,16 @@ type KanbanColumnProps = {
   tasks: KanbanTask[];
   onOpenTask: (task: KanbanTask) => void;
   onAddTask: (columnId: string) => void;
+  onToggleRunOnEnter: (columnId: string, runOnEnter: boolean) => void;
 };
 
-export default function KanbanColumn({ column, tasks, onOpenTask, onAddTask }: KanbanColumnProps) {
+export default function KanbanColumn({
+  column,
+  tasks,
+  onOpenTask,
+  onAddTask,
+  onToggleRunOnEnter,
+}: KanbanColumnProps) {
   const { setNodeRef, isOver } = useDroppable({
     id: `column:${column.id}`,
     data: { type: 'column', columnId: column.id },
@@ -31,21 +38,37 @@ export default function KanbanColumn({ column, tasks, onOpenTask, onAddTask }: K
           <span className="rounded bg-muted px-1.5 text-xs font-normal text-muted-foreground">
             {sortedTasks.length}
           </span>
-          {column.runOnEnter ? (
-            <Tooltip content="Runs assigned tasks when moved here" position="top">
-              <Zap className="h-3.5 w-3.5 text-amber-500" />
-            </Tooltip>
-          ) : null}
         </div>
-        <Button
-          variant="ghost"
-          size="icon"
-          className="h-6 w-6"
-          onClick={() => onAddTask(column.id)}
-          aria-label={`Add task to ${column.name}`}
-        >
-          <Plus className="h-4 w-4" />
-        </Button>
+        <div className="flex items-center gap-0.5">
+          <Tooltip
+            content={
+              column.runOnEnter
+                ? 'Auto-run is ON — tasks run when moved here'
+                : 'Toggle auto-run when tasks enter this column'
+            }
+            position="top"
+          >
+            <Button
+              variant="ghost"
+              size="icon"
+              className={cn('h-6 w-6', column.runOnEnter ? 'text-amber-500' : 'text-muted-foreground')}
+              onClick={() => onToggleRunOnEnter(column.id, !column.runOnEnter)}
+              aria-label={`Toggle auto-run for ${column.name}`}
+              aria-pressed={Boolean(column.runOnEnter)}
+            >
+              <Zap className="h-3.5 w-3.5" />
+            </Button>
+          </Tooltip>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-6 w-6"
+            onClick={() => onAddTask(column.id)}
+            aria-label={`Add task to ${column.name}`}
+          >
+            <Plus className="h-4 w-4" />
+          </Button>
+        </div>
       </div>
 
       <div

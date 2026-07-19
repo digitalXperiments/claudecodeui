@@ -3,6 +3,8 @@ import express from 'express';
 import { AppError, asyncHandler } from '@/shared/utils.js';
 import { kanbanDb, KanbanCycleError } from '@/modules/kanban/kanban.repository.js';
 import { kanbanRunner } from '@/modules/kanban/kanban-runner.service.js';
+import { enqueueTask } from '@/modules/kanban/kanban-queue.service.js';
+import { syncSchedules } from '@/modules/kanban/kanban-scheduler.service.js';
 import {
   isKanbanProvider,
   KANBAN_TASK_STATUSES,
@@ -229,6 +231,9 @@ router.post(
       scheduleCron:
         body.scheduleCron === null ? null : readOptionalString(body.scheduleCron) ?? undefined,
     });
+    if (task.schedule_cron) {
+      syncSchedules();
+    }
     res.status(201).json({ success: true, task });
   }),
 );
@@ -246,13 +251,14 @@ router.put(
   '/tasks/:taskId',
   asyncHandler(async (req, res) => {
     const taskId = readString(req.params.taskId);
-    requireTask(taskId);
+    const previous = requireTask(taskId);
     const body = req.body as Record<string, unknown>;
+    const requestedColumnId = readOptionalString(body.columnId);
     const task = kanbanDb.updateTask(taskId, {
       title: readOptionalString(body.title),
       description: readOptionalString(body.description),
       prompt: readOptionalString(body.prompt),
-      columnId: readOptionalString(body.columnId),
+      columnId: requestedColumnId,
       position: typeof body.position === 'number' ? body.position : undefined,
       assigneeProvider: validateAssignee(body.assigneeProvider),
       permissionMode: readOptionalString(body.permissionMode),
@@ -261,6 +267,21 @@ router.put(
         body.scheduleCron === null ? null : readOptionalString(body.scheduleCron) ?? undefined,
       status: validateStatus(body.status),
     });
+
+    if (task && body.scheduleCron !== undefined) {
+      syncSchedules();
+    }
+
+    // Column-move trigger: entering a `runOnEnter` column enqueues a run. Guard
+    // on an actual column change so re-saves in the same column don't re-fire.
+    if (task && task.column_id !== previous.column_id) {
+      const board = kanbanDb.getBoard(task.board_id);
+      const enteredColumn = board?.columns.find((col) => col.id === task.column_id);
+      if (enteredColumn?.runOnEnter && task.assignee_provider) {
+        enqueueTask(task.task_id, 'column_move');
+      }
+    }
+
     res.json({ success: true, task });
   }),
 );
@@ -272,6 +293,8 @@ router.delete(
     if (!deleted) {
       throw new AppError('Task not found', { code: 'KANBAN_TASK_NOT_FOUND', statusCode: 404 });
     }
+    // Drop any cron job that belonged to the deleted task.
+    syncSchedules();
     res.json({ success: true });
   }),
 );

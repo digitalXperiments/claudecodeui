@@ -75,7 +75,15 @@ import browserUseRoutes from './modules/browser-use/browser-use.routes.js';
 import { assetsRoutes } from './modules/assets/index.js';
 import browserUseMcpRoutes from './modules/browser-use/browser-use-mcp.routes.js';
 import kanbanRoutes from './modules/kanban/kanban.routes.js';
-import { configureKanbanRuntimes, initKanbanAutomation, reconcileKanbanOnBoot } from './modules/kanban/index.js';
+import {
+    configureKanbanRuntimes,
+    initKanbanAutomation,
+    reconcileKanbanOnBoot,
+    initKanbanQueue,
+    requeuePersisted,
+    startKanbanScheduler,
+    stopKanbanScheduler,
+} from './modules/kanban/index.js';
 import { browserUseService } from './modules/browser-use/browser-use.service.js';
 import { startEnabledPluginServers, stopAllPlugins, getPluginPort } from './utils/plugin-process-manager.js';
 import { initializeDatabase, projectsDb, sessionsDb } from './modules/database/index.js';
@@ -129,9 +137,11 @@ const providerSpawnFns = {
 };
 
 // Kanban runner reuses the same runtimes; automation reconciles task/run status
-// from run completions.
+// from run completions, the queue caps concurrent automated runs, and the
+// scheduler fires cron-based tasks.
 configureKanbanRuntimes(providerSpawnFns);
 initKanbanAutomation();
+initKanbanQueue({ concurrency: 3 });
 
 // Single WebSocket server that handles chat, shell, and plugin proxy paths.
 const wss = createWebSocketServer(server, {
@@ -1787,9 +1797,12 @@ async function startServer() {
         // Initialize authentication database
         await initializeDatabase();
 
-        // Fail any kanban runs left "running" by a previous process (crash/restart).
+        // Fail any kanban runs left "running" by a previous process (crash/restart),
+        // re-enqueue anything persisted as "queued", and start the cron scheduler.
         try {
             reconcileKanbanOnBoot();
+            requeuePersisted();
+            startKanbanScheduler();
         } catch (error) {
             console.error('[Kanban] boot reconcile failed:', error.message);
         }
@@ -1839,6 +1852,11 @@ async function startServer() {
         await closeSessionsWatcher();
         // Clean up plugin processes on shutdown
         const shutdownRuntimeServices = async () => {
+            try {
+                stopKanbanScheduler();
+            } catch (err) {
+                console.error('[Kanban] Error stopping scheduler during shutdown:', err?.message || err);
+            }
             try {
                 await browserUseService.stopAllSessions();
             } catch (err) {

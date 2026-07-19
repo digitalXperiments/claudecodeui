@@ -181,6 +181,29 @@ export function useKanbanBoard(projectId: string | null) {
     [upsertTask],
   );
 
+  const setColumnRunOnEnter = useCallback(
+    async (columnId: string, runOnEnter: boolean) => {
+      const board = state.board;
+      if (!board) {
+        return;
+      }
+      const columns = board.columns.map((col) =>
+        col.id === columnId ? { ...col, runOnEnter } : col,
+      );
+      setState((prev) => (prev.board ? { ...prev, board: { ...prev.board, columns } } : prev));
+      try {
+        const updated = await kanbanApi.updateBoard(board.board_id, { columns });
+        setState((prev) => ({ ...prev, board: updated }));
+      } catch (error) {
+        setState((prev) => ({
+          ...prev,
+          error: error instanceof Error ? error.message : 'Failed to update column',
+        }));
+      }
+    },
+    [state.board],
+  );
+
   const clearError = useCallback(() => setState((prev) => ({ ...prev, error: null })), []);
 
   return {
@@ -194,6 +217,7 @@ export function useKanbanBoard(projectId: string | null) {
     reorderColumn,
     addDependency,
     removeDependency,
+    setColumnRunOnEnter,
     clearError,
   };
 }

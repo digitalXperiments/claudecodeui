@@ -57,6 +57,16 @@ export function setOnTaskDone(handler: ((taskId: string) => void) | null): void 
 }
 
 /**
+ * Hook invoked after every kanban run settles (success or failure), with the
+ * task id. The run queue registers this to free a concurrency slot and drain.
+ */
+let onRunSettled: ((taskId: string) => void) | null = null;
+
+export function setOnRunSettled(handler: ((taskId: string) => void) | null): void {
+  onRunSettled = handler;
+}
+
+/**
  * Reconcile a task + its `kanban_runs` row from a terminal run outcome. Only
  * acts when a running kanban run exists for the app session — interactive chat
  * runs (which also fire `onRunComplete`) have no such row and are ignored.
@@ -84,10 +94,12 @@ export function handleRunCompletion(event: RunCompletionEvent): void {
     event.success ? 'done' : event.aborted ? 'aborted' : 'failed',
   );
 
-  // Dependency cascade is wired in Phase 5; on success, dependents may unblock.
+  // On success, dependents may now be unblocked (dependency cascade).
   if (event.success) {
     onTaskDone?.(run.task_id);
   }
+  // Always free the queue slot this run occupied.
+  onRunSettled?.(run.task_id);
 }
 
 /**

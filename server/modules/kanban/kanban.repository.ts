@@ -232,6 +232,26 @@ export const kanbanDb = {
     return result.changes > 0;
   },
 
+  /** All tasks with a non-empty cron expression (across every board). */
+  listScheduledTasks(): KanbanTask[] {
+    const db = getConnection();
+    const rows = db
+      .prepare(
+        `SELECT * FROM kanban_tasks WHERE schedule_cron IS NOT NULL AND TRIM(schedule_cron) != ''`,
+      )
+      .all() as KanbanTaskRow[];
+    return rows.map((row) => mapTask(row, kanbanDb.listDependencies(row.task_id)));
+  },
+
+  /** All tasks currently in a given status (across every board). */
+  listTasksByStatus(status: KanbanTaskStatus): KanbanTask[] {
+    const db = getConnection();
+    const rows = db
+      .prepare(`SELECT * FROM kanban_tasks WHERE status = ?`)
+      .all(status) as KanbanTaskRow[];
+    return rows.map((row) => mapTask(row, kanbanDb.listDependencies(row.task_id)));
+  },
+
   // --- Dependencies (DAG) -------------------------------------------------
   listDependencies(taskId: string): string[] {
     const db = getConnection();
