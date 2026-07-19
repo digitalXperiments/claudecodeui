@@ -9,7 +9,7 @@ import {
   type DragEndEvent,
   type DragStartEvent,
 } from '@dnd-kit/core';
-import { AlertTriangle, Loader2, Plus, RefreshCw, SquareKanban } from 'lucide-react';
+import { AlertTriangle, Loader2, Plus, RefreshCw, SquareKanban, Table2 } from 'lucide-react';
 
 import { Button } from '../../../shared/view/ui';
 import type { Project } from '../../../types/app';
@@ -20,6 +20,7 @@ import type { KanbanTask } from '../types';
 import KanbanColumn from './KanbanColumn';
 import KanbanCard from './KanbanCard';
 import TaskEditor from './TaskEditor';
+import PermissionMatrix from './PermissionMatrix';
 
 type KanbanViewProps = {
   selectedProject: Project | null;
@@ -42,6 +43,7 @@ export default function KanbanView({ selectedProject, isVisible }: KanbanViewPro
   const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
   const [draftColumnId, setDraftColumnId] = useState<string | null>(null);
   const [activeTask, setActiveTask] = useState<KanbanTask | null>(null);
+  const [view, setView] = useState<'board' | 'matrix'>('board');
 
   // Derive the edited task from live board state so run status/output refresh.
   const editingTask = editingTaskId
@@ -160,6 +162,15 @@ export default function KanbanView({ selectedProject, isVisible }: KanbanViewPro
           {board.board?.name ?? 'Kanban'}
         </div>
         <div className="flex items-center gap-2">
+          <Button
+            variant={view === 'matrix' ? 'secondary' : 'ghost'}
+            size="icon"
+            className="h-8 w-8"
+            onClick={() => setView((prev) => (prev === 'board' ? 'matrix' : 'board'))}
+            aria-label="Toggle permission matrix"
+          >
+            <Table2 className="h-4 w-4" />
+          </Button>
           <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => void board.reload()}>
             <RefreshCw className="h-4 w-4" />
           </Button>
@@ -188,6 +199,8 @@ export default function KanbanView({ selectedProject, isVisible }: KanbanViewPro
         <div className="flex flex-1 items-center justify-center text-muted-foreground">
           <Loader2 className="h-6 w-6 animate-spin" />
         </div>
+      ) : view === 'matrix' ? (
+        <PermissionMatrix tasks={board.tasks} onOpenTask={openEditTask} />
       ) : (
         <DndContext
           sensors={sensors}

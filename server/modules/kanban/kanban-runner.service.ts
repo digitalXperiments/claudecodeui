@@ -26,15 +26,22 @@ export function configureKanbanRuntimes(spawnFns: Partial<Record<LLMProvider, Pr
  * `permission_mode` verbatim and never force `bypassPermissions`.
  */
 function buildRuntimeOptions(task: KanbanTask): AnyRecord {
+  // Provider-native permission structures are stored verbatim in tools_json and
+  // spread straight through, so whatever the per-provider permission editor
+  // produced (grok allow/deny rules, codex sandbox, agy mode, ...) reaches its
+  // runtime unchanged.
   const options: AnyRecord = {
+    ...(task.tools ?? {}),
     permissionMode: task.permission_mode || 'default',
   };
+  // Back-compat convenience: the generic allow/deny lists also populate Claude's
+  // tool arrays (Claude is the only runtime keyed on allowedTools/disallowedTools).
   const allowed = task.tools?.allowedCommands;
   const disallowed = task.tools?.disallowedCommands;
-  if (Array.isArray(allowed) && allowed.length > 0) {
+  if (Array.isArray(allowed) && allowed.length > 0 && options.allowedTools === undefined) {
     options.allowedTools = allowed;
   }
-  if (Array.isArray(disallowed) && disallowed.length > 0) {
+  if (Array.isArray(disallowed) && disallowed.length > 0 && options.disallowedTools === undefined) {
     options.disallowedTools = disallowed;
   }
   return options;
