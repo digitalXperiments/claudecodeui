@@ -104,6 +104,7 @@
   "mainTabs": {
     "label": "Settings",
     "agents": "Agents",
+    "skills": "Project Skills",
     "appearance": "Appearance",
     "git": "Git",
     "apiTokens": "API & Tokens",
