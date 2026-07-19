@@ -1,9 +1,14 @@
 import { kanbanDb } from '@/modules/kanban/kanban.repository.js';
 import { kanbanRunner } from '@/modules/kanban/kanban-runner.service.js';
-import { setOnRunSettled, setOnTaskDone } from '@/modules/kanban/kanban-automation.service.js';
-import type { KanbanRunTrigger } from '@/modules/kanban/kanban.types.js';
+import {
+  setOnEnqueue,
+  setOnRunSettled,
+  setOnTaskDone,
+  type KanbanEnqueueContext,
+} from '@/modules/kanban/kanban-automation.service.js';
+import { COLUMN_IN_PROGRESS, type KanbanRunTrigger } from '@/modules/kanban/kanban.types.js';
 
-type QueueItem = { taskId: string; trigger: KanbanRunTrigger };
+type QueueItem = { taskId: string; trigger: KanbanRunTrigger; context?: KanbanEnqueueContext };
 
 const DEFAULT_CONCURRENCY = 3;
 
@@ -34,7 +39,7 @@ function drain(): void {
     // runTask resolves once the run has *started*; the slot is released later
     // when the run settles via onRunSettled. A synchronous start failure frees
     // the slot immediately and marks the task failed.
-    kanbanRunner.runTask(item.taskId, item.trigger).catch((error) => {
+    kanbanRunner.runTask(item.taskId, item.trigger, item.context).catch((error) => {
       const message = error instanceof Error ? error.message : String(error);
       console.error('[Kanban] queued run failed to start', { taskId: item.taskId, error: message });
       try {
@@ -52,8 +57,11 @@ function drain(): void {
  * Enqueue a task for automated execution. No-op (deduped) if the task is
  * already queued, in flight, or actively running — this is the debounce that
  * prevents runaway re-triggering.
+ *
+ * Review triggers require a review agent; all other triggers require an
+ * implementation agent.
  */
-export function enqueueTask(taskId: string, trigger: KanbanRunTrigger): void {
+export function enqueueTask(taskId: string, trigger: KanbanRunTrigger, context?: KanbanEnqueueContext): void {
   if (isTracked(taskId)) {
     return;
   }
@@ -64,12 +72,26 @@ export function enqueueTask(taskId: string, trigger: KanbanRunTrigger): void {
   if (task.status === 'running' || task.status === 'queued') {
     return;
   }
-  if (!task.assignee_provider) {
-    // Nothing to run automatically without an assigned agent.
+  const needsReviewAgent = trigger === 'review' || task.column_id === 'review';
+  if (needsReviewAgent) {
+    if (!task.review_provider) {
+      // No review agent — nothing to auto-run in Review.
+      return;
+    }
+  } else if (!task.assignee_provider) {
+    // Nothing to run automatically without an implementation agent.
+    return;
+  }
+  // Dependency gate: a task with unfinished dependencies must not run. Mark it
+  // `blocked` instead of `queued`; `cascadeDependents` will re-enqueue it once
+  // its last blocker finishes. (Review runs are exempt — a task only reaches
+  // Review after its own implementation, so its deps were already satisfied.)
+  if (!needsReviewAgent && !dependenciesSatisfied(taskId)) {
+    kanbanDb.setTaskStatus(taskId, 'blocked');
     return;
   }
   kanbanDb.setTaskStatus(taskId, 'queued');
-  pending.push({ taskId, trigger });
+  pending.push({ taskId, trigger, context });
   drain();
 }
 
@@ -92,8 +114,22 @@ function cascadeDependents(doneTaskId: string): void {
     if (dependent.status === 'running' || dependent.status === 'queued' || dependent.status === 'done') {
       continue;
     }
-    if (dependenciesSatisfied(dependentId)) {
+    if (!dependenciesSatisfied(dependentId)) {
+      // Still blocked by another open dependency; leave it be.
+      continue;
+    }
+    if (dependent.assignee_provider) {
+      // Auto-start: surface the work by moving it into In Progress, then run it.
+      // We call the repository directly (not the HTTP route) so this move does
+      // not re-fire the column-move trigger. Use an interim `todo` status —
+      // `enqueueTask` owns the lifecycle and would no-op if we pre-set `queued`.
+      if (dependent.column_id !== COLUMN_IN_PROGRESS) {
+        kanbanDb.moveTaskToColumn(dependentId, COLUMN_IN_PROGRESS, 'todo');
+      }
       enqueueTask(dependentId, 'dependency');
+    } else if (dependent.status === 'blocked') {
+      // Nothing to auto-run; just clear the block so a human can pick it up.
+      kanbanDb.setTaskStatus(dependentId, 'todo');
     }
   }
 }
@@ -109,9 +145,17 @@ function handleRunSettled(taskId: string): void {
  */
 export function requeuePersisted(): void {
   for (const task of kanbanDb.listTasksByStatus('queued')) {
-    if (!isTracked(task.task_id) && task.assignee_provider) {
-      pending.push({ taskId: task.task_id, trigger: 'dependency' });
+    if (isTracked(task.task_id)) {
+      continue;
     }
+    const trigger: KanbanRunTrigger =
+      task.column_id === 'review' ? 'review' : 'dependency';
+    const hasAgent =
+      trigger === 'review' ? Boolean(task.review_provider) : Boolean(task.assignee_provider);
+    if (!hasAgent) {
+      continue;
+    }
+    pending.push({ taskId: task.task_id, trigger });
   }
   drain();
 }
@@ -121,11 +165,13 @@ export function initKanbanQueue(options: { concurrency?: number } = {}): void {
   concurrency = options.concurrency && options.concurrency > 0 ? options.concurrency : DEFAULT_CONCURRENCY;
   setOnRunSettled(handleRunSettled);
   setOnTaskDone(cascadeDependents);
+  setOnEnqueue((taskId, trigger, context) => enqueueTask(taskId, trigger, context));
 }
 
 export function stopKanbanQueue(): void {
   setOnRunSettled(null);
   setOnTaskDone(null);
+  setOnEnqueue(null);
   pending.length = 0;
   inFlight.clear();
 }

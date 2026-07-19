@@ -339,6 +339,15 @@ export async function queryCodex(command, options = {}, ws) {
       // Normalize the transformed event into NormalizedMessage(s) via adapter
       const normalizedMsgs = sessionsService.normalizeMessage('codex', transformed, capturedSessionId || sessionId || null);
       for (const msg of normalizedMsgs) {
+        // The adapter maps `turn.completed` to a bare `complete` carrying no
+        // exitCode/success. The authoritative terminal event is emitted below
+        // via createCompleteMessage — forwarding this one would close the run
+        // early in the chat run registry with empty outcome metadata (kanban
+        // then records the run as failed with a null exit code), and the real
+        // terminal complete gets dropped by the exactly-one-complete contract.
+        if (msg.kind === 'complete') {
+          continue;
+        }
         sendMessage(ws, msg);
       }
 

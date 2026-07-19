@@ -171,7 +171,8 @@ CREATE TABLE IF NOT EXISTS kanban_tasks (
     prompt            TEXT DEFAULT '',   -- instruction sent to the agent on run
     column_id         TEXT NOT NULL,
     position          INTEGER DEFAULT 0, -- ordering within a column
-    assignee_provider TEXT,              -- LLMProvider | NULL
+    assignee_provider TEXT,              -- implementation agent (LLMProvider | NULL)
+    review_provider   TEXT,              -- review agent (LLMProvider | NULL)
     permission_mode   TEXT DEFAULT 'default',
     tools_json        TEXT DEFAULT '{}', -- {allowedCommands:[], disallowedCommands:[]}
     schedule_cron     TEXT,              -- NULL = not scheduled
@@ -195,13 +196,27 @@ CREATE TABLE IF NOT EXISTS kanban_task_deps (
 );
 `;
 
+export const KANBAN_TASK_COMMENTS_TABLE_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS kanban_task_comments (
+    comment_id   TEXT PRIMARY KEY NOT NULL,
+    task_id      TEXT NOT NULL,
+    author_type  TEXT NOT NULL DEFAULT 'human', -- 'human' | 'agent'
+    author       TEXT,                          -- human user id/name or agent provider
+    body         TEXT NOT NULL,
+    run_id       TEXT,                          -- links an agent comment to its run
+    created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (task_id) REFERENCES kanban_tasks(task_id) ON DELETE CASCADE
+);
+`;
+
 export const KANBAN_RUNS_TABLE_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS kanban_runs (
     run_id         TEXT PRIMARY KEY NOT NULL,
     task_id        TEXT NOT NULL,
     app_session_id TEXT,
     provider       TEXT,
-    trigger        TEXT,                 -- manual|schedule|column_move|dependency
+    trigger        TEXT,                 -- manual|schedule|column_move|dependency|review
+    role           TEXT DEFAULT 'implement', -- implement|review
     status         TEXT DEFAULT 'running', -- running|done|failed|aborted
     exit_code      INTEGER,
     started_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -229,6 +244,9 @@ CREATE INDEX IF NOT EXISTS idx_kanban_task_deps_depends_on ON kanban_task_deps(d
 ${KANBAN_RUNS_TABLE_SCHEMA_SQL}
 CREATE INDEX IF NOT EXISTS idx_kanban_runs_task ON kanban_runs(task_id);
 CREATE INDEX IF NOT EXISTS idx_kanban_runs_status ON kanban_runs(status);
+
+${KANBAN_TASK_COMMENTS_TABLE_SCHEMA_SQL}
+CREATE INDEX IF NOT EXISTS idx_kanban_task_comments_task ON kanban_task_comments(task_id);
 `;
 
 export const INIT_SCHEMA_SQL = `

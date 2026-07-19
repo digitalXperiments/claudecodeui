@@ -5,9 +5,9 @@ type PermissionMatrixProps = {
   onOpenTask: (task: KanbanTask) => void;
 };
 
-function providerLabel(provider: KanbanTask['assignee_provider']): string {
+function providerLabel(provider: string | null | undefined): string {
   if (!provider) {
-    return 'Unassigned';
+    return '—';
   }
   return KANBAN_PROVIDERS.find((p) => p.value === provider)?.label ?? provider;
 }
@@ -17,7 +17,7 @@ function permissionLabel(mode: string): string {
 }
 
 /**
- * Board-wide agents × tasks permission overview: which agent runs each task and
+ * Board-wide agents × tasks permission overview: which agents run each task and
  * under what permissions. Read-only; click a row to edit the task.
  */
 export default function PermissionMatrix({ tasks, onOpenTask }: PermissionMatrixProps) {
@@ -35,7 +35,8 @@ export default function PermissionMatrix({ tasks, onOpenTask }: PermissionMatrix
         <thead>
           <tr className="border-b border-border text-left text-xs uppercase text-muted-foreground">
             <th className="px-3 py-2 font-medium">Task</th>
-            <th className="px-3 py-2 font-medium">Agent</th>
+            <th className="px-3 py-2 font-medium">Implement</th>
+            <th className="px-3 py-2 font-medium">Review</th>
             <th className="px-3 py-2 font-medium">Permission mode</th>
             <th className="px-3 py-2 font-medium">Allowed</th>
             <th className="px-3 py-2 font-medium">Disallowed</th>
@@ -51,6 +52,7 @@ export default function PermissionMatrix({ tasks, onOpenTask }: PermissionMatrix
             >
               <td className="px-3 py-2 font-medium text-foreground">{task.title}</td>
               <td className="px-3 py-2">{providerLabel(task.assignee_provider)}</td>
+              <td className="px-3 py-2">{providerLabel(task.review_provider)}</td>
               <td className="px-3 py-2 text-muted-foreground">
                 {permissionLabel(task.permission_mode)}
               </td>

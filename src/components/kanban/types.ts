@@ -1,8 +1,9 @@
 import type { LLMProvider } from '../../types/app';
 
 export type KanbanTaskStatus = 'todo' | 'queued' | 'running' | 'done' | 'failed' | 'blocked';
-export type KanbanRunTrigger = 'manual' | 'schedule' | 'column_move' | 'dependency';
+export type KanbanRunTrigger = 'manual' | 'schedule' | 'column_move' | 'dependency' | 'review';
 export type KanbanRunStatus = 'running' | 'done' | 'failed' | 'aborted';
+export type KanbanRunRole = 'implement' | 'review';
 
 export type KanbanColumn = {
   id: string;
@@ -45,7 +46,10 @@ export type KanbanTask = {
   prompt: string;
   column_id: string;
   position: number;
+  /** Implementation agent. */
   assignee_provider: LLMProvider | null;
+  /** Review agent (runs after implementation succeeds). */
+  review_provider: LLMProvider | null;
   permission_mode: string;
   tools: KanbanTaskTools;
   schedule_cron: string | null;
@@ -64,10 +68,23 @@ export type KanbanRun = {
   app_session_id: string | null;
   provider: string | null;
   trigger: KanbanRunTrigger | null;
+  role: KanbanRunRole;
   status: KanbanRunStatus;
   exit_code: number | null;
   started_at: string;
   finished_at: string | null;
+};
+
+export type KanbanCommentAuthorType = 'human' | 'agent';
+
+export type KanbanTaskComment = {
+  comment_id: string;
+  task_id: string;
+  author_type: KanbanCommentAuthorType;
+  author: string | null;
+  body: string;
+  run_id: string | null;
+  created_at: string;
 };
 
 export const KANBAN_PROVIDERS: { value: LLMProvider; label: string }[] = [

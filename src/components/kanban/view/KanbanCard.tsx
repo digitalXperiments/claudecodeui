@@ -1,6 +1,6 @@
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import { Clock, FolderGit2, GitBranch, Loader2 } from 'lucide-react';
+import { Ban, Clock, FolderGit2, GitBranch, Loader2 } from 'lucide-react';
 
 import { Badge } from '../../../shared/view/ui';
 import { cn } from '../../../lib/utils';
@@ -15,7 +15,7 @@ const STATUS_STYLES: Record<KanbanTaskStatus, string> = {
   blocked: 'bg-muted text-muted-foreground',
 };
 
-function providerLabel(provider: KanbanTask['assignee_provider']): string | null {
+function providerLabel(provider: string | null | undefined): string | null {
   if (!provider) {
     return null;
   }
@@ -40,7 +40,8 @@ export default function KanbanCard({ task, onOpen, projectName = null }: KanbanC
     transition,
   };
 
-  const provider = providerLabel(task.assignee_provider);
+  const implementLabel = providerLabel(task.assignee_provider);
+  const reviewLabel = providerLabel(task.review_provider);
 
   return (
     <div
@@ -58,6 +59,7 @@ export default function KanbanCard({ task, onOpen, projectName = null }: KanbanC
         <span className="text-sm font-medium leading-snug text-card-foreground">{task.title}</span>
         <Badge className={cn('shrink-0 gap-1', STATUS_STYLES[task.status])} variant="secondary">
           {task.status === 'running' && <Loader2 className="h-3 w-3 animate-spin" />}
+          {task.status === 'blocked' && <Ban className="h-3 w-3" />}
           {task.status}
         </Badge>
       </div>
@@ -73,13 +75,21 @@ export default function KanbanCard({ task, onOpen, projectName = null }: KanbanC
             {projectName}
           </Badge>
         ) : null}
-        {provider ? (
-          <Badge variant="outline" className="font-normal">
-            {provider}
+        {implementLabel ? (
+          <Badge variant="outline" className="font-normal" title="Implementation agent">
+            {implementLabel}
+          </Badge>
+        ) : null}
+        {reviewLabel ? (
+          <Badge variant="outline" className="font-normal opacity-80" title="Review agent">
+            rev: {reviewLabel}
           </Badge>
         ) : null}
         {(task.dependsOn?.length ?? 0) > 0 ? (
-          <span className="inline-flex items-center gap-0.5">
+          <span
+            className="inline-flex items-center gap-0.5"
+            title={`Depends on ${task.dependsOn?.length ?? 0} task(s)`}
+          >
             <GitBranch className="h-3 w-3" />
             {task.dependsOn?.length ?? 0}
           </span>

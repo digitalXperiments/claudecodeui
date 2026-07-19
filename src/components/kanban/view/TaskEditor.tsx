@@ -16,6 +16,7 @@ import {
 import type { TaskPatch } from '../api/kanbanApi';
 
 import TaskRunOutput from './TaskRunOutput';
+import TaskComments from './TaskComments';
 
 type TaskDraft = {
   columnId?: string;
@@ -40,6 +41,7 @@ type TaskEditorProps = {
     description?: string;
     prompt?: string;
     assigneeProvider?: LLMProvider | null;
+    reviewProvider?: LLMProvider | null;
     permissionMode?: string;
     tools?: { allowedCommands?: string[]; disallowedCommands?: string[] };
     scheduleCron?: string | null;
@@ -96,6 +98,7 @@ export default function TaskEditor(props: TaskEditorProps) {
   const [projectId, setProjectId] = useState('');
   const [columnId, setColumnId] = useState('');
   const [assignee, setAssignee] = useState<LLMProvider | ''>('');
+  const [reviewAgent, setReviewAgent] = useState<LLMProvider | ''>('');
   const [permissionMode, setPermissionMode] = useState('default');
   const [skipPermissions, setSkipPermissions] = useState(false);
   const [allowed, setAllowed] = useState<string[]>([]);
@@ -118,6 +121,7 @@ export default function TaskEditor(props: TaskEditorProps) {
       setProjectId(task.project_id ?? '');
       setColumnId(task.column_id);
       setAssignee(task.assignee_provider ?? '');
+      setReviewAgent(task.review_provider ?? '');
       setPermissionMode(task.permission_mode || 'default');
       setSkipPermissions((task.permission_mode || 'default') === 'bypassPermissions');
       setAllowed(task.tools?.allowedCommands ?? []);
@@ -130,6 +134,7 @@ export default function TaskEditor(props: TaskEditorProps) {
       setProjectId(projects.length === 1 ? projects[0].projectId : '');
       setColumnId(draft?.columnId ?? columns[0]?.id ?? '');
       setAssignee('');
+      setReviewAgent('');
       setPermissionMode('default');
       setSkipPermissions(false);
       setAllowed([]);
@@ -242,6 +247,7 @@ export default function TaskEditor(props: TaskEditorProps) {
         description,
         prompt,
         assigneeProvider: assignee === '' ? null : assignee,
+        reviewProvider: reviewAgent === '' ? null : reviewAgent,
         permissionMode: resolvePermissionMode(),
         tools: buildTools(),
         scheduleCron: scheduleCron.trim() ? scheduleCron.trim() : null,
@@ -382,28 +388,28 @@ export default function TaskEditor(props: TaskEditorProps) {
               </div>
             ) : null}
 
+            <div className="flex flex-col gap-1">
+              <label className={labelClass} htmlFor="kanban-column">
+                Column
+              </label>
+              <select
+                id="kanban-column"
+                className={selectClass}
+                value={columnId}
+                onChange={(e) => setColumnId(e.target.value)}
+              >
+                {columns.map((col) => (
+                  <option key={col.id} value={col.id}>
+                    {col.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+
             <div className="grid grid-cols-2 gap-3">
               <div className="flex flex-col gap-1">
-                <label className={labelClass} htmlFor="kanban-column">
-                  Column
-                </label>
-                <select
-                  id="kanban-column"
-                  className={selectClass}
-                  value={columnId}
-                  onChange={(e) => setColumnId(e.target.value)}
-                >
-                  {columns.map((col) => (
-                    <option key={col.id} value={col.id}>
-                      {col.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="flex flex-col gap-1">
                 <label className={labelClass} htmlFor="kanban-assignee">
-                  Agent
+                  Implementation agent
                 </label>
                 <select
                   id="kanban-assignee"
@@ -418,6 +424,31 @@ export default function TaskEditor(props: TaskEditorProps) {
                     </option>
                   ))}
                 </select>
+                <p className="text-[11px] text-muted-foreground">
+                  Auto-runs when moved to In Progress.
+                </p>
+              </div>
+
+              <div className="flex flex-col gap-1">
+                <label className={labelClass} htmlFor="kanban-review">
+                  Review agent
+                </label>
+                <select
+                  id="kanban-review"
+                  className={selectClass}
+                  value={reviewAgent}
+                  onChange={(e) => setReviewAgent(e.target.value as LLMProvider | '')}
+                >
+                  <option value="">None (skip review)</option>
+                  {KANBAN_PROVIDERS.map((provider) => (
+                    <option key={provider.value} value={provider.value}>
+                      {provider.label}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-[11px] text-muted-foreground">
+                  After implement succeeds, card moves to Review and this agent runs.
+                </p>
               </div>
             </div>
 
@@ -485,9 +516,23 @@ export default function TaskEditor(props: TaskEditorProps) {
                 <TaskRunOutput
                   sessionId={task.app_session_id}
                   isRunning={task.status === 'running'}
-                  provider={task.assignee_provider ?? 'claude'}
+                  provider={
+                    (task.column_id === 'review'
+                      ? task.review_provider
+                      : task.assignee_provider) ??
+                    task.assignee_provider ??
+                    task.review_provider ??
+                    'claude'
+                  }
                 />
               </div>
+            ) : null}
+
+            {isEdit && task ? (
+              <TaskComments
+                taskId={task.task_id}
+                refreshSignal={`${task.status}:${task.updated_at}`}
+              />
             ) : null}
 
             {error ? <p className="text-sm text-destructive">{error}</p> : null}

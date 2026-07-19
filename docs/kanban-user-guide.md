@@ -16,13 +16,20 @@ created: **Backlog → In Progress → Review → Done**.
 - **New task** (top-right) or the **+** on a column header creates a task.
 - Click a card to open the task editor. Fields:
   - **Title / Description** — human-facing labels.
-  - **Prompt** — the instruction sent to the agent when the task runs.
+  - **Prompt** — the instruction sent to the **implementation** agent on run.
   - **Column** — which column the card lives in.
-  - **Agent** — the provider that will execute the task (Claude, Codex, Cursor,
-    OpenCode, Grok, Kimi, Agy). Leave **Unassigned** for a note-only card.
+  - **Implementation agent** — provider that executes the task when it enters
+    **In Progress** (Claude, Codex, Cursor, OpenCode, Grok, Kimi, Agy).
+  - **Review agent** — optional second provider. When implementation finishes
+    successfully, the card moves to **Review** with a review brief (original
+    task + prompt + the implementation agent's output tail + instructions to
+    inspect git/diff), and this agent runs. On success the card moves to
+    **Done**. Leave as **None** to skip review and go straight to Done after
+    implementation.
   - **Permission mode** — how guarded the run is. Defaults to **Default
-    (guarded)**; automated runs never bypass permissions unless you explicitly
-    pick **Bypass permissions**.
+    (guarded)**. Headless/auto runs cannot answer interactive permission
+    prompts — for unattended work prefer **Accept edits** or **Bypass
+    permissions**, or pre-allow the tools you need.
   - **Allowed / Disallowed commands** — one entry per line (e.g. `Bash(ls)`).
   - **Schedule (cron)** — a cron expression to run the task on a timer.
   - **Depends on** — other tasks that must reach **Done** before this one runs.
@@ -31,19 +38,27 @@ created: **Backlog → In Progress → Review → Done**.
 ## Running a task
 
 - Open a task and click **Run** to execute it immediately. Live output appears
-  in the task editor; the card status moves `todo → running → done` (or
-  `failed`). Each execution is recorded in the task's run history.
+  in the task editor; the card status moves `todo → running → …`. Each
+  execution is recorded in the task's run history.
+- Lifecycle on success:
+  - **With review agent:** In Progress → (implement) → Review → (review) → Done
+  - **Without review agent:** In Progress → (implement) → Done
+- On failure the card stays where it is with status **failed** so you can fix
+  and re-run. Check exit code in the task editor.
 
 ## Automation
 
-Three triggers run tasks without a manual click:
+Triggers that run tasks without a manual click:
 
-1. **Dependency chaining** — when a task reaches **Done**, any task whose
-   dependencies are now all done is queued automatically. Cycles are rejected
-   when you create the dependency.
-2. **Column-move (run on enter)** — click the ⚡ icon on a column header to turn
-   on auto-run. Moving an assigned task into that column queues a run.
-3. **Schedule** — a task with a cron expression is queued each time the schedule
+1. **Move to In Progress** — an assigned implementation agent is always
+   auto-queued when a card enters In Progress (Backlog → In Progress).
+2. **Move to Review / implement success** — a review agent is auto-queued when
+   the card lands in Review (including the automatic move after implementation).
+3. **Dependency chaining** — when a task reaches **Done** (after review if any),
+   any task whose dependencies are now all done is queued automatically.
+4. **Column-move (run on enter)** — click the ⚡ icon on a custom column to
+   auto-run the implementation agent when tasks enter it.
+5. **Schedule** — a task with a cron expression is queued each time the schedule
    fires.
 
 Automated runs go through a queue with a concurrency cap (default **3**

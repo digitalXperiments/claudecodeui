@@ -53,7 +53,7 @@ export default function KanbanView({ selectedProject, isVisible }: KanbanViewPro
   const editingTask = editingTaskId
     ? boardTasks.find((t) => t.task_id === editingTaskId) ?? null
     : null;
-  const anyRunning = boardTasks.some((t) => t.status === 'running');
+  const anyActive = boardTasks.some((t) => t.status === 'running' || t.status === 'queued');
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
@@ -78,9 +78,9 @@ export default function KanbanView({ selectedProject, isVisible }: KanbanViewPro
     return map;
   }, [board.projects]);
 
-  // While a run is in flight, poll the board so status/output transitions land.
+  // While a run is queued/in flight, poll so implement→review→done transitions land.
   useEffect(() => {
-    if (!anyRunning || !isVisible) {
+    if (!anyActive || !isVisible) {
       return;
     }
     const refresh = board.refreshTasks;
@@ -88,7 +88,7 @@ export default function KanbanView({ selectedProject, isVisible }: KanbanViewPro
       void refresh();
     }, 2500);
     return () => clearInterval(timer);
-  }, [anyRunning, isVisible, board.refreshTasks]);
+  }, [anyActive, isVisible, board.refreshTasks]);
 
   if (!isVisible) {
     return null;
@@ -167,7 +167,7 @@ export default function KanbanView({ selectedProject, isVisible }: KanbanViewPro
       return;
     }
 
-    void board.reorderColumn(targetColumnId, orderedIds);
+    void board.reorderColumn(targetColumnId, orderedIds, activeId);
   };
 
   const columns = board.board?.columns ?? [];
