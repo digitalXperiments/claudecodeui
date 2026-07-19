@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { AlertTriangle, Plus, Shield, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Button, Input } from '../../../../../../../shared/view/ui';
-import type { CodexPermissionMode } from '../../../../../types/types';
+import type { AgyPermissionMode, CodexPermissionMode } from '../../../../../types/types';
 
 const COMMON_CLAUDE_TOOLS = [
   'Bash(git log:*)',
@@ -830,7 +830,108 @@ function CodexPermissions({ permissionMode, onPermissionModeChange }: Omit<Codex
   );
 }
 
-type PermissionsContentProps = ClaudePermissionsProps | CursorPermissionsProps | GrokPermissionsProps | CodexPermissionsProps;
+type AgyPermissionsProps = {
+  agent: 'agy';
+  permissionMode: AgyPermissionMode;
+  onPermissionModeChange: (value: AgyPermissionMode) => void;
+};
+
+function AgyPermissions({ permissionMode, onPermissionModeChange }: Omit<AgyPermissionsProps, 'agent'>) {
+  const { t } = useTranslation('settings');
+
+  return (
+    <div className="space-y-6">
+      <div className="space-y-4">
+        <div className="flex items-center gap-3">
+          <Shield className="h-5 w-5 text-sky-500" />
+          <h3 className="text-lg font-medium text-foreground">{t('permissions.agy.permissionMode', { defaultValue: 'Permission Mode' })}</h3>
+        </div>
+        <p className="text-sm text-muted-foreground">
+          {t('permissions.agy.description', {
+            defaultValue: 'Controls how Antigravity handles tool permissions when run from cloudcli. Runs are non-interactive, so an approval prompt cannot be answered — pick a mode that completes without one.',
+          })}
+        </p>
+
+        <div
+          className={`cursor-pointer rounded-lg border p-4 transition-all ${permissionMode === 'plan'
+            ? 'border-sky-400 bg-sky-50 dark:border-sky-600 dark:bg-sky-900/20'
+            : 'border-border bg-card/50 active:border-border active:bg-accent/50'
+            }`}
+          onClick={() => onPermissionModeChange('plan')}
+        >
+          <label className="flex cursor-pointer items-start gap-3">
+            <input
+              type="radio"
+              name="agyPermissionMode"
+              checked={permissionMode === 'plan'}
+              onChange={() => onPermissionModeChange('plan')}
+              className="mt-1 h-4 w-4 text-sky-600"
+            />
+            <div>
+              <div className="font-medium text-sky-900 dark:text-sky-100">{t('permissions.agy.modes.plan.title', { defaultValue: 'Plan' })}</div>
+              <div className="text-sm text-sky-700 dark:text-sky-300">
+                {t('permissions.agy.modes.plan.description', { defaultValue: 'Read-only planning (--mode plan). Antigravity analyzes and proposes changes without editing files or running commands.' })}
+              </div>
+            </div>
+          </label>
+        </div>
+
+        <div
+          className={`cursor-pointer rounded-lg border p-4 transition-all ${permissionMode === 'acceptEdits'
+            ? 'border-green-400 bg-green-50 dark:border-green-600 dark:bg-green-900/20'
+            : 'border-border bg-card/50 active:border-border active:bg-accent/50'
+            }`}
+          onClick={() => onPermissionModeChange('acceptEdits')}
+        >
+          <label className="flex cursor-pointer items-start gap-3">
+            <input
+              type="radio"
+              name="agyPermissionMode"
+              checked={permissionMode === 'acceptEdits'}
+              onChange={() => onPermissionModeChange('acceptEdits')}
+              className="mt-1 h-4 w-4 text-green-600"
+            />
+            <div>
+              <div className="font-medium text-green-900 dark:text-green-100">{t('permissions.agy.modes.acceptEdits.title', { defaultValue: 'Accept Edits' })}</div>
+              <div className="text-sm text-green-700 dark:text-green-300">
+                {t('permissions.agy.modes.acceptEdits.description', { defaultValue: 'Auto-accept file edits (--mode accept-edits). Other tool actions may still require approval, which can stall a headless run.' })}
+              </div>
+            </div>
+          </label>
+        </div>
+
+        <div
+          className={`cursor-pointer rounded-lg border p-4 transition-all ${permissionMode === 'bypassPermissions'
+            ? 'border-orange-400 bg-orange-50 dark:border-orange-600 dark:bg-orange-900/20'
+            : 'border-border bg-card/50 active:border-border active:bg-accent/50'
+            }`}
+          onClick={() => onPermissionModeChange('bypassPermissions')}
+        >
+          <label className="flex cursor-pointer items-start gap-3">
+            <input
+              type="radio"
+              name="agyPermissionMode"
+              checked={permissionMode === 'bypassPermissions'}
+              onChange={() => onPermissionModeChange('bypassPermissions')}
+              className="mt-1 h-4 w-4 text-orange-600"
+            />
+            <div>
+              <div className="flex items-center gap-2 font-medium text-orange-900 dark:text-orange-100">
+                {t('permissions.agy.modes.bypassPermissions.title', { defaultValue: 'Skip Permissions' })}
+                <AlertTriangle className="h-4 w-4" />
+              </div>
+              <div className="text-sm text-orange-700 dark:text-orange-300">
+                {t('permissions.agy.modes.bypassPermissions.description', { defaultValue: 'Auto-approve every tool action (--dangerously-skip-permissions). Recommended for headless runs so nothing stalls — use only in trusted workspaces.' })}
+              </div>
+            </div>
+          </label>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+type PermissionsContentProps = ClaudePermissionsProps | CursorPermissionsProps | GrokPermissionsProps | CodexPermissionsProps | AgyPermissionsProps;
 
 export default function PermissionsContent(props: PermissionsContentProps) {
   if (props.agent === 'claude') {
@@ -843,6 +944,10 @@ export default function PermissionsContent(props: PermissionsContentProps) {
 
   if (props.agent === 'grok') {
     return <GrokPermissions {...props} />;
+  }
+
+  if (props.agent === 'agy') {
+    return <AgyPermissions {...props} />;
   }
 
   return <CodexPermissions {...props} />;

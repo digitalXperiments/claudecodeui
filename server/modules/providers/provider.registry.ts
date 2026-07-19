@@ -4,6 +4,7 @@ import { CursorProvider } from '@/modules/providers/list/cursor/cursor.provider.
 import { OpenCodeProvider } from '@/modules/providers/list/opencode/opencode.provider.js';
 import { GrokProvider } from '@/modules/providers/list/grok/grok.provider.js';
 import { KimiProvider } from '@/modules/providers/list/kimi/kimi.provider.js';
+import { AgyProvider } from '@/modules/providers/list/agy/agy.provider.js';
 import type { IProvider } from '@/shared/interfaces.js';
 import type { LLMProvider } from '@/shared/types.js';
 import { AppError } from '@/shared/utils.js';
@@ -15,6 +16,7 @@ const providers: Record<LLMProvider, IProvider> = {
   opencode: new OpenCodeProvider(),
   grok: new GrokProvider(),
   kimi: new KimiProvider(),
+  agy: new AgyProvider(),
 };
 
 /**

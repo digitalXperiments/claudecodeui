@@ -48,6 +48,7 @@ interface UseChatComposerStateArgs {
   opencodeModel: string;
   grokModel: string;
   kimiModel: string;
+  agyModel: string;
   isLoading: boolean;
   canAbortSession: boolean;
   tokenBudget: Record<string, unknown> | null;
@@ -202,6 +203,7 @@ export function useChatComposerState({
   opencodeModel,
   grokModel,
   kimiModel,
+  agyModel,
   isLoading,
   canAbortSession,
   tokenBudget,
@@ -383,7 +385,9 @@ export function useChatComposerState({
                     ? grokModel
                     : provider === 'kimi'
                       ? kimiModel
-                      : claudeModel,
+                      : provider === 'agy'
+                        ? agyModel
+                        : claudeModel,
           tokenUsage: tokenBudget,
         };
 
@@ -439,6 +443,7 @@ export function useChatComposerState({
       opencodeModel,
       grokModel,
       kimiModel,
+      agyModel,
       handleBuiltInCommand,
       handleCustomCommand,
       input,
@@ -609,6 +614,8 @@ export function useChatComposerState({
                   ? 'opencode-settings'
                 : provider === 'grok'
                   ? 'grok-tools-settings'
+                : provider === 'agy'
+                  ? 'agy-tools-settings'
                 : 'claude-settings';
         const savedSettings = safeLocalStorage.getItem(settingsKey);
         if (savedSettings) {
@@ -637,7 +644,9 @@ export function useChatComposerState({
               ? grokModel
               : provider === 'kimi'
                 ? kimiModel
-                : claudeModel;
+                : provider === 'agy'
+                  ? agyModel
+                  : claudeModel;
 
     return {
       model,
@@ -655,6 +664,7 @@ export function useChatComposerState({
     opencodeModel,
     grokModel,
     kimiModel,
+    agyModel,
     permissionMode,
     provider,
     resolvePermissionModeForProvider,

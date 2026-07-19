@@ -72,6 +72,15 @@ const agentConfig: Record<AgentProvider, AgentVisualConfig> = {
     subtextClass: 'text-emerald-700 dark:text-emerald-300',
     buttonClass: 'bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800',
   },
+  agy: {
+    name: 'Antigravity',
+    description: "Google's Antigravity CLI assistant",
+    bgClass: 'bg-sky-50 dark:bg-sky-900/20',
+    borderClass: 'border-sky-200 dark:border-sky-800',
+    textClass: 'text-sky-900 dark:text-sky-100',
+    subtextClass: 'text-sky-700 dark:text-sky-300',
+    buttonClass: 'bg-sky-600 hover:bg-sky-700 active:bg-sky-800',
+  },
 };
 
 export default function AccountContent({ agent, authStatus, onLogin }: AccountContentProps) {

@@ -167,6 +167,13 @@ function buildShellCommand(
     return 'kimi';
   }
 
+  if (provider === 'agy') {
+    if (resumeSessionId) {
+      return `agy --conversation "${resumeSessionId}"`;
+    }
+    return 'agy';
+  }
+
   const command = initialCommand || 'claude';
   if (resumeSessionId) {
     if (os.platform() === 'win32') {
@@ -489,7 +496,9 @@ export function handleShellConnection(
                     ? 'Grok Build'
                     : provider === 'kimi'
                       ? 'Kimi'
-                      : 'Claude';
+                      : provider === 'agy'
+                        ? 'Antigravity'
+                        : 'Claude';
           welcomeMsg = hasSession && resumeSessionId
             ? `\x1b[36mResuming ${providerName} session ${resumeSessionId} in: ${projectPath}\x1b[0m\r\n`
             : `\x1b[36mStarting new ${providerName} session in: ${projectPath}\x1b[0m\r\n`;

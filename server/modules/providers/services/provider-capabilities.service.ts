@@ -96,6 +96,26 @@ const PROVIDER_CAPABILITIES: Record<LLMProvider, ProviderCapabilities> = {
     supportsTokenUsage: true,
     supportsEffort: true,
   },
+  agy: {
+    provider: 'agy',
+    // Antigravity's headless `agy --print` mode maps these to real flags in
+    // agy-cli.js: plan -> --mode plan (read-only), acceptEdits -> --mode
+    // accept-edits (auto-accept edits; other tools may still prompt), and
+    // bypassPermissions -> --dangerously-skip-permissions (auto-approve all).
+    // bypassPermissions is the default because it is the only mode guaranteed
+    // never to stall waiting on an approval a spawned process cannot answer.
+    permissionModes: ['plan', 'acceptEdits', 'bypassPermissions'],
+    defaultPermissionMode: 'bypassPermissions',
+    supportsImages: false,
+    supportsAbort: true,
+    supportsPermissionRequests: false,
+    // Antigravity persists usage inside a protobuf conversation store with no
+    // public schema, so there is no readable per-session token usage to expose.
+    supportsTokenUsage: false,
+    // Reasoning effort is baked into the model label ("... (Medium/High/Low)")
+    // rather than passed as a separate flag, so there is no effort dimension.
+    supportsEffort: false,
+  },
   kimi: {
     provider: 'kimi',
     // Rewritten onto Kimi's real Agent Client Protocol (`kimi acp`), not the

@@ -7,6 +7,7 @@ export const MCP_PROVIDER_NAMES: Record<McpProvider, string> = {
   opencode: 'OpenCode',
   grok: 'Grok Build',
   kimi: 'Kimi',
+  agy: 'Antigravity',
 };
 
 export const MCP_SUPPORTED_SCOPES: Record<McpProvider, McpScope[]> = {
@@ -16,6 +17,9 @@ export const MCP_SUPPORTED_SCOPES: Record<McpProvider, McpScope[]> = {
   opencode: ['user', 'project'],
   grok: ['user', 'project'],
   kimi: ['user', 'project'],
+  // Antigravity MCP configuration is not wired up in this lean provider; no
+  // supported scopes disables the MCP UI for agy.
+  agy: [],
 };
 
 export const MCP_SUPPORTED_TRANSPORTS: Record<McpProvider, McpTransport[]> = {
@@ -25,6 +29,7 @@ export const MCP_SUPPORTED_TRANSPORTS: Record<McpProvider, McpTransport[]> = {
   opencode: ['stdio', 'http'],
   grok: ['stdio', 'http'],
   kimi: ['stdio', 'http'],
+  agy: [],
 };
 
 export const MCP_GLOBAL_SUPPORTED_SCOPES: McpScope[] = ['user', 'project'];
@@ -38,6 +43,7 @@ export const MCP_PROVIDER_BUTTON_CLASSES: Record<McpProvider, string> = {
   opencode: 'bg-primary text-primary-foreground hover:bg-primary/90',
   grok: 'bg-primary text-primary-foreground hover:bg-primary/90',
   kimi: 'bg-primary text-primary-foreground hover:bg-primary/90',
+  agy: 'bg-primary text-primary-foreground hover:bg-primary/90',
 };
 
 export const MCP_SUPPORTS_WORKING_DIRECTORY: Record<McpProvider, boolean> = {
@@ -47,6 +53,7 @@ export const MCP_SUPPORTS_WORKING_DIRECTORY: Record<McpProvider, boolean> = {
   opencode: false,
   grok: false,
   kimi: false,
+  agy: false,
 };
 
 export const DEFAULT_MCP_FORM: McpFormState = {

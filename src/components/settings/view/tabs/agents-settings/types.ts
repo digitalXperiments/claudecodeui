@@ -6,6 +6,7 @@ import type {
   CursorPermissionsState,
   GrokPermissionsState,
   CodexPermissionMode,
+  AgyPermissionMode,
   SettingsProject,
 } from '../../../types/types';
 
@@ -28,6 +29,8 @@ export type AgentsSettingsTabProps = {
   onGrokPermissionsChange: (value: GrokPermissionsState) => void;
   codexPermissionMode: CodexPermissionMode;
   onCodexPermissionModeChange: (value: CodexPermissionMode) => void;
+  agyPermissionMode: AgyPermissionMode;
+  onAgyPermissionModeChange: (value: AgyPermissionMode) => void;
   projects: SettingsProject[];
 };
 
@@ -43,6 +46,7 @@ export type AgentSelectorSectionProps = {
   selectedAgent: AgentProvider;
   onSelectAgent: (agent: AgentProvider) => void;
   agentContextById: AgentContextByProvider;
+  isAgentEnabled: (agent: AgentProvider) => boolean;
 };
 
 export type AgentCategoryContentSectionProps = {
@@ -57,5 +61,7 @@ export type AgentCategoryContentSectionProps = {
   onGrokPermissionsChange: (value: GrokPermissionsState) => void;
   codexPermissionMode: CodexPermissionMode;
   onCodexPermissionModeChange: (value: CodexPermissionMode) => void;
+  agyPermissionMode: AgyPermissionMode;
+  onAgyPermissionModeChange: (value: AgyPermissionMode) => void;
   projects: SettingsProject[];
 };

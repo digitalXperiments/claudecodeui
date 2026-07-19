@@ -9,6 +9,9 @@ export type AgentCategory = 'account' | 'permissions' | 'mcp' | 'skills';
 export type ProjectSortOrder = 'name' | 'date';
 export type SaveStatus = 'success' | 'error' | null;
 export type CodexPermissionMode = 'default' | 'acceptEdits' | 'bypassPermissions';
+// Antigravity's headless run modes: --mode plan (read-only), --mode accept-edits
+// (auto-accept file edits), or --dangerously-skip-permissions (auto-approve all).
+export type AgyPermissionMode = 'plan' | 'acceptEdits' | 'bypassPermissions';
 
 export type SettingsProject = {
   name: string;
@@ -63,6 +66,7 @@ export type SettingsStoragePayload = {
   cursor: CursorPermissionsState & { lastUpdated: string };
   codex: { permissionMode: CodexPermissionMode; lastUpdated: string };
   grok: GrokPermissionsState & { lastUpdated: string };
+  agy: { permissionMode: AgyPermissionMode; lastUpdated: string };
 };
 
 export type SettingsProps = {

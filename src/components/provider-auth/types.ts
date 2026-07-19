@@ -10,7 +10,7 @@ export type ProviderAuthStatus = {
 
 export type ProviderAuthStatusMap = Record<LLMProvider, ProviderAuthStatus>;
 
-export const CLI_PROVIDERS: LLMProvider[] = ['claude', 'cursor', 'codex', 'opencode', 'grok', 'kimi'];
+export const CLI_PROVIDERS: LLMProvider[] = ['claude', 'cursor', 'codex', 'opencode', 'grok', 'kimi', 'agy'];
 
 export const PROVIDER_AUTH_STATUS_ENDPOINTS: Record<LLMProvider, string> = {
   claude: '/api/providers/claude/auth/status',
@@ -19,6 +19,7 @@ export const PROVIDER_AUTH_STATUS_ENDPOINTS: Record<LLMProvider, string> = {
   opencode: '/api/providers/opencode/auth/status',
   grok: '/api/providers/grok/auth/status',
   kimi: '/api/providers/kimi/auth/status',
+  agy: '/api/providers/agy/auth/status',
 };
 
 export const createInitialProviderAuthStatusMap = (loading = true): ProviderAuthStatusMap => ({
@@ -28,4 +29,5 @@ export const createInitialProviderAuthStatusMap = (loading = true): ProviderAuth
   opencode: { authenticated: false, email: null, method: null, error: null, loading },
   grok: { authenticated: false, email: null, method: null, error: null, loading },
   kimi: { authenticated: false, email: null, method: null, error: null, loading },
+  agy: { authenticated: false, email: null, method: null, error: null, loading },
 });

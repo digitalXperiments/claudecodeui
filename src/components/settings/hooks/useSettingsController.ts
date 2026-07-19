@@ -11,6 +11,7 @@ import {
 } from '../constants/constants';
 import type {
   AgentProvider,
+  AgyPermissionMode,
   ClaudePermissionsState,
   CodeEditorSettingsState,
   CodexPermissionMode,
@@ -54,6 +55,10 @@ type CodexSettingsStorage = {
   permissionMode?: CodexPermissionMode;
 };
 
+type AgySettingsStorage = {
+  permissionMode?: AgyPermissionMode;
+};
+
 type NotificationPreferencesResponse = {
   success?: boolean;
   preferences?: NotificationPreferencesState;
@@ -90,6 +95,14 @@ const toCodexPermissionMode = (value: unknown): CodexPermissionMode => {
   }
 
   return 'default';
+};
+
+const toAgyPermissionMode = (value: unknown): AgyPermissionMode => {
+  if (value === 'plan' || value === 'acceptEdits') {
+    return value;
+  }
+
+  return 'bypassPermissions';
 };
 
 const readCodeEditorSettings = (): CodeEditorSettingsState => ({
@@ -173,6 +186,7 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
     createDefaultNotificationPreferences()
   ));
   const [codexPermissionMode, setCodexPermissionMode] = useState<CodexPermissionMode>('default');
+  const [agyPermissionMode, setAgyPermissionMode] = useState<AgyPermissionMode>('bypassPermissions');
 
   const [showLoginModal, setShowLoginModal] = useState(false);
   const [loginProvider, setLoginProvider] = useState<ActiveLoginProvider>('');
@@ -221,6 +235,12 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
       );
       setCodexPermissionMode(toCodexPermissionMode(savedCodexSettings.permissionMode));
 
+      const savedAgySettings = parseJson<AgySettingsStorage>(
+        localStorage.getItem('agy-tools-settings'),
+        {},
+      );
+      setAgyPermissionMode(toAgyPermissionMode(savedAgySettings.permissionMode));
+
       try {
         const notificationResponse = await authenticatedFetch('/api/settings/notification-preferences');
         if (notificationResponse.ok) {
@@ -244,6 +264,7 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
       setGrokPermissions(createEmptyGrokPermissions());
       setNotificationPreferences(createDefaultNotificationPreferences());
       setCodexPermissionMode('default');
+      setAgyPermissionMode('bypassPermissions');
       setProjectSortOrder('name');
     }
   }, []);
@@ -301,6 +322,11 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
         lastUpdated: now,
       }));
 
+      localStorage.setItem('agy-tools-settings', JSON.stringify({
+        permissionMode: agyPermissionMode,
+        lastUpdated: now,
+      }));
+
       const notificationResponse = await authenticatedFetch('/api/settings/notification-preferences', {
         method: 'PUT',
         body: JSON.stringify(notificationPreferences),
@@ -319,6 +345,7 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
     claudePermissions.disallowedTools,
     claudePermissions.skipPermissions,
     codexPermissionMode,
+    agyPermissionMode,
     cursorPermissions.allowedCommands,
     cursorPermissions.disallowedCommands,
     cursorPermissions.skipPermissions,
@@ -432,6 +459,8 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
     setNotificationPreferences,
     codexPermissionMode,
     setCodexPermissionMode,
+    agyPermissionMode,
+    setAgyPermissionMode,
     providerAuthStatus,
     openLoginForProvider,
     showLoginModal,

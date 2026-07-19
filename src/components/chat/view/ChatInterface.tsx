@@ -84,6 +84,8 @@ function ChatInterface({
     setGrokModel,
     kimiModel,
     setKimiModel,
+    agyModel,
+    setAgyModel,
     permissionMode,
     pendingPermissionRequests,
     setPendingPermissionRequests,
@@ -216,6 +218,7 @@ function ChatInterface({
     opencodeModel,
     grokModel,
     kimiModel,
+    agyModel,
     isLoading: isProcessing,
     canAbortSession,
     tokenBudget,
@@ -358,6 +361,8 @@ function ChatInterface({
           setGrokModel={setGrokModel}
           kimiModel={kimiModel}
           setKimiModel={setKimiModel}
+          agyModel={agyModel}
+          setAgyModel={setAgyModel}
           providerModelCatalog={providerModelCatalog}
           providerModelsLoading={providerModelsLoading}
           tasksEnabled={tasksEnabled}
@@ -469,7 +474,9 @@ function ChatInterface({
                       ? t('messageTypes.grok', { defaultValue: 'Grok Build' })
                       : provider === 'kimi'
                         ? t('messageTypes.kimi', { defaultValue: 'Kimi' })
-                        : t('messageTypes.claude'),
+                        : provider === 'agy'
+                          ? t('messageTypes.agy', { defaultValue: 'Antigravity' })
+                          : t('messageTypes.claude'),
           })}
           isTextareaExpanded={isTextareaExpanded}
           sendByCtrlEnter={sendByCtrlEnter}

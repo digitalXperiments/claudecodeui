@@ -1,26 +1,21 @@
 import { PillBar, Pill } from '../../../../../../shared/view/ui';
 import SessionProviderLogo from '../../../../../llm-logo-provider/SessionProviderLogo';
-import type { AgentProvider } from '../../../../types/types';
+import { AGENT_NAMES } from '../../../../constants/constants';
 import type { AgentSelectorSectionProps } from '../types';
-
-const AGENT_NAMES: Record<AgentProvider, string> = {
-  claude: 'Claude',
-  cursor: 'Cursor',
-  codex: 'Codex',
-  opencode: 'OpenCode',
-  grok: 'Grok Build',
-  kimi: 'Kimi',
-};
 
 export default function AgentSelectorSection({
   agents,
   selectedAgent,
   onSelectAgent,
   agentContextById,
+  isAgentEnabled,
 }: AgentSelectorSectionProps) {
   return (
     <div className="flex-shrink-0 border-b border-border px-3 py-2 md:px-4 md:py-3">
-      <PillBar className="w-full md:w-auto">
+      {/* Pills wrap onto multiple rows so every agent stays visible no matter
+          how many vendors are registered — the bar grows in height instead of
+          overflowing the viewport and clipping the last agent. */}
+      <PillBar className="flex w-full flex-wrap">
         {agents.map((agent) => {
           const dotColor =
             agent === 'claude' ? 'bg-blue-500' :
@@ -32,7 +27,7 @@ export default function AgentSelectorSection({
               key={agent}
               isActive={selectedAgent === agent}
               onClick={() => onSelectAgent(agent)}
-              className="min-w-0 flex-1 justify-center md:flex-initial"
+              className={`flex-shrink-0 justify-center${isAgentEnabled(agent) ? '' : ' opacity-50'}`}
             >
               <SessionProviderLogo provider={agent} className="h-4 w-4 flex-shrink-0" />
               <span className="truncate">{AGENT_NAMES[agent]}</span>

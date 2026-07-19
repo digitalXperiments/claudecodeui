@@ -40,6 +40,10 @@ import {
     abortKimiSession,
 } from './kimi-cli.js';
 import {
+    spawnAgy,
+    abortAgySession,
+} from './agy-cli.js';
+import {
     queryCodex,
     abortCodexSession,
 } from './openai-codex.js';
@@ -124,6 +128,7 @@ const wss = createWebSocketServer(server, {
             opencode: spawnOpenCode,
             grok: spawnGrok,
             kimi: spawnKimi,
+            agy: spawnAgy,
         },
         abortFns: {
             claude: abortClaudeSDKSession,
@@ -132,6 +137,7 @@ const wss = createWebSocketServer(server, {
             opencode: abortOpenCodeSession,
             grok: abortGrokSession,
             kimi: abortKimiSession,
+            agy: abortAgySession,
         },
         resolveToolApproval,
         getPendingApprovalsForSession,
@@ -1554,7 +1560,12 @@ const IGNORED_DIRS = new Set([
     // Rust / Go / Java / Ruby
     'target', 'vendor',
     // Build output / IDE
-    '.gradle', '.idea', 'coverage', '.nyc_output'
+    '.gradle', '.idea', 'coverage', '.nyc_output',
+    // macOS / VM / container noise that shows up when a project root is (or
+    // contains) a user's home directory — these routinely hold millions of
+    // entries (Mail, CloudStorage/iCloud placeholders, VM disk images) and
+    // are never project source.
+    'Library', 'Parallels', 'OrbStack', '.Trash'
 ]);
 
 const DEFAULT_FS_CONCURRENCY = 64;
@@ -1562,6 +1573,22 @@ const parsedFsConcurrency = Number.parseInt(process.env.FS_CONCURRENCY || '', 10
 const FS_CONCURRENCY = Number.isFinite(parsedFsConcurrency) && parsedFsConcurrency > 0
     ? parsedFsConcurrency
     : DEFAULT_FS_CONCURRENCY;
+
+// Hard ceiling on a single getFileTree() call so an unexpectedly huge or
+// slow subtree (a project root that happens to be a home directory, an NFS
+// mount, etc.) can't hang the request indefinitely. Once either limit is
+// hit, traversal stops early and returns whatever was collected so far.
+const DEFAULT_FS_MAX_ENTRIES = 20000;
+const parsedFsMaxEntries = Number.parseInt(process.env.FS_MAX_ENTRIES || '', 10);
+const FS_MAX_ENTRIES = Number.isFinite(parsedFsMaxEntries) && parsedFsMaxEntries > 0
+    ? parsedFsMaxEntries
+    : DEFAULT_FS_MAX_ENTRIES;
+
+const DEFAULT_FS_MAX_DURATION_MS = 15000;
+const parsedFsMaxDurationMs = Number.parseInt(process.env.FS_MAX_DURATION_MS || '', 10);
+const FS_MAX_DURATION_MS = Number.isFinite(parsedFsMaxDurationMs) && parsedFsMaxDurationMs > 0
+    ? parsedFsMaxDurationMs
+    : DEFAULT_FS_MAX_DURATION_MS;
 let activeFsOperations = 0;
 const pendingFsOperations = [];
 
@@ -1586,7 +1613,24 @@ function release() {
     activeFsOperations = Math.max(0, activeFsOperations - 1);
 }
 
-async function getFileTree(dirPath, maxDepth = 3, currentDepth = 0, showHidden = true) {
+async function getFileTree(dirPath, maxDepth = 3, currentDepth = 0, showHidden = true, budget) {
+    // The budget is shared across the whole recursive call tree (created
+    // once by the top-level caller) so it can bound total work regardless
+    // of how wide or deep the directory structure turns out to be.
+    if (!budget) {
+        budget = { count: 0, startTime: Date.now(), truncated: false };
+    }
+    if (budget.truncated) {
+        return [];
+    }
+    if (Date.now() - budget.startTime > FS_MAX_DURATION_MS || budget.count >= FS_MAX_ENTRIES) {
+        if (!budget.truncated) {
+            budget.truncated = true;
+            console.warn(`[getFileTree] Truncating traversal at "${dirPath}": exceeded ${budget.count >= FS_MAX_ENTRIES ? `entry limit (${FS_MAX_ENTRIES})` : `time limit (${FS_MAX_DURATION_MS}ms)`}`);
+        }
+        return [];
+    }
+
     // Using fsPromises from import
     let entries;
     try {
@@ -1610,6 +1654,15 @@ async function getFileTree(dirPath, maxDepth = 3, currentDepth = 0, showHidden =
     // serial stat() was the real bottleneck — issuing them concurrently lets
     // the kernel pipeline the round-trips and the recursive calls overlap too.
     const items = await Promise.all(filteredEntries.map(async (entry) => {
+        budget.count += 1;
+        if (budget.truncated || budget.count > FS_MAX_ENTRIES || Date.now() - budget.startTime > FS_MAX_DURATION_MS) {
+            if (!budget.truncated) {
+                budget.truncated = true;
+                console.warn(`[getFileTree] Truncating traversal at "${dirPath}": exceeded ${budget.count > FS_MAX_ENTRIES ? `entry limit (${FS_MAX_ENTRIES})` : `time limit (${FS_MAX_DURATION_MS}ms)`}`);
+            }
+            return null;
+        }
+
         const itemPath = path.join(dirPath, entry.name);
         const item = {
             name: entry.name,
@@ -1661,13 +1714,13 @@ async function getFileTree(dirPath, maxDepth = 3, currentDepth = 0, showHidden =
             // The recursive call starts with a bounded readdir; holding a permit
             // for the whole subtree can deadlock when sibling directories are
             // waiting on their own children.
-            item.children = await getFileTree(itemPath, maxDepth, currentDepth + 1, showHidden);
+            item.children = await getFileTree(itemPath, maxDepth, currentDepth + 1, showHidden, budget);
         }
 
         return item;
     }));
 
-    return items.sort((a, b) => {
+    return items.filter(Boolean).sort((a, b) => {
         if (a.type !== b.type) {
             return a.type === 'directory' ? -1 : 1;
         }
