@@ -17,32 +17,44 @@ export function configureKanbanRuntimes(spawnFns: Partial<Record<LLMProvider, Pr
 }
 
 /**
- * Translate a task's stored permissions into runtime options. Kept intentionally
- * generic: keys not understood by a given runtime are ignored. Per-provider
- * permission flag mapping (grok `--allow`, codex sandbox, ...) is layered on in
- * Phase 6; here we pass the provider-agnostic shape plus Claude's tool arrays.
+ * Translate a task's stored permissions into the exact runtime option shape each
+ * provider expects. The task stores a provider-agnostic allow/deny pair
+ * (`tools.allowedCommands` / `tools.disallowedCommands`) plus a `permission_mode`;
+ * this maps them onto the per-runtime contract:
  *
- * Permissions are the safety boundary: we pass the task's declared
- * `permission_mode` verbatim and never force `bypassPermissions`.
+ * - claude / cursor: `toolsSettings.{allowedTools,disallowedTools,skipPermissions}`
+ * - grok:            `toolsSettings.{allowedCommands,disallowedCommands}`
+ * - codex/agy/kimi/opencode: `permissionMode` only
+ *
+ * Permissions are the safety boundary: `permission_mode` is passed verbatim and
+ * bypass is only enabled when the task explicitly selected `bypassPermissions`.
  */
-function buildRuntimeOptions(task: KanbanTask): AnyRecord {
-  // Provider-native permission structures are stored verbatim in tools_json and
-  // spread straight through, so whatever the per-provider permission editor
-  // produced (grok allow/deny rules, codex sandbox, agy mode, ...) reaches its
-  // runtime unchanged.
-  const options: AnyRecord = {
-    ...(task.tools ?? {}),
-    permissionMode: task.permission_mode || 'default',
-  };
-  // Back-compat convenience: the generic allow/deny lists also populate Claude's
-  // tool arrays (Claude is the only runtime keyed on allowedTools/disallowedTools).
-  const allowed = task.tools?.allowedCommands;
-  const disallowed = task.tools?.disallowedCommands;
-  if (Array.isArray(allowed) && allowed.length > 0 && options.allowedTools === undefined) {
-    options.allowedTools = allowed;
-  }
-  if (Array.isArray(disallowed) && disallowed.length > 0 && options.disallowedTools === undefined) {
-    options.disallowedTools = disallowed;
+function buildRuntimeOptions(task: KanbanTask, provider: LLMProvider): AnyRecord {
+  const permissionMode = task.permission_mode || 'default';
+  const allowed = Array.isArray(task.tools?.allowedCommands) ? task.tools!.allowedCommands! : [];
+  const disallowed = Array.isArray(task.tools?.disallowedCommands)
+    ? task.tools!.disallowedCommands!
+    : [];
+  const options: AnyRecord = { permissionMode };
+
+  switch (provider) {
+    case 'claude':
+    case 'cursor':
+      options.toolsSettings = {
+        allowedTools: allowed,
+        disallowedTools: disallowed,
+        skipPermissions: permissionMode === 'bypassPermissions',
+      };
+      break;
+    case 'grok':
+      options.toolsSettings = {
+        allowedCommands: allowed,
+        disallowedCommands: disallowed,
+      };
+      break;
+    // codex, agy, kimi, opencode take only permissionMode.
+    default:
+      break;
   }
   return options;
 }
@@ -128,7 +140,7 @@ export const kanbanRunner = {
       projectPath,
       spawnFn,
       content: task.prompt || task.title,
-      options: buildRuntimeOptions(task),
+      options: buildRuntimeOptions(task, provider),
       connection: DETACHED_CONNECTION,
       userId: null,
     });

@@ -55,11 +55,26 @@ test('every provider runs a task through the shared spawnFns map', async () => {
         prompt: `run ${provider}`,
         assigneeProvider: provider,
         permissionMode: 'default',
+        tools: { allowedCommands: ['Bash(ls)'], disallowedCommands: ['Bash(rm)'] },
       });
       await kanbanRunner.runTask(task.task_id, 'manual');
       assert.equal(kanbanDb.getTask(task.task_id)?.status, 'done', `${provider} should be done`);
+      const opts = seenOptions.get(provider)!;
       // Permission mode is passed through to the runtime, never forced to bypass.
-      assert.equal(seenOptions.get(provider)?.permissionMode, 'default');
+      assert.equal(opts.permissionMode, 'default');
+
+      // Per-provider permission option shape.
+      const toolsSettings = opts.toolsSettings as Record<string, unknown> | undefined;
+      if (provider === 'claude' || provider === 'cursor') {
+        assert.deepEqual(toolsSettings?.allowedTools, ['Bash(ls)'], `${provider} allowedTools`);
+        assert.deepEqual(toolsSettings?.disallowedTools, ['Bash(rm)'], `${provider} disallowedTools`);
+        assert.equal(toolsSettings?.skipPermissions, false, `${provider} skipPermissions`);
+      } else if (provider === 'grok') {
+        assert.deepEqual(toolsSettings?.allowedCommands, ['Bash(ls)'], 'grok allowedCommands');
+        assert.deepEqual(toolsSettings?.disallowedCommands, ['Bash(rm)'], 'grok disallowedCommands');
+      } else {
+        assert.equal(toolsSettings, undefined, `${provider} takes only permissionMode`);
+      }
     }
   } finally {
     dispose();
