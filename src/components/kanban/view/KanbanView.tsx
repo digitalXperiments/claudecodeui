@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   DndContext,
   DragOverlay,
@@ -14,6 +14,7 @@ import { AlertTriangle, Loader2, Plus, RefreshCw, SquareKanban } from 'lucide-re
 import { Button } from '../../../shared/view/ui';
 import type { Project } from '../../../types/app';
 import { useKanbanBoard } from '../hooks/useKanbanBoard';
+import { kanbanApi } from '../api/kanbanApi';
 import type { KanbanTask } from '../types';
 
 import KanbanColumn from './KanbanColumn';
@@ -38,9 +39,15 @@ export default function KanbanView({ selectedProject, isVisible }: KanbanViewPro
   const board = useKanbanBoard(projectId);
 
   const [editorOpen, setEditorOpen] = useState(false);
-  const [editingTask, setEditingTask] = useState<KanbanTask | null>(null);
+  const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
   const [draftColumnId, setDraftColumnId] = useState<string | null>(null);
   const [activeTask, setActiveTask] = useState<KanbanTask | null>(null);
+
+  // Derive the edited task from live board state so run status/output refresh.
+  const editingTask = editingTaskId
+    ? board.tasks.find((t) => t.task_id === editingTaskId) ?? null
+    : null;
+  const anyRunning = board.tasks.some((t) => t.status === 'running');
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
@@ -56,6 +63,18 @@ export default function KanbanView({ selectedProject, isVisible }: KanbanViewPro
     return map;
   }, [board.tasks]);
 
+  // While a run is in flight, poll the board so status/output transitions land.
+  useEffect(() => {
+    if (!anyRunning || !isVisible) {
+      return;
+    }
+    const refresh = board.refreshTasks;
+    const timer = setInterval(() => {
+      void refresh();
+    }, 2500);
+    return () => clearInterval(timer);
+  }, [anyRunning, isVisible, board.refreshTasks]);
+
   if (!isVisible) {
     return null;
   }
@@ -70,13 +89,13 @@ export default function KanbanView({ selectedProject, isVisible }: KanbanViewPro
   }
 
   const openNewTask = (columnId: string) => {
-    setEditingTask(null);
+    setEditingTaskId(null);
     setDraftColumnId(columnId);
     setEditorOpen(true);
   };
 
   const openEditTask = (task: KanbanTask) => {
-    setEditingTask(task);
+    setEditingTaskId(task.task_id);
     setDraftColumnId(null);
     setEditorOpen(true);
   };
@@ -215,6 +234,10 @@ export default function KanbanView({ selectedProject, isVisible }: KanbanViewPro
         }}
         onRemoveDependency={async (taskId, dependsOnTaskId) => {
           await board.removeDependency(taskId, dependsOnTaskId);
+        }}
+        onRun={async (taskId) => {
+          await kanbanApi.runTask(taskId);
+          await board.refreshTasks();
         }}
       />
     </div>

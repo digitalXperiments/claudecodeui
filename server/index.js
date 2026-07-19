@@ -75,6 +75,7 @@ import browserUseRoutes from './modules/browser-use/browser-use.routes.js';
 import { assetsRoutes } from './modules/assets/index.js';
 import browserUseMcpRoutes from './modules/browser-use/browser-use-mcp.routes.js';
 import kanbanRoutes from './modules/kanban/kanban.routes.js';
+import { configureKanbanRuntimes, initKanbanAutomation } from './modules/kanban/index.js';
 import { browserUseService } from './modules/browser-use/browser-use.service.js';
 import { startEnabledPluginServers, stopAllPlugins, getPluginPort } from './utils/plugin-process-manager.js';
 import { initializeDatabase, projectsDb, sessionsDb } from './modules/database/index.js';
@@ -115,6 +116,23 @@ function readUsageNumber(value) {
 const app = express();
 const server = http.createServer(app);
 
+// Provider runtimes, shared between the chat websocket server and the kanban
+// task runner so both dispatch through one provider-keyed map.
+const providerSpawnFns = {
+    claude: queryClaudeSDK,
+    cursor: spawnCursor,
+    codex: queryCodex,
+    opencode: spawnOpenCode,
+    grok: spawnGrok,
+    kimi: spawnKimi,
+    agy: spawnAgy,
+};
+
+// Kanban runner reuses the same runtimes; automation reconciles task/run status
+// from run completions.
+configureKanbanRuntimes(providerSpawnFns);
+initKanbanAutomation();
+
 // Single WebSocket server that handles chat, shell, and plugin proxy paths.
 const wss = createWebSocketServer(server, {
     verifyClient: {
@@ -122,15 +140,7 @@ const wss = createWebSocketServer(server, {
         authenticateWebSocket,
     },
     chat: {
-        spawnFns: {
-            claude: queryClaudeSDK,
-            cursor: spawnCursor,
-            codex: queryCodex,
-            opencode: spawnOpenCode,
-            grok: spawnGrok,
-            kimi: spawnKimi,
-            agy: spawnAgy,
-        },
+        spawnFns: providerSpawnFns,
         abortFns: {
             claude: abortClaudeSDKSession,
             cursor: abortCursorSession,

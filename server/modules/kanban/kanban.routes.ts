@@ -2,6 +2,7 @@ import express from 'express';
 
 import { AppError, asyncHandler } from '@/shared/utils.js';
 import { kanbanDb, KanbanCycleError } from '@/modules/kanban/kanban.repository.js';
+import { kanbanRunner } from '@/modules/kanban/kanban-runner.service.js';
 import {
   isKanbanProvider,
   KANBAN_TASK_STATUSES,
@@ -303,6 +304,19 @@ router.delete(
     kanbanDb.removeDependency(taskId, dependsOnTaskId);
     const task = kanbanDb.getTask(taskId);
     res.json({ success: true, task });
+  }),
+);
+
+// --- Execution ------------------------------------------------------------
+router.post(
+  '/tasks/:taskId/run',
+  asyncHandler(async (req, res) => {
+    const taskId = readString(req.params.taskId);
+    requireTask(taskId);
+    const result = await kanbanRunner.runTask(taskId, 'manual');
+    const task = kanbanDb.getTask(taskId);
+    const run = kanbanDb.getRun(result.runId);
+    res.status(202).json({ success: true, run, task });
   }),
 );
 

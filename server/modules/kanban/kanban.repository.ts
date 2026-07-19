@@ -376,6 +376,17 @@ export const kanbanDb = {
     return db.prepare(`SELECT * FROM kanban_runs WHERE status = 'running'`).all() as KanbanRunRow[];
   },
 
+  /** The in-flight run for a given app session, if any (used at completion). */
+  findRunningRunByAppSession(appSessionId: string): KanbanRunRow | null {
+    const db = getConnection();
+    const row = db
+      .prepare(
+        `SELECT * FROM kanban_runs WHERE app_session_id = ? AND status = 'running' ORDER BY started_at DESC LIMIT 1`,
+      )
+      .get(appSessionId) as KanbanRunRow | undefined;
+    return row ?? null;
+  },
+
   /** Latest run for a task (any status), or null. */
   getLatestRunForTask(taskId: string): KanbanRunRow | null {
     const db = getConnection();

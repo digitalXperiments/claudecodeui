@@ -12,6 +12,8 @@ import {
 } from '../types';
 import type { TaskPatch } from '../api/kanbanApi';
 
+import TaskRunOutput from './TaskRunOutput';
+
 type TaskDraft = {
   columnId?: string;
 };
@@ -377,6 +379,19 @@ export default function TaskEditor(props: TaskEditorProps) {
                     })}
                   </div>
                 )}
+              </div>
+            ) : null}
+
+            {isEdit && task ? (
+              <div className="flex flex-col gap-1 border-t border-border pt-3">
+                <span className={labelClass}>Run</span>
+                {task.last_run_at ? (
+                  <p className="text-xs text-muted-foreground">
+                    Last run {new Date(task.last_run_at).toLocaleString()}
+                    {task.last_exit_code !== null ? ` · exit ${task.last_exit_code}` : ''}
+                  </p>
+                ) : null}
+                <TaskRunOutput sessionId={task.app_session_id} isRunning={task.status === 'running'} />
               </div>
             ) : null}
 
