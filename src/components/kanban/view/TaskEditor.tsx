@@ -468,7 +468,11 @@ export default function TaskEditor(props: TaskEditorProps) {
                     {task.last_exit_code !== null ? ` · exit ${task.last_exit_code}` : ''}
                   </p>
                 ) : null}
-                <TaskRunOutput sessionId={task.app_session_id} isRunning={task.status === 'running'} />
+                <TaskRunOutput
+                  sessionId={task.app_session_id}
+                  isRunning={task.status === 'running'}
+                  provider={task.assignee_provider ?? 'claude'}
+                />
               </div>
             ) : null}
 
