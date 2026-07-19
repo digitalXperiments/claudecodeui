@@ -7,6 +7,7 @@ import test from 'node:test';
 import TOML from '@iarna/toml';
 
 import { providerMcpService } from '@/modules/providers/services/mcp.service.js';
+import { providerRegistry } from '@/modules/providers/provider.registry.js';
 import { AppError } from '@/shared/utils.js';
 
 const patchHomeDir = (nextHomeDir: string) => {
@@ -313,8 +314,16 @@ test('providerMcpService global adder writes to all providers and rejects unsupp
       workspacePath,
     });
 
-    assert.equal(globalResult.length, 4);
-    assert.ok(globalResult.every((entry) => entry.created === true));
+    // One result per registered provider — the service attempts every provider
+    // and reports per-provider success/failure rather than a fixed set.
+    assert.equal(globalResult.length, providerRegistry.listProviders().length);
+    // No silent failures: each provider either wrote its config or reported why.
+    assert.ok(globalResult.every((entry) => entry.created === true || typeof entry.error === 'string'));
+    // The MCP-capable providers verified below must have succeeded.
+    for (const providerId of ['claude', 'codex', 'opencode', 'cursor'] as const) {
+      const entry = globalResult.find((result) => result.provider === providerId);
+      assert.ok(entry?.created === true, `${providerId} should have written its MCP config`);
+    }
 
     const claudeProject = await readJson(path.join(workspacePath, '.mcp.json'));
     assert.ok((claudeProject.mcpServers as Record<string, unknown>)['global-http']);
