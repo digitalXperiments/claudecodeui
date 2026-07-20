@@ -30,6 +30,7 @@ import {
   notifyUserIfEnabled
 } from './services/notification-orchestrator.js';
 import { sessionsService } from './modules/providers/services/sessions.service.js';
+import { getMemoryPreamble } from './modules/providers/services/project-memory.service.js';
 import { providerAuthService } from './modules/providers/services/provider-auth.service.js';
 import { createCompleteMessage, createNormalizedMessage } from './shared/utils.js';
 
@@ -223,6 +224,18 @@ function mapCliOptionsToSDK(options = {}) {
     type: 'preset',
     preset: 'claude_code'
   };
+
+  // App-level memory bookend: when the workspace has Obsidian memory enabled,
+  // instruct the agent to read context first and record proceedings at the end.
+  // Best-effort — a lookup failure must never block a run.
+  try {
+    const memoryPreamble = getMemoryPreamble(cwd);
+    if (memoryPreamble) {
+      sdkOptions.systemPrompt.append = memoryPreamble;
+    }
+  } catch {
+    // Ignore memory preamble failures.
+  }
 
   sdkOptions.settingSources = ['project', 'user', 'local'];
 

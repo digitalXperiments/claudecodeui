@@ -105,6 +105,7 @@
     "label": "Settings",
     "agents": "Agents",
     "skills": "Project Skills",
+    "memory": "Memory",
     "appearance": "Appearance",
     "git": "Git",
     "apiTokens": "API & Tokens",
