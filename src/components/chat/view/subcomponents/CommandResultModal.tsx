@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import {
   Activity,
+  AlertTriangle,
   BadgeCheck,
   CircleHelp,
   Coins,
@@ -246,6 +247,9 @@ function ModelsContent({
   const [changingModel, setChangingModel] = useState<string | null>(null);
   const [pendingSessionModel, setPendingSessionModel] = useState<string | null>(null);
   const [selectionNotice, setSelectionNotice] = useState<string | null>(null);
+  // Model the user picked mid-session that is awaiting explicit confirmation
+  // (because it re-reads the whole transcript with cost impact).
+  const [confirmModel, setConfirmModel] = useState<string | null>(null);
   const currentProvider = (data?.current?.provider || 'claude') as LLMProvider;
   const currentModel = data?.current?.model || 'Unknown';
   const providerLabel = data?.current?.providerLabel || getProviderLabel(currentProvider);
@@ -277,7 +281,8 @@ function ModelsContent({
   const hasConcreteSessionId = typeof currentSessionId === 'string' && currentSessionId.trim().length > 0;
   const showSearch = availableOptions.length > 6;
 
-  const handleSelectModel = async (model: string) => {
+  const applyModelChange = async (model: string) => {
+    setConfirmModel(null);
     setChangingModel(model);
     try {
       const result = await onSelectProviderModel(currentProvider, model, currentSessionId);
@@ -295,6 +300,18 @@ function ModelsContent({
     } finally {
       setChangingModel(null);
     }
+  };
+
+  const handleSelectModel = (model: string) => {
+    // A mid-session switch to a *different* model re-reads the entire prior
+    // transcript with the new model (extra input-token cost), so require an
+    // explicit confirmation. New chats and re-picking the current model apply
+    // straight away.
+    if (hasConcreteSessionId && model !== currentModel) {
+      setConfirmModel(model);
+      return;
+    }
+    void applyModelChange(model);
   };
 
   return (
@@ -328,6 +345,44 @@ function ModelsContent({
         </Button>
       </div>
 
+      {hasConcreteSessionId && (
+        <div className="flex items-start gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2.5 text-amber-700 dark:text-amber-300">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+          <div className="min-w-0 flex-1">
+            <p className="text-xs leading-5">
+              Switching models mid-conversation re-reads the entire prior transcript with the new model on your next
+              response. That history is sent again as input tokens, so expect a cost (and latency) impact.
+            </p>
+            {confirmModel && (
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <span className="break-all text-xs font-semibold">
+                  Switch to <span className="font-mono">{confirmModel}</span>?
+                </span>
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={() => void applyModelChange(confirmModel)}
+                  disabled={Boolean(changingModel)}
+                  className="h-7 rounded-lg bg-amber-600 px-3 text-xs text-white hover:bg-amber-600/90"
+                >
+                  Switch anyway
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setConfirmModel(null)}
+                  disabled={Boolean(changingModel)}
+                  className="h-7 rounded-lg px-3 text-xs"
+                >
+                  Cancel
+                </Button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {showSearch && (
         <SearchField value={query} onChange={setQuery} placeholder={`Search ${providerLabel} models...`} />
       )}
@@ -339,6 +394,7 @@ function ModelsContent({
               const isCurrent = option.value === currentModel;
               const isPendingSelection = option.value === pendingSessionModel;
               const isChanging = option.value === changingModel;
+              const isAwaitingConfirm = option.value === confirmModel;
               return (
                 <button
                   key={option.value}
@@ -349,9 +405,11 @@ function ModelsContent({
                   className={`settings-content-enter group flex min-h-[4rem] flex-col rounded-2xl border p-3 text-left shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default disabled:opacity-60 ${
                     isCurrent
                       ? 'border-primary/45 bg-primary/10'
-                      : isPendingSelection
-                        ? 'border-emerald-500/35 bg-emerald-500/10'
-                        : 'border-border/70 bg-background/80 hover:border-primary/30 hover:bg-background'
+                      : isAwaitingConfirm
+                        ? 'border-amber-500/50 bg-amber-500/10 ring-1 ring-amber-500/40'
+                        : isPendingSelection
+                          ? 'border-emerald-500/35 bg-emerald-500/10'
+                          : 'border-border/70 bg-background/80 hover:border-primary/30 hover:bg-background'
                   }`}
                   style={{ animationDelay: `${Math.min(index * 14, 180)}ms` }}
                 >
@@ -372,9 +430,14 @@ function ModelsContent({
                   {isCurrent && (
                     <span className="mt-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-primary">Current selection</span>
                   )}
-                  {isPendingSelection && !isCurrent && (
+                  {isPendingSelection && !isCurrent && !isAwaitingConfirm && (
                     <span className="mt-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-emerald-500 dark:text-emerald-400">
                       Applies next response
+                    </span>
+                  )}
+                  {isAwaitingConfirm && !isCurrent && (
+                    <span className="mt-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-amber-600 dark:text-amber-400">
+                      Confirm above
                     </span>
                   )}
                 </button>

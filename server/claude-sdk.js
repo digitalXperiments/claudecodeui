@@ -434,21 +434,46 @@ async function loadMcpConfig(cwd) {
       return null;
     }
 
-    // Extract MCP servers (merge global and project-specific)
+    // Extract MCP servers, merged lowest-to-highest precedence:
+    //   1. global ~/.claude.json `mcpServers`
+    //   2. ~/.claude.json `projects[cwd].mcpServers` (native Claude per-project)
+    //   3. `<cwd>/.mcp.json` `mcpServers` (project-scoped file)
     let mcpServers = {};
 
-    // Add global MCP servers
+    // 1. Global MCP servers.
     if (claudeConfig.mcpServers && typeof claudeConfig.mcpServers === 'object') {
       mcpServers = { ...claudeConfig.mcpServers };
-      // Global MCP servers loaded
     }
 
-    // Add/override with project-specific MCP servers
-    if (claudeConfig.claudeProjects && cwd) {
-      const projectConfig = claudeConfig.claudeProjects[cwd];
+    // 2. Per-project overrides from ~/.claude.json. Claude stores these under
+    //    `projects` — the previous `claudeProjects` key never matched anything,
+    //    so this branch was dead code.
+    if (claudeConfig.projects && cwd) {
+      const projectConfig = claudeConfig.projects[cwd];
       if (projectConfig && projectConfig.mcpServers && typeof projectConfig.mcpServers === 'object') {
         mcpServers = { ...mcpServers, ...projectConfig.mcpServers };
-        // Project MCP servers merged
+      }
+    }
+
+    // 3. Project-scoped `<cwd>/.mcp.json` wins. This is where cloudcli's
+    //    project-memory fan-out installs the `obsidian` server (and where the
+    //    native `claude` CLI reads project servers from). Previously this file
+    //    was never read here, so a cloudcli-launched Claude only saw per-project
+    //    servers if they were also registered globally — which is exactly why
+    //    memory silently failed in projects that relied on the injected file.
+    if (cwd) {
+      try {
+        const projectMcpPath = path.join(cwd, '.mcp.json');
+        const projectMcp = JSON.parse(await fs.readFile(projectMcpPath, 'utf8'));
+        if (projectMcp && projectMcp.mcpServers && typeof projectMcp.mcpServers === 'object') {
+          mcpServers = { ...mcpServers, ...projectMcp.mcpServers };
+        }
+      } catch (error) {
+        // A missing file (ENOENT) is normal for non-memory projects; only a
+        // malformed .mcp.json is worth surfacing.
+        if (error.code !== 'ENOENT') {
+          console.error(`Failed to read project .mcp.json in ${cwd}:`, error.message);
+        }
       }
     }
 

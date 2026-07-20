@@ -74,6 +74,11 @@ export class GrokMcpProvider extends McpProvider {
         args: input.args ?? [],
         env: input.env ?? {},
         cwd: input.cwd,
+        // Grok treats a server as active only when `enabled` is truthy in
+        // practice; every server the CLI writes itself sets it explicitly.
+        // Although the docs say it defaults to true, we emit it to match the
+        // working entries and avoid a silently-skipped server.
+        enabled: true,
       };
     }
 
@@ -87,6 +92,7 @@ export class GrokMcpProvider extends McpProvider {
     return {
       url: input.url,
       headers: input.headers ?? {},
+      enabled: true,
     };
   }
 

@@ -102,6 +102,11 @@ temp/
 # AI specific
 .claude/
 .cursor/
+.agents/
+.codex/
+.grok/
+.kimi-code/
+.cloudcli/
 .roo/
 .taskmaster/
 .cline/
@@ -143,6 +148,10 @@ tasks/
 
 # Git worktrees
 .worktrees/
+
+# Local scripts and tooling
+scripts/
+opencode.json
 
 # Local desktop packaging artifacts
 /.desktop-build/

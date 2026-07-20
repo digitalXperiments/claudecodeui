@@ -33,6 +33,16 @@ import { escapeRegExp } from '../utils/chatFormatting';
 import { useFileMentions } from './useFileMentions';
 import { type SlashCommand, useSlashCommands } from './useSlashCommands';
 
+const PROVIDER_MODEL_LABELS: Record<LLMProvider, string> = {
+  claude: 'Claude',
+  cursor: 'Cursor',
+  codex: 'Codex',
+  opencode: 'OpenCode',
+  grok: 'Grok Build',
+  kimi: 'Kimi',
+  agy: 'Antigravity',
+};
+
 interface UseChatComposerStateArgs {
   selectedProject: Project | null;
   selectedSession: ProjectSession | null;
@@ -326,6 +336,33 @@ export function useChatComposerState({
   const closeCommandModal = useCallback(() => {
     setCommandModalPayload(null);
   }, []);
+
+  // Opens the same rich model selector as the `/models` command, but straight
+  // from the composer so the model can be switched mid-conversation. For an
+  // active session the modal applies the choice on the next response; for a
+  // brand-new chat it becomes the default. `ModelsContent` derives the option
+  // list and labels from the live catalog, so we only seed the active model.
+  const openModelSelector = useCallback(() => {
+    const modelByProvider: Record<LLMProvider, string> = {
+      claude: claudeModel,
+      cursor: cursorModel,
+      codex: codexModel,
+      opencode: opencodeModel,
+      grok: grokModel,
+      kimi: kimiModel,
+      agy: agyModel,
+    };
+    setCommandModalPayload({
+      kind: 'models',
+      data: {
+        current: {
+          provider,
+          providerLabel: PROVIDER_MODEL_LABELS[provider],
+          model: modelByProvider[provider],
+        },
+      },
+    });
+  }, [provider, claudeModel, cursorModel, codexModel, opencodeModel, grokModel, kimiModel, agyModel]);
 
   const handleCustomCommand = useCallback(async (result: CommandExecutionResult) => {
     const { content, hasBashCommands } = result;
@@ -1245,6 +1282,7 @@ export function useChatComposerState({
     isInputFocused,
     commandModalPayload,
     closeCommandModal,
+    openModelSelector,
     showCostModal,
   };
 }

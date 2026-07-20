@@ -11,7 +11,7 @@ import type {
   RefObject,
   TouchEvent,
 } from 'react';
-import { ImageIcon, MessageSquareIcon, XIcon, Loader2, ChevronDown, Check, ArrowUpIcon } from 'lucide-react';
+import { ImageIcon, MessageSquareIcon, XIcon, Loader2, ChevronDown, Check, ArrowUpIcon, Cpu } from 'lucide-react';
 
 import { useVoiceInput } from '../../hooks/useVoiceInput';
 import { useVoiceAvailable } from '../../hooks/useVoiceAvailable';
@@ -68,6 +68,8 @@ interface ChatComposerProps {
   effort: string;
   availableEffortOptions: NonNullable<ProviderModelOption['effort']>['values'];
   onSelectEffort: (effort: string) => void;
+  modelLabel: string;
+  onOpenModelSelector: () => void;
   tokenBudget: Record<string, unknown> | null;
   onShowTokenUsage: () => void;
   slashCommandsCount: number;
@@ -126,6 +128,8 @@ export default function ChatComposer({
   effort,
   availableEffortOptions,
   onSelectEffort,
+  modelLabel,
+  onOpenModelSelector,
   tokenBudget,
   onShowTokenUsage,
   slashCommandsCount,
@@ -476,6 +480,17 @@ export default function ChatComposer({
                   {permissionMode === 'plan' && t('codex.modes.plan')}
                 </span>
               </div>
+            </button>
+
+            <button
+              type="button"
+              onClick={onOpenModelSelector}
+              className="flex h-8 max-w-36 items-center gap-1.5 rounded-lg border border-border/60 bg-muted/40 px-2 text-xs font-medium text-foreground transition-all duration-200 hover:bg-muted sm:px-2.5"
+              aria-label={t('input.changeModel', { defaultValue: 'Change model' })}
+              title={t('input.changeModel', { defaultValue: 'Change model' })}
+            >
+              <Cpu className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+              <span className="truncate">{modelLabel}</span>
             </button>
 
             {availableEffortOptions.length > 0 && (

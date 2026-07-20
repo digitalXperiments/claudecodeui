@@ -203,6 +203,7 @@ function ChatInterface({
     isInputFocused,
     commandModalPayload,
     closeCommandModal,
+    openModelSelector,
     showCostModal,
   } = useChatComposerState({
     selectedProject,
@@ -308,6 +309,34 @@ function ChatInterface({
   // reserve enough bottom space to keep the floating status tab from
   // overlapping the last message.
   const hasActivityIndicator = Boolean(sessionActivity && pendingPermissionRequests.length === 0);
+
+  // Label shown on the composer's model button. Resolve the active provider's
+  // current model value against the live catalog so the button reads the
+  // friendly label ("Claude Sonnet 4.5") rather than the raw model id.
+  const currentModelLabel = useMemo(() => {
+    const currentModel = {
+      claude: claudeModel,
+      cursor: cursorModel,
+      codex: codexModel,
+      opencode: opencodeModel,
+      grok: grokModel,
+      kimi: kimiModel,
+      agy: agyModel,
+    }[provider];
+    const option = providerModelCatalog[provider]?.OPTIONS.find((o) => o.value === currentModel);
+    return option?.label || currentModel || t('input.model', { defaultValue: 'Model' });
+  }, [
+    provider,
+    claudeModel,
+    cursorModel,
+    codexModel,
+    opencodeModel,
+    grokModel,
+    kimiModel,
+    agyModel,
+    providerModelCatalog,
+    t,
+  ]);
 
   if (!selectedProject) {
     const selectedProviderLabel =
@@ -417,6 +446,8 @@ function ChatInterface({
           effort={currentProviderEffort}
           availableEffortOptions={currentProviderEffortOptions}
           onSelectEffort={(nextEffort) => setStoredProviderEffort(provider, nextEffort)}
+          modelLabel={currentModelLabel}
+          onOpenModelSelector={openModelSelector}
           tokenBudget={tokenBudget}
           onShowTokenUsage={showCostModal}
           slashCommandsCount={slashCommandsCount}

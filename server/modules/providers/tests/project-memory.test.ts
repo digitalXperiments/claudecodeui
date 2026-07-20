@@ -105,4 +105,12 @@ test('buildMemorySkillContent embeds front matter and the vault folder', () => {
   assert.match(content, /Projects\/demo\/00-Overview\.md/);
   assert.match(content, /Projects\/demo\/Sessions/);
   assert.equal(MEMORY_SKILL_DIRECTORY_NAME, 'project-memory');
+
+  // Must document the real Obsidian MCP tool names (agents were previously
+  // confused by non-existent names like get_note/search_notes).
+  assert.match(content, /obsidian_get_file/);
+  assert.match(content, /obsidian_simple_search/);
+  assert.match(content, /obsidian_put_file/);
+  assert.match(content, /obsidian_post_file/);
+  assert.doesNotMatch(content, /`get_note`|`search_notes`|`create_note`|`update_note`|`get_backlinks`|`list_notes`/);
 });
