@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { X } from 'lucide-react';
+import { Download, File, FileSpreadsheet, FileText, X } from 'lucide-react';
 
 import { authenticatedFetch } from '../../../../utils/api';
 import type { ChatImage } from '../../types/types';
@@ -9,6 +9,32 @@ type ChatMessageImagesProps = {
   images: ChatImage[];
   projectId?: string | null;
 };
+
+const IMAGE_EXTENSIONS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico'];
+
+/** Whether a stored attachment is an image (thumbnail) vs a document (chip). */
+function isImageAttachment(image: ChatImage): boolean {
+  if (image.data) {
+    return image.data.startsWith('data:image/');
+  }
+  if (image.mimeType) {
+    return image.mimeType.startsWith('image/');
+  }
+  const source = image.path || image.name || '';
+  const extension = source.slice(source.lastIndexOf('.') + 1).toLowerCase();
+  return IMAGE_EXTENSIONS.includes(extension);
+}
+
+/** Candidate URLs to fetch a stored attachment from, newest storage first. */
+function attachmentUrls(path: string, projectId?: string | null): string[] {
+  const filename = path.split(/[\\/]/).pop() || '';
+  return [
+    `/api/assets/images/${encodeURIComponent(filename)}`,
+    ...(projectId
+      ? [`/api/projects/${projectId}/files/content?path=${encodeURIComponent(path)}`]
+      : []),
+  ];
+}
 
 /**
  * Resolves one chat image to a displayable src. Inline data URLs are used
@@ -35,13 +61,7 @@ function useChatImageSrc(image: ChatImage, projectId?: string | null): { src: st
       return;
     }
 
-    const filename = imagePath.split(/[\\/]/).pop() || '';
-    const candidateUrls = [
-      `/api/assets/images/${encodeURIComponent(filename)}`,
-      ...(projectId
-        ? [`/api/projects/${projectId}/files/content?path=${encodeURIComponent(imagePath)}`]
-        : []),
-    ];
+    const candidateUrls = attachmentUrls(imagePath, projectId);
 
     let objectUrl: string | null = null;
     const controller = new AbortController();
@@ -160,10 +180,84 @@ function ChatMessageImage({ image, projectId }: { image: ChatImage; projectId?: 
   );
 }
 
+function iconForAttachment(name: string) {
+  const extension = name.slice(name.lastIndexOf('.') + 1).toLowerCase();
+  if (['csv', 'tsv', 'xls', 'xlsx', 'ods'].includes(extension)) {
+    return FileSpreadsheet;
+  }
+  if (['pdf', 'txt', 'md', 'markdown', 'json', 'xml', 'html', 'htm', 'rtf', 'log', 'yaml', 'yml', 'doc', 'docx', 'ppt', 'pptx', 'odt', 'odp'].includes(extension)) {
+    return FileText;
+  }
+  return File;
+}
+
 /**
- * Image attachments for a user turn, rendered claude.ai-style: standalone
- * rounded square cards shown above the message bubble. Each thumbnail
- * expands to a fullscreen lightbox on click.
+ * A non-image attachment on a past user turn: a downloadable chip. Clicking
+ * fetches the stored asset as a blob (an authenticated request, so a bare
+ * anchor href cannot be used) and triggers a browser download.
+ */
+function ChatMessageFile({ image, projectId }: { image: ChatImage; projectId?: string | null }) {
+  const [downloading, setDownloading] = useState(false);
+  const name = image.name || image.path?.split(/[\\/]/).pop() || 'attachment';
+  const Icon = iconForAttachment(name);
+
+  const handleDownload = async () => {
+    if (image.data) {
+      const link = document.createElement('a');
+      link.href = image.data;
+      link.download = name;
+      link.click();
+      return;
+    }
+    if (!image.path || downloading) {
+      return;
+    }
+    setDownloading(true);
+    try {
+      for (const url of attachmentUrls(image.path, projectId)) {
+        try {
+          const response = await authenticatedFetch(url);
+          if (!response.ok) {
+            continue;
+          }
+          const blob = await response.blob();
+          const objectUrl = URL.createObjectURL(blob);
+          const link = document.createElement('a');
+          link.href = objectUrl;
+          link.download = name;
+          link.click();
+          URL.revokeObjectURL(objectUrl);
+          return;
+        } catch {
+          // Try the next candidate URL.
+        }
+      }
+    } finally {
+      setDownloading(false);
+    }
+  };
+
+  return (
+    <button
+      type="button"
+      onClick={handleDownload}
+      disabled={downloading}
+      className="group flex max-w-52 items-center gap-2 rounded-xl border border-border/50 bg-background/60 px-3 py-2 text-left shadow-sm transition-colors hover:bg-accent/50 focus:outline-none focus:ring-2 focus:ring-primary/60"
+      title={`Download ${name}`}
+    >
+      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+        <Icon className="h-4 w-4" />
+      </div>
+      <span className="min-w-0 flex-1 truncate text-xs font-medium text-foreground">{name}</span>
+      <Download className="h-3.5 w-3.5 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" />
+    </button>
+  );
+}
+
+/**
+ * Attachments for a user turn, rendered claude.ai-style above the message
+ * bubble: images as thumbnails that expand to a fullscreen lightbox, and
+ * documents as downloadable chips.
  */
 export default function ChatMessageImages({ images, projectId }: ChatMessageImagesProps) {
   if (!images || images.length === 0) {
@@ -172,9 +266,14 @@ export default function ChatMessageImages({ images, projectId }: ChatMessageImag
 
   return (
     <div className="flex flex-wrap justify-end gap-2">
-      {images.map((image, index) => (
-        <ChatMessageImage key={image.path || image.name || index} image={image} projectId={projectId} />
-      ))}
+      {images.map((image, index) => {
+        const key = image.path || image.name || index;
+        return isImageAttachment(image) ? (
+          <ChatMessageImage key={key} image={image} projectId={projectId} />
+        ) : (
+          <ChatMessageFile key={key} image={image} projectId={projectId} />
+        );
+      })}
     </div>
   );
 }

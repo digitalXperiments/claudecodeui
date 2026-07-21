@@ -2,6 +2,7 @@ import readline from 'node:readline';
 
 import crossSpawn from 'cross-spawn';
 
+import { appendImagesInputTag } from './shared/image-attachments.js';
 import { createRequestId, waitForToolApproval } from './claude-sdk.js';
 import { notifyRunFailed, notifyRunStopped } from './services/notification-orchestrator.js';
 import { sessionsService } from './modules/providers/services/sessions.service.js';
@@ -438,7 +439,10 @@ async function spawnKimi(command, options = {}, ws) {
   });
 
   try {
-    const promptText = command && command.trim() ? command : '';
+    // Image and file attachments ride along as an <images_input> path list
+    // appended to the prompt; the session history reader strips the tag back
+    // out for display.
+    const promptText = command && command.trim() ? appendImagesInputTag(command, options.images) : '';
     handle.inFlightPromptId = true;
     const result = await handle.rpc.request('session/prompt', {
       sessionId: handle.kimiSessionId,

@@ -75,3 +75,26 @@ test('still renders a well-formed question + answer', () => {
   );
   assert.ok(html.includes('Pick one?'));
 });
+
+test('shows "Skipped" for an unanswered question once the tool has resolved', () => {
+  const html = renderToStaticMarkup(
+    React.createElement(QuestionAnswerContent, {
+      questions: [{ question: 'Pick one?', options: [{ label: 'A' }] }],
+      answers: {},
+    }),
+  );
+  assert.ok(html.includes('Skipped'));
+  assert.ok(!html.includes('Waiting for your answer'));
+});
+
+test('shows "Waiting for your answer" (not "Skipped") while the tool is running', () => {
+  const html = renderToStaticMarkup(
+    React.createElement(QuestionAnswerContent, {
+      questions: [{ question: 'Pick one?', options: [{ label: 'A' }] }],
+      answers: {},
+      isRunning: true,
+    }),
+  );
+  assert.ok(html.includes('Waiting for your answer'));
+  assert.ok(!html.includes('Skipped'));
+});

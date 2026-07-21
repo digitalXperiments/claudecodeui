@@ -15,6 +15,48 @@ const ALLOWED_IMAGE_MIME_TYPES = new Set([
   'image/svg+xml',
 ]);
 
+/**
+ * Non-image document mime types accepted as chat attachments. These are never
+ * decoded inline — providers reference them by path and read them with their
+ * file tools — so the set can be broad. Office/binary formats are frequently
+ * mislabelled by browsers (often `application/octet-stream`), so uploads also
+ * pass via the extension allowlist below.
+ */
+const ALLOWED_DOCUMENT_MIME_TYPES = new Set([
+  'application/pdf',
+  'text/plain',
+  'text/markdown',
+  'text/csv',
+  'text/tab-separated-values',
+  'application/json',
+  'application/xml',
+  'text/xml',
+  'text/html',
+  'application/rtf',
+  'text/rtf',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.ms-powerpoint',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  'application/vnd.oasis.opendocument.text',
+  'application/vnd.oasis.opendocument.spreadsheet',
+  'application/vnd.oasis.opendocument.presentation',
+]);
+
+/**
+ * Extensions allowed even when the browser reports an unhelpful mime type
+ * (e.g. `.xlsx`/`.csv` sent as `application/octet-stream`). Kept deliberately
+ * conservative — dangerous executable/script types are intentionally absent.
+ */
+const ALLOWED_DOCUMENT_EXTENSIONS = new Set([
+  '.pdf', '.txt', '.md', '.markdown', '.csv', '.tsv', '.json', '.xml',
+  '.html', '.htm', '.rtf', '.log', '.yaml', '.yml',
+  '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
+  '.odt', '.ods', '.odp',
+]);
+
 // Used only by this service and the assets routes via the barrel file.
 type StoredImageAsset = {
   /** Original upload filename, for display. */
@@ -36,6 +78,19 @@ type UploadedImageFile = {
 /** Returns whether one uploaded mime type may be stored as a chat image asset. */
 export function isAllowedImageMimeType(mimeType: string): boolean {
   return ALLOWED_IMAGE_MIME_TYPES.has(mimeType);
+}
+
+/**
+ * Returns whether an uploaded file may be stored as a chat attachment: any
+ * allowed image or document mime type, or a document by extension when the mime
+ * type is unhelpful. Used by the upload route's file filter.
+ */
+export function isAllowedAttachmentMimeType(mimeType: string, originalName?: string): boolean {
+  if (ALLOWED_IMAGE_MIME_TYPES.has(mimeType) || ALLOWED_DOCUMENT_MIME_TYPES.has(mimeType)) {
+    return true;
+  }
+  const extension = originalName ? path.extname(originalName).toLowerCase() : '';
+  return extension ? ALLOWED_DOCUMENT_EXTENSIONS.has(extension) : false;
 }
 
 /** Creates the global `~/.cloudcli/assets` folder if needed and returns it. */

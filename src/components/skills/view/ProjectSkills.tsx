@@ -6,6 +6,7 @@ import {
   FileUp,
   FolderUp,
   Loader2,
+  Pencil,
   Plus,
   RefreshCw,
   Search,
@@ -34,6 +35,8 @@ import {
   type QueuedSkillFile,
 } from '../lib/skillUpload';
 import type { ProjectSkill, SkillsProject, SkillsProvider } from '../types';
+
+import SkillEditorDialog from './SkillEditorDialog';
 
 type ProjectSkillsProps = {
   currentProjects: SkillsProject[];
@@ -96,6 +99,8 @@ export default function ProjectSkills({ currentProjects }: ProjectSkillsProps) {
     saveStatus,
     addSkills,
     removeSkill,
+    getSkillContent,
+    saveSkillContent,
     refreshSkills,
   } = useProjectSkills({ workspacePath: selectedPath });
 
@@ -105,6 +110,7 @@ export default function ProjectSkills({ currentProjects }: ProjectSkillsProps) {
   const [justInstalled, setJustInstalled] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
+  const [editorState, setEditorState] = useState<{ mode: 'create' | 'edit'; skill: ProjectSkill | null } | null>(null);
   const [removingDirectory, setRemovingDirectory] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement | null>(null);
@@ -397,9 +403,13 @@ export default function ProjectSkills({ currentProjects }: ProjectSkillsProps) {
                 </button>
               )}
             </div>
-            <Button type="button" size="sm" className="w-full sm:w-auto" onClick={() => handleAddDialogOpenChange(true)}>
+            <Button type="button" size="sm" className="w-full sm:w-auto" onClick={() => setEditorState({ mode: 'create', skill: null })}>
               <Plus className="h-4 w-4" />
-              Add Skill
+              New Skill
+            </Button>
+            <Button type="button" variant="outline" size="sm" className="w-full sm:w-auto" onClick={() => handleAddDialogOpenChange(true)}>
+              <Upload className="h-4 w-4" />
+              Upload Skill
             </Button>
             <Button
               onClick={() => void refreshSkills()}
@@ -466,19 +476,31 @@ export default function ProjectSkills({ currentProjects }: ProjectSkillsProps) {
                       <div className="break-all font-mono text-sm font-semibold text-foreground">{skill.name}</div>
                       <div className="text-xs text-muted-foreground">{skill.directoryName}</div>
                     </div>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      className="h-8 w-8 flex-shrink-0 p-0 text-muted-foreground hover:text-red-600"
-                      aria-label={`Remove ${skill.name}`}
-                      disabled={removingDirectory === skill.directoryName}
-                      onClick={() => void handleRemove(skill)}
-                    >
-                      {removingDirectory === skill.directoryName
-                        ? <Loader2 className="h-4 w-4 animate-spin" />
-                        : <Trash2 className="h-4 w-4" />}
-                    </Button>
+                    <div className="flex flex-shrink-0 items-center gap-1">
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-8 w-8 p-0 text-muted-foreground hover:text-foreground"
+                        aria-label={`Edit ${skill.name}`}
+                        onClick={() => setEditorState({ mode: 'edit', skill })}
+                      >
+                        <Pencil className="h-4 w-4" />
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-8 w-8 p-0 text-muted-foreground hover:text-red-600"
+                        aria-label={`Remove ${skill.name}`}
+                        disabled={removingDirectory === skill.directoryName}
+                        onClick={() => void handleRemove(skill)}
+                      >
+                        {removingDirectory === skill.directoryName
+                          ? <Loader2 className="h-4 w-4 animate-spin" />
+                          : <Trash2 className="h-4 w-4" />}
+                      </Button>
+                    </div>
                   </div>
 
                   <p className="mt-3 text-sm leading-relaxed text-muted-foreground">
@@ -558,6 +580,23 @@ export default function ProjectSkills({ currentProjects }: ProjectSkillsProps) {
           </div>
         </DialogContent>
       </Dialog>
+
+      <SkillEditorDialog
+        open={editorState !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setEditorState(null);
+          }
+        }}
+        mode={editorState?.mode ?? 'edit'}
+        skill={editorState?.skill ?? null}
+        loadContent={getSkillContent}
+        saveContent={saveSkillContent}
+        createSkill={async (entries) => {
+          await addSkills(entries);
+          setJustInstalled(true);
+        }}
+      />
     </div>
   );
 }

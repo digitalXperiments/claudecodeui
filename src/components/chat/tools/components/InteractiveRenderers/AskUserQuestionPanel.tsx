@@ -2,12 +2,26 @@ import React, { useState, useCallback, useRef, useEffect } from 'react';
 import type { PermissionPanelProps } from '../../configs/permissionPanelRegistry';
 import type { Question } from '../../../types/types';
 
+// Display names for the "<agent> needs your input" header. Keyed loosely so a
+// new/unknown provider degrades to a neutral label rather than mislabelling the
+// prompt as Claude's.
+const PROVIDER_INPUT_LABELS: Record<string, string> = {
+  claude: 'Claude',
+  cursor: 'Cursor',
+  codex: 'Codex',
+  opencode: 'OpenCode',
+  grok: 'Grok Build',
+  kimi: 'Kimi',
+  agy: 'Antigravity',
+};
+
 export const AskUserQuestionPanel: React.FC<PermissionPanelProps> = ({
   request,
   onDecision,
 }) => {
   const input = request.input as { questions?: Question[] } | undefined;
   const questions: Question[] = input?.questions || [];
+  const agentLabel = PROVIDER_INPUT_LABELS[request.provider ?? ''] || 'The agent';
 
   const [currentStep, setCurrentStep] = useState(0);
   const [selections, setSelections] = useState<Map<number, Set<string>>>(() => new Map());
@@ -170,7 +184,7 @@ export const AskUserQuestionPanel: React.FC<PermissionPanelProps> = ({
 
             <div className="flex min-w-0 flex-1 items-center gap-2">
               <span className="text-[10px] font-medium uppercase tracking-wide text-gray-400 dark:text-gray-500">
-                Claude needs your input
+                {agentLabel} needs your input
               </span>
               {q.header && (
                 <span className="inline-flex items-center rounded border border-blue-100 bg-blue-50 px-1.5 py-px text-[9px] font-semibold uppercase tracking-wider text-blue-600 dark:border-blue-800/50 dark:bg-blue-900/30 dark:text-blue-400">

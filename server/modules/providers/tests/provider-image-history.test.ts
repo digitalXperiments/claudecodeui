@@ -58,6 +58,55 @@ test('claude history: image-only user turns still produce a bubble', () => {
   assert.deepEqual(messages[0].images, [{ data: 'data:image/png;base64,QUJD' }]);
 });
 
+test('claude history: non-image attachments strip the tag and surface as path attachments', () => {
+  const provider = new ClaudeSessionsProvider();
+  const taggedText = appendImagesInputTag('Summarize the report', [
+    { path: '.cloudcli/assets/report.pdf', name: 'report.pdf' },
+  ]);
+  const entry = {
+    uuid: 'u4',
+    timestamp: '2026-07-03T10:00:00.000Z',
+    message: { role: 'user', content: [{ type: 'text', text: taggedText }] },
+  };
+
+  const messages = provider.normalizeMessage(entry, SESSION_ID);
+
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].role, 'user');
+  // The <images_input> block is gone; only the user's prompt remains.
+  assert.equal(messages[0].content, 'Summarize the report');
+  assert.deepEqual(messages[0].images, [{ path: '.cloudcli/assets/report.pdf', name: 'report.pdf' }]);
+});
+
+test('claude history: base64 images and document references coexist on one turn', () => {
+  const provider = new ClaudeSessionsProvider();
+  const taggedText = appendImagesInputTag('Compare these', [
+    { path: '.cloudcli/assets/spec.pdf', name: 'spec.pdf' },
+  ]);
+  const entry = {
+    uuid: 'u5',
+    timestamp: '2026-07-03T10:00:00.000Z',
+    message: {
+      role: 'user',
+      content: [
+        { type: 'text', text: taggedText },
+        { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'QUJD' } },
+      ],
+    },
+  };
+
+  const messages = provider.normalizeMessage(entry, SESSION_ID);
+
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].content, 'Compare these');
+  // Attachments follow content order: the text part (carrying the document
+  // reference) precedes the base64 image block.
+  assert.deepEqual(messages[0].images, [
+    { path: '.cloudcli/assets/spec.pdf', name: 'spec.pdf' },
+    { data: 'data:image/png;base64,QUJD' },
+  ]);
+});
+
 test('claude history: plain text user turns carry no images field', () => {
   const provider = new ClaudeSessionsProvider();
   const entry = {
@@ -121,6 +170,25 @@ test('codex history: normalized user entries keep their images', () => {
   assert.equal(messages[0].role, 'user');
   assert.equal(messages[0].content, 'Look at this');
   assert.deepEqual(messages[0].images, [{ path: '.cloudcli/assets/a.png' }]);
+});
+
+test('codex history: non-image attachments strip the tag and surface as path attachments', () => {
+  const provider = new CodexSessionsProvider();
+  const taggedMessage = appendImagesInputTag('Read the spreadsheet', [
+    { path: '.cloudcli/assets/data.xlsx', name: 'data.xlsx' },
+  ]);
+  const messages = provider.normalizeMessage(
+    {
+      timestamp: '2026-07-03T10:00:00.000Z',
+      message: { role: 'user', content: taggedMessage },
+    },
+    SESSION_ID,
+  );
+
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].role, 'user');
+  assert.equal(messages[0].content, 'Read the spreadsheet');
+  assert.deepEqual(messages[0].images, [{ path: '.cloudcli/assets/data.xlsx', name: 'data.xlsx' }]);
 });
 
 // ---------------------------------------------------------------- Cursor

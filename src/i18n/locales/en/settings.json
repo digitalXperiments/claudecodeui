@@ -105,6 +105,7 @@
     "label": "Settings",
     "agents": "Agents",
     "skills": "Project Skills",
+    "globalSkills": "Global Skills",
     "memory": "Memory",
     "appearance": "Appearance",
     "git": "Git",

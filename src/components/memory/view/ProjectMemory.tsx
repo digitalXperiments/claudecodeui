@@ -5,6 +5,7 @@ import {
   Database,
   FolderTree,
   Loader2,
+  PlugZap,
   RefreshCw,
 } from 'lucide-react';
 
@@ -45,6 +46,25 @@ const defaultVaultFolder = (displayName: string): string => {
   return `Projects/${slug || 'project'}`;
 };
 
+const formatRelativeTime = (isoTimestamp: string): string => {
+  const then = new Date(isoTimestamp).getTime();
+  if (!Number.isFinite(then)) {
+    return 'unknown';
+  }
+  const minutes = Math.round((Date.now() - then) / 60000);
+  if (minutes < 1) {
+    return 'just now';
+  }
+  if (minutes < 60) {
+    return `${minutes}m ago`;
+  }
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) {
+    return `${hours}h ago`;
+  }
+  return `${Math.round(hours / 24)}d ago`;
+};
+
 export default function ProjectMemory({ currentProjects }: ProjectMemoryProps) {
   const projectTargets = useMemo(() => createProjectTargets(currentProjects), [currentProjects]);
   const [selectedPath, setSelectedPath] = useState<string | null>(projectTargets[0]?.path ?? null);
@@ -66,6 +86,9 @@ export default function ProjectMemory({ currentProjects }: ProjectMemoryProps) {
     error: settingsError,
     saveStatus: settingsSaveStatus,
     save: saveSettings,
+    testConnection,
+    testResult,
+    isTesting,
   } = useObsidianSettings();
 
   const {
@@ -76,6 +99,9 @@ export default function ProjectMemory({ currentProjects }: ProjectMemoryProps) {
     enable,
     disable,
     rescaffold,
+    vaultStats,
+    isLoadingStats,
+    refreshVaultStats,
   } = useProjectMemory({ workspacePath: selectedPath });
 
   // Local editable copies of the global settings form.
@@ -228,16 +254,41 @@ export default function ProjectMemory({ currentProjects }: ProjectMemoryProps) {
           </label>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
           <Button type="button" size="sm" onClick={() => void handleSaveSettings()} disabled={isSavingSettings || settingsLoading}>
             {isSavingSettings ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
             Save connection
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => void testConnection()}
+            disabled={isTesting || settingsLoading}
+            title="Tests the saved connection settings"
+          >
+            {isTesting ? <Loader2 className="h-4 w-4 animate-spin" /> : <PlugZap className="h-4 w-4" />}
+            Test connection
           </Button>
           {settingsSaveStatus === 'success' && (
             <span className="text-xs font-medium text-emerald-600 dark:text-emerald-400">Saved.</span>
           )}
           {settingsError && <span className="text-xs text-red-600 dark:text-red-400">{settingsError}</span>}
         </div>
+
+        {testResult && (
+          testResult.ok ? (
+            <div className="text-xs font-medium text-emerald-600 dark:text-emerald-400">
+              Connected to the Obsidian Local REST API
+              {testResult.version ? ` (Obsidian ${testResult.version})` : ''}
+              {testResult.vaultName ? ` — vault: ${testResult.vaultName}` : ''}.
+            </div>
+          ) : (
+            <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-800/60 dark:bg-red-900/20 dark:text-red-200">
+              {testResult.error}
+            </div>
+          )
+        )}
       </section>
 
       {/* Per-project memory */}
@@ -332,6 +383,51 @@ export default function ProjectMemory({ currentProjects }: ProjectMemoryProps) {
                 ))}
                 {status.skillInstalled && (
                   <Badge variant="outline" className="rounded-full bg-background/70 text-xs">Memory skill</Badge>
+                )}
+              </div>
+            )}
+
+            {enabled && (
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-border/60 bg-muted/15 px-3 py-2 text-xs text-muted-foreground">
+                {isLoadingStats ? (
+                  <>
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    Loading vault stats…
+                  </>
+                ) : vaultStats?.exists ? (
+                  <>
+                    <span><span className="font-semibold text-foreground">{vaultStats.decisions}</span> decisions</span>
+                    <span aria-hidden="true">·</span>
+                    <span><span className="font-semibold text-foreground">{vaultStats.entities}</span> entities</span>
+                    <span aria-hidden="true">·</span>
+                    <span><span className="font-semibold text-foreground">{vaultStats.sessions}</span> session notes</span>
+                    <span aria-hidden="true">·</span>
+                    <span>
+                      Last write: {vaultStats.lastSessionWrite ? formatRelativeTime(vaultStats.lastSessionWrite) : 'never'}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => void refreshVaultStats()}
+                      aria-label="Refresh vault stats"
+                      className="ml-1 inline-flex h-5 w-5 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                    >
+                      <RefreshCw className="h-3 w-3" />
+                    </button>
+                  </>
+                ) : vaultStats ? (
+                  <>
+                    Vault folder not found on disk — use Re-scaffold to create it.
+                    <button
+                      type="button"
+                      onClick={() => void refreshVaultStats()}
+                      aria-label="Refresh vault stats"
+                      className="ml-1 inline-flex h-5 w-5 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                    >
+                      <RefreshCw className="h-3 w-3" />
+                    </button>
+                  </>
+                ) : (
+                  <span>Vault stats unavailable.</span>
                 )}
               </div>
             )}

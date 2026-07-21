@@ -13,8 +13,14 @@ type ProviderCapabilities = {
   /** Permission modes the provider runtime understands, in cycle order. */
   permissionModes: string[];
   defaultPermissionMode: string;
-  /** Whether image attachments can be included in a chat.send. */
+  /** Whether inline image attachments (base64/local_image, i.e. real vision)
+   * can be included in a chat.send. */
   supportsImages: boolean;
+  /** Whether non-image file attachments (PDF, spreadsheets, text, …) can be
+   * included in a chat.send. Delivered to the runtime by path reference, which
+   * every agent can read with its file tools — so this is true everywhere even
+   * for providers without image vision. */
+  supportsFiles: boolean;
   /** Whether an in-flight run can be cancelled via chat.abort. */
   supportsAbort: boolean;
   /** Whether interactive tool permission prompts can reach the UI. */
@@ -37,6 +43,7 @@ const PROVIDER_CAPABILITIES: Record<LLMProvider, ProviderCapabilities> = {
     permissionModes: ['default', 'auto', 'acceptEdits', 'bypassPermissions', 'plan'],
     defaultPermissionMode: 'default',
     supportsImages: true,
+    supportsFiles: true,
     supportsAbort: true,
     supportsPermissionRequests: true,
     supportsTokenUsage: true,
@@ -47,6 +54,7 @@ const PROVIDER_CAPABILITIES: Record<LLMProvider, ProviderCapabilities> = {
     permissionModes: ['default', 'acceptEdits', 'bypassPermissions', 'plan'],
     defaultPermissionMode: 'default',
     supportsImages: true,
+    supportsFiles: true,
     supportsAbort: true,
     supportsPermissionRequests: false,
     supportsTokenUsage: false,
@@ -57,6 +65,7 @@ const PROVIDER_CAPABILITIES: Record<LLMProvider, ProviderCapabilities> = {
     permissionModes: ['default', 'acceptEdits', 'bypassPermissions'],
     defaultPermissionMode: 'default',
     supportsImages: true,
+    supportsFiles: true,
     supportsAbort: true,
     supportsPermissionRequests: false,
     supportsTokenUsage: true,
@@ -70,6 +79,7 @@ const PROVIDER_CAPABILITIES: Record<LLMProvider, ProviderCapabilities> = {
     permissionModes: ['default', 'acceptEdits', 'bypassPermissions', 'plan'],
     defaultPermissionMode: 'default',
     supportsImages: true,
+    supportsFiles: true,
     supportsAbort: true,
     supportsPermissionRequests: false,
     supportsTokenUsage: true,
@@ -77,20 +87,17 @@ const PROVIDER_CAPABILITIES: Record<LLMProvider, ProviderCapabilities> = {
   },
   grok: {
     provider: 'grok',
-    // grok's `--permission-mode` accepts default/acceptEdits/auto/dontAsk/
-    // bypassPermissions/plan, and grok-cli.js passes the selected mode
-    // straight through, BUT only `auto` and `bypassPermissions` actually run
-    // to completion headlessly (verified live): default/acceptEdits/dontAsk/
-    // plan all block waiting for an interactive approval grok has no way to
-    // deliver in a spawned, non-interactive process (confirmed by killing a
-    // hung `--permission-mode default` run awaiting approval to delete a
-    // file — it never proceeds on its own). Only expose the two that don't
-    // silently hang until grok gets an approval-request channel wired up.
-    permissionModes: ['auto', 'bypassPermissions'],
-    defaultPermissionMode: 'bypassPermissions',
+    // grok-cli.js runs Grok over ACP (`grok agent stdio`). Modes map to a
+    // CloudCLI-managed GROK_HOME config (`[ui] permission_mode`) plus optional
+    // `--always-approve`. Interactive `session/request_permission` works when
+    // not in bypass — see grok-cli.js permission bridge (verified live).
+    // CLI vocabulary: default | acceptEdits | auto | bypassPermissions | plan.
+    permissionModes: ['default', 'acceptEdits', 'auto', 'bypassPermissions', 'plan'],
+    defaultPermissionMode: 'default',
     supportsImages: false,
+    supportsFiles: true,
     supportsAbort: true,
-    supportsPermissionRequests: false,
+    supportsPermissionRequests: true,
     // Real per-turn usage lives in the session's updates.jsonl
     // (turn_completed events) and is summed by the /token-usage route.
     supportsTokenUsage: true,
@@ -107,6 +114,7 @@ const PROVIDER_CAPABILITIES: Record<LLMProvider, ProviderCapabilities> = {
     permissionModes: ['plan', 'acceptEdits', 'bypassPermissions'],
     defaultPermissionMode: 'bypassPermissions',
     supportsImages: false,
+    supportsFiles: true,
     supportsAbort: true,
     supportsPermissionRequests: false,
     // Antigravity persists usage inside a protobuf conversation store with no
@@ -131,6 +139,7 @@ const PROVIDER_CAPABILITIES: Record<LLMProvider, ProviderCapabilities> = {
     permissionModes: ['default', 'plan', 'auto', 'bypassPermissions'],
     defaultPermissionMode: 'bypassPermissions',
     supportsImages: false,
+    supportsFiles: true,
     supportsAbort: true,
     // The permission bridge reuses the same pendingToolApprovals mechanism
     // as Claude's SDK integration (waitForToolApproval/resolveToolApproval,

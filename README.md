@@ -21,12 +21,24 @@
 
 ## 🍴 About this fork
 
-This is a fork of [siteboon/claudecodeui](https://github.com/siteboon/claudecodeui) that adds two more CLI vendors as full, first-class providers — not UI decoration, actually wired into chat, sessions, MCP, and permissions:
+This is a fork of [siteboon/claudecodeui](https://github.com/siteboon/claudecodeui) that adds two more CLI vendors as full, first-class providers and layers several cross-agent capabilities on top — all actually wired into chat, sessions, MCP, and permissions, not UI decoration.
 
-- **[Grok Build](https://x.ai)** (xAI) — full provider integration (auth, models, sessions, MCP, skills), with a real Permissions settings tab wired to Grok's genuine `--allow`/`--deny` rule flags, and live per-turn token usage.
-- **[Kimi](https://github.com/MoonshotAI/kimi-code)** (Moonshot AI) — built on Kimi's real [Agent Client Protocol](https://agentclientprotocol.com) (`kimi acp`) rather than one-shot CLI spawning: a persistent session per chat with genuine interactive permission approval (the model actually pauses and asks before running risky tool calls, rather than silently auto-approving everything).
+### New providers
 
-Also includes a handful of fixes found while building this that apply to every provider, not just the new ones:
+- **[Grok Build](https://x.ai)** (xAI) — full provider integration (auth, models, sessions, MCP, skills). Built on Grok's real [Agent Client Protocol](https://agentclientprotocol.com) (`grok agent stdio`) rather than one-shot CLI spawning, so you get live tool-call, plan, and thinking streaming plus genuine interactive permission prompts at parity with Claude. The full `default`/`acceptEdits`/`auto`/`bypassPermissions`/`plan` permission-mode set is honored via an isolated CloudCLI-managed runtime that reuses your existing xAI auth without leaking it, and per-turn token usage is shown live.
+- **[Kimi](https://github.com/MoonshotAI/kimi-code)** (Moonshot AI) — built on Kimi's Agent Client Protocol (`kimi acp`): a persistent session per chat with genuine interactive permission approval (the model actually pauses and asks before running risky tool calls, rather than silently auto-approving everything).
+
+### Cross-agent capabilities (work across every provider)
+
+- **Cross-agent skills** — author a skill once and either scope it to a project or make it **global**; CloudCLI fans it out into each installed agent's own skill directory (`~/.claude/skills`, `~/.kimi-code/skills`, …) and tracks exactly which copies it wrote, so removal is precise and your hand-authored skills are never clobbered. Skills are editable in place from the UI.
+- **Per-project memory (Obsidian second brain)** — an optional Obsidian-backed memory that agents read at the start of a task and write decisions/entities/session notes back to. Includes a connection test against the Obsidian Local REST API and a live vault-stats panel.
+- **Interactive prompts, provider-neutral** — `AskUserQuestion` and `ExitPlanMode` are recognized across Claude, Grok, Kimi, and the other adapters (including provider-native aliases), so any agent can pause mid-run to ask a question or hand back a plan for approval, with the prompt attributed to the right agent.
+- **Image & document attachments** — attach images (delivered inline to vision-capable models) plus PDFs, Office/OpenDocument files, and text formats (referenced by path so the agent reads them with its file tools). Up to 25MB per file, with the picker and paste behavior adapting to what the active provider supports.
+- **Mid-conversation model switching** — change the model partway through a chat without starting over.
+
+### Cross-provider fixes
+
+Found while building the above; they apply to every provider, not just the new ones:
 - MCP servers no longer double-list when a project's path is your home directory.
 - The shell/terminal tab now opens the actually-selected provider's CLI instead of silently falling back to Claude.
 - Live "thinking" output streams as one growing block instead of one bubble per token.

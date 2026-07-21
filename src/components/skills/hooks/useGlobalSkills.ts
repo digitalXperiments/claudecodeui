@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 
 import { authenticatedFetch } from '../../../utils/api';
 import type {
   ApiResponse,
-  ProjectSkill,
-  ProjectSkillsResponse,
+  GlobalSkill,
+  GlobalSkillContentUpdateResponse,
+  GlobalSkillsResponse,
   ProviderSkillCreateEntryPayload,
   SkillContentResponse,
 } from '../types';
@@ -32,121 +33,79 @@ const getApiErrorMessage = (payload: unknown, fallback: string): string => {
   return fallback;
 };
 
-const normalizeProjectSkill = (skill: Partial<ProjectSkill>): ProjectSkill => ({
+const normalizeGlobalSkill = (skill: Partial<GlobalSkill>): GlobalSkill => ({
   name: String(skill.name ?? ''),
   description: String(skill.description ?? ''),
   directoryName: String(skill.directoryName ?? ''),
   sourcePath: String(skill.sourcePath ?? ''),
   providers: Array.isArray(skill.providers) ? skill.providers : [],
   conflicts: Array.isArray(skill.conflicts) ? skill.conflicts : [],
+  unsupported: Array.isArray(skill.unsupported) ? skill.unsupported : [],
+  ...(skill.kind === 'memory-template' ? { kind: 'memory-template' as const } : {}),
 });
 
-const fetchProjectSkills = async (workspacePath: string): Promise<ProjectSkill[]> => {
-  const params = new URLSearchParams({ workspacePath });
-  const response = await authenticatedFetch(`/api/project-skills?${params.toString()}`);
-  const data = await toResponseJson<ApiResponse<ProjectSkillsResponse>>(response);
-  if (!response.ok || !data.success) {
-    throw new Error(getApiErrorMessage(data, 'Failed to load project skills'));
-  }
-
-  return (data.data.skills || []).map(normalizeProjectSkill);
-};
-
-type UseProjectSkillsArgs = {
-  workspacePath: string | null;
-};
-
-export function useProjectSkills({ workspacePath }: UseProjectSkillsArgs) {
-  const [skills, setSkills] = useState<ProjectSkill[]>([]);
+export function useGlobalSkills() {
+  const [skills, setSkills] = useState<GlobalSkill[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saveStatus, setSaveStatus] = useState<'success' | 'error' | null>(null);
-  const activeLoadIdRef = useRef(0);
 
   const refreshSkills = useCallback(async () => {
-    if (!workspacePath) {
-      setSkills([]);
-      setIsLoading(false);
-      setLoadError(null);
-      return;
-    }
-
-    const loadId = activeLoadIdRef.current + 1;
-    activeLoadIdRef.current = loadId;
     setIsLoading(true);
     setLoadError(null);
 
     try {
-      const nextSkills = await fetchProjectSkills(workspacePath);
-      if (activeLoadIdRef.current !== loadId) {
-        return;
+      const response = await authenticatedFetch('/api/global-skills');
+      const data = await toResponseJson<ApiResponse<GlobalSkillsResponse>>(response);
+      if (!response.ok || !data.success) {
+        throw new Error(getApiErrorMessage(data, 'Failed to load global skills'));
       }
 
-      setSkills(nextSkills);
+      setSkills((data.data.skills || []).map(normalizeGlobalSkill));
     } catch (error) {
-      if (activeLoadIdRef.current !== loadId) {
-        return;
-      }
-
       setSkills([]);
-      setLoadError(error instanceof Error ? error.message : 'Failed to load project skills');
+      setLoadError(error instanceof Error ? error.message : 'Failed to load global skills');
     } finally {
-      if (activeLoadIdRef.current === loadId) {
-        setIsLoading(false);
-      }
+      setIsLoading(false);
     }
-  }, [workspacePath]);
+  }, []);
 
   const addSkills = useCallback(async (entries: ProviderSkillCreateEntryPayload[]) => {
-    if (!workspacePath) {
-      throw new Error('Select a project before adding project skills.');
-    }
-
     try {
-      const response = await authenticatedFetch('/api/project-skills', {
+      const response = await authenticatedFetch('/api/global-skills', {
         method: 'POST',
-        body: JSON.stringify({ workspacePath, entries }),
+        body: JSON.stringify({ entries }),
       });
-      const data = await toResponseJson<ApiResponse<ProjectSkillsResponse>>(response);
+      const data = await toResponseJson<ApiResponse<GlobalSkillsResponse>>(response);
       if (!response.ok || !data.success) {
-        throw new Error(getApiErrorMessage(data, 'Failed to save project skills'));
+        throw new Error(getApiErrorMessage(data, 'Failed to save global skills'));
       }
 
       await refreshSkills();
       setSaveStatus('success');
-      return (data.data.skills || []).map(normalizeProjectSkill);
+      return (data.data.skills || []).map(normalizeGlobalSkill);
     } catch (error) {
       setSaveStatus('error');
       throw error;
     }
-  }, [refreshSkills, workspacePath]);
+  }, [refreshSkills]);
 
   const removeSkill = useCallback(async (directoryName: string) => {
-    if (!workspacePath) {
-      throw new Error('Select a project before removing project skills.');
-    }
-
-    const params = new URLSearchParams({ workspacePath });
     const response = await authenticatedFetch(
-      `/api/project-skills/${encodeURIComponent(directoryName)}?${params.toString()}`,
+      `/api/global-skills/${encodeURIComponent(directoryName)}`,
       { method: 'DELETE' },
     );
     const data = await toResponseJson<ApiResponse<unknown>>(response);
     if (!response.ok || !data.success) {
-      throw new Error(getApiErrorMessage(data, 'Failed to remove project skill'));
+      throw new Error(getApiErrorMessage(data, 'Failed to remove global skill'));
     }
 
     await refreshSkills();
-  }, [refreshSkills, workspacePath]);
+  }, [refreshSkills]);
 
   const getSkillContent = useCallback(async (directoryName: string): Promise<SkillContentResponse> => {
-    if (!workspacePath) {
-      throw new Error('Select a project before loading skill content.');
-    }
-
-    const params = new URLSearchParams({ workspacePath });
     const response = await authenticatedFetch(
-      `/api/project-skills/${encodeURIComponent(directoryName)}/content?${params.toString()}`,
+      `/api/global-skills/${encodeURIComponent(directoryName)}/content`,
     );
     const data = await toResponseJson<ApiResponse<SkillContentResponse>>(response);
     if (!response.ok || !data.success) {
@@ -154,24 +113,20 @@ export function useProjectSkills({ workspacePath }: UseProjectSkillsArgs) {
     }
 
     return data.data;
-  }, [workspacePath]);
+  }, []);
 
   const saveSkillContent = useCallback(async (
     directoryName: string,
     content: string,
-  ): Promise<SkillContentResponse> => {
-    if (!workspacePath) {
-      throw new Error('Select a project before saving skill content.');
-    }
-
+  ): Promise<GlobalSkillContentUpdateResponse> => {
     const response = await authenticatedFetch(
-      `/api/project-skills/${encodeURIComponent(directoryName)}/content`,
+      `/api/global-skills/${encodeURIComponent(directoryName)}/content`,
       {
         method: 'PUT',
-        body: JSON.stringify({ workspacePath, content }),
+        body: JSON.stringify({ content }),
       },
     );
-    const data = await toResponseJson<ApiResponse<SkillContentResponse>>(response);
+    const data = await toResponseJson<ApiResponse<GlobalSkillContentUpdateResponse>>(response);
     if (!response.ok || !data.success) {
       throw new Error(getApiErrorMessage(data, 'Failed to save skill content'));
     }
@@ -179,15 +134,11 @@ export function useProjectSkills({ workspacePath }: UseProjectSkillsArgs) {
     await refreshSkills();
     setSaveStatus('success');
     return data.data;
-  }, [refreshSkills, workspacePath]);
+  }, [refreshSkills]);
 
   useEffect(() => {
     void refreshSkills();
   }, [refreshSkills]);
-
-  useEffect(() => {
-    setSaveStatus(null);
-  }, [workspacePath]);
 
   useEffect(() => {
     if (saveStatus === null) {

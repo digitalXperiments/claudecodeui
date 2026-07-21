@@ -1,12 +1,16 @@
 import path from 'node:path';
+import http from 'node:http';
+import https from 'node:https';
+import { readdir, stat } from 'node:fs/promises';
 
 import { projectMemoryDb, projectsDb } from '@/modules/database/index.js';
 import { obsidianSettingsService } from '@/modules/providers/services/obsidian-settings.service.js';
 import { providerMcpService } from '@/modules/providers/services/mcp.service.js';
 import { projectSkillsService } from '@/modules/providers/services/project-skills.service.js';
+import { globalSkillsService } from '@/modules/providers/services/global-skills.service.js';
 import {
-  buildMemorySkillContent,
   MEMORY_SKILL_DIRECTORY_NAME,
+  renderMemorySkillTemplate,
 } from '@/modules/providers/shared/memory/memory-skill.template.js';
 import { scaffoldVault, type ScaffoldResult } from '@/modules/providers/shared/memory/memory.scaffold.js';
 import {
@@ -15,9 +19,13 @@ import {
 } from '@/modules/providers/shared/memory/obsidian-mcp.config.js';
 import type {
   LLMProvider,
+  ObsidianConnectionTestResult,
+  ObsidianMemorySettings,
   ProjectMemoryConfigInput,
   ProjectMemoryProviderResult,
+  ProjectMemorySkillResyncResult,
   ProjectMemoryStatus,
+  ProjectMemoryVaultStats,
 } from '@/shared/types.js';
 import {
   AppError,
@@ -115,6 +123,53 @@ const resolveProjectName = (workspacePath: string): string => {
   return custom || path.basename(workspacePath);
 };
 
+const directoryExists = async (directoryPath: string): Promise<boolean> => {
+  try {
+    const stats = await stat(directoryPath);
+    return stats.isDirectory();
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Probes the Obsidian Local REST API root with the saved credentials. The
+ * plugin serves a self-signed certificate on https, so verification is disabled
+ * there; the API key is the actual credential.
+ */
+const requestObsidianRoot = (
+  settings: ObsidianMemorySettings,
+): Promise<{ statusCode: number; body: string }> =>
+  new Promise((resolve, reject) => {
+    const handleResponse = (response: http.IncomingMessage) => {
+      const chunks: Buffer[] = [];
+      response.on('data', (chunk: Buffer) => chunks.push(chunk));
+      response.on('end', () => {
+        resolve({
+          statusCode: response.statusCode ?? 0,
+          body: Buffer.concat(chunks).toString('utf8'),
+        });
+      });
+    };
+
+    const baseOptions = {
+      host: settings.restHost,
+      port: settings.restPort,
+      path: '/',
+      method: 'GET',
+      timeout: 5000,
+      headers: { Authorization: `Bearer ${settings.restApiKey}` },
+    } as const;
+
+    const request = settings.restProtocol === 'https'
+      ? https.request({ ...baseOptions, rejectUnauthorized: false }, handleResponse)
+      : http.request(baseOptions, handleResponse);
+
+    request.on('timeout', () => request.destroy(new Error('Request timed out.')));
+    request.on('error', reject);
+    request.end();
+  });
+
 const buildStatus = async (workspacePath: string): Promise<ProjectMemoryStatus> => {
   const row = projectMemoryDb.get(workspacePath);
   const settings = obsidianSettingsService.getStatus();
@@ -203,14 +258,16 @@ export const projectMemoryService = {
     const installedProviders = mcpResults.filter((result) => result.ok).map((result) => result.provider);
 
     // 3. Install the Memory skill into every agent (best-effort; MCP is the
-    //    functional requirement, the skill is guidance).
+    //    functional requirement, the skill is guidance). Rendered from the
+    //    active (possibly user-edited) template in the global skills store.
     let skillInstalled = false;
     try {
+      const template = await globalSkillsService.getMemorySkillTemplate();
       await projectSkillsService.addProjectSkills({
         workspacePath,
         entries: [
           {
-            content: buildMemorySkillContent(vaultFolder),
+            content: renderMemorySkillTemplate(vaultFolder, template),
             directoryName: MEMORY_SKILL_DIRECTORY_NAME,
           },
         ],
@@ -314,5 +371,170 @@ export const projectMemoryService = {
     });
 
     return { status: await buildStatus(resolved), mcpResults };
+  },
+
+  /**
+   * Re-renders the managed memory skill from the active template for every
+   * memory-enabled project and re-fans it out to each project's agents. Called
+   * after the template is edited from the Global Skills tab, and available as a
+   * manual repair action.
+   */
+  async resyncMemorySkill(): Promise<ProjectMemorySkillResyncResult[]> {
+    const enabledRows = projectMemoryDb.list().filter((row) => Boolean(row.enabled));
+    const template = await globalSkillsService.getMemorySkillTemplate();
+
+    const results: ProjectMemorySkillResyncResult[] = [];
+    for (const row of enabledRows) {
+      try {
+        await projectSkillsService.addProjectSkills({
+          workspacePath: row.project_path,
+          entries: [
+            {
+              content: renderMemorySkillTemplate(row.vault_folder, template),
+              directoryName: MEMORY_SKILL_DIRECTORY_NAME,
+            },
+          ],
+        });
+        results.push({ workspacePath: row.project_path, ok: true });
+      } catch (error) {
+        results.push({
+          workspacePath: row.project_path,
+          ok: false,
+          error: error instanceof Error ? error.message : 'Failed to resync memory skill',
+        });
+      }
+    }
+
+    return results;
+  },
+
+  /**
+   * Probes the Obsidian Local REST API with the saved credentials so users can
+   * verify the connection before enabling memory for projects.
+   */
+  async testObsidianConnection(): Promise<ObsidianConnectionTestResult> {
+    const settings = obsidianSettingsService.getSettings();
+    if (!settings.restApiKey.trim()) {
+      return { ok: false, error: 'REST API key is not set.' };
+    }
+
+    let response: { statusCode: number; body: string };
+    try {
+      response = await requestObsidianRoot(settings);
+    } catch (error) {
+      const address = `${settings.restProtocol}://${settings.restHost}:${settings.restPort}`;
+      return {
+        ok: false,
+        error: `Cannot reach the Obsidian Local REST API at ${address} (${error instanceof Error ? error.message : 'unknown error'}). Is Obsidian running with the Local REST API plugin enabled?`,
+      };
+    }
+
+    if (response.statusCode === 401 || response.statusCode === 403) {
+      return { ok: false, error: 'The Obsidian Local REST API rejected the API key (HTTP 401). Check the key in the plugin settings.' };
+    }
+
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      return { ok: false, error: `Unexpected response from the Obsidian Local REST API (HTTP ${response.statusCode}).` };
+    }
+
+    let vaultName: string | undefined;
+    let version: string | undefined;
+    try {
+      const payload = JSON.parse(response.body) as Record<string, unknown>;
+      const manifest = payload.manifest;
+      if (manifest && typeof manifest === 'object') {
+        // The root payload does not carry the vault name; keep the slot for
+        // forward compatibility if the plugin adds it.
+      }
+      const versions = payload.versions;
+      if (versions && typeof versions === 'object') {
+        const obsidianVersion = (versions as Record<string, unknown>).obsidian;
+        if (typeof obsidianVersion === 'string') {
+          version = obsidianVersion;
+        }
+      }
+      const self = payload.vault;
+      if (typeof self === 'string' && self.trim()) {
+        vaultName = self.trim();
+      }
+    } catch {
+      // A 2xx with a non-JSON body still proves reachability + auth.
+    }
+
+    return { ok: true, vaultName, version };
+  },
+
+  /**
+   * Filesystem-derived stats about the project's folder inside the vault. The
+   * server is local to the vault, so no REST round-trip is needed.
+   */
+  async getVaultStats(workspacePath: string): Promise<ProjectMemoryVaultStats> {
+    const resolved = resolveWorkspacePath(workspacePath);
+    const row = projectMemoryDb.get(resolved);
+    const settings = obsidianSettingsService.getSettings();
+    const vaultFolder = row?.vault_folder ?? '';
+
+    const base: ProjectMemoryVaultStats = {
+      workspacePath: resolved,
+      vaultFolder,
+      exists: false,
+      decisions: 0,
+      entities: 0,
+      sessions: 0,
+      lastSessionWrite: null,
+    };
+
+    if (!row || !row.enabled || !settings.vaultPath.trim() || !vaultFolder) {
+      return base;
+    }
+
+    const folderRoot = path.join(settings.vaultPath, vaultFolder);
+    if (!(await directoryExists(folderRoot))) {
+      return base;
+    }
+
+    const countMarkdownFiles = async (subfolder: string): Promise<number> => {
+      try {
+        const entries = await readdir(path.join(folderRoot, subfolder), { withFileTypes: true });
+        return entries.filter((entry) => entry.isFile() && entry.name.toLowerCase().endsWith('.md')).length;
+      } catch {
+        return 0;
+      }
+    };
+
+    const findLastSessionWrite = async (): Promise<string | null> => {
+      try {
+        const sessionsDir = path.join(folderRoot, 'Sessions');
+        const entries = await readdir(sessionsDir, { withFileTypes: true });
+        let latestMs = 0;
+        for (const entry of entries) {
+          if (!entry.isFile() || !entry.name.toLowerCase().endsWith('.md')) {
+            continue;
+          }
+          const stats = await stat(path.join(sessionsDir, entry.name));
+          latestMs = Math.max(latestMs, stats.mtimeMs);
+        }
+        return latestMs > 0 ? new Date(latestMs).toISOString() : null;
+      } catch {
+        return null;
+      }
+    };
+
+    const [decisions, entities, sessions, lastSessionWrite] = await Promise.all([
+      countMarkdownFiles('Decisions'),
+      countMarkdownFiles('Entities'),
+      countMarkdownFiles('Sessions'),
+      findLastSessionWrite(),
+    ]);
+
+    return {
+      workspacePath: resolved,
+      vaultFolder,
+      exists: true,
+      decisions,
+      entities,
+      sessions,
+      lastSessionWrite,
+    };
   },
 };

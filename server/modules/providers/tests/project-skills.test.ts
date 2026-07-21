@@ -5,7 +5,6 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { projectSkillsService } from '@/modules/providers/services/project-skills.service.js';
-
 const patchHomeDir = (nextHomeDir: string) => {
   const original = os.homedir;
   (os as any).homedir = () => nextHomeDir;
@@ -119,6 +118,60 @@ test('projectSkillsService skips agent folders with a pre-existing non-managed s
     await projectSkillsService.removeProjectSkill({ workspacePath, directoryName: 'shared-skill' });
     assert.equal(await pathExists(handAuthoredPath), true);
     assert.equal(await pathExists(path.join(workspacePath, '.agents', 'skills', 'shared-skill')), false);
+  } finally {
+    restoreHomeDir();
+    await fs.rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+/**
+ * Editing a project skill rewrites the canonical copy and every installed
+ * agent copy in place, preserving supporting files.
+ */
+test('projectSkillsService.updateProjectSkillContent rewrites all copies and keeps supporting files', { concurrency: false }, async () => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'llm-project-skills-edit-'));
+  const workspacePath = path.join(tempRoot, 'workspace');
+  await fs.mkdir(workspacePath, { recursive: true });
+
+  const restoreHomeDir = patchHomeDir(tempRoot);
+  try {
+    await projectSkillsService.addProjectSkills({
+      workspacePath,
+      entries: [
+        {
+          directoryName: 'editable',
+          content: '---\nname: editable\ndescription: Before\n---\n\nOriginal body.\n',
+          files: [{ relativePath: 'scripts/run.sh', content: '#!/bin/sh\necho hi\n', encoding: 'utf8' }],
+        },
+      ],
+    });
+
+    const readBack = await projectSkillsService.getProjectSkillContent({ workspacePath, directoryName: 'editable' });
+    assert.match(readBack.content, /Original body\./);
+
+    const updated = '---\nname: editable\ndescription: After\n---\n\nUpdated body.\n';
+    await projectSkillsService.updateProjectSkillContent({ workspacePath, directoryName: 'editable', content: updated });
+
+    const canonicalPath = path.join(workspacePath, '.cloudcli', 'skills', 'editable', 'SKILL.md');
+    assert.equal(await fs.readFile(canonicalPath, 'utf8'), `${updated.trim()}\n`);
+    assert.equal(
+      await fs.readFile(path.join(workspacePath, '.claude', 'skills', 'editable', 'SKILL.md'), 'utf8'),
+      `${updated.trim()}\n`,
+    );
+    assert.equal(
+      await fs.readFile(path.join(workspacePath, '.kimi-code', 'skills', 'editable', 'SKILL.md'), 'utf8'),
+      `${updated.trim()}\n`,
+    );
+
+    // Supporting files survive the edit in both the canonical and agent copies.
+    assert.equal(await pathExists(path.join(workspacePath, '.cloudcli', 'skills', 'editable', 'scripts', 'run.sh')), true);
+    assert.equal(await pathExists(path.join(workspacePath, '.claude', 'skills', 'editable', 'scripts', 'run.sh')), true);
+
+    // Unknown skills report a 404-style error.
+    await assert.rejects(
+      () => projectSkillsService.updateProjectSkillContent({ workspacePath, directoryName: 'missing', content: '---\nname: missing\n---\n\nX.\n' }),
+      (error: unknown) => (error as { code?: string }).code === 'PROJECT_SKILL_NOT_FOUND',
+    );
   } finally {
     restoreHomeDir();
     await fs.rm(tempRoot, { recursive: true, force: true });

@@ -68,6 +68,46 @@ export type ProjectSkillsResponse = {
   skills: Array<Partial<ProjectSkill>>;
 };
 
+/**
+ * One cross-agent global skill. Authored once and fanned out to every agent's
+ * user-scope skill folder, so it applies to every project. `unsupported` lists
+ * agents that have no user-scope skill folder. `kind: 'memory-template'` marks
+ * the managed memory skill template, which is edited here but never fanned out.
+ */
+export type GlobalSkill = {
+  name: string;
+  description: string;
+  directoryName: string;
+  sourcePath: string;
+  providers: SkillsProvider[];
+  conflicts: SkillsProvider[];
+  unsupported: SkillsProvider[];
+  kind?: 'memory-template';
+};
+
+export type GlobalSkillCreatePayload = {
+  entries: ProviderSkillCreateEntryPayload[];
+};
+
+export type GlobalSkillsResponse = {
+  skills: Array<Partial<GlobalSkill>>;
+};
+
+export type SkillContentResponse = {
+  directoryName: string;
+  content: string;
+};
+
+export type MemorySkillResyncResult = {
+  workspacePath: string;
+  ok: boolean;
+  error?: string;
+};
+
+export type GlobalSkillContentUpdateResponse = SkillContentResponse & {
+  resync: MemorySkillResyncResult[] | null;
+};
+
 export type ApiSuccessResponse<T> = {
   success: true;
   data: T;

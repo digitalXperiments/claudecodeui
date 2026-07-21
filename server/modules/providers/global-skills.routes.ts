@@ -1,8 +1,10 @@
 import express, { type Request, type Response } from 'express';
 
-import { projectSkillsService } from '@/modules/providers/services/project-skills.service.js';
+import { globalSkillsService } from '@/modules/providers/services/global-skills.service.js';
+import { projectMemoryService } from '@/modules/providers/services/project-memory.service.js';
+import { MEMORY_SKILL_DIRECTORY_NAME } from '@/modules/providers/shared/memory/memory-skill.template.js';
 import type {
-  ProjectSkillCreateInput,
+  GlobalSkillCreateInput,
   ProviderSkillCreateEntry,
   ProviderSkillCreateFile,
 } from '@/shared/types.js';
@@ -14,7 +16,7 @@ const readRequiredString = (value: unknown, name: string): string => {
   const normalized = typeof value === 'string' ? value.trim() : '';
   if (!normalized) {
     throw new AppError(`${name} is required.`, {
-      code: 'PROJECT_SKILL_PARAMETER_REQUIRED',
+      code: 'GLOBAL_SKILL_PARAMETER_REQUIRED',
       statusCode: 400,
     });
   }
@@ -56,7 +58,7 @@ const parseSkillFiles = (value: unknown, entryIndex: number): ProviderSkillCreat
   });
 };
 
-const parseProjectSkillCreatePayload = (payload: unknown): ProjectSkillCreateInput => {
+const parseGlobalSkillCreatePayload = (payload: unknown): GlobalSkillCreateInput => {
   if (!payload || typeof payload !== 'object') {
     throw new AppError('Request body must be an object.', {
       code: 'INVALID_REQUEST_BODY',
@@ -65,7 +67,6 @@ const parseProjectSkillCreatePayload = (payload: unknown): ProjectSkillCreateInp
   }
 
   const body = payload as Record<string, unknown>;
-  const workspacePath = readRequiredString(body.workspacePath, 'workspacePath');
   const rawEntries = Array.isArray(body.entries)
     ? body.entries
     : typeof body.content === 'string'
@@ -79,7 +80,7 @@ const parseProjectSkillCreatePayload = (payload: unknown): ProjectSkillCreateInp
 
   if (!rawEntries || rawEntries.length === 0) {
     throw new AppError('At least one skill entry is required.', {
-      code: 'PROJECT_SKILLS_REQUIRED',
+      code: 'GLOBAL_SKILLS_REQUIRED',
       statusCode: 400,
     });
   }
@@ -109,7 +110,7 @@ const parseProjectSkillCreatePayload = (payload: unknown): ProjectSkillCreateInp
     } satisfies ProviderSkillCreateEntry;
   });
 
-  return { workspacePath, entries };
+  return { entries };
 };
 
 const readPathParam = (value: unknown, name: string): string => {
@@ -127,31 +128,28 @@ const readPathParam = (value: unknown, name: string): string => {
   });
 };
 
-// ----------------- Project skills routes -----------------
+// ----------------- Global skills routes -----------------
 router.get(
   '/',
-  asyncHandler(async (req: Request, res: Response) => {
-    const workspacePath = readRequiredString(req.query.workspacePath, 'workspacePath');
-    const skills = await projectSkillsService.listProjectSkills({ workspacePath });
-    res.json(createApiSuccessResponse({ workspacePath, skills }));
+  asyncHandler(async (_req: Request, res: Response) => {
+    const skills = await globalSkillsService.listGlobalSkills();
+    res.json(createApiSuccessResponse({ skills }));
   }),
 );
 
 router.post(
   '/',
   asyncHandler(async (req: Request, res: Response) => {
-    const input = parseProjectSkillCreatePayload(req.body);
-    const skills = await projectSkillsService.addProjectSkills(input);
-    res.json(createApiSuccessResponse({ workspacePath: input.workspacePath, skills }));
+    const input = parseGlobalSkillCreatePayload(req.body);
+    const skills = await globalSkillsService.addGlobalSkills(input);
+    res.json(createApiSuccessResponse({ skills }));
   }),
 );
 
 router.delete(
   '/:directoryName',
   asyncHandler(async (req: Request, res: Response) => {
-    const workspacePath = readRequiredString(req.query.workspacePath, 'workspacePath');
-    const result = await projectSkillsService.removeProjectSkill({
-      workspacePath,
+    const result = await globalSkillsService.removeGlobalSkill({
       directoryName: readPathParam(req.params.directoryName, 'directoryName'),
     });
     res.json(createApiSuccessResponse(result));
@@ -161,9 +159,7 @@ router.delete(
 router.get(
   '/:directoryName/content',
   asyncHandler(async (req: Request, res: Response) => {
-    const workspacePath = readRequiredString(req.query.workspacePath, 'workspacePath');
-    const result = await projectSkillsService.getProjectSkillContent({
-      workspacePath,
+    const result = await globalSkillsService.getGlobalSkillContent({
       directoryName: readPathParam(req.params.directoryName, 'directoryName'),
     });
     res.json(createApiSuccessResponse(result));
@@ -173,14 +169,20 @@ router.get(
 router.put(
   '/:directoryName/content',
   asyncHandler(async (req: Request, res: Response) => {
-    const workspacePath = readRequiredString(req.body?.workspacePath, 'workspacePath');
-    const content = readRequiredString(req.body?.content, 'content');
-    const result = await projectSkillsService.updateProjectSkillContent({
-      workspacePath,
-      directoryName: readPathParam(req.params.directoryName, 'directoryName'),
-      content,
-    });
-    res.json(createApiSuccessResponse(result));
+    const directoryName = readPathParam(req.params.directoryName, 'directoryName');
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const content = readRequiredString(body.content, 'content');
+
+    const result = await globalSkillsService.updateGlobalSkillContent({ directoryName, content });
+
+    // Saving the memory template re-renders the skill for every memory-enabled
+    // project so the new contract reaches agents on their next run.
+    let resync: Awaited<ReturnType<typeof projectMemoryService.resyncMemorySkill>> | null = null;
+    if (directoryName === MEMORY_SKILL_DIRECTORY_NAME) {
+      resync = await projectMemoryService.resyncMemorySkill();
+    }
+
+    res.json(createApiSuccessResponse({ ...result, resync }));
   }),
 );
 

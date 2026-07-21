@@ -113,4 +113,11 @@ test('buildMemorySkillContent embeds front matter and the vault folder', () => {
   assert.match(content, /obsidian_put_file/);
   assert.match(content, /obsidian_post_file/);
   assert.doesNotMatch(content, /`get_note`|`search_notes`|`create_note`|`update_note`|`get_backlinks`|`list_notes`/);
+
+  // Write tools return a spurious "Unexpected end of JSON input" on success
+  // (204 empty body). The skill must tell agents to treat it as success and not
+  // retry, or they abandon memory / duplicate session entries.
+  assert.match(content, /Unexpected end of JSON input/);
+  assert.match(content, /treat it as success/i);
+  assert.match(content, /do NOT retry/i);
 });

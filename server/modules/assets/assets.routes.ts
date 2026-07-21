@@ -7,7 +7,7 @@ import multer from 'multer';
 import {
   buildStoredImageRecords,
   ensureImageAssetsDir,
-  isAllowedImageMimeType,
+  isAllowedAttachmentMimeType,
   resolveImageAssetFile,
 } from '@/modules/assets/services/image-assets.service.js';
 
@@ -31,14 +31,14 @@ const storage = multer.diskStorage({
 const upload = multer({
   storage,
   fileFilter: (req, file, cb) => {
-    if (isAllowedImageMimeType(file.mimetype)) {
+    if (isAllowedAttachmentMimeType(file.mimetype, file.originalname)) {
       cb(null, true);
     } else {
-      cb(new Error('Invalid file type. Only JPEG, PNG, GIF, WebP, and SVG are allowed.'));
+      cb(new Error('Unsupported file type.'));
     }
   },
   limits: {
-    fileSize: 5 * 1024 * 1024, // 5MB
+    fileSize: 25 * 1024 * 1024, // 25MB — documents run larger than images
     files: 5,
   },
 });
@@ -87,7 +87,11 @@ router.get('/images/:filename', async (req, res) => {
   // fetches assets as blobs and shows them through <img>, where SVG scripts
   // never execute.
   res.setHeader('X-Content-Type-Options', 'nosniff');
-  if (contentType === 'image/svg+xml') {
+  // Only raster images are safe to render inline; SVG (script-carrying) and
+  // every non-image document type are forced to download instead. The chat UI
+  // is unaffected — it fetches assets as blobs and never navigates to them.
+  const isInlineImage = contentType.startsWith('image/') && contentType !== 'image/svg+xml';
+  if (!isInlineImage) {
     res.setHeader('Content-Disposition', 'attachment');
   }
   const fileStream = fsSync.createReadStream(resolved);

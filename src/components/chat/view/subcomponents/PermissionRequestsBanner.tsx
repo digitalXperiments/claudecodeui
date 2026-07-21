@@ -15,6 +15,9 @@ import {
 } from '../../../../shared/view/ui';
 
 registerPermissionPanel('AskUserQuestion', AskUserQuestionPanel);
+// Grok ACP uses the snake_case tool name on the wire; register both so a
+// permission_request that still carries the native name still opens the panel.
+registerPermissionPanel('ask_user_question', AskUserQuestionPanel);
 
 interface PermissionRequestsBannerProps {
   pendingPermissionRequests: PendingPermissionRequest[];
