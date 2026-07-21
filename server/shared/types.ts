@@ -395,6 +395,64 @@ export type ProjectSkillRemoveInput = {
 };
 
 /**
+ * Input for installing one or more cross-agent global skills. Each entry is
+ * fanned out into every agent's user-scope skill directory so the skill applies
+ * to every project on this machine.
+ */
+export type GlobalSkillCreateInput = {
+  entries: ProviderSkillCreateEntry[];
+};
+
+export type GlobalSkillRemoveInput = {
+  directoryName: string;
+};
+
+export type GlobalSkillListOptions = Record<string, never>;
+
+/**
+ * One managed skill's raw markdown plus the folder identity it belongs to.
+ */
+export type SkillContentResult = {
+  directoryName: string;
+  content: string;
+};
+
+export type ProjectSkillContentInput = {
+  workspacePath: string;
+  directoryName: string;
+};
+
+export type ProjectSkillContentUpdateInput = ProjectSkillContentInput & {
+  content: string;
+};
+
+export type GlobalSkillContentInput = {
+  directoryName: string;
+};
+
+export type GlobalSkillContentUpdateInput = GlobalSkillContentInput & {
+  content: string;
+};
+
+/**
+ * Normalized record for one cross-agent global skill.
+ *
+ * Same shape as {@link ProjectSkill}, plus `kind` marking the reserved managed
+ * memory template, and `unsupported` listing agents that have no writable
+ * user-scope skill directory.
+ */
+export type GlobalSkill = {
+  name: string;
+  description: string;
+  directoryName: string;
+  sourcePath: string;
+  providers: LLMProvider[];
+  conflicts: LLMProvider[];
+  unsupported: LLMProvider[];
+  kind?: 'memory-template';
+};
+
+/**
  * One provider's writable project-scoped skill directory for a workspace.
  */
 export type ProjectSkillProviderTarget = {
@@ -597,6 +655,39 @@ export type ProjectMemoryStatus = {
   settingsConfigured: boolean;
   providers: LLMProvider[];
   skillInstalled: boolean;
+};
+
+/**
+ * Result of probing the Obsidian Local REST API with the saved credentials.
+ */
+export type ObsidianConnectionTestResult = {
+  ok: boolean;
+  vaultName?: string;
+  version?: string;
+  error?: string;
+};
+
+/**
+ * Filesystem-derived stats about one project's folder inside the vault.
+ */
+export type ProjectMemoryVaultStats = {
+  workspacePath: string;
+  vaultFolder: string;
+  exists: boolean;
+  decisions: number;
+  entities: number;
+  sessions: number;
+  lastSessionWrite: string | null;
+};
+
+/**
+ * Per-project outcome of re-rendering the managed memory skill from the active
+ * template.
+ */
+export type ProjectMemorySkillResyncResult = {
+  workspacePath: string;
+  ok: boolean;
+  error?: string;
 };
 
 // ---------------------------

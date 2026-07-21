@@ -92,6 +92,8 @@ export interface PendingPermissionRequest {
   input?: unknown;
   context?: unknown;
   sessionId?: string | null;
+  /** Which provider raised the request — drives provider-neutral prompt copy. */
+  provider?: LLMProvider;
   receivedAt?: Date;
 }
 

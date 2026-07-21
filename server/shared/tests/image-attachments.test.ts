@@ -9,6 +9,7 @@ import {
   buildClaudeUserContent,
   buildCodexInputItems,
   isAllowedImageSourcePath,
+  isImageDescriptor,
   normalizeImageDescriptors,
   parseImagesInputTag,
   resolveImageMediaType,
@@ -75,7 +76,7 @@ test('appendImagesInputTag and parseImagesInputTag round-trip', () => {
   assert.ok(tagged.startsWith(prompt));
   assert.ok(tagged.includes('<images_input>'));
   assert.ok(tagged.includes('</images_input>'));
-  assert.ok(tagged.includes('The user attached 2 image(s)'));
+  assert.ok(tagged.includes('The user attached 2 file(s)'));
 
   const parsed = parseImagesInputTag(tagged);
   assert.equal(parsed.text, prompt);
@@ -181,7 +182,7 @@ test('buildClaudeUserContent reads image bytes into base64 blocks', async () => 
   }
 });
 
-test('buildClaudeUserContent skips unsupported types and unreadable files', async () => {
+test('buildClaudeUserContent path-references non-inline types and drops unreadable images', async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), 'image-attachments-'));
   try {
     await writeFile(path.join(tempDir, 'vector.svg'), '<svg></svg>');
@@ -189,17 +190,80 @@ test('buildClaudeUserContent skips unsupported types and unreadable files', asyn
     const content = await buildClaudeUserContent(
       'prompt',
       [
+        // SVG can't be sent inline to Claude, so it is referenced by path.
         { path: 'vector.svg', mimeType: 'image/svg+xml' },
+        // A supported image type that fails to read is dropped entirely.
         { path: 'missing.png', mimeType: 'image/png' },
       ],
       tempDir,
     );
 
-    // Only the text block survives; the prompt still goes through.
-    assert.deepEqual(content, [{ type: 'text', text: 'prompt' }]);
+    // One text block; it carries the prompt plus an <images_input> reference to
+    // the SVG, but never mentions the unreadable PNG.
+    assert.equal(content.length, 1);
+    assert.equal(content[0].type, 'text');
+    const textBlock = content[0] as Extract<(typeof content)[number], { type: 'text' }>;
+    assert.ok(textBlock.text.startsWith('prompt'));
+    assert.ok(textBlock.text.includes('<images_input>'));
+    assert.ok(textBlock.text.includes('vector.svg'));
+    assert.ok(!textBlock.text.includes('missing.png'));
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
+});
+
+test('isImageDescriptor distinguishes images from documents', () => {
+  assert.equal(isImageDescriptor({ path: 'a.png' }), true);
+  assert.equal(isImageDescriptor({ path: 'a.bin', mimeType: 'image/webp' }), true);
+  assert.equal(isImageDescriptor({ path: 'report.pdf', mimeType: 'application/pdf' }), false);
+  assert.equal(isImageDescriptor({ path: 'data.xlsx' }), false);
+  assert.equal(isImageDescriptor({ path: 'notes.txt' }), false);
+});
+
+test('buildClaudeUserContent keeps base64 images and path-references documents together', async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), 'image-attachments-'));
+  try {
+    await writeFile(path.join(tempDir, 'shot.png'), PNG_BYTES);
+
+    const content = await buildClaudeUserContent(
+      'Compare the screenshot with the spec.',
+      [
+        { path: 'shot.png', mimeType: 'image/png' },
+        { path: '.cloudcli/assets/spec.pdf', name: 'spec.pdf', mimeType: 'application/pdf' },
+      ],
+      tempDir,
+    );
+
+    // Text block (with the PDF reference) first, then the base64 image block.
+    assert.equal(content.length, 2);
+    assert.equal(content[0].type, 'text');
+    const textBlock = content[0] as Extract<(typeof content)[number], { type: 'text' }>;
+    assert.ok(textBlock.text.includes('<images_input>'));
+    assert.ok(textBlock.text.includes('spec.pdf'));
+    assert.equal(content[1].type, 'image');
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('buildCodexInputItems path-references documents and keeps images as local_image', () => {
+  const cwd = path.join(os.tmpdir(), 'codex-project');
+  const items = buildCodexInputItems(
+    'Summarize the report and describe the chart.',
+    [
+      { path: '.cloudcli/assets/chart.jpg' },
+      { path: '.cloudcli/assets/report.pdf', name: 'report.pdf', mimeType: 'application/pdf' },
+    ],
+    cwd,
+  );
+
+  // Text item first (with the PDF reference), then one local_image for the jpg.
+  assert.equal(items.length, 2);
+  assert.equal(items[0].type, 'text');
+  const textItem = items[0] as Extract<(typeof items)[number], { type: 'text' }>;
+  assert.ok(textItem.text.includes('<images_input>'));
+  assert.ok(textItem.text.includes('report.pdf'));
+  assert.equal(items[1].type, 'local_image');
 });
 
 test('buildClaudeUserContent refuses symlinked images outside allowed roots', async (t) => {

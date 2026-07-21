@@ -87,6 +87,7 @@
   "mainTabs": {
     "label": "設定",
     "agents": "智慧代理",
+    "globalSkills": "全域技能",
     "appearance": "外觀",
     "git": "Git",
     "apiTokens": "API 和權杖",

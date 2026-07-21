@@ -2,7 +2,7 @@ import fsSync from 'node:fs';
 import readline from 'node:readline';
 
 import { sessionsDb } from '@/modules/database/index.js';
-import { toImageAttachments } from '@/shared/image-attachments.js';
+import { parseImagesInputTag, toImageAttachments } from '@/shared/image-attachments.js';
 import type { IProviderSessions } from '@/shared/interfaces.js';
 import type { AnyRecord, FetchHistoryOptions, FetchHistoryResult, NormalizedMessage } from '@/shared/types.js';
 import { createNormalizedMessage, generateMessageId, readObjectRecord, sliceTailPage } from '@/shared/utils.js';
@@ -134,14 +134,20 @@ async function getCodexSessionMessages(
         }
 
         if (entry.type === 'event_msg' && isVisibleCodexUserMessage(entry.payload as AnyRecord)) {
+          // Non-image attachments ride along as an `<images_input>` path block
+          // appended to the prompt; strip it from the displayed text and
+          // surface the referenced files alongside any inline images.
+          const { text, attachments } = parseImagesInputTag(String(entry.payload.message));
+          const inlineImages = extractCodexUserImages(entry.payload as AnyRecord) ?? [];
+          const images = [...inlineImages, ...attachments];
           messages.push({
             type: 'user',
             timestamp: entry.timestamp,
             message: {
               role: 'user',
-              content: entry.payload.message,
+              content: text,
             },
-            images: extractCodexUserImages(entry.payload as AnyRecord),
+            images: images.length > 0 ? images : undefined,
           });
         }
 
@@ -326,7 +332,7 @@ export class CodexSessionsProvider implements IProviderSessions {
     }
 
     if (raw.message?.role === 'user') {
-      const content = typeof raw.message.content === 'string'
+      const rawContent = typeof raw.message.content === 'string'
         ? raw.message.content
         : Array.isArray(raw.message.content)
           ? raw.message.content
@@ -334,8 +340,12 @@ export class CodexSessionsProvider implements IProviderSessions {
               .filter(Boolean)
               .join('\n')
           : String(raw.message.content || '');
-      const rawImages = Array.isArray(raw.images) && raw.images.length > 0 ? raw.images : undefined;
-      if (!content.trim() && !rawImages) {
+      // Non-image attachments ride along as an <images_input> path block; strip
+      // it from the displayed text and surface the referenced files.
+      const { text: content, attachments } = parseImagesInputTag(rawContent);
+      const rawImages = Array.isArray(raw.images) && raw.images.length > 0 ? raw.images : [];
+      const images = [...rawImages, ...attachments];
+      if (!content.trim() && images.length === 0) {
         return [];
       }
       return [createNormalizedMessage({
@@ -346,7 +356,7 @@ export class CodexSessionsProvider implements IProviderSessions {
         kind: 'text',
         role: 'user',
         content,
-        images: rawImages,
+        images: images.length > 0 ? images : undefined,
       })];
     }
 

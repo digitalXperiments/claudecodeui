@@ -87,6 +87,7 @@
   "mainTabs": {
     "label": "设置",
     "agents": "智能体",
+    "globalSkills": "全局技能",
     "appearance": "外观",
     "git": "Git",
     "apiTokens": "API 和令牌",

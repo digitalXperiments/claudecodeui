@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   ChangeEvent,
   ClipboardEvent,
@@ -80,6 +80,10 @@ interface UseChatComposerStateArgs {
   addMessage: (msg: ChatMessage) => void;
   setIsUserScrolledUp: (isScrolledUp: boolean) => void;
   setPendingPermissionRequests: Dispatch<SetStateAction<PendingPermissionRequest[]>>;
+  /** Whether the active provider accepts inline image attachments (vision). */
+  supportsImages?: boolean;
+  /** Whether the active provider accepts non-image file attachments. */
+  supportsFiles?: boolean;
 }
 
 interface MentionableFile {
@@ -163,6 +167,33 @@ const createFakeSubmitEvent = () => {
   return { preventDefault: () => undefined } as unknown as FormEvent<HTMLFormElement>;
 };
 
+/** Max attachment size. Documents run larger than images, so 25MB (mirrors the
+ * server-side limit in assets.routes.ts). */
+const MAX_ATTACHMENT_SIZE = 25 * 1024 * 1024;
+
+/** Image extensions — accepted only for providers with inline image vision. */
+const IMAGE_ATTACHMENT_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg'];
+
+/** Document extensions — accepted by every provider (read by path). Mirrors the
+ * server allowlist in image-assets.service.ts. Dangerous types are absent. */
+const DOCUMENT_ATTACHMENT_EXTENSIONS = [
+  '.pdf', '.txt', '.md', '.markdown', '.csv', '.tsv', '.json', '.xml',
+  '.html', '.htm', '.rtf', '.log', '.yaml', '.yml',
+  '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.odt', '.ods', '.odp',
+];
+
+function getFileExtension(name: string): string {
+  const lastDot = name.lastIndexOf('.');
+  return lastDot >= 0 ? name.slice(lastDot).toLowerCase() : '';
+}
+
+function isImageFile(file: File): boolean {
+  if (file.type && file.type.startsWith('image/')) {
+    return true;
+  }
+  return IMAGE_ATTACHMENT_EXTENSIONS.includes(getFileExtension(file.name || ''));
+}
+
 export type QueuedDraft = {
   content: string;
   images: File[];
@@ -228,7 +259,11 @@ export function useChatComposerState({
   addMessage,
   setIsUserScrolledUp,
   setPendingPermissionRequests,
+  supportsImages = true,
+  supportsFiles = true,
 }: UseChatComposerStateArgs) {
+  const allowsImages = supportsImages !== false;
+  const allowsFiles = supportsFiles !== false;
   const [input, setInput] = useState(() => {
     if (typeof window !== 'undefined' && selectedProject) {
       // Draft inputs are keyed by the DB projectId so per-project drafts
@@ -565,7 +600,15 @@ export function useChatComposerState({
     lastAutosizedInputRef.current = target.value;
   }, []);
 
-  const handleImageFiles = useCallback((files: File[]) => {
+  const handleAttachedFiles = useCallback((files: File[]) => {
+    const setError = (fileName: string, message: string) => {
+      setImageErrors((previous) => {
+        const next = new Map(previous);
+        next.set(fileName, message);
+        return next;
+      });
+    };
+
     const validFiles = files.filter((file) => {
       try {
         if (!file || typeof file !== 'object') {
@@ -573,17 +616,23 @@ export function useChatComposerState({
           return false;
         }
 
-        if (!file.type || !file.type.startsWith('image/')) {
+        const fileName = file.name || 'Unknown file';
+        const extension = getFileExtension(fileName);
+
+        if (isImageFile(file)) {
+          if (!allowsImages) {
+            // Provider has no image vision — documents only (see the capability
+            // matrix in provider-capabilities.service.ts).
+            setError(fileName, 'This agent can’t view images — attach a document instead');
+            return false;
+          }
+        } else if (!allowsFiles || !DOCUMENT_ATTACHMENT_EXTENSIONS.includes(extension)) {
+          setError(fileName, 'Unsupported file type');
           return false;
         }
 
-        if (!file.size || file.size > 5 * 1024 * 1024) {
-          const fileName = file.name || 'Unknown file';
-          setImageErrors((previous) => {
-            const next = new Map(previous);
-            next.set(fileName, 'File too large (max 5MB)');
-            return next;
-          });
+        if (!file.size || file.size > MAX_ATTACHMENT_SIZE) {
+          setError(fileName, 'File too large (max 25MB)');
           return false;
         }
 
@@ -597,10 +646,14 @@ export function useChatComposerState({
     if (validFiles.length > 0) {
       setAttachedImages((previous) => [...previous, ...validFiles].slice(0, 5));
     }
-  }, []);
+  }, [allowsImages, allowsFiles]);
 
   const handlePaste = useCallback(
     (event: ClipboardEvent<HTMLTextAreaElement>) => {
+      // Pasted content is always an image; skip entirely for vision-less agents.
+      if (!allowsImages) {
+        return;
+      }
       const items = Array.from(event.clipboardData.items);
 
       items.forEach((item) => {
@@ -609,7 +662,7 @@ export function useChatComposerState({
         }
         const file = item.getAsFile();
         if (file) {
-          handleImageFiles([file]);
+          handleAttachedFiles([file]);
         }
       });
 
@@ -617,20 +670,32 @@ export function useChatComposerState({
         const files = Array.from(event.clipboardData.files);
         const imageFiles = files.filter((file) => file.type.startsWith('image/'));
         if (imageFiles.length > 0) {
-          handleImageFiles(imageFiles);
+          handleAttachedFiles(imageFiles);
         }
       }
     },
-    [handleImageFiles],
+    [allowsImages, handleAttachedFiles],
   );
 
+  // The OS picker / drop filter mirrors the provider's capabilities: images
+  // only for vision-capable agents, documents everywhere. Validation in
+  // handleAttachedFiles enforces the same rules for anything that slips through.
+  const dropzoneAccept = useMemo(() => {
+    const accept: Record<string, string[]> = {};
+    if (allowsImages) {
+      accept['image/*'] = IMAGE_ATTACHMENT_EXTENSIONS;
+    }
+    if (allowsFiles) {
+      accept['application/octet-stream'] = DOCUMENT_ATTACHMENT_EXTENSIONS;
+    }
+    return accept;
+  }, [allowsImages, allowsFiles]);
+
   const { getRootProps, getInputProps, isDragActive, open } = useDropzone({
-    accept: {
-      'image/*': ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg'],
-    },
-    maxSize: 5 * 1024 * 1024,
+    accept: dropzoneAccept,
+    maxSize: MAX_ATTACHMENT_SIZE,
     maxFiles: 5,
-    onDrop: handleImageFiles,
+    onDrop: handleAttachedFiles,
     noClick: true,
     noKeyboard: true,
   });

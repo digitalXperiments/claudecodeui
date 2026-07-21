@@ -87,6 +87,7 @@
   "mainTabs": {
     "label": "Impostazioni",
     "agents": "Agenti",
+    "globalSkills": "Skill globali",
     "appearance": "Aspetto",
     "git": "Git",
     "apiTokens": "API e Token",

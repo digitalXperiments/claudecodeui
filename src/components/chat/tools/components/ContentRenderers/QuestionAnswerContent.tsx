@@ -5,6 +5,15 @@ interface QuestionAnswerContentProps {
   questions: Question[];
   answers: Record<string, string>;
   className?: string;
+  /**
+   * Whether the underlying tool call is still in-flight (no result yet). While
+   * running, an unanswered question is *pending*, not "Skipped" — that label is
+   * only correct once the tool has resolved without an answer. Passing this
+   * avoids the contradictory "Running" badge + "Skipped" text seen on providers
+   * whose ask-the-user tool calls aren't wired to the interactive answer
+   * round-trip (they arrive as a plain tool_use card that never gets answered).
+   */
+  isRunning?: boolean;
 }
 
 // Exception to the stateless ContentRenderer pattern: multi-question navigation requires local state.
@@ -12,6 +21,7 @@ export const QuestionAnswerContent: React.FC<QuestionAnswerContentProps> = ({
   questions,
   answers,
   className = '',
+  isRunning = false,
 }) => {
   const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
 
@@ -25,6 +35,9 @@ export const QuestionAnswerContent: React.FC<QuestionAnswerContentProps> = ({
 
   const hasAnyAnswer = Object.keys(answers || {}).length > 0;
   const total = questions.length;
+  // An unanswered question is only "Skipped" once the tool has resolved. While
+  // the run is still waiting on the user, it is pending — not skipped.
+  const unansweredLabel = isRunning ? 'Waiting for your answer' : 'Skipped';
 
   return (
     <div className={`space-y-2 ${className}`}>
@@ -108,7 +121,7 @@ export const QuestionAnswerContent: React.FC<QuestionAnswerContentProps> = ({
 
                 {!isExpanded && skipped && hasAnyAnswer && (
                   <span className="mt-1 inline-block text-[10px] italic text-gray-400 dark:text-gray-500">
-                    Skipped
+                    {unansweredLabel}
                   </span>
                 )}
               </div>
@@ -183,7 +196,7 @@ export const QuestionAnswerContent: React.FC<QuestionAnswerContentProps> = ({
 
                   {skipped && hasAnyAnswer && (
                     <div className="px-2.5 py-1 text-[11px] italic text-gray-400 dark:text-gray-500">
-                      No answer provided
+                      {isRunning ? 'Waiting for your answer' : 'No answer provided'}
                     </div>
                   )}
                 </div>
@@ -193,9 +206,9 @@ export const QuestionAnswerContent: React.FC<QuestionAnswerContentProps> = ({
         );
       })}
 
-      {!hasAnyAnswer && total === 1 && (
+      {!hasAnyAnswer && (total === 1 || isRunning) && (
         <div className="text-[11px] italic text-gray-400 dark:text-gray-500">
-          Skipped
+          {unansweredLabel}
         </div>
       )}
     </div>

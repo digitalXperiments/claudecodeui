@@ -33,6 +33,7 @@ import { sessionsService } from './modules/providers/services/sessions.service.j
 import { getMemoryPreamble } from './modules/providers/services/project-memory.service.js';
 import { providerAuthService } from './modules/providers/services/provider-auth.service.js';
 import { createCompleteMessage, createNormalizedMessage } from './shared/utils.js';
+import { TOOLS_REQUIRING_INTERACTION } from './shared/interactive-tools.js';
 
 const activeSessions = new Map();
 const pendingToolApprovals = new Map();
@@ -42,8 +43,6 @@ const pendingToolApprovals = new Map();
 const abortedSessionIds = new Set();
 
 const TOOL_APPROVAL_TIMEOUT_MS = parseInt(process.env.CLAUDE_TOOL_APPROVAL_TIMEOUT_MS, 10) || 55000;
-
-const TOOLS_REQUIRING_INTERACTION = new Set(['AskUserQuestion', 'ExitPlanMode']);
 
 function resolveClaudeEffort(model, effort, modelsDefinition = CLAUDE_FALLBACK_MODELS) {
   const selectedModel = modelsDefinition?.OPTIONS?.find((option) => option.value === model) || null;

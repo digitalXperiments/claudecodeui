@@ -5,6 +5,7 @@ import readline from 'node:readline';
 
 import type { IProviderSessions } from '@/shared/interfaces.js';
 import type { AnyRecord, FetchHistoryOptions, FetchHistoryResult, NormalizedMessage } from '@/shared/types.js';
+import { parseImagesInputTag } from '@/shared/image-attachments.js';
 import {
   createNormalizedMessage,
   generateMessageId,
@@ -275,8 +276,14 @@ export class KimiSessionsProvider implements IProviderSessions {
           if (message?.role !== 'user') {
             continue;
           }
-          const text = extractKimiTextParts(message.content);
-          if (!text.trim() || isInternalKimiText(text)) {
+          const rawText = extractKimiTextParts(message.content);
+          if (!rawText.trim() || isInternalKimiText(rawText)) {
+            continue;
+          }
+          // Attachments sent with a turn ride along as an <images_input> path
+          // block; strip it from the displayed text and surface the files.
+          const { text, attachments } = parseImagesInputTag(rawText);
+          if (!text.trim() && attachments.length === 0) {
             continue;
           }
           messages.push(createNormalizedMessage({
@@ -287,6 +294,7 @@ export class KimiSessionsProvider implements IProviderSessions {
             kind: 'text',
             role: 'user',
             content: text,
+            images: attachments.length > 0 ? attachments : undefined,
           }));
           continue;
         }

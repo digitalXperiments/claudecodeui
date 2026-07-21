@@ -8,6 +8,7 @@ import { notifyRunFailed, notifyRunStopped } from './services/notification-orche
 import { sessionsService } from './modules/providers/services/sessions.service.js';
 import { providerAuthService } from './modules/providers/services/provider-auth.service.js';
 import { providerModelsService } from './modules/providers/services/provider-models.service.js';
+import { appendImagesInputTag } from './shared/image-attachments.js';
 import { createCompleteMessage, createNormalizedMessage, flattenPromptForWindowsShell } from './shared/utils.js';
 
 // cross-spawn resolves .cmd shims/PATHEXT on Windows and delegates to
@@ -78,7 +79,9 @@ async function spawnAgy(command, options = {}, ws) {
     // following option. Passing the prompt positionally instead makes `--print`
     // swallow the next flag and agy answers an empty prompt (a generic
     // greeting), so keep this as the final `--print <prompt>` pair.
-    baseArgs.push('--print', flattenPromptForWindowsShell(command || ''));
+    // Image and file attachments ride along as an <images_input> path list
+    // appended to the prompt so agy reads them with its file tools.
+    baseArgs.push('--print', flattenPromptForWindowsShell(appendImagesInputTag(command || '', options.images)));
 
     const workingDir = cwd || projectPath || process.cwd();
     const processKey = capturedSessionId || Date.now().toString();

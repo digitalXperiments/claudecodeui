@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { rm, stat } from 'node:fs/promises';
+import { readFile, rm, stat, writeFile } from 'node:fs/promises';
 
 import { providerRegistry } from '@/modules/providers/provider.registry.js';
 import {
@@ -10,9 +10,12 @@ import {
 import type {
   LLMProvider,
   ProjectSkill,
+  ProjectSkillContentInput,
+  ProjectSkillContentUpdateInput,
   ProjectSkillCreateInput,
   ProjectSkillListOptions,
   ProjectSkillRemoveInput,
+  SkillContentResult,
 } from '@/shared/types.js';
 import {
   AppError,
@@ -20,6 +23,7 @@ import {
   readJsonConfig,
   readObjectRecord,
   readProviderSkillMarkdownDefinition,
+  readProviderSkillMarkdownDefinitionFromContent,
   writeJsonConfig,
 } from '@/shared/utils.js';
 
@@ -311,5 +315,72 @@ export const projectSkillsService = {
     }
 
     return { removed, directoryName, providers };
+  },
+
+  /**
+   * Returns the raw markdown of one managed project skill from the workspace's
+   * canonical folder.
+   */
+  async getProjectSkillContent(input: ProjectSkillContentInput): Promise<SkillContentResult> {
+    const workspacePath = resolveWorkspacePath(input.workspacePath);
+    const directoryName = requireDirectoryName(input.directoryName);
+    const skillPath = path.join(getManagedRoot(workspacePath), directoryName, 'SKILL.md');
+
+    let content: string;
+    try {
+      content = await readFile(skillPath, 'utf8');
+    } catch {
+      throw new AppError(`Project skill "${directoryName}" was not found.`, {
+        code: 'PROJECT_SKILL_NOT_FOUND',
+        statusCode: 404,
+      });
+    }
+
+    return { directoryName, content };
+  },
+
+  /**
+   * Rewrites one managed project skill's markdown in place: the canonical copy
+   * and every manifest-recorded agent copy. Supporting files are preserved. The
+   * folder is the skill's identity — changing the front matter `name` does not
+   * move it.
+   */
+  async updateProjectSkillContent(input: ProjectSkillContentUpdateInput): Promise<SkillContentResult> {
+    const workspacePath = resolveWorkspacePath(input.workspacePath);
+    const directoryName = requireDirectoryName(input.directoryName);
+
+    const content = typeof input.content === 'string' ? input.content.trim() : '';
+    if (!content) {
+      throw new AppError('Skill content must not be empty.', {
+        code: 'PROVIDER_SKILL_CONTENT_REQUIRED',
+        statusCode: 400,
+      });
+    }
+    // Throws a 400 AppError when the front matter does not carry a valid name.
+    readProviderSkillMarkdownDefinitionFromContent(content, directoryName);
+
+    const managedRoot = getManagedRoot(workspacePath);
+    const skillPath = path.join(managedRoot, directoryName, 'SKILL.md');
+    try {
+      await stat(skillPath);
+    } catch {
+      throw new AppError(`Project skill "${directoryName}" was not found.`, {
+        code: 'PROJECT_SKILL_NOT_FOUND',
+        statusCode: 404,
+      });
+    }
+
+    const manifest = await readManifest(workspacePath);
+    const rootDirs = [managedRoot, ...(manifest.skills[directoryName]?.targets ?? [])];
+
+    for (const rootDir of rootDirs) {
+      const skillDirectoryPath = path.join(rootDir, directoryName);
+      if (!isPathInsideRoot(rootDir, skillDirectoryPath) || path.resolve(skillDirectoryPath) === path.resolve(rootDir)) {
+        continue;
+      }
+      await writeFile(path.join(skillDirectoryPath, 'SKILL.md'), `${content}\n`, 'utf8');
+    }
+
+    return { directoryName, content };
   },
 };

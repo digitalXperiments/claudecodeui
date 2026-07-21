@@ -7,6 +7,7 @@ import { Button } from '../../../shared/view/ui';
 import SettingsSidebar from '../view/SettingsSidebar';
 import AgentsSettingsTab from '../view/tabs/agents-settings/AgentsSettingsTab';
 import ProjectSkillsSettingsTab from '../view/tabs/ProjectSkillsSettingsTab';
+import GlobalSkillsSettingsTab from '../view/tabs/GlobalSkillsSettingsTab';
 import MemorySettingsTab from '../view/tabs/MemorySettingsTab';
 import AppearanceSettingsTab from '../view/tabs/AppearanceSettingsTab';
 import CredentialsSettingsTab from '../view/tabs/api-settings/CredentialsSettingsTab';
@@ -200,6 +201,8 @@ function Settings({ isOpen, onClose, projects = [], initialTab = 'agents' }: Set
               )}
 
               {activeTab === 'skills' && <ProjectSkillsSettingsTab projects={projects} />}
+
+              {activeTab === 'global-skills' && <GlobalSkillsSettingsTab />}
 
               {activeTab === 'memory' && <MemorySettingsTab projects={projects} />}
 

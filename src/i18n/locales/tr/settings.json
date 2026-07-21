@@ -87,6 +87,7 @@
   "mainTabs": {
     "label": "Ayarlar",
     "agents": "Ajanlar",
+    "globalSkills": "Küresel Yetenekler",
     "appearance": "Görünüm",
     "git": "Git",
     "apiTokens": "API ve Token'lar",

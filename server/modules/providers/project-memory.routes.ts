@@ -98,4 +98,30 @@ router.delete(
   }),
 );
 
+// ----------------- Observability -----------------
+router.post(
+  '/test-connection',
+  asyncHandler(async (_req: Request, res: Response) => {
+    const result = await projectMemoryService.testObsidianConnection();
+    res.json(createApiSuccessResponse({ result }));
+  }),
+);
+
+router.get(
+  '/vault-stats',
+  asyncHandler(async (req: Request, res: Response) => {
+    const workspacePath = readWorkspaceQuery(req.query.workspacePath);
+    const stats = await projectMemoryService.getVaultStats(workspacePath);
+    res.json(createApiSuccessResponse({ stats }));
+  }),
+);
+
+router.post(
+  '/resync-skill',
+  asyncHandler(async (_req: Request, res: Response) => {
+    const results = await projectMemoryService.resyncMemorySkill();
+    res.json(createApiSuccessResponse({ results }));
+  }),
+);
+
 export default router;

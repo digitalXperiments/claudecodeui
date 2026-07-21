@@ -159,6 +159,15 @@ export abstract class SkillsProvider implements IProviderSkills {
     return null;
   }
 
+  /**
+   * Public accessor for the provider's writable user-scope skill directory, used
+   * by the cross-agent global skills fan-out. Returns null for providers that do
+   * not support managed global skills.
+   */
+  async getGlobalSkillTarget(): Promise<ProviderSkillSource | null> {
+    return this.getGlobalSkillSource();
+  }
+
   protected abstract getSkillSources(workspacePath: string): Promise<ProviderSkillSource[]>;
 
   protected async getGlobalSkillSource(): Promise<ProviderSkillSource | null> {

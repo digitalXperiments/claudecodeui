@@ -1,7 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { authenticatedFetch } from '../../../utils/api';
-import type { ApiResponse, ProjectMemoryStatus, ProjectMemoryStatusResponse } from '../types';
+import type {
+  ApiResponse,
+  ProjectMemoryStatus,
+  ProjectMemoryStatusResponse,
+  ProjectMemoryVaultStats,
+  ProjectMemoryVaultStatsResponse,
+} from '../types';
 
 const toResponseJson = async <T>(response: Response): Promise<T> => response.json() as Promise<T>;
 
@@ -154,5 +160,34 @@ export function useProjectMemory({ workspacePath }: UseProjectMemoryArgs) {
     void refresh();
   }, [refresh]);
 
-  return { status, isLoading, isBusy, error, refresh, enable, disable, rescaffold };
+  const [vaultStats, setVaultStats] = useState<ProjectMemoryVaultStats | null>(null);
+  const [isLoadingStats, setIsLoadingStats] = useState(false);
+
+  const refreshVaultStats = useCallback(async () => {
+    if (!workspacePath || !status?.enabled) {
+      setVaultStats(null);
+      return;
+    }
+
+    setIsLoadingStats(true);
+    try {
+      const params = new URLSearchParams({ workspacePath });
+      const response = await authenticatedFetch(`/api/project-memory/vault-stats?${params.toString()}`);
+      const data = await toResponseJson<ApiResponse<ProjectMemoryVaultStatsResponse>>(response);
+      if (!response.ok || !data.success) {
+        throw new Error(getApiErrorMessage(data, 'Failed to load vault stats'));
+      }
+      setVaultStats(data.data.stats);
+    } catch {
+      setVaultStats(null);
+    } finally {
+      setIsLoadingStats(false);
+    }
+  }, [workspacePath, status?.enabled]);
+
+  useEffect(() => {
+    void refreshVaultStats();
+  }, [refreshVaultStats]);
+
+  return { status, isLoading, isBusy, error, refresh, enable, disable, rescaffold, vaultStats, isLoadingStats, refreshVaultStats };
 }

@@ -128,6 +128,17 @@ export interface IProviderSkills {
    * workspace can use it.
    */
   getProjectSkillTarget(workspacePath: string): Promise<ProviderSkillSource | null>;
+
+  /**
+   * Returns the single writable user-scoped skill directory this provider's CLI
+   * reads for every project, or `null` when the provider has no user-scoped
+   * skill support.
+   *
+   * The cross-agent global skills service uses this to fan one authored skill
+   * out into every agent's user skill folder so the skill applies to all
+   * projects on the machine.
+   */
+  getGlobalSkillTarget(): Promise<ProviderSkillSource | null>;
 }
 
 // ---------------------------

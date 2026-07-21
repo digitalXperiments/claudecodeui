@@ -42,7 +42,7 @@ function getToolCategory(toolName: string): string {
   if (['TaskCreate', 'TaskUpdate', 'TaskList', 'TaskGet'].includes(toolName)) return 'task';
   if (toolName === 'Task') return 'agent';
   if (toolName === 'exit_plan_mode' || toolName === 'ExitPlanMode') return 'plan';
-  if (toolName === 'AskUserQuestion') return 'question';
+  if (toolName === 'AskUserQuestion' || toolName === 'ask_user_question') return 'question';
   return 'default';
 }
 
@@ -271,6 +271,7 @@ export const ToolRenderer: React.FC<ToolRendererProps> = memo(({
           <QuestionAnswerContent
             questions={contentProps.questions || []}
             answers={contentProps.answers || {}}
+            isRunning={toolStatus === 'running'}
           />
         );
         break;

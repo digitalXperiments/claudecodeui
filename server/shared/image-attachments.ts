@@ -138,6 +138,18 @@ export function resolveImageMediaType(descriptor: ImageAttachmentDescriptor): st
   return EXTENSION_TO_MEDIA_TYPE[extension] || null;
 }
 
+/**
+ * Whether an attachment is an image (as opposed to a document). Images are
+ * delivered to the model inline — base64 for Claude, `local_image` for Codex —
+ * while non-image files are delivered by path reference (see
+ * {@link appendImagesInputTag}). Resolved from the mime type, falling back to
+ * the file extension.
+ */
+export function isImageDescriptor(descriptor: ImageAttachmentDescriptor): boolean {
+  const mediaType = resolveImageMediaType(descriptor);
+  return typeof mediaType === 'string' && mediaType.startsWith('image/');
+}
+
 const IMAGES_INPUT_TAG_PATTERN = /\s*<images_input>([\s\S]*?)<\/images_input>\s*/g;
 
 // One image reference recovered from an <images_input> block: the stored
@@ -156,12 +168,19 @@ export type ParsedImagesInput = {
 };
 
 /**
- * Appends the `<images_input>` reference block used by the Cursor and
- * OpenCode CLIs. The block carries one numbered line per attachment with
- * the stored file path (quote-free on purpose — Windows .cmd shims mangle
- * quoted text) and the user's original filename, plus an explicit instruction
- * to read the files and keep the block out of the reply. The same block is
- * stripped back out of persisted history by {@link parseImagesInputTag}.
+ * Appends the `<images_input>` reference block that carries attachments to the
+ * model by path. Every provider uses it for non-image files (PDFs, docs,
+ * spreadsheets, …); Cursor and OpenCode additionally use it for images, since
+ * those CLIs have no inline-image channel. The block carries one numbered line
+ * per attachment with the stored file path (quote-free on purpose — Windows
+ * .cmd shims mangle quoted text) and the user's original filename, plus an
+ * explicit instruction to read the files and keep the block out of the reply.
+ * The same block is stripped back out of persisted history by
+ * {@link parseImagesInputTag}.
+ *
+ * The `<images_input>` tag name is retained (rather than a generic
+ * `<files_input>`) so it keeps parsing session history recorded before
+ * documents were supported.
  */
 export function appendImagesInputTag(prompt: string, images: unknown): string {
   const descriptors = normalizeImageDescriptors(images);
@@ -183,7 +202,7 @@ export function appendImagesInputTag(prompt: string, images: unknown): string {
     prompt,
     '',
     '<images_input>',
-    `The user attached ${descriptors.length} image(s) to this message. Read each file listed below with your file/image reading tool and use what you see to answer the prompt above. Respond as if the images were attached directly. Do not mention this block or the file paths unless the user asks about them.`,
+    `The user attached ${descriptors.length} file(s) to this message. Read each file listed below with your file reading tool and use its contents to answer the prompt above. Respond as if the files were provided directly. Do not mention this block or the file paths unless the user asks about them.`,
     ...entryLines,
     '</images_input>',
   ].join('\n');
@@ -264,21 +283,26 @@ type ClaudeContentBlock =
 
 /**
  * Builds the Claude user-message content list: the prompt text followed by one
- * base64 `image` block per attachment. Images the Claude API cannot accept
- * (e.g. SVG) or that fail to read are skipped with a warning so the prompt
- * itself still goes through.
+ * base64 `image` block per image attachment. Non-image attachments (PDFs, docs,
+ * spreadsheets) and images the Claude API cannot accept inline (e.g. SVG) are
+ * instead referenced by path in an `<images_input>` block appended to the
+ * prompt text, so Claude reads them with its file tools. Images that fail to
+ * read are skipped with a warning so the prompt itself still goes through.
  */
 export async function buildClaudeUserContent(
   prompt: string,
   images: unknown,
   cwd?: string,
 ): Promise<ClaudeContentBlock[]> {
-  const blocks: ClaudeContentBlock[] = [{ type: 'text', text: prompt }];
+  const imageBlocks: ClaudeContentBlock[] = [];
+  const referencedByPath: ImageAttachmentDescriptor[] = [];
 
   for (const descriptor of normalizeImageDescriptors(images)) {
     const mediaType = resolveImageMediaType(descriptor);
     if (!mediaType || !CLAUDE_IMAGE_MEDIA_TYPES.has(mediaType)) {
-      console.warn(`[Images] Skipping unsupported Claude image type for ${descriptor.path}`);
+      // Everything Claude can't take as an inline image (documents, SVG, …)
+      // is handed over by path reference instead of being dropped.
+      referencedByPath.push(descriptor);
       continue;
     }
 
@@ -296,7 +320,7 @@ export async function buildClaudeUserContent(
       }
 
       const bytes = await fs.readFile(canonicalPath);
-      blocks.push({
+      imageBlocks.push({
         type: 'image',
         source: {
           type: 'base64',
@@ -310,7 +334,8 @@ export async function buildClaudeUserContent(
     }
   }
 
-  return blocks;
+  const text = appendImagesInputTag(prompt, referencedByPath);
+  return [{ type: 'text', text }, ...imageBlocks];
 }
 
 type CodexInputItem =
@@ -319,12 +344,21 @@ type CodexInputItem =
 
 /**
  * Builds the Codex `runStreamed` input list: prompt text plus one
- * `local_image` item per attachment, resolved to absolute paths so the Codex
- * runtime can read them regardless of its own working directory handling.
+ * `local_image` item per image attachment, resolved to absolute paths so the
+ * Codex runtime can read them regardless of its own working directory handling.
+ * Non-image attachments are referenced by path in an `<images_input>` block
+ * appended to the prompt text (Codex has no inline document channel), which
+ * Codex reads with its file tools.
  */
 export function buildCodexInputItems(prompt: string, images: unknown, cwd?: string): CodexInputItem[] {
-  const items: CodexInputItem[] = [{ type: 'text', text: prompt }];
+  const imageItems: CodexInputItem[] = [];
+  const referencedByPath: ImageAttachmentDescriptor[] = [];
+
   for (const descriptor of normalizeImageDescriptors(images)) {
+    if (!isImageDescriptor(descriptor)) {
+      referencedByPath.push(descriptor);
+      continue;
+    }
     const resolvedPath = resolveImageAbsolutePath(cwd, descriptor.path);
     if (!isAllowedImageSourcePath(resolvedPath, cwd)) {
       // Same trust boundary as buildClaudeUserContent — the Codex runtime
@@ -332,10 +366,12 @@ export function buildCodexInputItems(prompt: string, images: unknown, cwd?: stri
       console.warn(`[Images] Refusing to attach image outside allowed roots: ${descriptor.path}`);
       continue;
     }
-    items.push({
+    imageItems.push({
       type: 'local_image',
       path: resolvedPath,
     });
   }
-  return items;
+
+  const text = appendImagesInputTag(prompt, referencedByPath);
+  return [{ type: 'text', text }, ...imageItems];
 }

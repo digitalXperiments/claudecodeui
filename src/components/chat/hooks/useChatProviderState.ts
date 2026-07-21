@@ -47,9 +47,36 @@ const FALLBACK_PERMISSION_MODES: Record<LLMProvider, PermissionMode[]> = {
   cursor: ['default', 'acceptEdits', 'bypassPermissions', 'plan'],
   codex: ['default', 'acceptEdits', 'bypassPermissions'],
   opencode: ['default', 'acceptEdits', 'bypassPermissions', 'plan'],
-  grok: ['auto', 'bypassPermissions'],
+  grok: ['default', 'acceptEdits', 'auto', 'bypassPermissions', 'plan'],
   kimi: ['default', 'plan', 'auto', 'bypassPermissions'],
   agy: ['plan', 'acceptEdits', 'bypassPermissions'],
+};
+
+/**
+ * Fallback image-vision support, used only until the backend capability matrix
+ * loads. Grok/Kimi/Antigravity have no inline image vision — they can still
+ * read attached documents by path (see FALLBACK_SUPPORTS_FILES). Mirrors
+ * provider-capabilities.service.ts.
+ */
+const FALLBACK_SUPPORTS_IMAGES: Record<LLMProvider, boolean> = {
+  claude: true,
+  cursor: true,
+  codex: true,
+  opencode: true,
+  grok: false,
+  kimi: false,
+  agy: false,
+};
+
+/** Fallback document-attachment support: every agent reads path-referenced files. */
+const FALLBACK_SUPPORTS_FILES: Record<LLMProvider, boolean> = {
+  claude: true,
+  cursor: true,
+  codex: true,
+  opencode: true,
+  grok: true,
+  kimi: true,
+  agy: true,
 };
 
 type ProviderCapabilities = {
@@ -57,6 +84,7 @@ type ProviderCapabilities = {
   permissionModes: string[];
   defaultPermissionMode: string;
   supportsImages: boolean;
+  supportsFiles?: boolean;
   supportsAbort: boolean;
   supportsPermissionRequests: boolean;
   supportsTokenUsage: boolean;
@@ -315,6 +343,22 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
       return capabilitySupport;
     }
     return Boolean(FALLBACK_PROVIDER_EFFORT_VALUES[targetProvider]?.length);
+  }, [providerCapabilities]);
+
+  const getSupportsImagesForProvider = useCallback((targetProvider: LLMProvider): boolean => {
+    const capabilitySupport = providerCapabilities?.[targetProvider]?.supportsImages;
+    if (typeof capabilitySupport === 'boolean') {
+      return capabilitySupport;
+    }
+    return FALLBACK_SUPPORTS_IMAGES[targetProvider] ?? true;
+  }, [providerCapabilities]);
+
+  const getSupportsFilesForProvider = useCallback((targetProvider: LLMProvider): boolean => {
+    const capabilitySupport = providerCapabilities?.[targetProvider]?.supportsFiles;
+    if (typeof capabilitySupport === 'boolean') {
+      return capabilitySupport;
+    }
+    return FALLBACK_SUPPORTS_FILES[targetProvider] ?? true;
   }, [providerCapabilities]);
 
   const pickStoredOrCurrent = (
@@ -688,5 +732,9 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     selectProviderModel,
     setStoredProviderEffort,
     resolvePermissionModeForProvider,
+    // Attachment capabilities for the active provider: images need inline
+    // vision (a subset of providers), documents are supported everywhere.
+    supportsImages: getSupportsImagesForProvider(provider),
+    supportsFiles: getSupportsFilesForProvider(provider),
   };
 }

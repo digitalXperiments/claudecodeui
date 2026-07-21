@@ -5,6 +5,7 @@ import test from 'node:test';
 
 import {
   buildStoredImageRecords,
+  isAllowedAttachmentMimeType,
   isAllowedImageMimeType,
   resolveImageAssetFile,
 } from '@/modules/assets/services/image-assets.service.js';
@@ -16,6 +17,24 @@ test('isAllowedImageMimeType accepts image formats and rejects the rest', () => 
   assert.equal(isAllowedImageMimeType('image/svg+xml'), true);
   assert.equal(isAllowedImageMimeType('application/pdf'), false);
   assert.equal(isAllowedImageMimeType('text/html'), false);
+});
+
+test('isAllowedAttachmentMimeType accepts images, documents, and known extensions', () => {
+  // Images stay allowed.
+  assert.equal(isAllowedAttachmentMimeType('image/png'), true);
+  // Documents by mime type.
+  assert.equal(isAllowedAttachmentMimeType('application/pdf'), true);
+  assert.equal(isAllowedAttachmentMimeType('text/csv'), true);
+  assert.equal(
+    isAllowedAttachmentMimeType('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'),
+    true,
+  );
+  // Browsers often send octet-stream for office files: fall back to extension.
+  assert.equal(isAllowedAttachmentMimeType('application/octet-stream', 'budget.xlsx'), true);
+  assert.equal(isAllowedAttachmentMimeType('application/octet-stream', 'notes.md'), true);
+  // Unknown mime with an unlisted/dangerous extension is rejected.
+  assert.equal(isAllowedAttachmentMimeType('application/octet-stream', 'malware.exe'), false);
+  assert.equal(isAllowedAttachmentMimeType('application/x-sh', 'run.sh'), false);
 });
 
 test('buildStoredImageRecords returns absolute posix paths in the assets dir', () => {

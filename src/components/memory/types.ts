@@ -39,3 +39,28 @@ export type ObsidianSettingsResponse = {
 export type ProjectMemoryStatusResponse = {
   status: ProjectMemoryStatus;
 };
+
+export type ObsidianConnectionTestResult = {
+  ok: boolean;
+  vaultName?: string;
+  version?: string;
+  error?: string;
+};
+
+export type ObsidianConnectionTestResponse = {
+  result: ObsidianConnectionTestResult;
+};
+
+export type ProjectMemoryVaultStats = {
+  workspacePath: string;
+  vaultFolder: string;
+  exists: boolean;
+  decisions: number;
+  entities: number;
+  sessions: number;
+  lastSessionWrite: string | null;
+};
+
+export type ProjectMemoryVaultStatsResponse = {
+  stats: ProjectMemoryVaultStats;
+};

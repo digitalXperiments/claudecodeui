@@ -26,7 +26,7 @@ export default function QueuedMessageCard({ content, imageCount = 0, onEdit, onD
           <p className="mt-0.5 line-clamp-2 break-words text-sm text-foreground/90">{content}</p>
           {imageCount > 0 && (
             <p className="mt-0.5 text-xs text-muted-foreground">
-              {imageCount} {imageCount === 1 ? 'image' : 'images'} attached
+              {imageCount} {imageCount === 1 ? 'file' : 'files'} attached
             </p>
           )}
         </div>
