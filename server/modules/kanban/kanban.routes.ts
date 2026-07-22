@@ -286,6 +286,14 @@ router.post(
       columnId: readOptionalString(body.columnId),
       assigneeProvider: validateAssignee(body.assigneeProvider),
       reviewProvider: validateReviewProvider(body.reviewProvider),
+      implementProfileId:
+        body.implementProfileId === null
+          ? null
+          : readOptionalString(body.implementProfileId) ?? undefined,
+      reviewProfileId:
+        body.reviewProfileId === null
+          ? null
+          : readOptionalString(body.reviewProfileId) ?? undefined,
       permissionMode: readOptionalString(body.permissionMode),
       tools: (body.tools as KanbanTaskTools) ?? undefined,
       scheduleCron:
@@ -323,6 +331,18 @@ router.put(
       position: typeof body.position === 'number' ? body.position : undefined,
       assigneeProvider: validateAssignee(body.assigneeProvider),
       reviewProvider: validateReviewProvider(body.reviewProvider),
+      implementProfileId:
+        body.implementProfileId === null
+          ? null
+          : body.implementProfileId !== undefined
+            ? readOptionalString(body.implementProfileId) ?? null
+            : undefined,
+      reviewProfileId:
+        body.reviewProfileId === null
+          ? null
+          : body.reviewProfileId !== undefined
+            ? readOptionalString(body.reviewProfileId) ?? null
+            : undefined,
       permissionMode: readOptionalString(body.permissionMode),
       tools: (body.tools as KanbanTaskTools) ?? undefined,
       scheduleCron:

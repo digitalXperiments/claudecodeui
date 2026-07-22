@@ -30,7 +30,17 @@ function isWorkspaceTrustPrompt(text = '') {
 
 async function spawnCursor(command, options = {}, ws) {
   return new Promise(async (resolve, reject) => {
-    const { sessionId, projectPath, cwd, toolsSettings, skipPermissions, model, sessionSummary, images } = options;
+    const {
+      sessionId,
+      projectPath,
+      cwd,
+      toolsSettings,
+      skipPermissions,
+      permissionMode = 'default',
+      model,
+      sessionSummary,
+      images,
+    } = options;
     const resolvedModel = await providerModelsService.resolveResumeModel('cursor', sessionId, model);
     let capturedSessionId = sessionId; // Track session ID throughout the process
     let sessionCreatedSent = false; // Track if we've already sent session-created event
@@ -74,8 +84,14 @@ async function spawnCursor(command, options = {}, ws) {
       baseArgs.push('--output-format', 'stream-json');
     }
 
-    // Add skip permissions flag if enabled
-    if (skipPermissions || settings.skipPermissions) {
+    // cursor-agent only exposes force-approve as `-f` on this path. Map the
+    // chatbar permission mode + legacy skipPermissions settings onto it.
+    // acceptEdits/plan are not real cursor-agent flags here (capabilities only
+    // advertise default | bypassPermissions).
+    const forceApprove = permissionMode === 'bypassPermissions'
+      || Boolean(skipPermissions)
+      || Boolean(settings.skipPermissions);
+    if (forceApprove) {
       baseArgs.push('-f');
     }
 

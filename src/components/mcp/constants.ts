@@ -17,9 +17,7 @@ export const MCP_SUPPORTED_SCOPES: Record<McpProvider, McpScope[]> = {
   opencode: ['user', 'project'],
   grok: ['user', 'project'],
   kimi: ['user', 'project'],
-  // Antigravity MCP configuration is not wired up in this lean provider; no
-  // supported scopes disables the MCP UI for agy.
-  agy: [],
+  agy: ['user', 'project'],
 };
 
 export const MCP_SUPPORTED_TRANSPORTS: Record<McpProvider, McpTransport[]> = {
@@ -29,7 +27,7 @@ export const MCP_SUPPORTED_TRANSPORTS: Record<McpProvider, McpTransport[]> = {
   opencode: ['stdio', 'http'],
   grok: ['stdio', 'http'],
   kimi: ['stdio', 'http'],
-  agy: [],
+  agy: ['stdio', 'http', 'sse'],
 };
 
 export const MCP_GLOBAL_SUPPORTED_SCOPES: McpScope[] = ['user', 'project'];

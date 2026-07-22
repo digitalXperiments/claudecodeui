@@ -1,42 +1,114 @@
+import os from 'node:os';
+import path from 'node:path';
+
 import { McpProvider } from '@/modules/providers/shared/mcp/mcp.provider.js';
 import type { McpScope, ProviderMcpServer, UpsertProviderMcpServerInput } from '@/shared/types.js';
-import { AppError } from '@/shared/utils.js';
+import {
+  AppError,
+  readJsonConfig,
+  readObjectRecord,
+  readOptionalString,
+  readStringArray,
+  readStringRecord,
+  writeJsonConfig,
+} from '@/shared/utils.js';
 
-/**
- * Antigravity CLI MCP integration is not wired up (its MCP configuration path
- * and format are not part of this lean provider). Declaring no supported scopes
- * or transports disables the MCP UI for `agy` cleanly — `listServers` returns
- * empty groups and any upsert/remove is rejected by the base class's scope
- * guard before these stubs are ever reached.
- */
 export class AgyMcpProvider extends McpProvider {
   constructor() {
-    super('agy', [], []);
+    super('agy', ['user', 'project'], ['stdio', 'http', 'sse']);
   }
 
-  protected async readScopedServers(): Promise<Record<string, unknown>> {
-    return {};
+  private getUserMcpPath(): string {
+    return path.join(os.homedir(), '.gemini', 'antigravity-cli', 'mcp_config.json');
   }
 
-  protected async writeScopedServers(): Promise<void> {
-    throw new AppError('Antigravity does not support MCP configuration.', {
-      code: 'MCP_UNSUPPORTED',
-      statusCode: 400,
-    });
+  private getProjectMcpPath(workspacePath: string): string {
+    return path.join(workspacePath, '.gemini', 'mcp_config.json');
   }
 
-  protected buildServerConfig(_input: UpsertProviderMcpServerInput): Record<string, unknown> {
-    throw new AppError('Antigravity does not support MCP configuration.', {
-      code: 'MCP_UNSUPPORTED',
-      statusCode: 400,
-    });
+  protected async readScopedServers(scope: McpScope, workspacePath: string): Promise<Record<string, unknown>> {
+    const filePath = scope === 'project' ? this.getProjectMcpPath(workspacePath) : this.getUserMcpPath();
+    const config = await readJsonConfig(filePath);
+    return readObjectRecord(config.mcpServers) ?? readObjectRecord(config.servers) ?? {};
+  }
+
+  protected async writeScopedServers(
+    scope: McpScope,
+    workspacePath: string,
+    servers: Record<string, unknown>,
+  ): Promise<void> {
+    const filePath = scope === 'project' ? this.getProjectMcpPath(workspacePath) : this.getUserMcpPath();
+    const config = await readJsonConfig(filePath);
+    config.mcpServers = servers;
+    await writeJsonConfig(filePath, config);
+  }
+
+  protected buildServerConfig(input: UpsertProviderMcpServerInput): Record<string, unknown> {
+    if (input.transport === 'stdio') {
+      if (!input.command?.trim()) {
+        throw new AppError('command is required for stdio MCP servers.', {
+          code: 'MCP_COMMAND_REQUIRED',
+          statusCode: 400,
+        });
+      }
+
+      return {
+        type: 'stdio',
+        command: input.command,
+        args: input.args ?? [],
+        env: input.env ?? {},
+      };
+    }
+
+    if (!input.url?.trim()) {
+      throw new AppError('url is required for http/sse MCP servers.', {
+        code: 'MCP_URL_REQUIRED',
+        statusCode: 400,
+      });
+    }
+
+    return {
+      type: input.transport,
+      url: input.url,
+      headers: input.headers ?? {},
+    };
   }
 
   protected normalizeServerConfig(
-    _scope: McpScope,
-    _name: string,
-    _rawConfig: unknown,
+    scope: McpScope,
+    name: string,
+    rawConfig: unknown,
   ): ProviderMcpServer | null {
+    if (!rawConfig || typeof rawConfig !== 'object') {
+      return null;
+    }
+
+    const config = rawConfig as Record<string, unknown>;
+    if (typeof config.command === 'string') {
+      return {
+        provider: 'agy',
+        name,
+        scope,
+        transport: 'stdio',
+        command: config.command,
+        args: readStringArray(config.args),
+        env: readStringRecord(config.env),
+      };
+    }
+
+    if (typeof config.url === 'string') {
+      const transport = readOptionalString(config.type) === 'sse' ? 'sse' : 'http';
+      return {
+        provider: 'agy',
+        name,
+        scope,
+        transport,
+        url: config.url,
+        headers: readStringRecord(config.headers),
+      };
+    }
+
     return null;
   }
 }
+

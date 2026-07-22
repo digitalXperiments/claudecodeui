@@ -1,4 +1,4 @@
-import { userDb } from '@/modules/database/index.js';
+import { systemNotificationsDb, userDb } from '@/modules/database/index.js';
 import { notifyRunFailed, notifyRunStopped } from '@/modules/notifications/index.js';
 import { chatRunRegistry, type RunCompletionEvent } from '@/modules/websocket/index.js';
 import { kanbanDb } from '@/modules/kanban/kanban.repository.js';
@@ -35,6 +35,20 @@ function notifyTaskOutcome(
         error: `Task "${taskTitle}" failed`,
         sessionName: taskTitle,
       } as unknown as Parameters<typeof notifyRunFailed>[0]);
+      try {
+        systemNotificationsDb.create({
+          kind: 'run_failed',
+          severity: 'error',
+          title: `Kanban task failed: ${taskTitle}`,
+          body: `A ${provider || 'agent'} run failed for this task.`,
+          source: 'kanban',
+          href: null,
+          meta: { appSessionId, provider, taskTitle },
+          dedupeKey: `kanban-fail:${appSessionId}`,
+        });
+      } catch {
+        // inbox write is best-effort
+      }
     } else {
       notifyRunStopped({
         userId,
@@ -43,6 +57,21 @@ function notifyTaskOutcome(
         stopReason: outcome === 'aborted' ? 'aborted' : 'completed',
         sessionName: taskTitle,
       } as unknown as Parameters<typeof notifyRunStopped>[0]);
+      if (outcome === 'aborted') {
+        try {
+          systemNotificationsDb.create({
+            kind: 'action_required',
+            severity: 'warning',
+            title: `Kanban run aborted: ${taskTitle}`,
+            body: 'The agent run was aborted before completion.',
+            source: 'kanban',
+            meta: { appSessionId, provider, taskTitle },
+            dedupeKey: `kanban-abort:${appSessionId}`,
+          });
+        } catch {
+          // best-effort
+        }
+      }
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

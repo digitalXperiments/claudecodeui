@@ -5,6 +5,16 @@ be assigned to an agent (provider), given explicit permissions, and executed —
 manually, on a schedule, when moved into a column, or automatically when a task
 it depends on finishes.
 
+## Agent profiles
+
+Create reusable run configs under **Settings → Agent profiles** (for example
+“Claude High Effort” or “Grok Low Effort”). Each profile stores provider, model,
+effort, permission mode, optional plain-English permission intent, and
+allow/deny rules. Kanban implement/review pickers select from this catalog.
+
+Failed runs and permission waits surface in the left sidebar **Notifications**
+entry (above Settings) so headless work does not hang silently.
+
 ## Opening the board
 
 Select a project, then open the **Kanban** tab in the main content area. The
@@ -18,19 +28,23 @@ created: **Backlog → In Progress → Review → Done**.
   - **Title / Description** — human-facing labels.
   - **Prompt** — the instruction sent to the **implementation** agent on run.
   - **Column** — which column the card lives in.
-  - **Implementation agent** — provider that executes the task when it enters
-    **In Progress** (Claude, Codex, Cursor, OpenCode, Grok, Kimi, Agy).
-  - **Review agent** — optional second provider. When implementation finishes
+  - **Implementation profile** — preferred: pick a named **agent run profile**
+    from **Settings → Agent profiles** (provider + model + effort +
+    permissions). Falls back to a raw provider if no profile is selected.
+    Auto-runs when the card enters **In Progress**.
+  - **Review profile** — optional second profile. When implementation finishes
     successfully, the card moves to **Review** with a review brief (original
     task + prompt + the implementation agent's output tail + instructions to
     inspect git/diff), and this agent runs. On success the card moves to
     **Done**. Leave as **None** to skip review and go straight to Done after
     implementation.
-  - **Permission mode** — how guarded the run is. Defaults to **Default
-    (guarded)**. Headless/auto runs cannot answer interactive permission
-    prompts — for unattended work prefer **Accept edits** or **Bypass
-    permissions**, or pre-allow the tools you need.
-  - **Allowed / Disallowed commands** — one entry per line (e.g. `Bash(ls)`).
+  - **Permission mode / tools** — used when no implement profile is selected.
+    With a profile, permissions are **live-linked** from the profile (edit them
+    under Agent profiles). For unattended work prefer profiles with **Accept
+    edits**, **Auto** + allow lists, or **Bypass**, or plain-English permission
+    intents that compile to allow/deny rules.
+  - **Allowed / Disallowed commands** — one entry per line (e.g. `Bash(ls)`),
+    when not using a profile.
   - **Schedule (cron)** — a cron expression to run the task on a timer.
   - **Depends on** — other tasks that must reach **Done** before this one runs.
 - Drag cards within/between columns to reorder or move them.

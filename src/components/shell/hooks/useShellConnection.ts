@@ -138,6 +138,13 @@ export function useShellConnection({
             const forceRestart = forceRestartOnInitRef.current;
             forceRestartOnInitRef.current = false;
 
+            // Agent shells always start a fresh PTY on the server — clear any
+            // leftover xterm scrollback so the new TUI paints on a clean slate.
+            if (!isPlainShellRef.current) {
+              currentTerminal.reset();
+              clearTerminalScreen();
+            }
+
             sendSocketMessage(socket, {
               type: 'init',
               projectPath: currentProject.fullPath || currentProject.path || '',
@@ -148,7 +155,8 @@ export function useShellConnection({
               rows: currentTerminal.rows,
               initialCommand: initialCommandRef.current,
               isPlainShell: isPlainShellRef.current,
-              forceRestart,
+              // Agent TUIs always get a fresh process (server also enforces this).
+              forceRestart: forceRestart || !isPlainShellRef.current,
             });
           }, TERMINAL_INIT_DELAY_MS);
         };

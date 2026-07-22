@@ -87,6 +87,10 @@ export type KanbanTaskRow = {
   assignee_provider: string | null;
   /** Review agent (provider) that runs after implementation succeeds. */
   review_provider: string | null;
+  /** Optional named agent run profile for the implementation role. */
+  implement_profile_id: string | null;
+  /** Optional named agent run profile for the review role. */
+  review_profile_id: string | null;
   permission_mode: string;
   tools_json: string;
   schedule_cron: string | null;
@@ -157,6 +161,8 @@ export type CreateTaskInput = {
   position?: number;
   assigneeProvider?: LLMProvider | null;
   reviewProvider?: LLMProvider | null;
+  implementProfileId?: string | null;
+  reviewProfileId?: string | null;
   permissionMode?: string;
   tools?: KanbanTaskTools;
   scheduleCron?: string | null;
@@ -171,6 +177,8 @@ export type UpdateTaskInput = {
   position?: number;
   assigneeProvider?: LLMProvider | null;
   reviewProvider?: LLMProvider | null;
+  implementProfileId?: string | null;
+  reviewProfileId?: string | null;
   permissionMode?: string;
   tools?: KanbanTaskTools;
   scheduleCron?: string | null;

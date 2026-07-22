@@ -148,6 +148,10 @@ type SidebarContentProps = {
   currentVersion: string;
   onShowVersionModal: () => void;
   onShowSettings: () => void;
+  onShowNotifications?: () => void;
+  unreadNotificationCount?: number;
+  onShowMissionControl?: () => void;
+  missionControlPendingCount?: number;
   projectListProps: SidebarProjectListProps;
   t: TFunction;
 };
@@ -187,6 +191,10 @@ export default function SidebarContent({
   currentVersion,
   onShowVersionModal,
   onShowSettings,
+  onShowNotifications,
+  unreadNotificationCount = 0,
+  onShowMissionControl,
+  missionControlPendingCount = 0,
   projectListProps,
   t,
 }: SidebarContentProps) {
@@ -564,6 +572,10 @@ export default function SidebarContent({
         currentVersion={currentVersion}
         onShowVersionModal={onShowVersionModal}
         onShowSettings={onShowSettings}
+        onShowNotifications={onShowNotifications}
+        unreadNotificationCount={unreadNotificationCount}
+        onShowMissionControl={onShowMissionControl}
+        missionControlPendingCount={missionControlPendingCount}
         t={t}
       />
     </div>

@@ -55,14 +55,13 @@ const PROVIDER_NAMES: Record<SkillsProvider, string> = {
   agy: 'Antigravity',
 };
 
-// Antigravity skills are not surfaced by this lean provider, so it has no
-// documented skill path (handled like opencode via the Exclude below).
-const PROVIDER_SKILL_PATHS: Record<Exclude<SkillsProvider, 'opencode' | 'agy'>, string> = {
+const PROVIDER_SKILL_PATHS: Record<Exclude<SkillsProvider, 'opencode'>, string> = {
   claude: '~/.claude/skills/<skill-name>/SKILL.md',
   codex: '~/.agents/skills/<skill-name>/SKILL.md',
   cursor: '~/.cursor/skills/<skill-name>/SKILL.md',
   grok: '~/.grok/skills/<skill-name>/SKILL.md',
   kimi: '~/.kimi-code/skills/<skill-name>/SKILL.md',
+  agy: '~/.gemini/antigravity-cli/skills/<skill-name>/SKILL.md',
 };
 
 const SCOPE_LABELS: Record<SkillsScope, string> = {
@@ -113,7 +112,7 @@ export default function ProviderSkills({ selectedProvider, currentProjects }: Pr
   const folderInputRef = useRef<HTMLInputElement | null>(null);
 
   const providerName = PROVIDER_NAMES[selectedProvider];
-  const providerPath = selectedProvider === 'opencode' || selectedProvider === 'agy'
+  const providerPath = selectedProvider === 'opencode'
     ? null
     : PROVIDER_SKILL_PATHS[selectedProvider];
 

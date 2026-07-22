@@ -1,4 +1,5 @@
-import { projectsDb, sessionsDb } from '@/modules/database/index.js';
+import { agentRunProfilesDb, projectsDb, sessionsDb } from '@/modules/database/index.js';
+import type { AgentRunProfile } from '@/modules/database/index.js';
 import { sessionsService } from '@/modules/providers/index.js';
 import { DETACHED_CONNECTION, startProviderRun, type ProviderSpawnFn } from '@/modules/websocket/index.js';
 import { kanbanDb } from '@/modules/kanban/kanban.repository.js';
@@ -8,6 +9,7 @@ import {
   type KanbanRunRole,
   type KanbanRunTrigger,
   type KanbanTask,
+  type KanbanTaskTools,
 } from '@/modules/kanban/kanban.types.js';
 import type { AnyRecord, LLMProvider } from '@/shared/types.js';
 import { AppError } from '@/shared/utils.js';
@@ -35,13 +37,57 @@ export function configureKanbanRuntimes(spawnFns: Partial<Record<LLMProvider, Pr
  * Permissions are the safety boundary: `permission_mode` is passed verbatim and
  * bypass is only enabled when the task explicitly selected `bypassPermissions`.
  */
-function buildRuntimeOptions(task: KanbanTask, provider: LLMProvider): AnyRecord {
-  const permissionMode = task.permission_mode || 'default';
-  const allowed = Array.isArray(task.tools?.allowedCommands) ? task.tools!.allowedCommands! : [];
-  const disallowed = Array.isArray(task.tools?.disallowedCommands)
-    ? task.tools!.disallowedCommands!
-    : [];
+/**
+ * Resolve the live agent run profile for a role, if the task references one.
+ * Missing profiles fall through so legacy provider-only assignment still works.
+ */
+export function resolveProfileForRole(
+  task: KanbanTask,
+  role: KanbanRunRole,
+): AgentRunProfile | null {
+  const profileId = role === 'review' ? task.review_profile_id : task.implement_profile_id;
+  if (!profileId) {
+    return null;
+  }
+  return agentRunProfilesDb.get(profileId);
+}
+
+/**
+ * Effective tools/permissions for a run: profile wins when present (live-link),
+ * otherwise the task's own permission_mode + tools.
+ */
+function resolvePermissionSource(
+  task: KanbanTask,
+  profile: AgentRunProfile | null,
+): { permissionMode: string; tools: KanbanTaskTools } {
+  if (profile) {
+    return {
+      permissionMode: profile.permission_mode || 'default',
+      tools: profile.tools ?? {},
+    };
+  }
+  return {
+    permissionMode: task.permission_mode || 'default',
+    tools: task.tools ?? {},
+  };
+}
+
+function buildRuntimeOptions(
+  task: KanbanTask,
+  provider: LLMProvider,
+  profile: AgentRunProfile | null,
+): AnyRecord {
+  const { permissionMode, tools } = resolvePermissionSource(task, profile);
+  const allowed = Array.isArray(tools?.allowedCommands) ? tools.allowedCommands! : [];
+  const disallowed = Array.isArray(tools?.disallowedCommands) ? tools.disallowedCommands! : [];
   const options: AnyRecord = { permissionMode };
+
+  if (profile?.model) {
+    options.model = profile.model;
+  }
+  if (profile?.effort && profile.effort !== 'default') {
+    options.effort = profile.effort;
+  }
 
   switch (provider) {
     case 'claude':
@@ -58,7 +104,7 @@ function buildRuntimeOptions(task: KanbanTask, provider: LLMProvider): AnyRecord
         disallowedCommands: disallowed,
       };
       break;
-    // codex, agy, kimi, opencode take only permissionMode.
+    // codex, agy, kimi, opencode take only permissionMode (+ model/effort above).
     default:
       break;
   }
@@ -83,6 +129,12 @@ export function resolveRunRole(task: KanbanTask, trigger: KanbanRunTrigger): Kan
  * run a review phase at all).
  */
 export function resolveProviderForRole(task: KanbanTask, role: KanbanRunRole): LLMProvider | null {
+  // Prefer live profile provider when a profile is linked.
+  const profile = resolveProfileForRole(task, role);
+  if (profile && isKanbanProvider(profile.provider)) {
+    return profile.provider;
+  }
+
   if (role === 'review') {
     const review = task.review_provider;
     if (review && isKanbanProvider(review)) {
@@ -167,12 +219,13 @@ export const kanbanRunner = {
     }
 
     const role = resolveRunRole(task, trigger);
+    const profile = resolveProfileForRole(task, role);
     const provider = resolveProviderForRole(task, role);
     if (!provider) {
       throw new AppError(
         role === 'review'
-          ? 'Task has no review agent assigned'
-          : 'Task has no implementation agent assigned',
+          ? 'Task has no review agent or profile assigned'
+          : 'Task has no implementation agent or profile assigned',
         {
           code: role === 'review' ? 'KANBAN_NO_REVIEW_AGENT' : 'KANBAN_NO_ASSIGNEE',
           statusCode: 400,
@@ -232,7 +285,7 @@ export const kanbanRunner = {
       projectPath,
       spawnFn,
       content: buildRunPrompt(task, role, role === 'review' ? context?.implementOutput : null),
-      options: buildRuntimeOptions(task, provider),
+      options: buildRuntimeOptions(task, provider, profile),
       connection: DETACHED_CONNECTION,
       userId: null,
     });

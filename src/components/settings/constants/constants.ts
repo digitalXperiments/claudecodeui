@@ -9,6 +9,7 @@ import {
   MonitorPlay,
   Palette,
   Plug,
+  UserCog,
 } from 'lucide-react';
 
 import type {
@@ -30,6 +31,12 @@ export type SettingsMainTabMeta = {
 
 export const SETTINGS_MAIN_TABS: SettingsMainTabMeta[] = [
   { id: 'agents', label: 'Agents', keywords: 'agents subagents claude code', icon: Bot },
+  {
+    id: 'agent-profiles',
+    label: 'Agent profiles',
+    keywords: 'profiles model effort permissions kanban presets',
+    icon: UserCog,
+  },
   { id: 'appearance', label: 'Appearance', keywords: 'appearance theme dark light language', icon: Palette },
   { id: 'git', label: 'Git', keywords: 'git github commits', icon: GitBranch },
   { id: 'api', label: 'API Tokens', keywords: 'api tokens auth keys', icon: KeyRound },

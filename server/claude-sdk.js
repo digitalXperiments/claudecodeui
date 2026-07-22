@@ -32,8 +32,14 @@ import {
 import { sessionsService } from './modules/providers/services/sessions.service.js';
 import { getMemoryPreamble } from './modules/providers/services/project-memory.service.js';
 import { providerAuthService } from './modules/providers/services/provider-auth.service.js';
+import { obsidianSettingsService } from './modules/providers/services/obsidian-settings.service.js';
+import {
+  buildObsidianMcpServerInput,
+  OBSIDIAN_MCP_SERVER_NAME,
+} from './modules/providers/shared/memory/obsidian-mcp.config.js';
 import { createCompleteMessage, createNormalizedMessage } from './shared/utils.js';
 import { TOOLS_REQUIRING_INTERACTION } from './shared/interactive-tools.js';
+import { buildClaudeTokenBudgetFromUsage } from './modules/providers/list/claude/claude-token-usage.js';
 
 const activeSessions = new Map();
 const pendingToolApprovals = new Map();
@@ -42,7 +48,19 @@ const pendingToolApprovals = new Map();
 // emit a second one when its generator winds down.
 const abortedSessionIds = new Set();
 
-const TOOL_APPROVAL_TIMEOUT_MS = parseInt(process.env.CLAUDE_TOOL_APPROVAL_TIMEOUT_MS, 10) || 55000;
+// Default for non-interactive / automated callers. Chat UI paths should pass
+// timeoutMs: 0 (wait indefinitely) so users are not cancelled mid-approval.
+// Override with CLAUDE_TOOL_APPROVAL_TIMEOUT_MS if needed (0 = never timeout).
+const TOOL_APPROVAL_TIMEOUT_MS = (() => {
+  const raw = process.env.CLAUDE_TOOL_APPROVAL_TIMEOUT_MS;
+  if (raw === undefined || raw === '') {
+    // No short default for chat: waiting on a human is expected. Automation
+    // that needs a deadline can set CLAUDE_TOOL_APPROVAL_TIMEOUT_MS explicitly.
+    return 0;
+  }
+  const parsed = parseInt(raw, 10);
+  return Number.isFinite(parsed) ? parsed : 0;
+})();
 
 function resolveClaudeEffort(model, effort, modelsDefinition = CLAUDE_FALLBACK_MODELS) {
   const selectedModel = modelsDefinition?.OPTIONS?.find((option) => option.value === model) || null;
@@ -310,6 +328,8 @@ function readNumber(value) {
  * Extracts token usage from SDK messages.
  * Prefers per-step `message.usage` (Claude message payload), then falls back
  * to result-level usage/modelUsage for compatibility across SDK versions.
+ * Exposes contextUsed (latest input+cache = context fill) separately from
+ * cumulative spend fields so the badge matches context occupancy.
  * @param {Object} sdkMessage - SDK stream message
  * @returns {Object|null} Token budget object or null
  */
@@ -319,36 +339,21 @@ function extractTokenBudget(sdkMessage) {
   }
 
   const messageUsage = sdkMessage.message?.usage || sdkMessage.usage;
-  if (messageUsage && typeof messageUsage === 'object') {
-    const directInputTokens = readNumber(messageUsage.input_tokens ?? messageUsage.inputTokens);
-    const cacheCreationTokens = readNumber(messageUsage.cache_creation_input_tokens ?? messageUsage.cacheCreationInputTokens ?? messageUsage.cacheCreationTokens);
-    const cacheReadTokens = readNumber(messageUsage.cache_read_input_tokens ?? messageUsage.cacheReadInputTokens ?? messageUsage.cacheReadTokens);
-    const cacheTokens = cacheCreationTokens + cacheReadTokens;
-    const inputTokens = directInputTokens + cacheTokens;
-    const outputTokens = readNumber(messageUsage.output_tokens ?? messageUsage.outputTokens);
-    const totalUsed = inputTokens + outputTokens;
-    const contextWindow = parseInt(process.env.CONTEXT_WINDOW, 10) || 160000;
+  const model =
+    (typeof sdkMessage.message?.model === 'string' && sdkMessage.message.model) ||
+    (typeof sdkMessage.model === 'string' && sdkMessage.model) ||
+    null;
 
-    return {
-      used: totalUsed,
-      total: contextWindow,
-      inputTokens,
-      outputTokens,
-      cacheReadTokens,
-      cacheCreationTokens,
-      cacheTokens,
-      breakdown: {
-        input: inputTokens,
-        output: outputTokens,
-      },
-    };
+  if (messageUsage && typeof messageUsage === 'object') {
+    return buildClaudeTokenBudgetFromUsage(messageUsage, model);
   }
 
   if (!sdkMessage.modelUsage || typeof sdkMessage.modelUsage !== 'object') {
     return null;
   }
 
-  // Fallback for older SDK messages with only modelUsage
+  // Fallback for older SDK messages with only modelUsage — prefer non-cumulative
+  // fields when present so we do not treat lifetime totals as context fill.
   const modelKey = Object.keys(sdkMessage.modelUsage)[0];
   const modelData = sdkMessage.modelUsage[modelKey];
 
@@ -356,21 +361,15 @@ function extractTokenBudget(sdkMessage) {
     return null;
   }
 
-  const inputTokens = readNumber(modelData.cumulativeInputTokens ?? modelData.inputTokens);
-  const outputTokens = readNumber(modelData.cumulativeOutputTokens ?? modelData.outputTokens);
-  const totalUsed = inputTokens + outputTokens;
-  const contextWindow = parseInt(process.env.CONTEXT_WINDOW, 10) || 160000;
-
-  return {
-    used: totalUsed,
-    total: contextWindow,
-    inputTokens,
-    outputTokens,
-    breakdown: {
-      input: inputTokens,
-      output: outputTokens,
+  const inputTokens = readNumber(modelData.inputTokens ?? modelData.cumulativeInputTokens);
+  const outputTokens = readNumber(modelData.outputTokens ?? modelData.cumulativeOutputTokens);
+  return buildClaudeTokenBudgetFromUsage(
+    {
+      input_tokens: inputTokens,
+      output_tokens: outputTokens,
     },
-  };
+    modelKey || model,
+  );
 }
 
 /**
@@ -473,6 +472,49 @@ async function loadMcpConfig(cwd) {
         if (error.code !== 'ENOENT') {
           console.error(`Failed to read project .mcp.json in ${cwd}:`, error.message);
         }
+      }
+    }
+
+    // 4. Ensure the CloudCLI Obsidian MCP is available even for global /
+    //    home-cwd runs (Mission Control sections, etc.). Project `.mcp.json`
+    //    only covers workspaces where memory was enabled; global settings are
+    //    the single source of truth for vault credentials.
+    if (!mcpServers[OBSIDIAN_MCP_SERVER_NAME]) {
+      try {
+        const settings = obsidianSettingsService.getSettings();
+        if (settings.restApiKey && settings.restApiKey.trim()) {
+          const input = buildObsidianMcpServerInput(settings);
+          mcpServers[OBSIDIAN_MCP_SERVER_NAME] = {
+            type: 'stdio',
+            command: input.command,
+            args: input.args ?? [],
+            env: input.env ?? {},
+          };
+        } else {
+          // Fall back: scavenge env from any known project .mcp.json that has
+          // an obsidian entry (user may have configured it only per-project).
+          const candidates = [
+            path.join(os.homedir(), 'Development', 'cloudcli-fork', '.mcp.json'),
+            path.join(os.homedir(), 'Sites', 'mission_control', '.mcp.json'),
+          ];
+          for (const candidate of candidates) {
+            try {
+              const raw = JSON.parse(await fs.readFile(candidate, 'utf8'));
+              const entry = raw?.mcpServers?.[OBSIDIAN_MCP_SERVER_NAME];
+              if (entry && typeof entry === 'object') {
+                mcpServers[OBSIDIAN_MCP_SERVER_NAME] = entry;
+                break;
+              }
+            } catch {
+              // skip missing/malformed
+            }
+          }
+        }
+      } catch (error) {
+        console.warn(
+          '[Claude SDK] Could not inject Obsidian MCP:',
+          error instanceof Error ? error.message : error,
+        );
       }
     }
 
@@ -599,7 +641,12 @@ async function queryClaudeSDK(command, options = {}, ws) {
       }));
 
       const decision = await waitForToolApproval(requestId, {
-        timeoutMs: requiresInteraction ? 0 : undefined,
+        // Chatbar approvals wait until the user answers (or the run is aborted
+        // via signal). A short default timeout used to cancel Grok/Claude
+        // prompts mid-review; only CLAUDE_TOOL_APPROVAL_TIMEOUT_MS overrides.
+        timeoutMs: TOOL_APPROVAL_TIMEOUT_MS > 0 && !requiresInteraction
+          ? TOOL_APPROVAL_TIMEOUT_MS
+          : 0,
         signal: context?.signal,
         metadata: {
           _sessionId: capturedSessionId || sessionId || null,

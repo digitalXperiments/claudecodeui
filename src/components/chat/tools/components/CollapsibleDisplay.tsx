@@ -70,7 +70,7 @@ export const CollapsibleDisplay: React.FC<CollapsibleDisplayProps> = ({
               raw params
             </CollapsibleTrigger>
             <CollapsibleContent>
-              <pre className="mt-1 overflow-hidden whitespace-pre-wrap break-words rounded border border-border/40 bg-muted p-2 font-mono text-[11px] text-muted-foreground">
+              <pre className="mt-1 overflow-hidden whitespace-pre-wrap break-words rounded border border-border bg-muted p-2 font-mono text-[11px] text-foreground">
                 {rawContent}
               </pre>
             </CollapsibleContent>

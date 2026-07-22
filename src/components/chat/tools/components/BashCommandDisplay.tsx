@@ -91,7 +91,7 @@ export const BashCommandDisplay: React.FC<BashCommandDisplayProps> = ({
       >
         <ChevronRight
           className={cn(
-            'h-3.5 w-3.5 flex-shrink-0 text-muted-foreground/70 transition-transform duration-200',
+            'h-3.5 w-3.5 flex-shrink-0 text-muted-foreground transition-transform duration-200',
             open && 'rotate-90',
             !hasOutput && 'opacity-0',
           )}
@@ -113,7 +113,7 @@ export const BashCommandDisplay: React.FC<BashCommandDisplayProps> = ({
         )}
         {status && status !== 'running' && <ToolStatusBadge status={status} className="flex-shrink-0" />}
         {!open && hasOutput && !isRunning && (
-          <span className="flex-shrink-0 text-[10px] tabular-nums text-muted-foreground/70 transition-opacity group-hover/cmd:opacity-0">
+          <span className="flex-shrink-0 text-[10px] tabular-nums text-muted-foreground transition-opacity group-hover/cmd:opacity-0">
             {outputLineCount} {outputLineCount === 1 ? 'line' : 'lines'}
           </span>
         )}
@@ -130,7 +130,7 @@ export const BashCommandDisplay: React.FC<BashCommandDisplayProps> = ({
       </div>
 
       {description && !open && (
-        <div className="truncate px-2.5 pb-1.5 pl-[2.4rem] text-[11px] italic text-muted-foreground/70">
+        <div className="truncate px-2.5 pb-1.5 pl-[2.4rem] text-[11px] italic text-muted-foreground">
           {description}
         </div>
       )}

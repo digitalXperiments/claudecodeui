@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { useDeviceSettings } from '../../../hooks/useDeviceSettings';
@@ -14,7 +14,10 @@ import type { MCPServerStatus, SidebarProps } from '../types/types';
 import SidebarCollapsed from './subcomponents/SidebarCollapsed';
 import SidebarContent from './subcomponents/SidebarContent';
 import SidebarModals from './subcomponents/SidebarModals';
+import NotificationsPanel from './subcomponents/NotificationsPanel';
 import type { SidebarProjectListProps } from './subcomponents/SidebarProjectList';
+import MissionControlPanel from '../../mission-control/view/MissionControlPanel';
+import { missionControlApi } from '../../mission-control/api/missionControlApi';
 
 type TaskMasterSidebarContext = {
   setCurrentProject: (project: Project) => void;
@@ -53,6 +56,35 @@ function Sidebar({
   const { setCurrentProject, mcpServerStatus } = useTaskMaster() as TaskMasterSidebarContext;
   const { tasksEnabled } = useTasksSettings();
   const paletteOps = usePaletteOps();
+  const [showNotifications, setShowNotifications] = useState(false);
+  const [unreadNotificationCount, setUnreadNotificationCount] = useState(0);
+  const [showMissionControl, setShowMissionControl] = useState(false);
+  const [missionControlPendingCount, setMissionControlPendingCount] = useState(0);
+  const handleUnreadChange = useCallback((count: number) => {
+    setUnreadNotificationCount(count);
+  }, []);
+  const handleMissionControlPendingChange = useCallback((count: number) => {
+    setMissionControlPendingCount(count);
+  }, []);
+
+  // Keep Mission Control badge fresh even when the panel is closed.
+  useEffect(() => {
+    let cancelled = false;
+    const load = () => {
+      void missionControlApi
+        .summary()
+        .then((s) => {
+          if (!cancelled) setMissionControlPendingCount(s.pendingCount);
+        })
+        .catch(() => {});
+    };
+    load();
+    const id = window.setInterval(load, 30_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, []);
 
   const {
     isSidebarCollapsed,
@@ -261,6 +293,10 @@ function Sidebar({
         <SidebarCollapsed
           onExpand={handleExpandSidebar}
           onShowSettings={onShowSettings}
+          onShowNotifications={() => setShowNotifications(true)}
+          unreadNotificationCount={unreadNotificationCount}
+          onShowMissionControl={() => setShowMissionControl(true)}
+          missionControlPendingCount={missionControlPendingCount}
           updateAvailable={updateAvailable}
           restartRequired={restartRequired}
           onShowVersionModal={() => setShowVersionModal(true)}
@@ -342,11 +378,28 @@ function Sidebar({
             currentVersion={currentVersion}
             onShowVersionModal={() => setShowVersionModal(true)}
             onShowSettings={onShowSettings}
+            onShowNotifications={() => setShowNotifications(true)}
+            unreadNotificationCount={unreadNotificationCount}
+            onShowMissionControl={() => setShowMissionControl(true)}
+            missionControlPendingCount={missionControlPendingCount}
             projectListProps={projectListProps}
             t={t}
           />
         </>
       )}
+
+      <NotificationsPanel
+        open={showNotifications}
+        onClose={() => setShowNotifications(false)}
+        onUnreadChange={handleUnreadChange}
+      />
+
+      <MissionControlPanel
+        isOpen={showMissionControl}
+        onClose={() => setShowMissionControl(false)}
+        projects={projects}
+        onPendingCountChange={handleMissionControlPendingChange}
+      />
 
     </>
   );

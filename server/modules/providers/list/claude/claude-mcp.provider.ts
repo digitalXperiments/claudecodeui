@@ -1,6 +1,10 @@
 import os from 'node:os';
 import path from 'node:path';
 
+import {
+  listMcpServersFromCli,
+  mergeCliMcpEntries,
+} from '@/modules/providers/services/mcp-cli-list.service.js';
 import { McpProvider } from '@/modules/providers/shared/mcp/mcp.provider.js';
 import type { McpScope, ProviderMcpServer, UpsertProviderMcpServerInput } from '@/shared/types.js';
 import {
@@ -16,6 +20,31 @@ import {
 export class ClaudeMcpProvider extends McpProvider {
   constructor() {
     super('claude', ['user', 'local', 'project'], ['stdio', 'http', 'sse']);
+  }
+
+  /**
+   * File-based servers + live `claude mcp list` inventory so claude.ai hosted
+   * connectors (Gmail, Slack, Atlassian, …) appear alongside local stdio/http
+   * entries. Hosted connectors never live in ~/.claude.json mcpServers.
+   */
+  override async listServersForScope(
+    scope: McpScope,
+    options?: { workspacePath?: string },
+  ): Promise<ProviderMcpServer[]> {
+    const fromFiles = await super.listServersForScope(scope, options);
+    // CLI list is global for the machine; merge it into user (and project when
+    // cwd-specific .mcp.json servers also appear in the CLI output).
+    if (scope !== 'user' && scope !== 'project' && scope !== 'local') {
+      return fromFiles;
+    }
+    try {
+      const cliEntries = await listMcpServersFromCli('claude');
+      return mergeCliMcpEntries('claude', scope, fromFiles, cliEntries);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn('[ClaudeMcp] CLI list failed, using file config only:', message);
+      return fromFiles;
+    }
   }
 
   protected async readScopedServers(scope: McpScope, workspacePath: string): Promise<Record<string, unknown>> {

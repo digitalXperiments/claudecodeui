@@ -445,6 +445,7 @@ function ChatInterface({
           activity={sessionActivity}
           isLoading={isProcessing}
           onAbortSession={handleAbortSession}
+          provider={provider}
           permissionMode={permissionMode}
           onModeSwitch={cyclePermissionMode}
           effort={currentProviderEffort}

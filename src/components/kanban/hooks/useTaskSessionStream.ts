@@ -112,9 +112,31 @@ export function useTaskSessionStream(sessionId: string | null, provider: LLMProv
           void store.refreshFromServer(sessionId);
           return;
         }
-        // Skip non-persisted control frames.
+        // Skip non-persisted control frames. Surface permission waits in the
+        // sidebar inbox so headless Kanban runs don't hang silently.
+        case 'permission_request': {
+          const requestId =
+            typeof msg.requestId === 'string'
+              ? msg.requestId
+              : typeof msg.id === 'string'
+                ? msg.id
+                : sessionId;
+          void import('../../settings/api/inboxNotificationsApi')
+            .then(({ inboxNotificationsApi }) =>
+              inboxNotificationsApi.create({
+                kind: 'permission_pending',
+                severity: 'warning',
+                title: 'Agent waiting on permission',
+                body: 'A Kanban/agent run needs permission approval before it can continue.',
+                source: 'kanban',
+                meta: { sessionId, provider, requestId },
+                dedupeKey: `permission:${sessionId}:${requestId}`,
+              }),
+            )
+            .catch(() => undefined);
+          return;
+        }
         case 'status':
-        case 'permission_request':
         case 'permission_cancelled':
           return;
         default:

@@ -50,6 +50,10 @@ export type KanbanTask = {
   assignee_provider: LLMProvider | null;
   /** Review agent (runs after implementation succeeds). */
   review_provider: LLMProvider | null;
+  /** Named agent run profile for implement (optional). */
+  implement_profile_id: string | null;
+  /** Named agent run profile for review (optional). */
+  review_profile_id: string | null;
   permission_mode: string;
   tools: KanbanTaskTools;
   schedule_cron: string | null;

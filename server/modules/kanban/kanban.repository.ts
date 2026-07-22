@@ -48,8 +48,10 @@ function mapTask(row: KanbanTaskRow, dependsOn: string[]): KanbanTask {
   const { tools_json, ...rest } = row;
   return {
     ...rest,
-    // Older DBs may not have review_provider until migration; coerce to null.
+    // Older DBs may not have columns until migration; coerce to null.
     review_provider: rest.review_provider ?? null,
+    implement_profile_id: rest.implement_profile_id ?? null,
+    review_profile_id: rest.review_profile_id ?? null,
     tools: parseTools(tools_json),
     dependsOn,
   };
@@ -146,8 +148,9 @@ export const kanbanDb = {
     db.prepare(
       `INSERT INTO kanban_tasks (
          task_id, board_id, project_id, title, description, prompt, column_id, position,
-         assignee_provider, review_provider, permission_mode, tools_json, schedule_cron, status
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         assignee_provider, review_provider, implement_profile_id, review_profile_id,
+         permission_mode, tools_json, schedule_cron, status
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       taskId,
       input.boardId,
@@ -159,6 +162,8 @@ export const kanbanDb = {
       nextPosition,
       input.assigneeProvider ?? null,
       input.reviewProvider ?? null,
+      input.implementProfileId ?? null,
+      input.reviewProfileId ?? null,
       input.permissionMode ?? 'default',
       JSON.stringify(input.tools ?? {}),
       input.scheduleCron ?? null,
@@ -209,6 +214,14 @@ export const kanbanDb = {
         patch.reviewProvider !== undefined
           ? patch.reviewProvider
           : ((existing as KanbanTaskRow).review_provider ?? null),
+      implement_profile_id:
+        patch.implementProfileId !== undefined
+          ? patch.implementProfileId
+          : ((existing as KanbanTaskRow).implement_profile_id ?? null),
+      review_profile_id:
+        patch.reviewProfileId !== undefined
+          ? patch.reviewProfileId
+          : ((existing as KanbanTaskRow).review_profile_id ?? null),
       permission_mode: patch.permissionMode ?? existing.permission_mode,
       tools_json: patch.tools !== undefined ? JSON.stringify(patch.tools) : existing.tools_json,
       schedule_cron:
@@ -219,7 +232,8 @@ export const kanbanDb = {
     db.prepare(
       `UPDATE kanban_tasks SET
          title = ?, description = ?, prompt = ?, project_id = ?, column_id = ?, position = ?,
-         assignee_provider = ?, review_provider = ?, permission_mode = ?, tools_json = ?,
+         assignee_provider = ?, review_provider = ?, implement_profile_id = ?, review_profile_id = ?,
+         permission_mode = ?, tools_json = ?,
          schedule_cron = ?, status = ?, updated_at = CURRENT_TIMESTAMP
        WHERE task_id = ?`,
     ).run(
@@ -231,6 +245,8 @@ export const kanbanDb = {
       next.position,
       next.assignee_provider,
       next.review_provider,
+      next.implement_profile_id,
+      next.review_profile_id,
       next.permission_mode,
       next.tools_json,
       next.schedule_cron,

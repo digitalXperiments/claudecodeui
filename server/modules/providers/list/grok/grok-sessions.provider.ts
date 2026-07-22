@@ -69,9 +69,133 @@ function extractGrokTextParts(content: unknown): string {
     .join('\n');
 }
 
-function resolveGrokSessionDir(projectPath: string, sessionId: string): string {
+export function resolveGrokSessionDir(projectPath: string, sessionId: string): string {
   const encodedProjectPath = encodeURIComponent(projectPath);
   return path.join(GROK_SESSIONS_ROOT, encodedProjectPath, sessionId);
+}
+
+/**
+ * Grok reports two different token notions:
+ * - **Context occupancy** (`signals.json` → contextTokensUsed / contextWindowTokens)
+ *   — what `/context` shows (e.g. 188k / 500k). This is the live window fill.
+ * - **Session spend** (sum of each turn_completed.usage) — cumulative billing
+ *   across turns (can be many millions because every turn re-sends context).
+ *
+ * CloudCLI previously only summed turn spend and labeled it as the badge
+ * "tokens", which looked wildly out of sync with Grok's own UI. We expose both.
+ */
+export type GrokSessionTokenUsage = {
+  /** Primary badge value: current context fill (preferred) or cumulative spend. */
+  used: number;
+  /** Context window size when known. */
+  total: number;
+  contextUsed: number;
+  contextWindow: number;
+  /** Remaining context capacity (window - used), when known. */
+  contextFree: number;
+  /** Fill percent 0–100 when window is known. */
+  contextPercent: number | null;
+  /**
+   * Latest turn API input/output (billing for that turn only). Not the same as
+   * context occupancy — Grok can bill multi-step modelCalls with large cache.
+   */
+  lastTurnInputTokens: number;
+  lastTurnOutputTokens: number;
+  /** Sum of per-turn totalTokens (API tokens billed this session). */
+  cumulativeUsed: number;
+  billedInputTokens: number;
+  billedOutputTokens: number;
+  model: string | null;
+  provider: 'grok';
+  /** Breakdown aligned with *context* (not lifetime bill). */
+  breakdown: { input: number; output: number };
+};
+
+export function readGrokSessionTokenUsage(sessionDir: string): GrokSessionTokenUsage {
+  let contextUsed = 0;
+  let contextWindow = 0;
+  let model: string | null = null;
+
+  try {
+    const signalsRaw = fsSync.readFileSync(path.join(sessionDir, 'signals.json'), 'utf8');
+    const signals = JSON.parse(signalsRaw) as Record<string, unknown>;
+    contextUsed = Number(signals.contextTokensUsed || 0) || 0;
+    contextWindow = Number(signals.contextWindowTokens || 0) || 0;
+    if (typeof signals.primaryModelId === 'string' && signals.primaryModelId.trim()) {
+      model = signals.primaryModelId.trim();
+    }
+  } catch {
+    // signals.json may be missing on brand-new sessions
+  }
+
+  let billedInputTokens = 0;
+  let billedOutputTokens = 0;
+  let cumulativeUsed = 0;
+  let lastTurnInputTokens = 0;
+  let lastTurnOutputTokens = 0;
+
+  try {
+    const updatesContent = fsSync.readFileSync(path.join(sessionDir, 'updates.jsonl'), 'utf8');
+    for (const line of updatesContent.trim().split('\n')) {
+      if (!line) continue;
+      try {
+        const entry = JSON.parse(line) as {
+          params?: { update?: { sessionUpdate?: string; usage?: Record<string, unknown> } };
+        };
+        const update = entry?.params?.update;
+        const usage = update?.usage;
+        if (update?.sessionUpdate === 'turn_completed' && usage) {
+          const turnIn = Number(usage.inputTokens || 0) || 0;
+          const turnOut = Number(usage.outputTokens || 0) || 0;
+          const turnTotal = Number(usage.totalTokens || 0) || 0;
+          billedInputTokens += turnIn;
+          billedOutputTokens += turnOut;
+          cumulativeUsed += turnTotal > 0 ? turnTotal : turnIn + turnOut;
+          lastTurnInputTokens = turnIn;
+          lastTurnOutputTokens = turnOut;
+        }
+      } catch {
+        // skip bad lines
+      }
+    }
+  } catch {
+    // updates.jsonl may be missing
+  }
+
+  if (cumulativeUsed <= 0) {
+    cumulativeUsed = billedInputTokens + billedOutputTokens;
+  }
+
+  // Badge / primary metrics: context occupancy from signals only.
+  const used = contextUsed > 0 ? contextUsed : cumulativeUsed;
+  const total = contextWindow > 0 ? contextWindow : 0;
+  const contextFree =
+    contextWindow > 0 ? Math.max(0, contextWindow - (contextUsed > 0 ? contextUsed : 0)) : 0;
+  const contextPercent =
+    contextWindow > 0 && contextUsed > 0
+      ? Math.min(100, Math.round((contextUsed / contextWindow) * 1000) / 10)
+      : null;
+
+  return {
+    used,
+    total,
+    contextUsed,
+    contextWindow,
+    contextFree,
+    contextPercent,
+    lastTurnInputTokens,
+    lastTurnOutputTokens,
+    cumulativeUsed,
+    billedInputTokens,
+    billedOutputTokens,
+    model,
+    provider: 'grok',
+    // Keep breakdown context-oriented for the modal default view.
+    breakdown: {
+      input: contextUsed > 0 ? contextUsed : billedInputTokens,
+      output: lastTurnOutputTokens,
+    },
+  };
 }
 
 export class GrokSessionsProvider implements IProviderSessions {

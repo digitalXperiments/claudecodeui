@@ -87,6 +87,13 @@ import {
     startKanbanScheduler,
     stopKanbanScheduler,
 } from './modules/kanban/index.js';
+import missionControlRoutes from './modules/mission-control/mission-control.routes.js';
+import {
+    configureMissionControlRuntimes,
+    startMissionControlScheduler,
+    stopMissionControlScheduler,
+} from './modules/mission-control/index.js';
+import agentProfilesRoutes from './modules/agent-profiles/agent-profiles.routes.js';
 import { browserUseService } from './modules/browser-use/browser-use.service.js';
 import { startEnabledPluginServers, stopAllPlugins, getPluginPort } from './utils/plugin-process-manager.js';
 import { initializeDatabase, projectsDb, sessionsDb } from './modules/database/index.js';
@@ -145,6 +152,9 @@ const providerSpawnFns = {
 configureKanbanRuntimes(providerSpawnFns);
 initKanbanAutomation();
 initKanbanQueue({ concurrency: 3 });
+
+// Mission Control reuses the same provider runtimes for produce/resolve runs.
+configureMissionControlRuntimes(providerSpawnFns);
 
 // Single WebSocket server that handles chat, shell, and plugin proxy paths.
 const wss = createWebSocketServer(server, {
@@ -267,6 +277,12 @@ app.use('/api/voice', authenticateToken, voiceRoutes);
 
 // Kanban orchestration API Routes (protected)
 app.use('/api/kanban', authenticateToken, kanbanRoutes);
+
+// Mission Control — global + project produce/resolve queues
+app.use('/api/mission-control', authenticateToken, missionControlRoutes);
+
+// Named agent run profiles (Settings + Kanban)
+app.use('/api/agent-profiles', authenticateToken, agentProfilesRoutes);
 
 // Serve public files (like api-docs.html)
 app.use(express.static(path.join(APP_ROOT, 'public')));
@@ -1293,134 +1309,36 @@ app.get('/api/projects/:projectId/sessions/:sessionId/token-usage', authenticate
             });
         }
 
-        // Handle Kimi sessions - not exposed on the live ACP wire (verified:
-        // no session/update notification ever carries usage/token data), but
-        // genuinely recorded to disk per turn-step as `usage.record` entries
-        // in `~/.kimi-code/sessions/wd_*/<sessionId>/agents/main/wire.jsonl`,
-        // e.g. {"type":"usage.record","usage":{"inputOther":2160,"output":51,
-        // "inputCacheRead":17920,"inputCacheCreation":0},"usageScope":"turn"}.
-        // Sum across all such entries for the session-cumulative total, same
-        // approach as Grok's per-turn turn_completed events below.
+        // Handle Kimi sessions — context fill from latest usage.record turn,
+        // session spend from the sum of all turns (see kimi-token-usage.ts).
         if (provider === 'kimi') {
-            const kimiSessionsRoot = path.join(homeDir, '.kimi-code', 'sessions');
-            let kimiSessionDir = null;
-            try {
-                const workDirs = await fsPromises.readdir(kimiSessionsRoot);
-                for (const workDir of workDirs) {
-                    const candidate = path.join(kimiSessionsRoot, workDir, providerNativeSessionId);
-                    if (fs.existsSync(candidate)) {
-                        kimiSessionDir = candidate;
-                        break;
-                    }
-                }
-            } catch (error) {
-                if (error.code !== 'ENOENT') throw error;
-            }
-
+            const { findKimiSessionDir, readKimiSessionTokenUsage } = await import(
+                './modules/providers/list/kimi/kimi-token-usage.js'
+            );
+            const kimiSessionDir = findKimiSessionDir(providerNativeSessionId);
             if (!kimiSessionDir) {
                 return res.status(404).json({ error: 'Kimi session not found', sessionId: safeSessionId });
             }
-
-            let inputTokens = 0;
-            let outputTokens = 0;
-            try {
-                const wireContent = await fsPromises.readFile(path.join(kimiSessionDir, 'agents', 'main', 'wire.jsonl'), 'utf8');
-                for (const line of wireContent.trim().split('\n')) {
-                    if (!line) continue;
-                    try {
-                        const entry = JSON.parse(line);
-                        if (entry?.type === 'usage.record' && entry.usage) {
-                            const usage = entry.usage;
-                            inputTokens += Number(usage.inputOther || 0)
-                                + Number(usage.inputCacheRead || 0)
-                                + Number(usage.inputCacheCreation || 0);
-                            outputTokens += Number(usage.output || 0);
-                        }
-                    } catch (parseError) {
-                        continue;
-                    }
-                }
-            } catch (error) {
-                if (error.code !== 'ENOENT') throw error;
-            }
-
-            return res.json({
-                used: inputTokens + outputTokens,
-                total: 0,
-                inputTokens,
-                outputTokens,
-                breakdown: {
-                    input: inputTokens,
-                    output: outputTokens
-                }
-            });
+            return res.json(readKimiSessionTokenUsage(kimiSessionDir));
         }
 
-        // Handle Grok sessions - `~/.grok/sessions/<encoded-cwd>/<sessionId>/`
-        // has a signals.json (contextTokensUsed/contextWindowTokens, i.e.
-        // context-window occupancy) and an updates.jsonl with one
-        // `turn_completed` update per turn, each carrying that turn's own
-        // usage - so the session-cumulative input/output token spend has to
-        // be summed across every turn_completed line, unlike Codex's running
-        // cumulative total_token_usage where only the latest line is needed.
+        // Handle Grok sessions - context occupancy (signals.json) vs session
+        // spend (sum of turn_completed usage). See readGrokSessionTokenUsage.
         if (provider === 'grok') {
+            const { readGrokSessionTokenUsage, resolveGrokSessionDir } = await import(
+                './modules/providers/list/grok/grok-sessions.provider.js'
+            );
             const grokProjectPath = await projectsDb.getProjectPathById(projectId);
             if (!grokProjectPath) {
                 return res.status(404).json({ error: 'Project not found' });
             }
 
-            const grokSessionDir = path.join(
-                homeDir,
-                '.grok',
-                'sessions',
-                encodeURIComponent(grokProjectPath),
-                providerNativeSessionId
-            );
-
-            let contextWindow = 0;
-            try {
-                const signals = JSON.parse(await fsPromises.readFile(path.join(grokSessionDir, 'signals.json'), 'utf8'));
-                contextWindow = Number(signals.contextWindowTokens || 0);
-            } catch (error) {
-                if (error.code !== 'ENOENT') throw error;
+            const grokSessionDir = resolveGrokSessionDir(grokProjectPath, providerNativeSessionId);
+            if (!fs.existsSync(grokSessionDir)) {
+                return res.status(404).json({ error: 'Grok session not found', sessionId: safeSessionId });
             }
 
-            let inputTokens = 0;
-            let outputTokens = 0;
-            let totalTokens = 0;
-            try {
-                const updatesContent = await fsPromises.readFile(path.join(grokSessionDir, 'updates.jsonl'), 'utf8');
-                for (const line of updatesContent.trim().split('\n')) {
-                    if (!line) continue;
-                    try {
-                        const entry = JSON.parse(line);
-                        const usage = entry?.params?.update?.usage;
-                        if (entry?.params?.update?.sessionUpdate === 'turn_completed' && usage) {
-                            inputTokens += Number(usage.inputTokens || 0);
-                            outputTokens += Number(usage.outputTokens || 0);
-                            totalTokens += Number(usage.totalTokens || 0);
-                        }
-                    } catch (parseError) {
-                        continue;
-                    }
-                }
-            } catch (error) {
-                if (error.code === 'ENOENT') {
-                    return res.status(404).json({ error: 'Grok session not found', sessionId: safeSessionId });
-                }
-                throw error;
-            }
-
-            return res.json({
-                used: totalTokens,
-                total: contextWindow,
-                inputTokens,
-                outputTokens,
-                breakdown: {
-                    input: inputTokens,
-                    output: outputTokens
-                }
-            });
+            return res.json(readGrokSessionTokenUsage(grokSessionDir));
         }
 
         // Handle Claude sessions (default)
@@ -1454,65 +1372,14 @@ app.get('/api/projects/:projectId/sessions/:sessionId/token-usage', authenticate
             }
         }
 
-        // Read and parse the JSONL file
-        let fileContent;
-        try {
-            fileContent = await fsPromises.readFile(jsonlPath, 'utf8');
-        } catch (error) {
-            if (error.code === 'ENOENT') {
-                return res.status(404).json({ error: 'Session file not found', path: jsonlPath });
-            }
-            throw error; // Re-throw other errors to be caught by outer try-catch
+        // Claude: latest-turn context fill vs sum-of-turns session spend.
+        if (!fs.existsSync(jsonlPath)) {
+            return res.status(404).json({ error: 'Session file not found', path: jsonlPath });
         }
-        const lines = fileContent.trim().split('\n');
-
-        const parsedContextWindow = parseInt(process.env.CONTEXT_WINDOW, 10);
-        const contextWindow = Number.isFinite(parsedContextWindow) ? parsedContextWindow : 160000;
-        let inputTokens = 0;
-        let outputTokens = 0;
-        let cacheReadTokens = 0;
-        let cacheCreationTokens = 0;
-
-        // Find the latest assistant message with usage data (scan from end)
-        for (let i = lines.length - 1; i >= 0; i--) {
-            try {
-                const entry = JSON.parse(lines[i]);
-
-                // Only count assistant messages which have usage data
-                if (entry.type === 'assistant' && entry.message?.usage) {
-                    const usage = entry.message.usage;
-
-                    // Use token counts from latest assistant message only
-                    const directInputTokens = readUsageNumber(usage.input_tokens ?? usage.inputTokens);
-                    cacheReadTokens = readUsageNumber(usage.cache_read_input_tokens ?? usage.cacheReadInputTokens ?? usage.cacheReadTokens);
-                    cacheCreationTokens = readUsageNumber(usage.cache_creation_input_tokens ?? usage.cacheCreationInputTokens ?? usage.cacheCreationTokens);
-                    inputTokens = directInputTokens + cacheReadTokens + cacheCreationTokens;
-                    outputTokens = readUsageNumber(usage.output_tokens ?? usage.outputTokens);
-
-                    break; // Stop after finding the latest assistant message
-                }
-            } catch (parseError) {
-                // Skip lines that can't be parsed
-                continue;
-            }
-        }
-
-        const totalUsed = inputTokens + outputTokens;
-        const cacheTokens = cacheReadTokens + cacheCreationTokens;
-
-        res.json({
-            used: totalUsed,
-            total: contextWindow,
-            inputTokens,
-            outputTokens,
-            cacheReadTokens,
-            cacheCreationTokens,
-            cacheTokens,
-            breakdown: {
-                input: inputTokens,
-                output: outputTokens
-            }
-        });
+        const { readClaudeSessionTokenUsage } = await import(
+            './modules/providers/list/claude/claude-token-usage.js'
+        );
+        res.json(readClaudeSessionTokenUsage(jsonlPath));
     } catch (error) {
         console.error('Error reading session token usage:', error);
         res.status(500).json({ error: 'Failed to read session token usage' });
@@ -1813,6 +1680,12 @@ async function startServer() {
             console.error('[Kanban] boot reconcile failed:', error.message);
         }
 
+        try {
+            startMissionControlScheduler();
+        } catch (error) {
+            console.error('[MissionControl] scheduler start failed:', error.message);
+        }
+
         // Configure Web Push (VAPID keys)
         configureWebPush();
 
@@ -1862,6 +1735,11 @@ async function startServer() {
                 stopKanbanScheduler();
             } catch (err) {
                 console.error('[Kanban] Error stopping scheduler during shutdown:', err?.message || err);
+            }
+            try {
+                stopMissionControlScheduler();
+            } catch (err) {
+                console.error('[MissionControl] Error stopping scheduler during shutdown:', err?.message || err);
             }
             try {
                 await browserUseService.stopAllSessions();

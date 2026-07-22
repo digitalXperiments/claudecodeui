@@ -96,7 +96,8 @@
     --secondary: 0 0% 17%;
     --secondary-foreground: 40 8% 93%;
     --muted: 0 0% 17%;
-    --muted-foreground: 0 0% 60%;
+    /* Slightly brighter secondary text so tool params / labels stay readable */
+    --muted-foreground: 40 6% 72%;
     --accent: 0 0% 17%;
     --accent-foreground: 40 8% 93%;
     --destructive: 0 62.8% 30.6%;

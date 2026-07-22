@@ -1,15 +1,18 @@
 import { Database } from 'better-sqlite3';
 
 import {
+  AGENT_RUN_PROFILES_TABLE_SCHEMA_SQL,
   APP_CONFIG_TABLE_SCHEMA_SQL,
   CATEGORIES_TABLE_SCHEMA_SQL,
   KANBAN_SCHEMA_SQL,
   LAST_SCANNED_AT_SQL,
+  MISSION_CONTROL_SCHEMA_SQL,
   NOTIFICATION_CHANNEL_ENDPOINTS_TABLE_SCHEMA_SQL,
   PROJECT_MEMORY_TABLE_SCHEMA_SQL,
   PROJECTS_TABLE_SCHEMA_SQL,
   PUSH_SUBSCRIPTIONS_TABLE_SCHEMA_SQL,
   SESSIONS_TABLE_SCHEMA_SQL,
+  SYSTEM_NOTIFICATIONS_TABLE_SCHEMA_SQL,
   USER_NOTIFICATION_PREFERENCES_TABLE_SCHEMA_SQL,
   VAPID_KEYS_TABLE_SCHEMA_SQL,
 } from '@/modules/database/schema.js';
@@ -496,8 +499,12 @@ const ensureKanbanGlobalBoardSchema = (db: Database): void => {
  */
 const ensureKanbanAgentWorkflowSchema = (db: Database): void => {
   if (tableExists(db, 'kanban_tasks')) {
-    const taskColumns = getTableInfo(db, 'kanban_tasks').map((column) => column.name);
+    let taskColumns = getTableInfo(db, 'kanban_tasks').map((column) => column.name);
     addColumnToTableIfNotExists(db, 'kanban_tasks', taskColumns, 'review_provider', 'TEXT');
+    taskColumns = getTableInfo(db, 'kanban_tasks').map((column) => column.name);
+    addColumnToTableIfNotExists(db, 'kanban_tasks', taskColumns, 'implement_profile_id', 'TEXT');
+    taskColumns = getTableInfo(db, 'kanban_tasks').map((column) => column.name);
+    addColumnToTableIfNotExists(db, 'kanban_tasks', taskColumns, 'review_profile_id', 'TEXT');
   }
 
   if (tableExists(db, 'kanban_runs')) {
@@ -617,10 +624,17 @@ export const runMigrations = (db: Database) => {
     // Per-project Obsidian memory mapping (additive; runs after projects rebuild).
     ensureProjectMemorySchema(db);
 
+    // Named agent run profiles + in-app notification inbox (additive).
+    db.exec(AGENT_RUN_PROFILES_TABLE_SCHEMA_SQL);
+    db.exec(SYSTEM_NOTIFICATIONS_TABLE_SCHEMA_SQL);
+
     // Kanban orchestration tables (additive; safe to re-exec via IF NOT EXISTS).
     db.exec(KANBAN_SCHEMA_SQL);
     ensureKanbanGlobalBoardSchema(db);
     ensureKanbanAgentWorkflowSchema(db);
+
+    // Mission Control (sections + reviewable items).
+    db.exec(MISSION_CONTROL_SCHEMA_SQL);
 
     console.log('Database migrations completed successfully');
   } catch (error: any) {

@@ -186,6 +186,8 @@ CREATE TABLE IF NOT EXISTS kanban_tasks (
     position          INTEGER DEFAULT 0, -- ordering within a column
     assignee_provider TEXT,              -- implementation agent (LLMProvider | NULL)
     review_provider   TEXT,              -- review agent (LLMProvider | NULL)
+    implement_profile_id TEXT,           -- optional agent_run_profiles.profile_id
+    review_profile_id    TEXT,           -- optional agent_run_profiles.profile_id
     permission_mode   TEXT DEFAULT 'default',
     tools_json        TEXT DEFAULT '{}', -- {allowedCommands:[], disallowedCommands:[]}
     schedule_cron     TEXT,              -- NULL = not scheduled
@@ -197,6 +199,44 @@ CREATE TABLE IF NOT EXISTS kanban_tasks (
     updated_at        DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (board_id) REFERENCES kanban_boards(board_id) ON DELETE CASCADE
 );
+`;
+
+/** Named reusable agent run configs (provider + model + effort + permissions). */
+export const AGENT_RUN_PROFILES_TABLE_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS agent_run_profiles (
+    profile_id         TEXT PRIMARY KEY NOT NULL,
+    name               TEXT NOT NULL,
+    description        TEXT DEFAULT '',
+    provider           TEXT NOT NULL,
+    model              TEXT,
+    effort             TEXT,
+    permission_mode    TEXT DEFAULT 'default',
+    tools_json         TEXT DEFAULT '{}',
+    permission_intent  TEXT DEFAULT '',
+    created_at         DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at         DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_agent_run_profiles_provider ON agent_run_profiles(provider);
+CREATE INDEX IF NOT EXISTS idx_agent_run_profiles_name ON agent_run_profiles(name);
+`;
+
+/** In-app attention inbox (permission limbo, failures, action required). */
+export const SYSTEM_NOTIFICATIONS_TABLE_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS system_notifications (
+    notification_id  TEXT PRIMARY KEY NOT NULL,
+    kind             TEXT NOT NULL,          -- permission_pending|run_failed|action_required|info
+    severity         TEXT DEFAULT 'info',    -- info|warning|error
+    title            TEXT NOT NULL,
+    body             TEXT DEFAULT '',
+    source           TEXT DEFAULT 'system',  -- kanban|chat|system
+    href             TEXT,                   -- optional deep-link path/query
+    meta_json        TEXT DEFAULT '{}',
+    read_at          DATETIME,
+    dismissed_at     DATETIME,
+    created_at       DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_system_notifications_created ON system_notifications(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_system_notifications_unread ON system_notifications(read_at, dismissed_at);
 `;
 
 export const KANBAN_TASK_DEPS_TABLE_SCHEMA_SQL = `
@@ -262,6 +302,70 @@ ${KANBAN_TASK_COMMENTS_TABLE_SCHEMA_SQL}
 CREATE INDEX IF NOT EXISTS idx_kanban_task_comments_task ON kanban_task_comments(task_id);
 `;
 
+/** Mission Control — config-driven produce/resolve sections + reviewable items. */
+export const MC_SECTIONS_TABLE_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS mc_sections (
+    section_id          TEXT PRIMARY KEY NOT NULL,
+    title               TEXT NOT NULL,
+    icon                TEXT DEFAULT '',
+    sort_order          INTEGER DEFAULT 0,
+    enabled             INTEGER DEFAULT 1,
+    scope               TEXT DEFAULT 'global',  -- global | project
+    project_id          TEXT,                  -- required when scope=project
+    mode                TEXT DEFAULT 'review', -- review | fire_and_forget
+    schedule_cron       TEXT DEFAULT '',
+    provider            TEXT DEFAULT 'claude',
+    model               TEXT DEFAULT '',
+    permission_mode     TEXT DEFAULT 'bypassPermissions',
+    dry_run             INTEGER DEFAULT 0,
+    auto_approve        INTEGER DEFAULT 0,
+    produce_prompt      TEXT DEFAULT '',
+    produce_tools_json  TEXT DEFAULT '[]',
+    resolve_prompt      TEXT DEFAULT '',
+    resolve_tools_json  TEXT DEFAULT '[]',
+    actions_json        TEXT DEFAULT '[]',
+    last_run_at         DATETIME,
+    last_run_error      TEXT,
+    created_at          DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at          DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_mc_sections_enabled ON mc_sections(enabled);
+CREATE INDEX IF NOT EXISTS idx_mc_sections_project ON mc_sections(project_id);
+CREATE INDEX IF NOT EXISTS idx_mc_sections_sort ON mc_sections(sort_order);
+`;
+
+export const MC_ITEMS_TABLE_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS mc_items (
+    item_id       TEXT PRIMARY KEY NOT NULL,
+    section_id    TEXT NOT NULL,
+    status        TEXT DEFAULT 'pending', -- pending|resolving|resolved|dismissed|failed|expired
+    title         TEXT NOT NULL,
+    summary       TEXT DEFAULT '',
+    body_json     TEXT DEFAULT '{}',
+    source_json   TEXT DEFAULT '{}',
+    actions_json  TEXT DEFAULT '[]',
+    confidence    REAL DEFAULT 0,
+    provider      TEXT DEFAULT '',
+    model         TEXT DEFAULT '',
+    dedupe_key    TEXT NOT NULL,
+    result_json   TEXT,
+    error         TEXT,
+    created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+    resolved_at   DATETIME,
+    FOREIGN KEY (section_id) REFERENCES mc_sections(section_id) ON DELETE CASCADE,
+    UNIQUE(section_id, dedupe_key)
+);
+CREATE INDEX IF NOT EXISTS idx_mc_items_section ON mc_items(section_id);
+CREATE INDEX IF NOT EXISTS idx_mc_items_status ON mc_items(status);
+CREATE INDEX IF NOT EXISTS idx_mc_items_created ON mc_items(created_at DESC);
+`;
+
+export const MISSION_CONTROL_SCHEMA_SQL = `
+${MC_SECTIONS_TABLE_SCHEMA_SQL}
+${MC_ITEMS_TABLE_SCHEMA_SQL}
+`;
+
 export const INIT_SCHEMA_SQL = `
 -- Initialize authentication database
 PRAGMA foreign_keys = ON;
@@ -310,5 +414,11 @@ ${APP_CONFIG_TABLE_SCHEMA_SQL}
 
 ${PROJECT_MEMORY_TABLE_SCHEMA_SQL}
 
+${AGENT_RUN_PROFILES_TABLE_SCHEMA_SQL}
+
+${SYSTEM_NOTIFICATIONS_TABLE_SCHEMA_SQL}
+
 ${KANBAN_SCHEMA_SQL}
+
+${MISSION_CONTROL_SCHEMA_SQL}
 `;

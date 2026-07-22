@@ -44,7 +44,8 @@ const readStoredProvider = (): LLMProvider => {
  */
 const FALLBACK_PERMISSION_MODES: Record<LLMProvider, PermissionMode[]> = {
   claude: ['default', 'auto', 'acceptEdits', 'bypassPermissions', 'plan'],
-  cursor: ['default', 'acceptEdits', 'bypassPermissions', 'plan'],
+  // Cursor headless only supports default vs -f (bypass).
+  cursor: ['default', 'bypassPermissions'],
   codex: ['default', 'acceptEdits', 'bypassPermissions'],
   opencode: ['default', 'acceptEdits', 'bypassPermissions', 'plan'],
   grok: ['default', 'acceptEdits', 'auto', 'bypassPermissions', 'plan'],
@@ -53,19 +54,19 @@ const FALLBACK_PERMISSION_MODES: Record<LLMProvider, PermissionMode[]> = {
 };
 
 /**
- * Fallback image-vision support, used only until the backend capability matrix
- * loads. Grok/Kimi/Antigravity have no inline image vision — they can still
- * read attached documents by path (see FALLBACK_SUPPORTS_FILES). Mirrors
- * provider-capabilities.service.ts.
+ * Fallback image attachment support, used only until the backend capability
+ * matrix loads. All current runtimes accept pasted/attached images (Claude as
+ * base64 vision blocks; Grok/Cursor/OpenCode/Kimi/Agy as path references).
+ * Mirrors provider-capabilities.service.ts.
  */
 const FALLBACK_SUPPORTS_IMAGES: Record<LLMProvider, boolean> = {
   claude: true,
   cursor: true,
   codex: true,
   opencode: true,
-  grok: false,
-  kimi: false,
-  agy: false,
+  grok: true,
+  kimi: true,
+  agy: true,
 };
 
 /** Fallback document-attachment support: every agent reads path-referenced files. */

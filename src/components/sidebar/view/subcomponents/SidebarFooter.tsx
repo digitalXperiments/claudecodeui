@@ -1,4 +1,4 @@
-import { Settings, ArrowUpCircle, Bug, AlertTriangle } from 'lucide-react';
+import { Settings, ArrowUpCircle, Bug, AlertTriangle, Bell, Radar } from 'lucide-react';
 import type { TFunction } from 'i18next';
 import { IS_PLATFORM } from '../../../../constants/config';
 import type { ReleaseInfo } from '../../../../types/sharedTypes';
@@ -24,6 +24,10 @@ type SidebarFooterProps = {
   currentVersion: string;
   onShowVersionModal: () => void;
   onShowSettings: () => void;
+  onShowNotifications?: () => void;
+  unreadNotificationCount?: number;
+  onShowMissionControl?: () => void;
+  missionControlPendingCount?: number;
   t: TFunction;
 };
 
@@ -35,6 +39,10 @@ export default function SidebarFooter({
   currentVersion,
   onShowVersionModal,
   onShowSettings,
+  onShowNotifications,
+  unreadNotificationCount = 0,
+  onShowMissionControl,
+  missionControlPendingCount = 0,
   t,
 }: SidebarFooterProps) {
   return (
@@ -103,42 +111,73 @@ export default function SidebarFooter({
         </>
       )}
 
-      {/* Community + Settings */}
+      {/* Community + Notifications + Settings — shared spacing for all footer links */}
       <div className="nav-divider" />
 
-      {/* Desktop Report Issue */}
-      <div className="hidden px-2 pt-1.5 md:block">
+      {/* Desktop footer nav: one stack, identical item padding */}
+      <div className="hidden flex-col gap-0.5 px-2 py-1.5 md:flex">
         <a
           href={GITHUB_ISSUES_URL}
           target="_blank"
           rel="noopener noreferrer"
           className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
         >
-          <Bug className="h-3.5 w-3.5" />
+          <Bug className="h-3.5 w-3.5 shrink-0" />
           <span className="text-sm">{t('actions.reportIssue')}</span>
         </a>
-      </div>
-
-      {/* Desktop Discord */}
-      <div className="hidden px-2 md:block">
         <a
           href={DISCORD_INVITE_URL}
           target="_blank"
           rel="noopener noreferrer"
           className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
         >
-          <DiscordIcon className="h-3.5 w-3.5" />
+          <DiscordIcon className="h-3.5 w-3.5 shrink-0" />
           <span className="text-sm">{t('actions.joinCommunity')}</span>
         </a>
-      </div>
-
-      {/* Desktop settings */}
-      <div className="hidden px-2 py-1.5 md:block">
+        {onShowNotifications ? (
+          <button
+            type="button"
+            className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
+            onClick={onShowNotifications}
+          >
+            <span className="relative shrink-0">
+              <Bell className="h-3.5 w-3.5" />
+              {unreadNotificationCount > 0 ? (
+                <span className="absolute -right-1.5 -top-1.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-red-500 px-0.5 text-[9px] font-semibold text-white">
+                  {unreadNotificationCount > 99 ? '99+' : unreadNotificationCount}
+                </span>
+              ) : null}
+            </span>
+            <span className="text-sm">
+              {t('actions.notifications', { defaultValue: 'Notifications' })}
+            </span>
+          </button>
+        ) : null}
+        {onShowMissionControl ? (
+          <button
+            type="button"
+            className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
+            onClick={onShowMissionControl}
+          >
+            <span className="relative shrink-0">
+              <Radar className="h-3.5 w-3.5" />
+              {missionControlPendingCount > 0 ? (
+                <span className="absolute -right-1.5 -top-1.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-amber-500 px-0.5 text-[9px] font-semibold text-white">
+                  {missionControlPendingCount > 99 ? '99+' : missionControlPendingCount}
+                </span>
+              ) : null}
+            </span>
+            <span className="text-sm">
+              {t('actions.missionControl', { defaultValue: 'Mission Control' })}
+            </span>
+          </button>
+        ) : null}
         <button
-          className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
+          type="button"
+          className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
           onClick={onShowSettings}
         >
-          <Settings className="h-3.5 w-3.5" />
+          <Settings className="h-3.5 w-3.5 shrink-0" />
           <span className="text-sm">{t('actions.settings')}</span>
         </button>
       </div>
@@ -157,8 +196,8 @@ export default function SidebarFooter({
         </div>
       )}
 
-      {/* Mobile Report Issue */}
-      <div className="px-3 pt-3 md:hidden">
+      {/* Mobile footer nav: one stack, identical item padding */}
+      <div className="flex flex-col gap-2 px-3 py-3 md:hidden">
         <a
           href={GITHUB_ISSUES_URL}
           target="_blank"
@@ -170,10 +209,6 @@ export default function SidebarFooter({
           </div>
           <span className="text-sm font-normal text-foreground">{t('actions.reportIssue')}</span>
         </a>
-      </div>
-
-      {/* Mobile Discord */}
-      <div className="px-3 pt-2 md:hidden">
         <a
           href={DISCORD_INVITE_URL}
           target="_blank"
@@ -185,11 +220,46 @@ export default function SidebarFooter({
           </div>
           <span className="text-sm font-normal text-foreground">{t('actions.joinCommunity')}</span>
         </a>
-      </div>
-
-      {/* Mobile settings */}
-      <div className="px-3 pb-3 pt-2 md:hidden">
+        {onShowNotifications ? (
+          <button
+            type="button"
+            className="flex h-10 w-full items-center gap-3 rounded-xl bg-muted/40 px-3.5 transition-all hover:bg-muted/60 active:scale-[0.98]"
+            onClick={onShowNotifications}
+          >
+            <div className="relative flex h-7 w-7 items-center justify-center rounded-lg bg-background/80">
+              <Bell className="h-4 w-4 text-muted-foreground" />
+              {unreadNotificationCount > 0 ? (
+                <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500 px-0.5 text-[9px] font-semibold text-white">
+                  {unreadNotificationCount > 99 ? '99+' : unreadNotificationCount}
+                </span>
+              ) : null}
+            </div>
+            <span className="text-sm font-normal text-foreground">
+              {t('actions.notifications', { defaultValue: 'Notifications' })}
+            </span>
+          </button>
+        ) : null}
+        {onShowMissionControl ? (
+          <button
+            type="button"
+            className="flex h-10 w-full items-center gap-3 rounded-xl bg-muted/40 px-3.5 transition-all hover:bg-muted/60 active:scale-[0.98]"
+            onClick={onShowMissionControl}
+          >
+            <div className="relative flex h-7 w-7 items-center justify-center rounded-lg bg-background/80">
+              <Radar className="h-4 w-4 text-muted-foreground" />
+              {missionControlPendingCount > 0 ? (
+                <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-amber-500 px-0.5 text-[9px] font-semibold text-white">
+                  {missionControlPendingCount > 99 ? '99+' : missionControlPendingCount}
+                </span>
+              ) : null}
+            </div>
+            <span className="text-sm font-normal text-foreground">
+              {t('actions.missionControl', { defaultValue: 'Mission Control' })}
+            </span>
+          </button>
+        ) : null}
         <button
+          type="button"
           className="flex h-10 w-full items-center gap-3 rounded-xl bg-muted/40 px-3.5 transition-all hover:bg-muted/60 active:scale-[0.98]"
           onClick={onShowSettings}
         >

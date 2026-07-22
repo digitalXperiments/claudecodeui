@@ -15,13 +15,16 @@ const APP_ROOT = findAppRoot(__dirname);
 
 const router = express.Router();
 
-const MODEL_PROVIDERS = ["claude", "cursor", "codex", "opencode"];
+const MODEL_PROVIDERS = ["claude", "cursor", "codex", "opencode", "grok", "kimi", "agy"];
 
 const MODEL_PROVIDER_LABELS = {
   claude: "Claude",
   cursor: "Cursor",
   codex: "Codex",
   opencode: "OpenCode",
+  grok: "Grok",
+  kimi: "Kimi",
+  agy: "Antigravity",
 };
 
 const readModelProvider = (value) => {
@@ -253,62 +256,70 @@ Custom commands can be created in:
 
   "/cost": async (args, context) => {
     const tokenUsage = context?.tokenUsage || {};
-    const provider = readModelProvider(context?.provider);
+    // Prefer provider reported on the token payload (e.g. Grok signals) when
+    // the composer context is stale or mismatched.
+    const provider = readModelProvider(
+      tokenUsage.provider || context?.provider,
+    );
     const catalog = (await providerModelsService.getProviderModels(provider)).models;
-    const model = await resolveCommandModel(provider, catalog, context?.sessionId);
+    const modelFromUsage =
+      typeof tokenUsage.model === "string" && tokenUsage.model.trim()
+        ? tokenUsage.model.trim()
+        : null;
+    const model =
+      modelFromUsage ||
+      (await resolveCommandModel(provider, catalog, context?.sessionId));
+
+    const contextUsed = Number(tokenUsage.contextUsed ?? 0) || 0;
+    const contextWindow =
+      Number(tokenUsage.contextWindow ?? tokenUsage.total ?? 0) || 0;
+    const contextFree =
+      Number(tokenUsage.contextFree ?? 0) ||
+      (contextWindow > 0 && contextUsed > 0
+        ? Math.max(0, contextWindow - contextUsed)
+        : 0);
+    const contextPercent =
+      typeof tokenUsage.contextPercent === "number"
+        ? tokenUsage.contextPercent
+        : contextWindow > 0 && contextUsed > 0
+          ? Math.min(100, Math.round((contextUsed / contextWindow) * 1000) / 10)
+          : null;
 
     const reportedUsed =
       Number(
         tokenUsage.used ?? tokenUsage.totalUsed ?? tokenUsage.total_tokens ?? 0,
       ) || 0;
     const total =
+      Number(tokenUsage.total ?? tokenUsage.contextWindow ?? 0) || 0;
+
+    // Context-oriented breakdown (do not fall back to lifetime billed sums).
+    const breakdownInput =
       Number(
-        tokenUsage.total ??
-          tokenUsage.contextWindow ??
+        tokenUsage.breakdown?.input ??
+          (contextUsed > 0 ? contextUsed : tokenUsage.lastTurnInputTokens) ??
           0,
       ) || 0;
-    const normalizedInputValue =
-      tokenUsage.inputTokens ??
-      tokenUsage.input ??
-      tokenUsage.cumulativeInputTokens ??
-      tokenUsage.breakdown?.input ??
-      tokenUsage.promptTokens;
-    const directInputTokens =
+    const breakdownOutput =
       Number(
-        normalizedInputValue ??
-          tokenUsage.input_tokens ??
-          0
+        tokenUsage.breakdown?.output ?? tokenUsage.lastTurnOutputTokens ?? 0,
       ) || 0;
-    const cacheReadTokens =
-      Number(
-        tokenUsage.cacheReadTokens ??
-          tokenUsage.cache_read_input_tokens ??
-          tokenUsage.cacheReadInputTokens ??
-          0,
-      ) || 0;
-    const cacheCreationTokens =
-      Number(
-        tokenUsage.cacheCreationTokens ??
-          tokenUsage.cache_creation_input_tokens ??
-          tokenUsage.cacheCreationInputTokens ??
-          0,
-      ) || 0;
-    const inputTokens = normalizedInputValue == null
-      ? directInputTokens + cacheReadTokens + cacheCreationTokens
-      : directInputTokens;
-    const outputTokens =
-      Number(
-        tokenUsage.outputTokens ??
-          tokenUsage.output ??
-          tokenUsage.output_tokens ??
-          tokenUsage.cumulativeOutputTokens ??
-          tokenUsage.breakdown?.output ??
-          tokenUsage.completionTokens ??
-          0,
-      ) || 0;
-    const computedUsed = inputTokens + outputTokens;
-    const hasTokenBreakdown = computedUsed > 0;
-    const used = Math.max(reportedUsed, computedUsed);
+
+    const billedInputTokens =
+      Number(tokenUsage.billedInputTokens ?? tokenUsage.inputTokens ?? 0) || 0;
+    const billedOutputTokens =
+      Number(tokenUsage.billedOutputTokens ?? tokenUsage.outputTokens ?? 0) || 0;
+    const cumulativeUsed =
+      Number(tokenUsage.cumulativeUsed ?? 0) ||
+      billedInputTokens + billedOutputTokens;
+    const lastTurnInputTokens =
+      Number(tokenUsage.lastTurnInputTokens ?? 0) || 0;
+    const lastTurnOutputTokens =
+      Number(tokenUsage.lastTurnOutputTokens ?? 0) || 0;
+
+    const used =
+      contextUsed > 0 ? contextUsed : Math.max(reportedUsed, breakdownInput + breakdownOutput);
+
+    const hasTokenBreakdown = breakdownInput > 0 || breakdownOutput > 0;
 
     return {
       type: "builtin",
@@ -316,13 +327,22 @@ Custom commands can be created in:
       data: {
         tokenUsage: {
           used,
-          total,
+          total: contextWindow > 0 ? contextWindow : total,
+          contextUsed,
+          contextWindow,
+          contextFree,
+          contextPercent,
+          cumulativeUsed,
+          billedInputTokens,
+          billedOutputTokens,
+          lastTurnInputTokens,
+          lastTurnOutputTokens,
         },
         ...(hasTokenBreakdown
           ? {
               tokenBreakdown: {
-                input: inputTokens,
-                output: outputTokens,
+                input: breakdownInput,
+                output: breakdownOutput,
               },
             }
           : {}),

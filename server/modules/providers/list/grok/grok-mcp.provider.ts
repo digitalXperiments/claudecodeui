@@ -1,9 +1,13 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
 import TOML from '@iarna/toml';
 
+import {
+  listMcpServersFromCli,
+  mergeCliMcpEntries,
+} from '@/modules/providers/services/mcp-cli-list.service.js';
 import { McpProvider } from '@/modules/providers/shared/mcp/mcp.provider.js';
 import type { McpScope, ProviderMcpServer, UpsertProviderMcpServerInput } from '@/shared/types.js';
 import {
@@ -34,9 +38,85 @@ const writeTomlConfig = async (filePath: string, data: Record<string, unknown>):
   await writeFile(filePath, toml, 'utf8');
 };
 
+/**
+ * Grok stores some connector tool descriptors under
+ * ~/.grok/projects/<encoded-cwd>/mcps/<name>/ — including grok.com-linked
+ * servers that never appear in config.toml. Directory names are server names.
+ */
+async function listGrokProjectMcpDirNames(workspacePath: string): Promise<string[]> {
+  const encoded = workspacePath.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-|-$/g, '');
+  // Grok uses path-with-dashes encoding: /Users/foo -> Users-foo
+  const alt = workspacePath
+    .replace(/^\//, '')
+    .replace(/\//g, '-');
+  const candidates = [
+    path.join(os.homedir(), '.grok', 'projects', encoded, 'mcps'),
+    path.join(os.homedir(), '.grok', 'projects', alt, 'mcps'),
+  ];
+  const names = new Set<string>();
+  for (const dir of candidates) {
+    try {
+      const entries = await readdir(dir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.isDirectory() && !entry.name.startsWith('.')) {
+          names.add(entry.name);
+        }
+      }
+    } catch {
+      // missing dir is fine
+    }
+  }
+  return [...names];
+}
+
 export class GrokMcpProvider extends McpProvider {
   constructor() {
     super('grok', ['user', 'project'], ['stdio', 'http']);
+  }
+
+  /**
+   * File config + project mcps dirs + live `grok mcp list` so grok.com-linked
+   * and project servers show up (they often never land in config.toml).
+   */
+  override async listServersForScope(
+    scope: McpScope,
+    options?: { workspacePath?: string },
+  ): Promise<ProviderMcpServer[]> {
+    const fromFiles = await super.listServersForScope(scope, options);
+    let merged = fromFiles;
+
+    // Surface project MCP directory names when listing project/user scopes.
+    const workspacePath = path.resolve(options?.workspacePath ?? os.homedir());
+    try {
+      const dirNames = await listGrokProjectMcpDirNames(workspacePath);
+      // Also scan the home project (common for global / home workspaces).
+      const homeNames = await listGrokProjectMcpDirNames(os.homedir());
+      const allNames = new Set([...dirNames, ...homeNames]);
+      const byName = new Map(merged.map((s) => [s.name, s]));
+      for (const name of allNames) {
+        if (byName.has(name)) continue;
+        byName.set(name, {
+          provider: 'grok',
+          name,
+          scope: scope === 'user' ? 'user' : 'project',
+          transport: 'http',
+          // Placeholder — actual connection is managed by the Grok CLI.
+          url: `grok-project-mcp://${name}`,
+        });
+      }
+      merged = [...byName.values()];
+    } catch {
+      // ignore
+    }
+
+    try {
+      const cliEntries = await listMcpServersFromCli('grok');
+      return mergeCliMcpEntries('grok', scope, merged, cliEntries);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn('[GrokMcp] CLI list failed, using file/project config only:', message);
+      return merged.sort((a, b) => a.name.localeCompare(b.name));
+    }
   }
 
   protected async readScopedServers(scope: McpScope, workspacePath: string): Promise<Record<string, unknown>> {

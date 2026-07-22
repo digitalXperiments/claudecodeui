@@ -42,10 +42,10 @@ export const CollapsibleSection: React.FC<CollapsibleSectionProps> = ({
             </svg>
           </CollapsibleTrigger>
           {toolName && (
-            <span className="flex-shrink-0 font-medium text-muted-foreground">{toolName}</span>
+            <span className="flex-shrink-0 font-medium text-foreground/80">{toolName}</span>
           )}
           {toolName && (
-            <span className="flex-shrink-0 text-[10px] text-muted-foreground/40">/</span>
+            <span className="flex-shrink-0 text-[10px] text-muted-foreground">/</span>
           )}
           <button
             onClick={onTitleClick}
@@ -57,7 +57,7 @@ export const CollapsibleSection: React.FC<CollapsibleSectionProps> = ({
           {action && <span className="ml-1 flex-shrink-0">{action}</span>}
         </div>
       ) : (
-        <CollapsibleTrigger className="flex w-full select-none items-center gap-1.5 py-0.5 text-xs text-muted-foreground transition-colors hover:text-foreground group-data-[state=open]/section:sticky group-data-[state=open]/section:top-0 group-data-[state=open]/section:z-10 group-data-[state=open]/section:-mx-1 group-data-[state=open]/section:bg-background group-data-[state=open]/section:px-1">
+        <CollapsibleTrigger className="flex w-full select-none items-center gap-1.5 py-0.5 text-xs text-foreground/80 transition-colors hover:text-foreground group-data-[state=open]/section:sticky group-data-[state=open]/section:top-0 group-data-[state=open]/section:z-10 group-data-[state=open]/section:-mx-1 group-data-[state=open]/section:bg-background group-data-[state=open]/section:px-1">
           <svg
             className="h-3 w-3 flex-shrink-0 transition-transform duration-150 group-data-[state=open]/section:rotate-90"
             fill="none"
@@ -67,12 +67,12 @@ export const CollapsibleSection: React.FC<CollapsibleSectionProps> = ({
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
           </svg>
           {toolName && (
-            <span className="flex-shrink-0 font-medium">{toolName}</span>
+            <span className="flex-shrink-0 font-medium text-foreground">{toolName}</span>
           )}
           {toolName && (
-            <span className="flex-shrink-0 text-[10px] text-muted-foreground/40">/</span>
+            <span className="flex-shrink-0 text-[10px] text-muted-foreground">/</span>
           )}
-          <span className="flex-1 truncate text-left">{title}</span>
+          <span className="flex-1 truncate text-left text-foreground/90">{title}</span>
           {badge && <span className="ml-auto flex-shrink-0">{badge}</span>}
           {action && <span className="ml-1 flex-shrink-0">{action}</span>}
         </CollapsibleTrigger>

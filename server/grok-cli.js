@@ -10,8 +10,11 @@ import { notifyRunFailed, notifyRunStopped } from './services/notification-orche
 import { sessionsService } from './modules/providers/services/sessions.service.js';
 import { providerAuthService } from './modules/providers/services/provider-auth.service.js';
 import { providerModelsService } from './modules/providers/services/provider-models.service.js';
-import { isInteractiveTool } from './shared/interactive-tools.js';
 import { appendImagesInputTag } from './shared/image-attachments.js';
+import {
+  readGrokSessionTokenUsage,
+  resolveGrokSessionDir,
+} from './modules/providers/list/grok/grok-sessions.provider.js';
 import { createCompleteMessage, createNormalizedMessage } from './shared/utils.js';
 
 // cross-spawn resolves .cmd shims/PATHEXT on Windows and delegates to
@@ -679,7 +682,6 @@ async function spawnGrok(command, options = {}, ws) {
           ? 'ExitPlanMode'
           : toolName;
       const toolInput = toolCall.rawInput ?? toolCall.content;
-      const requiresInteraction = isInteractiveTool(toolName) || isInteractiveTool(uiToolName);
 
       ws.send(createNormalizedMessage({
         kind: 'permission_request',
@@ -690,8 +692,11 @@ async function spawnGrok(command, options = {}, ws) {
         provider: 'grok',
       }));
 
+      // Wait indefinitely for a chatbar decision. The shared waitForToolApproval
+      // default used to be ~55s and auto-cancelled prompts before users could
+      // answer — every permission shown in the UI is interactive.
       const decision = await waitForToolApproval(requestId, {
-        timeoutMs: requiresInteraction ? 0 : undefined,
+        timeoutMs: 0,
         metadata: {
           _sessionId: finalSessionId,
           _toolName: uiToolName,
@@ -755,6 +760,28 @@ async function spawnGrok(command, options = {}, ws) {
       exitCode: aborted ? 1 : 0,
       aborted,
     }));
+
+    // Push live context occupancy (matches Grok /context) so the composer
+    // badge does not keep showing stale or cumulative-only spend.
+    try {
+      const projectPath = options.projectPath || options.cwd;
+      if (projectPath && handle.grokSessionId) {
+        const sessionDir = resolveGrokSessionDir(projectPath, handle.grokSessionId);
+        if (fs.existsSync(sessionDir)) {
+          const tokenBudget = readGrokSessionTokenUsage(sessionDir);
+          ws.send(createNormalizedMessage({
+            kind: 'status',
+            text: 'token_budget',
+            tokenBudget,
+            sessionId: finalSessionId,
+            provider: 'grok',
+          }));
+        }
+      }
+    } catch (tokenError) {
+      console.warn('Grok token budget refresh failed (non-fatal):', tokenError?.message || tokenError);
+    }
+
     // Isolated from the main try/catch: a notification-plumbing failure must
     // never retroactively turn an already-sent successful `complete` into a
     // false failure below.

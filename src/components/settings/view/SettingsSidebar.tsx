@@ -1,4 +1,4 @@
-import { Bell, Bot, BrainCircuit, FileCode2, GitBranch, Globe, Info, Key, ListChecks, Mic, MonitorPlay, Palette, Puzzle } from 'lucide-react';
+import { Bell, Bot, BrainCircuit, FileCode2, GitBranch, Globe, Info, Key, ListChecks, Mic, MonitorPlay, Palette, Puzzle, UserCog } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import { cn } from '../../../lib/utils';
@@ -13,23 +13,31 @@ type SettingsSidebarProps = {
 type NavItem = {
   id: SettingsMainTab;
   labelKey: string;
+  /** Fallback label when i18n key is missing. */
+  fallbackLabel: string;
   icon: typeof Bot;
 };
 
 const NAV_ITEMS: NavItem[] = [
-  { id: 'agents', labelKey: 'mainTabs.agents', icon: Bot },
-  { id: 'skills', labelKey: 'mainTabs.skills', icon: FileCode2 },
-  { id: 'global-skills', labelKey: 'mainTabs.globalSkills', icon: Globe },
-  { id: 'memory', labelKey: 'mainTabs.memory', icon: BrainCircuit },
-  { id: 'appearance', labelKey: 'mainTabs.appearance', icon: Palette },
-  { id: 'git', labelKey: 'mainTabs.git', icon: GitBranch },
-  { id: 'api', labelKey: 'mainTabs.apiTokens', icon: Key },
-  { id: 'voice', labelKey: 'mainTabs.voice', icon: Mic },
-  { id: 'tasks', labelKey: 'mainTabs.tasks', icon: ListChecks },
-  { id: 'browser', labelKey: 'mainTabs.browser', icon: MonitorPlay },
-  { id: 'plugins', labelKey: 'mainTabs.plugins', icon: Puzzle },
-  { id: 'notifications', labelKey: 'mainTabs.notifications', icon: Bell },
-  { id: 'about', labelKey: 'mainTabs.about', icon: Info },
+  { id: 'agents', labelKey: 'mainTabs.agents', fallbackLabel: 'Agents', icon: Bot },
+  {
+    id: 'agent-profiles',
+    labelKey: 'mainTabs.agentProfiles',
+    fallbackLabel: 'Agent profiles',
+    icon: UserCog,
+  },
+  { id: 'skills', labelKey: 'mainTabs.skills', fallbackLabel: 'Skills', icon: FileCode2 },
+  { id: 'global-skills', labelKey: 'mainTabs.globalSkills', fallbackLabel: 'Global skills', icon: Globe },
+  { id: 'memory', labelKey: 'mainTabs.memory', fallbackLabel: 'Memory', icon: BrainCircuit },
+  { id: 'appearance', labelKey: 'mainTabs.appearance', fallbackLabel: 'Appearance', icon: Palette },
+  { id: 'git', labelKey: 'mainTabs.git', fallbackLabel: 'Git', icon: GitBranch },
+  { id: 'api', labelKey: 'mainTabs.apiTokens', fallbackLabel: 'API Tokens', icon: Key },
+  { id: 'voice', labelKey: 'mainTabs.voice', fallbackLabel: 'Voice', icon: Mic },
+  { id: 'tasks', labelKey: 'mainTabs.tasks', fallbackLabel: 'Tasks', icon: ListChecks },
+  { id: 'browser', labelKey: 'mainTabs.browser', fallbackLabel: 'Browser', icon: MonitorPlay },
+  { id: 'plugins', labelKey: 'mainTabs.plugins', fallbackLabel: 'Plugins', icon: Puzzle },
+  { id: 'notifications', labelKey: 'mainTabs.notifications', fallbackLabel: 'Notifications', icon: Bell },
+  { id: 'about', labelKey: 'mainTabs.about', fallbackLabel: 'About', icon: Info },
 ];
 
 export default function SettingsSidebar({ activeTab, onChange }: SettingsSidebarProps) {
@@ -56,7 +64,7 @@ export default function SettingsSidebar({ activeTab, onChange }: SettingsSidebar
                 )}
               >
                 <Icon className="h-4 w-4 flex-shrink-0" />
-                {t(item.labelKey)}
+                {t(item.labelKey, { defaultValue: item.fallbackLabel })}
               </button>
             );
           })}
@@ -77,7 +85,7 @@ export default function SettingsSidebar({ activeTab, onChange }: SettingsSidebar
                 className="flex-shrink-0"
               >
                 <Icon className="h-3.5 w-3.5" />
-                {t(item.labelKey)}
+                {t(item.labelKey, { defaultValue: item.fallbackLabel })}
               </Pill>
             );
           })}

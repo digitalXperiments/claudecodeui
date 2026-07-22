@@ -91,18 +91,18 @@
   "codex": {
     "permissionMode": "Permission Mode",
     "modes": {
-      "default": "Default Mode",
-      "auto": "Auto Mode",
+      "default": "Default",
+      "auto": "Auto",
       "acceptEdits": "Accept Edits",
       "bypassPermissions": "Bypass Permissions",
-      "plan": "Plan Mode"
+      "plan": "Plan"
     },
     "descriptions": {
-      "default": "Only trusted commands (ls, cat, grep, git status, etc.) run automatically. Other commands are skipped. Can write to workspace.",
-      "auto": "A model classifier decides per tool call whether to approve or deny. Hands-off, but safer than Bypass — denials still happen.",
-      "acceptEdits": "All commands run automatically within the workspace. Full auto mode with sandboxed execution.",
-      "bypassPermissions": "Full system access with no restrictions. All commands run automatically with full disk and network access. Use with caution.",
-      "plan": "Planning mode - no commands are executed"
+      "default": "Workspace write sandbox; only trusted commands auto-run, others need approval.",
+      "auto": "A model classifier decides per tool call whether to approve or deny.",
+      "acceptEdits": "Workspace write sandbox with no approval prompts for commands in the project.",
+      "bypassPermissions": "Full disk/network access with no approval prompts. Use with caution.",
+      "plan": "Planning mode — restricted execution."
     },
     "technicalDetails": "Technical details"
   },
@@ -112,7 +112,8 @@
     "transcribing": "Transcribing…",
     "speak": "Read aloud",
     "stopSpeaking": "Stop",
-    "loading": "Loading…"
+    "loading": "Loading…",
+    "enableInSettings": "Enable Voice in Settings → Voice and configure STT to use the mic"
   },
   "input": {
     "placeholder": "Type / for commands, @ for files, or ask {{provider}} anything...",

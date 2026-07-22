@@ -101,12 +101,60 @@ function resolveResumeSessionId(
     resumeSessionId = undefined;
   }
 
-  const resolvedSessionId = resumeSessionId === undefined ? sessionId : resumeSessionId;
+  // Prefer provider-native id; fall back to the app session id when the DB row
+  // has not been mapped yet (null from resolve, not "lookup threw").
+  const resolvedSessionId =
+    resumeSessionId === undefined || resumeSessionId === null || resumeSessionId === ''
+      ? sessionId
+      : resumeSessionId;
   if (!resolvedSessionId || !SAFE_SESSION_ID_PATTERN.test(resolvedSessionId)) {
     return '';
   }
 
   return resolvedSessionId;
+}
+
+/** POSIX single-quote escape for embedding paths/ids in `bash -c` commands. */
+function shellSingleQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
+ * Launch interactive Grok TUI for the Shell tab.
+ *
+ * Do **not** pipe `grok export` into the same PTY before the TUI — plain
+ * markdown plus Grok's screen-addressed UI corrupts the layout. Full history
+ * lives in the Chat tab (`chat_history.jsonl`). Shell is for interactive use.
+ *
+ * Use a clean process each open (see force-fresh agent shell handling below);
+ * reconnecting to a live Grok TUI after wiping the client leaves a blank frame.
+ */
+function buildGrokShellCommand(resumeSessionId: string, projectPath: string): string {
+  const managedHome = path.join(os.homedir(), '.cloudcli', 'grok-runtime', 'auto');
+  const resolvedCwd = projectPath ? path.resolve(projectPath) : '';
+  // Fullscreen alt-screen is what Grok's TUI expects; xterm.js handles it when
+  // we don't mix in plain-text dumps or half-reconnects.
+  const cwdFlag = resolvedCwd
+    ? os.platform() === 'win32'
+      ? ` --cwd '${resolvedCwd.replace(/'/g, "''")}'`
+      : ` --cwd ${shellSingleQuote(resolvedCwd)}`
+    : '';
+
+  if (os.platform() === 'win32') {
+    const homePs = managedHome.replace(/'/g, "''");
+    const idPs = resumeSessionId.replace(/'/g, "''");
+    if (resumeSessionId) {
+      return `$env:GROK_HOME='${homePs}'; grok --resume '${idPs}'${cwdFlag}`;
+    }
+    return `$env:GROK_HOME='${homePs}'; grok${cwdFlag}`;
+  }
+
+  const homeQ = shellSingleQuote(managedHome);
+  if (resumeSessionId) {
+    const idQ = shellSingleQuote(resumeSessionId);
+    return `export GROK_HOME=${homeQ}; exec grok --resume ${idQ}${cwdFlag}`;
+  }
+  return `export GROK_HOME=${homeQ}; exec grok${cwdFlag}`;
 }
 
 /**
@@ -119,6 +167,7 @@ function buildShellCommand(
   const hasSession = readBoolean(message.hasSession);
   const initialCommand = readString(message.initialCommand);
   const provider = readString(message.provider, 'claude');
+  const projectPath = readString(message.projectPath);
   const resumeSessionId = resolveResumeSessionId(message, dependencies);
   const isPlainShell =
     readBoolean(message.isPlainShell) ||
@@ -154,10 +203,7 @@ function buildShellCommand(
   }
 
   if (provider === 'grok') {
-    if (resumeSessionId) {
-      return `grok --resume="${resumeSessionId}"`;
-    }
-    return 'grok';
+    return buildGrokShellCommand(resumeSessionId, projectPath);
   }
 
   if (provider === 'kimi') {
@@ -288,19 +334,29 @@ export function handleShellConnection(
             : '';
         ptySessionKey = `${projectPath}_${sessionId ?? 'default'}${commandSuffix}`;
 
-        if (isLoginCommand || forceRestart) {
+        // Interactive agent TUIs (Grok, Claude, Cursor, …) own the full screen.
+        // Reusing a live PTY while the client terminal was reset/hidden leaves
+        // the UI desynced (blank frame, broken chrome). Always start a fresh
+        // process for agent shells; plain shells may still reconnect.
+        const isAgentShell = !isPlainShell;
+        const shouldStartFresh = isLoginCommand || forceRestart || isAgentShell;
+
+        if (shouldStartFresh) {
           const oldSession = ptySessionsMap.get(ptySessionKey);
           if (oldSession) {
             if (oldSession.timeoutId) {
               clearTimeout(oldSession.timeoutId);
             }
-            oldSession.pty.kill();
+            try {
+              oldSession.pty.kill();
+            } catch {
+              // Already gone.
+            }
             ptySessionsMap.delete(ptySessionKey);
           }
         }
 
-        const existingSession =
-          isLoginCommand || forceRestart ? null : ptySessionsMap.get(ptySessionKey);
+        const existingSession = shouldStartFresh ? null : ptySessionsMap.get(ptySessionKey);
         if (existingSession) {
           shellProcess = existingSession.pty;
           if (existingSession.timeoutId) {
@@ -311,18 +367,18 @@ export function handleShellConnection(
             JSON.stringify({
               type: 'output',
               data: '\x1b[36m[Reconnected to existing session]\x1b[0m\r\n',
-            })
+            }),
           );
 
-          if (existingSession.buffer.length > 0) {
-            existingSession.buffer.forEach((bufferedData) => {
-              ws.send(
-                JSON.stringify({
-                  type: 'output',
-                  data: bufferedData,
-                })
-              );
-            });
+          // Plain shells only: short tail, not thousands of chunks.
+          const tail = existingSession.buffer.slice(-120);
+          for (const bufferedData of tail) {
+            ws.send(
+              JSON.stringify({
+                type: 'output',
+                data: bufferedData,
+              }),
+            );
           }
 
           existingSession.ws = ws;
@@ -500,7 +556,10 @@ export function handleShellConnection(
                         ? 'Antigravity'
                         : 'Claude';
           welcomeMsg = hasSession && resumeSessionId
-            ? `\x1b[36mResuming ${providerName} session ${resumeSessionId} in: ${projectPath}\x1b[0m\r\n`
+            ? provider === 'grok'
+              ? `\x1b[36mResuming ${providerName} session ${resumeSessionId} in: ${projectPath}\x1b[0m\r\n` +
+                `\x1b[33mTip: full conversation history is in the Chat tab. Shell is the interactive Grok TUI.\x1b[0m\r\n`
+              : `\x1b[36mResuming ${providerName} session ${resumeSessionId} in: ${projectPath}\x1b[0m\r\n`
             : `\x1b[36mStarting new ${providerName} session in: ${projectPath}\x1b[0m\r\n`;
         }
 

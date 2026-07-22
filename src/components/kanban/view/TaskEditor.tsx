@@ -7,6 +7,10 @@ import type { LLMProvider } from '../../../types/app';
 import PermissionsContent from '../../settings/view/tabs/agents-settings/sections/content/PermissionsContent';
 import type { AgyPermissionMode, CodexPermissionMode } from '../../settings/types/types';
 import {
+  agentProfilesApi,
+  type AgentRunProfile,
+} from '../../settings/api/agentProfilesApi';
+import {
   KANBAN_PERMISSION_MODES,
   KANBAN_PROVIDERS,
   type KanbanColumn,
@@ -42,6 +46,8 @@ type TaskEditorProps = {
     prompt?: string;
     assigneeProvider?: LLMProvider | null;
     reviewProvider?: LLMProvider | null;
+    implementProfileId?: string | null;
+    reviewProfileId?: string | null;
     permissionMode?: string;
     tools?: { allowedCommands?: string[]; disallowedCommands?: string[] };
     scheduleCron?: string | null;
@@ -99,6 +105,11 @@ export default function TaskEditor(props: TaskEditorProps) {
   const [columnId, setColumnId] = useState('');
   const [assignee, setAssignee] = useState<LLMProvider | ''>('');
   const [reviewAgent, setReviewAgent] = useState<LLMProvider | ''>('');
+  const [implementProfileId, setImplementProfileId] = useState('');
+  const [reviewProfileId, setReviewProfileId] = useState('');
+  const [profiles, setProfiles] = useState<AgentRunProfile[]>([]);
+  /** When true, show legacy provider-only assignment under Advanced. */
+  const [showAdvancedAgents, setShowAdvancedAgents] = useState(false);
   const [permissionMode, setPermissionMode] = useState('default');
   const [skipPermissions, setSkipPermissions] = useState(false);
   const [allowed, setAllowed] = useState<string[]>([]);
@@ -107,6 +118,22 @@ export default function TaskEditor(props: TaskEditorProps) {
   const [saving, setSaving] = useState(false);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    void agentProfilesApi
+      .list()
+      .then((list) => {
+        if (!cancelled) setProfiles(list);
+      })
+      .catch(() => {
+        if (!cancelled) setProfiles([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
 
   // Reset local form state whenever the target task/draft changes.
   useEffect(() => {
@@ -122,6 +149,13 @@ export default function TaskEditor(props: TaskEditorProps) {
       setColumnId(task.column_id);
       setAssignee(task.assignee_provider ?? '');
       setReviewAgent(task.review_provider ?? '');
+      setImplementProfileId(task.implement_profile_id ?? '');
+      setReviewProfileId(task.review_profile_id ?? '');
+      // Open advanced only when task uses raw providers without profiles.
+      const hasRawImplement =
+        !task.implement_profile_id && Boolean(task.assignee_provider);
+      const hasRawReview = !task.review_profile_id && Boolean(task.review_provider);
+      setShowAdvancedAgents(hasRawImplement || hasRawReview);
       setPermissionMode(task.permission_mode || 'default');
       setSkipPermissions((task.permission_mode || 'default') === 'bypassPermissions');
       setAllowed(task.tools?.allowedCommands ?? []);
@@ -135,6 +169,9 @@ export default function TaskEditor(props: TaskEditorProps) {
       setColumnId(draft?.columnId ?? columns[0]?.id ?? '');
       setAssignee('');
       setReviewAgent('');
+      setImplementProfileId('');
+      setReviewProfileId('');
+      setShowAdvancedAgents(false);
       setPermissionMode('default');
       setSkipPermissions(false);
       setAllowed([]);
@@ -142,6 +179,54 @@ export default function TaskEditor(props: TaskEditorProps) {
       setScheduleCron('');
     }
   }, [open, task, draft, columns, projects]);
+
+  const implementProfile = useMemo(
+    () => profiles.find((p) => p.profile_id === implementProfileId) ?? null,
+    [profiles, implementProfileId],
+  );
+  const reviewProfile = useMemo(
+    () => profiles.find((p) => p.profile_id === reviewProfileId) ?? null,
+    [profiles, reviewProfileId],
+  );
+
+  const applyImplementProfile = (profileId: string) => {
+    setImplementProfileId(profileId);
+    if (!profileId) {
+      // Switching off a profile: keep advanced closed unless they open it.
+      return;
+    }
+    const profile = profiles.find((p) => p.profile_id === profileId);
+    if (!profile) return;
+    setAssignee(profile.provider as LLMProvider);
+    setPermissionMode(profile.permission_mode || 'default');
+    setSkipPermissions((profile.permission_mode || 'default') === 'bypassPermissions');
+    setAllowed(profile.tools?.allowedCommands ?? []);
+    setDisallowed(profile.tools?.disallowedCommands ?? []);
+    setShowAdvancedAgents(false);
+  };
+
+  const applyReviewProfile = (profileId: string) => {
+    setReviewProfileId(profileId);
+    if (!profileId) {
+      setReviewAgent('');
+      return;
+    }
+    const profile = profiles.find((p) => p.profile_id === profileId);
+    if (!profile) return;
+    setReviewAgent(profile.provider as LLMProvider);
+    setShowAdvancedAgents(false);
+  };
+
+  const profileSummary = (profile: AgentRunProfile | null) => {
+    if (!profile) return null;
+    const bits = [
+      profile.provider,
+      profile.model || 'default model',
+      profile.effort || 'default effort',
+      profile.permission_mode,
+    ];
+    return bits.join(' · ');
+  };
 
   const dependencyOptions = useMemo(
     () => allTasks.filter((t) => t.task_id !== task?.task_id),
@@ -248,6 +333,8 @@ export default function TaskEditor(props: TaskEditorProps) {
         prompt,
         assigneeProvider: assignee === '' ? null : assignee,
         reviewProvider: reviewAgent === '' ? null : reviewAgent,
+        implementProfileId: implementProfileId || null,
+        reviewProfileId: reviewProfileId || null,
         permissionMode: resolvePermissionMode(),
         tools: buildTools(),
         scheduleCron: scheduleCron.trim() ? scheduleCron.trim() : null,
@@ -406,49 +493,146 @@ export default function TaskEditor(props: TaskEditorProps) {
               </select>
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
-              <div className="flex flex-col gap-1">
-                <label className={labelClass} htmlFor="kanban-assignee">
-                  Implementation agent
-                </label>
-                <select
-                  id="kanban-assignee"
-                  className={selectClass}
-                  value={assignee}
-                  onChange={(e) => setAssignee(e.target.value as LLMProvider | '')}
-                >
-                  <option value="">Unassigned</option>
-                  {KANBAN_PROVIDERS.map((provider) => (
-                    <option key={provider.value} value={provider.value}>
-                      {provider.label}
-                    </option>
-                  ))}
-                </select>
+            <div className="space-y-3 rounded-md border border-border p-3">
+              <div>
+                <p className="text-xs font-medium text-foreground">Agents</p>
                 <p className="text-[11px] text-muted-foreground">
-                  Auto-runs when moved to In Progress.
+                  Pick a saved profile from Settings → Agent profiles. Profiles include model,
+                  effort, and permissions.
                 </p>
               </div>
 
-              <div className="flex flex-col gap-1">
-                <label className={labelClass} htmlFor="kanban-review">
-                  Review agent
-                </label>
-                <select
-                  id="kanban-review"
-                  className={selectClass}
-                  value={reviewAgent}
-                  onChange={(e) => setReviewAgent(e.target.value as LLMProvider | '')}
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div className="flex flex-col gap-1.5">
+                  <label className={labelClass} htmlFor="kanban-implement-profile">
+                    Implementation
+                  </label>
+                  <select
+                    id="kanban-implement-profile"
+                    className={selectClass}
+                    value={implementProfileId}
+                    onChange={(e) => applyImplementProfile(e.target.value)}
+                  >
+                    <option value="">Unassigned</option>
+                    {profiles.map((profile) => (
+                      <option key={profile.profile_id} value={profile.profile_id}>
+                        {profile.name}
+                      </option>
+                    ))}
+                  </select>
+                  {implementProfile ? (
+                    <div className="rounded-md bg-muted/50 px-2 py-1.5 text-[11px] leading-snug text-muted-foreground">
+                      <span className="font-medium text-foreground/80">{implementProfile.name}</span>
+                      <br />
+                      {profileSummary(implementProfile)}
+                      <br />
+                      <span className="text-muted-foreground/80">
+                        Runs when the card moves to In Progress.
+                      </span>
+                    </div>
+                  ) : (
+                    <p className="text-[11px] text-muted-foreground">
+                      Required for auto-run. Create profiles in Settings if the list is empty.
+                    </p>
+                  )}
+                </div>
+
+                <div className="flex flex-col gap-1.5">
+                  <label className={labelClass} htmlFor="kanban-review-profile">
+                    Review
+                  </label>
+                  <select
+                    id="kanban-review-profile"
+                    className={selectClass}
+                    value={reviewProfileId}
+                    onChange={(e) => applyReviewProfile(e.target.value)}
+                  >
+                    <option value="">None — skip review</option>
+                    {profiles.map((profile) => (
+                      <option key={profile.profile_id} value={profile.profile_id}>
+                        {profile.name}
+                      </option>
+                    ))}
+                  </select>
+                  {reviewProfile ? (
+                    <div className="rounded-md bg-muted/50 px-2 py-1.5 text-[11px] leading-snug text-muted-foreground">
+                      <span className="font-medium text-foreground/80">{reviewProfile.name}</span>
+                      <br />
+                      {profileSummary(reviewProfile)}
+                      <br />
+                      <span className="text-muted-foreground/80">
+                        Runs after implementation succeeds.
+                      </span>
+                    </div>
+                  ) : (
+                    <p className="text-[11px] text-muted-foreground">
+                      Optional. Leave as None to go straight to Done after implement.
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              <div className="border-t border-border/70 pt-2">
+                <button
+                  type="button"
+                  className="text-[11px] font-medium text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+                  onClick={() => setShowAdvancedAgents((v) => !v)}
                 >
-                  <option value="">None (skip review)</option>
-                  {KANBAN_PROVIDERS.map((provider) => (
-                    <option key={provider.value} value={provider.value}>
-                      {provider.label}
-                    </option>
-                  ))}
-                </select>
-                <p className="text-[11px] text-muted-foreground">
-                  After implement succeeds, card moves to Review and this agent runs.
-                </p>
+                  {showAdvancedAgents ? 'Hide' : 'Show'} advanced: provider without a profile
+                </button>
+                {showAdvancedAgents ? (
+                  <div className="mt-2 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    <div className="flex flex-col gap-1">
+                      <label className={labelClass} htmlFor="kanban-assignee">
+                        Implementation provider
+                      </label>
+                      <select
+                        id="kanban-assignee"
+                        className={selectClass}
+                        value={assignee}
+                        onChange={(e) => {
+                          setAssignee(e.target.value as LLMProvider | '');
+                          if (e.target.value) setImplementProfileId('');
+                        }}
+                        disabled={Boolean(implementProfileId)}
+                      >
+                        <option value="">Unassigned</option>
+                        {KANBAN_PROVIDERS.map((provider) => (
+                          <option key={provider.value} value={provider.value}>
+                            {provider.label}
+                          </option>
+                        ))}
+                      </select>
+                      {implementProfileId ? (
+                        <p className="text-[11px] text-muted-foreground">
+                          Using profile — clear the profile above to pick a raw provider.
+                        </p>
+                      ) : null}
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <label className={labelClass} htmlFor="kanban-review">
+                        Review provider
+                      </label>
+                      <select
+                        id="kanban-review"
+                        className={selectClass}
+                        value={reviewAgent}
+                        onChange={(e) => {
+                          setReviewAgent(e.target.value as LLMProvider | '');
+                          if (e.target.value) setReviewProfileId('');
+                        }}
+                        disabled={Boolean(reviewProfileId)}
+                      >
+                        <option value="">None</option>
+                        {KANBAN_PROVIDERS.map((provider) => (
+                          <option key={provider.value} value={provider.value}>
+                            {provider.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                ) : null}
               </div>
             </div>
 
@@ -466,9 +650,26 @@ export default function TaskEditor(props: TaskEditorProps) {
 
             <div className="flex flex-col gap-2 rounded-md border border-border p-3">
               <span className={labelClass}>
-                Permissions{assignee ? ` — ${assignee}` : ''}
+                Permissions
+                {implementProfile
+                  ? ` — profile “${implementProfile.name}”`
+                  : assignee
+                    ? ` — ${assignee}`
+                    : ''}
               </span>
-              {renderPermissions()}
+              {implementProfileId ? (
+                <p className="text-xs text-muted-foreground">
+                  Permissions come from the selected profile (Settings → Agent profiles). Edit the
+                  profile to change allow/deny rules for this and other tasks.
+                </p>
+              ) : showAdvancedAgents && assignee ? (
+                renderPermissions()
+              ) : (
+                <p className="text-xs text-muted-foreground">
+                  Select an implementation profile, or use advanced provider assignment, to set
+                  permissions.
+                </p>
+              )}
             </div>
 
             {isEdit ? (

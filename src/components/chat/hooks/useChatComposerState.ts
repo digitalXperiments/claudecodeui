@@ -121,6 +121,15 @@ export type CostCommandData = {
   tokenUsage?: {
     used?: number;
     total?: number;
+    contextUsed?: number;
+    contextWindow?: number;
+    contextFree?: number;
+    contextPercent?: number | null;
+    cumulativeUsed?: number;
+    billedInputTokens?: number;
+    billedOutputTokens?: number;
+    lastTurnInputTokens?: number;
+    lastTurnOutputTokens?: number;
   };
   tokenBreakdown?: {
     input?: number;

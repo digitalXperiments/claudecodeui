@@ -13,8 +13,9 @@ type ProviderCapabilities = {
   /** Permission modes the provider runtime understands, in cycle order. */
   permissionModes: string[];
   defaultPermissionMode: string;
-  /** Whether inline image attachments (base64/local_image, i.e. real vision)
-   * can be included in a chat.send. */
+  /** Whether image attachments (paste/upload) can be included in a chat.send.
+   * Delivery differs by runtime: Claude uses base64 vision blocks; most others
+   * pass local asset paths via `<images_input>` / local_image items. */
   supportsImages: boolean;
   /** Whether non-image file attachments (PDF, spreadsheets, text, …) can be
    * included in a chat.send. Delivered to the runtime by path reference, which
@@ -40,6 +41,10 @@ type ProviderCapabilities = {
 const PROVIDER_CAPABILITIES: Record<LLMProvider, ProviderCapabilities> = {
   claude: {
     provider: 'claude',
+    // Claude CLI --permission-mode: acceptEdits | auto | bypassPermissions |
+    // manual | dontAsk | plan. CloudCLI "default" omits the flag (SDK default /
+    // prompt-first, equivalent to daily interactive use). dontAsk is omitted
+    // because deny-by-default is a poor fit for interactive chat.
     permissionModes: ['default', 'auto', 'acceptEdits', 'bypassPermissions', 'plan'],
     defaultPermissionMode: 'default',
     supportsImages: true,
@@ -51,7 +56,9 @@ const PROVIDER_CAPABILITIES: Record<LLMProvider, ProviderCapabilities> = {
   },
   cursor: {
     provider: 'cursor',
-    permissionModes: ['default', 'acceptEdits', 'bypassPermissions', 'plan'],
+    // cursor-agent headless only exposes force-approve via `-f`. There is no
+    // acceptEdits/plan flag on the path CloudCLI uses (see cursor-cli.js).
+    permissionModes: ['default', 'bypassPermissions'],
     defaultPermissionMode: 'default',
     supportsImages: true,
     supportsFiles: true,
@@ -89,12 +96,15 @@ const PROVIDER_CAPABILITIES: Record<LLMProvider, ProviderCapabilities> = {
     provider: 'grok',
     // grok-cli.js runs Grok over ACP (`grok agent stdio`). Modes map to a
     // CloudCLI-managed GROK_HOME config (`[ui] permission_mode`) plus optional
-    // `--always-approve`. Interactive `session/request_permission` works when
-    // not in bypass — see grok-cli.js permission bridge (verified live).
-    // CLI vocabulary: default | acceptEdits | auto | bypassPermissions | plan.
+    // `--always-approve`. Grok also has dontAsk (not exposed — deny-by-default
+    // is a poor fit for interactive chat). Auto is a classifier, not yolo.
+    // CLI: default | acceptEdits | auto | bypassPermissions | plan.
     permissionModes: ['default', 'acceptEdits', 'auto', 'bypassPermissions', 'plan'],
     defaultPermissionMode: 'default',
-    supportsImages: false,
+    // Grok Build accepts images from the clipboard / attachments. Delivered as
+    // path references via `<images_input>` in grok-cli.js (same pattern as
+    // Cursor/OpenCode), not base64 content blocks.
+    supportsImages: true,
     supportsFiles: true,
     supportsAbort: true,
     supportsPermissionRequests: true,
@@ -113,7 +123,8 @@ const PROVIDER_CAPABILITIES: Record<LLMProvider, ProviderCapabilities> = {
     // never to stall waiting on an approval a spawned process cannot answer.
     permissionModes: ['plan', 'acceptEdits', 'bypassPermissions'],
     defaultPermissionMode: 'bypassPermissions',
-    supportsImages: false,
+    // Path-referenced attachments via appendImagesInputTag in agy-cli.js.
+    supportsImages: true,
     supportsFiles: true,
     supportsAbort: true,
     supportsPermissionRequests: false,
@@ -138,7 +149,8 @@ const PROVIDER_CAPABILITIES: Record<LLMProvider, ProviderCapabilities> = {
     // exposed, each a genuine 1:1 mapping (bypassPermissions -> Kimi "yolo").
     permissionModes: ['default', 'plan', 'auto', 'bypassPermissions'],
     defaultPermissionMode: 'bypassPermissions',
-    supportsImages: false,
+    // Path-referenced attachments via appendImagesInputTag in kimi-cli.js.
+    supportsImages: true,
     supportsFiles: true,
     supportsAbort: true,
     // The permission bridge reuses the same pendingToolApprovals mechanism

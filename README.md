@@ -35,6 +35,10 @@ This is a fork of [siteboon/claudecodeui](https://github.com/siteboon/claudecode
 - **Interactive prompts, provider-neutral** — `AskUserQuestion` and `ExitPlanMode` are recognized across Claude, Grok, Kimi, and the other adapters (including provider-native aliases), so any agent can pause mid-run to ask a question or hand back a plan for approval, with the prompt attributed to the right agent.
 - **Image & document attachments** — attach images (delivered inline to vision-capable models) plus PDFs, Office/OpenDocument files, and text formats (referenced by path so the agent reads them with its file tools). Up to 25MB per file, with the picker and paste behavior adapting to what the active provider supports.
 - **Mid-conversation model switching** — change the model partway through a chat without starting over.
+- **Mission Control** — scheduled or on-demand agent runs that produce a feed of reviewable action items. Sections are configurable (global or per-project scope, a cron schedule, provider/model, and dry-run/auto-approve), run in either `review` or `fire_and_forget` mode, and surface each result with approve/deny or custom actions you resolve from the UI. Existing Mission Control databases can be imported.
+- **Agent run profiles** — reusable per-agent permission profiles: describe what an agent should be allowed to do in plain language and have Claude compile it into concrete allow/deny tool permissions, then reuse the profile across runs.
+- **Notifications inbox** — a system-notifications panel in the sidebar so agent completions, approvals, and alerts land in one place instead of getting lost.
+- **Live per-turn token usage** — token accounting is now streamed for Claude and Kimi as well as Grok, so every provider shows what each turn actually cost.
 
 ### Cross-provider fixes
 

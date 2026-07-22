@@ -8,6 +8,10 @@ import { notifyRunFailed, notifyRunStopped } from './services/notification-orche
 import { sessionsService } from './modules/providers/services/sessions.service.js';
 import { providerAuthService } from './modules/providers/services/provider-auth.service.js';
 import { providerModelsService } from './modules/providers/services/provider-models.service.js';
+import {
+  findKimiSessionDir,
+  readKimiSessionTokenUsage,
+} from './modules/providers/list/kimi/kimi-token-usage.js';
 import { createCompleteMessage, createNormalizedMessage } from './shared/utils.js';
 
 // cross-spawn resolves .cmd shims/PATHEXT on Windows and delegates to
@@ -387,7 +391,10 @@ async function spawnKimi(command, options = {}, ws) {
         provider: 'kimi',
       }));
 
+      // Wait indefinitely for chatbar approval (same as Grok). The shared
+      // default timeout (~55s) was cancelling prompts before users could answer.
       const decision = await waitForToolApproval(requestId, {
+        timeoutMs: 0,
         metadata: {
           _sessionId: finalSessionId,
           _toolName: toolName,
@@ -451,6 +458,25 @@ async function spawnKimi(command, options = {}, ws) {
     handle.inFlightPromptId = null;
 
     ws.send(createCompleteMessage({ provider: 'kimi', sessionId: finalSessionId, exitCode: 0 }));
+
+    // Refresh badge with latest-turn context occupancy (not sum-of-turns spend).
+    try {
+      const kimiNativeId = handle.kimiSessionId || finalSessionId;
+      const sessionDir = findKimiSessionDir(kimiNativeId);
+      if (sessionDir) {
+        const tokenBudget = readKimiSessionTokenUsage(sessionDir);
+        ws.send(createNormalizedMessage({
+          kind: 'status',
+          text: 'token_budget',
+          tokenBudget,
+          sessionId: finalSessionId,
+          provider: 'kimi',
+        }));
+      }
+    } catch (tokenError) {
+      console.warn('Kimi token budget refresh failed (non-fatal):', tokenError?.message || tokenError);
+    }
+
     // Isolated from the main try/catch: a notification-plumbing failure
     // (e.g. a bad user-preferences row) must never retroactively turn an
     // already-sent successful `complete` into a false failure below.

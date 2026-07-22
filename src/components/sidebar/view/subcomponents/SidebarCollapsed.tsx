@@ -1,4 +1,4 @@
-import { Settings, Sparkles, PanelLeftOpen, Bug, AlertTriangle } from 'lucide-react';
+import { Settings, Sparkles, PanelLeftOpen, Bug, AlertTriangle, Bell, Radar } from 'lucide-react';
 import type { TFunction } from 'i18next';
 
 const DISCORD_INVITE_URL = 'https://discord.gg/buxwujPNRE';
@@ -15,6 +15,10 @@ function DiscordIcon({ className }: { className?: string }) {
 type SidebarCollapsedProps = {
   onExpand: () => void;
   onShowSettings: () => void;
+  onShowNotifications?: () => void;
+  unreadNotificationCount?: number;
+  onShowMissionControl?: () => void;
+  missionControlPendingCount?: number;
   updateAvailable: boolean;
   restartRequired: boolean;
   onShowVersionModal: () => void;
@@ -24,6 +28,10 @@ type SidebarCollapsedProps = {
 export default function SidebarCollapsed({
   onExpand,
   onShowSettings,
+  onShowNotifications,
+  unreadNotificationCount = 0,
+  onShowMissionControl,
+  missionControlPendingCount = 0,
   updateAvailable,
   restartRequired,
   onShowVersionModal,
@@ -42,6 +50,36 @@ export default function SidebarCollapsed({
       </button>
 
       <div className="nav-divider my-1 w-6" />
+
+      {/* Notifications (above Settings) */}
+      {onShowNotifications ? (
+        <button
+          onClick={onShowNotifications}
+          className="group relative flex h-8 w-8 items-center justify-center rounded-lg transition-colors hover:bg-accent/80"
+          aria-label={t('actions.notifications', { defaultValue: 'Notifications' })}
+          title={t('actions.notifications', { defaultValue: 'Notifications' })}
+        >
+          <Bell className="h-4 w-4 text-muted-foreground transition-colors group-hover:text-foreground" />
+          {unreadNotificationCount > 0 ? (
+            <span className="absolute right-0.5 top-0.5 h-2 w-2 rounded-full bg-red-500" />
+          ) : null}
+        </button>
+      ) : null}
+
+      {/* Mission Control */}
+      {onShowMissionControl ? (
+        <button
+          onClick={onShowMissionControl}
+          className="group relative flex h-8 w-8 items-center justify-center rounded-lg transition-colors hover:bg-accent/80"
+          aria-label={t('actions.missionControl', { defaultValue: 'Mission Control' })}
+          title={t('actions.missionControl', { defaultValue: 'Mission Control' })}
+        >
+          <Radar className="h-4 w-4 text-muted-foreground transition-colors group-hover:text-foreground" />
+          {missionControlPendingCount > 0 ? (
+            <span className="absolute right-0.5 top-0.5 h-2 w-2 rounded-full bg-amber-500" />
+          ) : null}
+        </button>
+      ) : null}
 
       {/* Settings */}
       <button

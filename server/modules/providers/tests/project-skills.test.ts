@@ -47,7 +47,7 @@ test('projectSkillsService fans one skill out to every agent project folder', { 
     const skill = created[0];
     assert.ok(skill);
     assert.equal(skill.directoryName, 'shared-skill');
-    assert.deepEqual([...skill.providers].sort(), ['claude', 'codex', 'cursor', 'grok', 'kimi']);
+    assert.deepEqual([...skill.providers].sort(), ['agy', 'claude', 'codex', 'cursor', 'grok', 'kimi']);
     assert.deepEqual(skill.conflicts, []);
 
     // Canonical master copy.
@@ -63,7 +63,7 @@ test('projectSkillsService fans one skill out to every agent project folder', { 
     const listed = await projectSkillsService.listProjectSkills({ workspacePath });
     assert.equal(listed.length, 1);
     assert.equal(listed[0]?.name, 'shared-skill');
-    assert.deepEqual([...(listed[0]?.providers ?? [])].sort(), ['claude', 'codex', 'cursor', 'grok', 'kimi']);
+    assert.deepEqual([...(listed[0]?.providers ?? [])].sort(), ['agy', 'claude', 'codex', 'cursor', 'grok', 'kimi']);
 
     const removed = await projectSkillsService.removeProjectSkill({ workspacePath, directoryName: 'shared-skill' });
     assert.equal(removed.removed, true);

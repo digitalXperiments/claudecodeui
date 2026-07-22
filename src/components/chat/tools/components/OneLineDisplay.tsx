@@ -108,7 +108,7 @@ export const OneLineDisplay: React.FC<OneLineDisplayProps> = ({
         </div>
         {secondary && (
           <div className="ml-7 mt-1">
-            <span className="text-[11px] italic text-muted-foreground/60">
+            <span className="text-[11px] italic text-muted-foreground">
               {secondary}
             </span>
           </div>
@@ -122,8 +122,8 @@ export const OneLineDisplay: React.FC<OneLineDisplayProps> = ({
     const displayName = value.split('/').pop() || value;
     return (
       <div className={`group flex items-center gap-1.5 border-l-2 ${colorScheme.border} my-0.5 py-0.5 pl-3`}>
-        <span className="flex-shrink-0 text-xs text-muted-foreground">{label || toolName}</span>
-        <span className="text-[10px] text-muted-foreground/40">/</span>
+        <span className="flex-shrink-0 text-xs font-medium text-foreground/80">{label || toolName}</span>
+        <span className="text-[10px] text-muted-foreground">/</span>
         <button
           onClick={handleAction}
           className="truncate font-mono text-xs text-primary transition-colors hover:text-primary/80 hover:underline"
@@ -140,13 +140,13 @@ export const OneLineDisplay: React.FC<OneLineDisplayProps> = ({
   if (action === 'jump-to-results') {
     return (
       <div className={`group flex items-center gap-1.5 border-l-2 ${colorScheme.border} my-0.5 py-0.5 pl-3`}>
-        <span className="flex-shrink-0 text-xs text-muted-foreground">{label || toolName}</span>
-        <span className="text-[10px] text-muted-foreground/40">/</span>
+        <span className="flex-shrink-0 text-xs font-medium text-foreground/80">{label || toolName}</span>
+        <span className="text-[10px] text-muted-foreground">/</span>
         <span className={`min-w-0 flex-1 truncate font-mono text-xs ${colorScheme.primary}`}>
           {value}
         </span>
         {secondary && (
-          <span className="flex-shrink-0 text-[11px] italic text-muted-foreground/60">
+          <span className="flex-shrink-0 text-[11px] italic text-muted-foreground">
             {secondary}
           </span>
         )}
@@ -172,12 +172,12 @@ export const OneLineDisplay: React.FC<OneLineDisplayProps> = ({
         <span className={`${colorScheme.icon} flex-shrink-0 text-xs`}>{icon}</span>
       )}
       {!icon && (label || toolName) && (
-        <span className="flex-shrink-0 text-xs text-muted-foreground">{label || toolName}</span>
+        <span className="flex-shrink-0 text-xs font-medium text-foreground/80">{label || toolName}</span>
       )}
       {(icon || label || toolName) && (
-        <span className="text-[10px] text-muted-foreground/40">/</span>
+        <span className="text-[10px] text-muted-foreground">/</span>
       )}
-      <span className={`font-mono text-xs ${wrapText ? 'whitespace-pre-wrap break-all' : 'truncate'} min-w-0 flex-1 ${colorScheme.primary}`}>
+      <span className={`font-mono text-xs ${wrapText ? 'whitespace-pre-wrap break-all' : 'truncate'} min-w-0 flex-1 ${colorScheme.primary || 'text-foreground'}`}>
         {value}
       </span>
       {secondary && (

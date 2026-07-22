@@ -1,6 +1,10 @@
 import express from 'express';
 
-import { notificationChannelEndpointsDb, notificationPreferencesDb } from '@/modules/database/index.js';
+import {
+  notificationChannelEndpointsDb,
+  notificationPreferencesDb,
+  systemNotificationsDb,
+} from '@/modules/database/index.js';
 
 const router = express.Router();
 
@@ -121,6 +125,96 @@ router.delete('/endpoints/:channel/:endpointId', (req, res) => {
   } catch (error) {
     console.error('Error removing notification endpoint:', error);
     return res.status(500).json({ error: 'Failed to remove notification endpoint' });
+  }
+});
+
+// --- In-app attention inbox (sidebar Notifications bar) -------------------
+
+router.get('/inbox', (req, res) => {
+  try {
+    readUserId(req);
+    const includeDismissed = String(req.query.includeDismissed || '') === '1';
+    const notifications = systemNotificationsDb.list({ includeDismissed });
+    const unreadCount = systemNotificationsDb.unreadCount();
+    return res.json({ success: true, notifications, unreadCount });
+  } catch (error) {
+    console.error('Error listing inbox notifications:', error);
+    return res.status(500).json({ error: 'Failed to list notifications' });
+  }
+});
+
+router.post('/inbox', (req, res) => {
+  try {
+    readUserId(req);
+    const body = req.body || {};
+    const title = readText(body.title);
+    if (!title) {
+      return res.status(400).json({ error: 'title is required' });
+    }
+    const notification = systemNotificationsDb.create({
+      kind: readText(body.kind) || 'info',
+      severity: readText(body.severity) || 'info',
+      title,
+      body: typeof body.body === 'string' ? body.body : '',
+      source: readText(body.source) || 'system',
+      href: typeof body.href === 'string' ? body.href : null,
+      meta: body.meta && typeof body.meta === 'object' ? body.meta : {},
+      dedupeKey: readText(body.dedupeKey) || undefined,
+    });
+    return res.status(201).json({ success: true, notification, unreadCount: systemNotificationsDb.unreadCount() });
+  } catch (error) {
+    console.error('Error creating inbox notification:', error);
+    return res.status(500).json({ error: 'Failed to create notification' });
+  }
+});
+
+router.post('/inbox/read-all', (req, res) => {
+  try {
+    readUserId(req);
+    const updated = systemNotificationsDb.markAllRead();
+    return res.json({ success: true, updated, unreadCount: 0 });
+  } catch (error) {
+    console.error('Error marking notifications read:', error);
+    return res.status(500).json({ error: 'Failed to mark notifications read' });
+  }
+});
+
+router.post('/inbox/dismiss-all', (req, res) => {
+  try {
+    readUserId(req);
+    const updated = systemNotificationsDb.dismissAll();
+    return res.json({ success: true, updated, unreadCount: 0 });
+  } catch (error) {
+    console.error('Error dismissing notifications:', error);
+    return res.status(500).json({ error: 'Failed to dismiss notifications' });
+  }
+});
+
+router.post('/inbox/:id/read', (req, res) => {
+  try {
+    readUserId(req);
+    const notification = systemNotificationsDb.markRead(String(req.params.id));
+    if (!notification) {
+      return res.status(404).json({ error: 'Notification not found' });
+    }
+    return res.json({ success: true, notification, unreadCount: systemNotificationsDb.unreadCount() });
+  } catch (error) {
+    console.error('Error marking notification read:', error);
+    return res.status(500).json({ error: 'Failed to mark notification read' });
+  }
+});
+
+router.post('/inbox/:id/dismiss', (req, res) => {
+  try {
+    readUserId(req);
+    const ok = systemNotificationsDb.dismiss(String(req.params.id));
+    if (!ok) {
+      return res.status(404).json({ error: 'Notification not found' });
+    }
+    return res.json({ success: true, unreadCount: systemNotificationsDb.unreadCount() });
+  } catch (error) {
+    console.error('Error dismissing notification:', error);
+    return res.status(500).json({ error: 'Failed to dismiss notification' });
   }
 });
 

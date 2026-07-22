@@ -63,6 +63,9 @@ const PROVIDER_LABELS: Record<string, string> = {
   cursor: 'Cursor',
   codex: 'Codex',
   opencode: 'OpenCode',
+  grok: 'Grok',
+  kimi: 'Kimi',
+  agy: 'Antigravity',
 };
 
 const FALLBACK_COMMANDS: CommandEntry[] = [
@@ -468,44 +471,114 @@ function ModelsContent({
 function CostContent({ data }: { data: CostCommandData }) {
   const used = Number(data.tokenUsage?.used ?? 0);
   const total = Number(data.tokenUsage?.total ?? 0);
+  const contextUsed = Number(data.tokenUsage?.contextUsed ?? 0);
+  const contextWindow = Number(data.tokenUsage?.contextWindow ?? total ?? 0);
+  const contextFree = Number(data.tokenUsage?.contextFree ?? 0);
+  const contextPercent =
+    typeof data.tokenUsage?.contextPercent === 'number'
+      ? data.tokenUsage.contextPercent
+      : null;
+  const cumulativeUsed = Number(data.tokenUsage?.cumulativeUsed ?? 0);
+  const billedInput = Number(data.tokenUsage?.billedInputTokens ?? 0);
+  const billedOutput = Number(data.tokenUsage?.billedOutputTokens ?? 0);
   const model = data.model || 'Unknown';
   const provider = getProviderLabel(data.provider, data.provider || 'Unknown');
-  const hasBreakdown =
-    typeof data.tokenBreakdown?.input === 'number' ||
-    typeof data.tokenBreakdown?.output === 'number';
-  const usageRows = [
-    { label: 'Total tokens used', value: formatNumber(used), icon: Activity },
-    ...(hasBreakdown
-      ? [
-          {
-            label: 'Input tokens',
-            value: formatNumber(Number(data.tokenBreakdown?.input ?? 0)),
-            icon: TerminalSquare,
-          },
-          {
-            label: 'Output tokens',
-            value: formatNumber(Number(data.tokenBreakdown?.output ?? 0)),
-            icon: Coins,
-          },
-        ]
-      : [
-          {
-            label: 'Breakdown',
-            value: 'Unavailable',
-            icon: TerminalSquare,
-          },
-        ]),
-    ...(total > 0
-      ? [{ label: 'Context window', value: formatNumber(total), icon: Gauge }]
-      : []),
-  ];
+  const hasContext = contextUsed > 0 && contextWindow > 0;
+
+  // Context-first rows that always add up (used + free = window).
+  const contextRows = hasContext
+    ? [
+        {
+          label: 'Context used',
+          value: formatNumber(contextUsed),
+          icon: Gauge,
+        },
+        {
+          label: 'Context free',
+          value: formatNumber(
+            contextFree > 0 ? contextFree : Math.max(0, contextWindow - contextUsed),
+          ),
+          icon: Activity,
+        },
+        {
+          label: 'Context window',
+          value: formatNumber(contextWindow),
+          icon: Gauge,
+        },
+        ...(contextPercent != null
+          ? [
+              {
+                label: 'Fill',
+                value: `${contextPercent}%`,
+                icon: Activity,
+              },
+            ]
+          : []),
+      ]
+    : [
+        {
+          label: 'Tokens used',
+          value: formatNumber(used),
+          icon: Activity,
+        },
+        ...(total > 0
+          ? [{ label: 'Context window', value: formatNumber(total), icon: Gauge }]
+          : []),
+        ...(typeof data.tokenBreakdown?.input === 'number'
+          ? [
+              {
+                label: 'Input',
+                value: formatNumber(Number(data.tokenBreakdown.input)),
+                icon: TerminalSquare,
+              },
+            ]
+          : []),
+        ...(typeof data.tokenBreakdown?.output === 'number'
+          ? [
+              {
+                label: 'Output',
+                value: formatNumber(Number(data.tokenBreakdown.output)),
+                icon: Coins,
+              },
+            ]
+          : []),
+      ];
+
+  // Optional secondary: API tokens billed across the session (not context fill).
+  const showBilled = hasContext && cumulativeUsed > 0 && cumulativeUsed !== contextUsed;
+  const billedRows = showBilled
+    ? [
+        {
+          label: 'API tokens billed (session)',
+          value: formatNumber(cumulativeUsed),
+          icon: Activity,
+        },
+        ...(billedInput > 0
+          ? [
+              {
+                label: 'Billed input',
+                value: formatNumber(billedInput),
+                icon: TerminalSquare,
+              },
+            ]
+          : []),
+        ...(billedOutput > 0
+          ? [
+              {
+                label: 'Billed output',
+                value: formatNumber(billedOutput),
+                icon: Coins,
+              },
+            ]
+          : []),
+      ]
+    : [];
 
   return (
     <div className="space-y-4">
       <div className="overflow-hidden rounded-2xl border border-border/70 bg-background/75">
-        {usageRows.map((row) => {
+        {contextRows.map((row) => {
           const Icon = row.icon;
-
           return (
             <div
               key={row.label}
@@ -522,6 +595,36 @@ function CostContent({ data }: { data: CostCommandData }) {
           );
         })}
       </div>
+
+      {showBilled ? (
+        <div className="space-y-2">
+          <p className="px-0.5 text-[11px] leading-relaxed text-muted-foreground">
+            API billed tokens sum every model call in this session (context is re-sent each turn),
+            so they are much larger than context used. They are not the same metric.
+          </p>
+          <div className="overflow-hidden rounded-2xl border border-border/50 bg-muted/15">
+            {billedRows.map((row) => {
+              const Icon = row.icon;
+              return (
+                <div
+                  key={row.label}
+                  className="flex items-center justify-between gap-4 border-b border-border/40 px-4 py-2.5 last:border-b-0"
+                >
+                  <div className="flex min-w-0 items-center gap-3">
+                    <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg border border-border/60 bg-background/60 text-muted-foreground">
+                      <Icon className="h-3.5 w-3.5" />
+                    </span>
+                    <span className="truncate text-sm text-muted-foreground">{row.label}</span>
+                  </div>
+                  <span className="shrink-0 font-mono text-sm text-muted-foreground">
+                    {row.value}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
 
       <div className="rounded-2xl border border-border/70 bg-muted/20 p-4">
         <div className="grid gap-3 sm:grid-cols-2">
@@ -606,7 +709,7 @@ export default function CommandResultModal({
     cost: {
       eyebrow: 'Session telemetry',
       title: 'Token Usage',
-      subtitle: 'Input, output, and total token counts for this session.',
+      subtitle: 'Context window occupancy for this session (not the same as lifetime API bill).',
       icon: Coins,
     },
     status: {

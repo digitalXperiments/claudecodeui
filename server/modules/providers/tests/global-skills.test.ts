@@ -52,9 +52,9 @@ test('globalSkillsService fans one skill out to every agent user folder', { conc
     const skill = created[0];
     assert.ok(skill);
     assert.equal(skill.directoryName, 'shared-global');
-    assert.deepEqual([...skill.providers].sort(), ['claude', 'codex', 'cursor', 'grok', 'kimi']);
+    assert.deepEqual([...skill.providers].sort(), ['agy', 'claude', 'codex', 'cursor', 'grok', 'kimi']);
     assert.deepEqual(skill.conflicts, []);
-    assert.deepEqual([...skill.unsupported].sort(), ['agy', 'opencode']);
+    assert.deepEqual([...skill.unsupported].sort(), ['opencode']);
 
     // Canonical master copy.
     assert.equal(
@@ -73,7 +73,7 @@ test('globalSkillsService fans one skill out to every agent user folder', { conc
     const listed = await globalSkillsService.listGlobalSkills();
     const listedSkill = listed.find((entry) => entry.directoryName === 'shared-global');
     assert.ok(listedSkill);
-    assert.deepEqual([...listedSkill.providers].sort(), ['claude', 'codex', 'cursor', 'grok', 'kimi']);
+    assert.deepEqual([...listedSkill.providers].sort(), ['agy', 'claude', 'codex', 'cursor', 'grok', 'kimi']);
 
     const removed = await globalSkillsService.removeGlobalSkill({ directoryName: 'shared-global' });
     assert.equal(removed.removed, true);

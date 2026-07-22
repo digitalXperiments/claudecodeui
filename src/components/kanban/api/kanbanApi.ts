@@ -33,6 +33,8 @@ function normalizeTask(task: KanbanTask): KanbanTask {
     tools: task?.tools && typeof task.tools === 'object' ? task.tools : {},
     dependsOn: Array.isArray(task?.dependsOn) ? task.dependsOn : [],
     review_provider: task?.review_provider ?? null,
+    implement_profile_id: task?.implement_profile_id ?? null,
+    review_profile_id: task?.review_profile_id ?? null,
   };
 }
 
@@ -66,6 +68,8 @@ export type TaskPatch = {
   position?: number;
   assigneeProvider?: LLMProvider | null;
   reviewProvider?: LLMProvider | null;
+  implementProfileId?: string | null;
+  reviewProfileId?: string | null;
   permissionMode?: string;
   tools?: KanbanTaskTools;
   scheduleCron?: string | null;
@@ -138,6 +142,8 @@ export const kanbanApi = {
     columnId?: string;
     assigneeProvider?: LLMProvider | null;
     reviewProvider?: LLMProvider | null;
+    implementProfileId?: string | null;
+    reviewProfileId?: string | null;
     permissionMode?: string;
     tools?: KanbanTaskTools;
     scheduleCron?: string | null;
