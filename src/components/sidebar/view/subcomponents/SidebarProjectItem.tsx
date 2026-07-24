@@ -52,6 +52,7 @@ type SidebarProjectItemProps = {
   onStartEditingSession: (sessionId: string, initialName: string) => void;
   onCancelEditingSession: () => void;
   onSaveEditingSession: (projectName: string, sessionId: string, summary: string, provider: LLMProvider) => void;
+  showInlineSessions?: boolean;
   t: TFunction;
 };
 
@@ -96,6 +97,7 @@ export default function SidebarProjectItem({
   onStartEditingSession,
   onCancelEditingSession,
   onSaveEditingSession,
+  showInlineSessions = true,
   t,
 }: SidebarProjectItemProps) {
   // Project identity is tracked by the DB-assigned `projectId` everywhere
@@ -130,7 +132,13 @@ export default function SidebarProjectItem({
       onProjectSelect(project);
     }
 
-    toggleProject();
+    if (showInlineSessions) {
+      toggleProject();
+    }
+  };
+
+  const handleProjectRowClick = () => {
+    onProjectSelect(project);
   };
 
   return (
@@ -145,7 +153,7 @@ export default function SidebarProjectItem({
                 !isSelected &&
                 'bg-yellow-50/50 dark:bg-yellow-900/5 border-yellow-200/30 dark:border-yellow-800/30',
             )}
-            onClick={toggleProject}
+            onClick={showInlineSessions ? toggleProject : handleProjectRowClick}
           >
             <div className="flex items-center justify-between">
               <div className="flex min-w-0 flex-1 items-center gap-3">
@@ -296,7 +304,7 @@ export default function SidebarProjectItem({
               !isSelected &&
               'bg-yellow-50/50 dark:bg-yellow-900/10 hover:bg-yellow-100/50 dark:hover:bg-yellow-900/20',
           )}
-          onClick={selectAndToggleProject}
+          onClick={showInlineSessions ? selectAndToggleProject : handleProjectRowClick}
         >
           <div className="flex min-w-0 flex-1 items-center gap-3">
             <div
@@ -417,10 +425,12 @@ export default function SidebarProjectItem({
                 >
                   <Trash2 className="h-3 w-3 text-red-600 dark:text-red-400" />
                 </div>
-                {isExpanded ? (
-                  <ChevronDown className="h-4 w-4 text-muted-foreground transition-colors group-hover:text-foreground" />
-                ) : (
-                  <ChevronRight className="h-4 w-4 text-muted-foreground transition-colors group-hover:text-foreground" />
+                {showInlineSessions && (
+                  isExpanded ? (
+                    <ChevronDown className="h-4 w-4 text-muted-foreground transition-colors group-hover:text-foreground" />
+                  ) : (
+                    <ChevronRight className="h-4 w-4 text-muted-foreground transition-colors group-hover:text-foreground" />
+                  )
                 )}
               </>
             )}
@@ -428,7 +438,7 @@ export default function SidebarProjectItem({
         </Button>
       </div>
 
-      <SidebarProjectSessions
+      {showInlineSessions && <SidebarProjectSessions
         project={project}
         isExpanded={isExpanded}
         sessions={sessions}
@@ -451,7 +461,7 @@ export default function SidebarProjectItem({
         onLoadMoreSessions={onLoadMoreSessions}
         onNewSession={onNewSession}
         t={t}
-      />
+      />}
     </div>
   );
 }

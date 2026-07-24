@@ -37,6 +37,7 @@
   "tooltips": {
     "viewEnvironments": "View Environments",
     "hideSidebar": "Hide sidebar",
+    "showSidebar": "Show sidebar",
     "createProject": "Create new project",
     "refresh": "Refresh projects and sessions (Ctrl+R)",
     "renameProject": "Rename project (F2)",
@@ -66,6 +67,9 @@
   "actions": {
     "refresh": "Refresh",
     "settings": "Settings",
+    "missionControl": "Mission Control",
+    "kanban": "Kanban",
+    "notifications": "Notifications",
     "collapseAll": "Collapse All",
     "expandAll": "Expand All",
     "cancel": "Cancel",
@@ -127,6 +131,10 @@
     "modeProjects": "Projects",
     "modeConversations": "Conversations",
     "conversationsPlaceholder": "Search in conversations...",
+    "archivedPlaceholder": "Search archived sessions...",
+    "runningPlaceholder": "Search running sessions...",
+    "runningTooltip": "Running sessions",
+    "archiveOnlyTooltip": "Archive only",
     "searching": "Searching...",
     "noResults": "No results found",
     "tryDifferentQuery": "Try a different search query",

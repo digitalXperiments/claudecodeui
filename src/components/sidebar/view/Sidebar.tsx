@@ -10,14 +10,14 @@ import { usePaletteOps } from '../../../contexts/PaletteOpsContext';
 import { useTasksSettings } from '../../../contexts/TasksSettingsContext';
 import type { Project, ProjectCategory, LLMProvider } from '../../../types/app';
 import type { MCPServerStatus, SidebarProps } from '../types/types';
+import MissionControlPanel from '../../mission-control/view/MissionControlPanel';
+import { missionControlApi } from '../../mission-control/api/missionControlApi';
+import KanbanPanel from '../../kanban/view/KanbanPanel';
 
-import SidebarCollapsed from './subcomponents/SidebarCollapsed';
 import SidebarContent from './subcomponents/SidebarContent';
 import SidebarModals from './subcomponents/SidebarModals';
 import NotificationsPanel from './subcomponents/NotificationsPanel';
 import type { SidebarProjectListProps } from './subcomponents/SidebarProjectList';
-import MissionControlPanel from '../../mission-control/view/MissionControlPanel';
-import { missionControlApi } from '../../mission-control/api/missionControlApi';
 
 type TaskMasterSidebarContext = {
   setCurrentProject: (project: Project) => void;
@@ -60,6 +60,7 @@ function Sidebar({
   const [unreadNotificationCount, setUnreadNotificationCount] = useState(0);
   const [showMissionControl, setShowMissionControl] = useState(false);
   const [missionControlPendingCount, setMissionControlPendingCount] = useState(0);
+  const [showKanban, setShowKanban] = useState(false);
   const handleUnreadChange = useCallback((count: number) => {
     setUnreadNotificationCount(count);
   }, []);
@@ -289,104 +290,90 @@ function Sidebar({
         t={t}
       />
 
-      {isSidebarCollapsed ? (
-        <SidebarCollapsed
-          onExpand={handleExpandSidebar}
-          onShowSettings={onShowSettings}
-          onShowNotifications={() => setShowNotifications(true)}
-          unreadNotificationCount={unreadNotificationCount}
-          onShowMissionControl={() => setShowMissionControl(true)}
-          missionControlPendingCount={missionControlPendingCount}
-          updateAvailable={updateAvailable}
-          restartRequired={restartRequired}
-          onShowVersionModal={() => setShowVersionModal(true)}
-          t={t}
-        />
-      ) : (
-        <>
-        <SidebarContent
-            isPWA={isPWA}
-            isMobile={isMobile}
-            isLoading={isLoading}
-            projects={projects}
-            runningSessionsCount={runningSessionsCount}
-            archivedProjects={archivedProjects}
-            archivedSessions={archivedSessions}
-            archivedSessionsCount={archivedSessionsCount}
-            isArchivedSessionsLoading={isArchivedSessionsLoading}
-            searchFilter={searchFilter}
-            onSearchFilterChange={setSearchFilter}
-            onClearSearchFilter={() => setSearchFilter('')}
-            searchMode={searchMode}
-            onSearchModeChange={(mode) => {
-              setSearchMode(mode);
-              if (mode === 'projects') clearConversationResults();
-            }}
-            conversationResults={conversationResults}
-            isSearching={isSearching}
-            searchProgress={searchProgress}
-            onRestoreArchivedProject={restoreArchivedProject}
-            onArchivedSessionClick={openArchivedSession}
-            onRestoreArchivedSession={restoreArchivedSession}
-            onDeleteArchivedSession={(session) => {
-              showDeleteSessionConfirmation(
-                session.projectId,
-                session.sessionId,
-                session.sessionTitle,
-                session.provider,
-                { isArchived: true },
-              );
-            }}
-            onConversationResultClick={(projectId: string | null, sessionId: string, provider: string, messageTimestamp?: string | null, messageSnippet?: string | null) => {
-              // `projectId` (DB key) is the canonical identifier post-migration.
-              // The server emits null when it can't resolve a project row for
-              // the search hit; treat that as "no project" and still navigate
-              // to the session so the user can open it from the URL.
-              const resolvedProvider = (provider || 'claude') as LLMProvider;
-              const project = projectId ? projects.find(p => p.projectId === projectId) : null;
-              const searchTarget = { __searchTargetTimestamp: messageTimestamp || null, __searchTargetSnippet: messageSnippet || null };
-              const sessionObj = {
-                id: sessionId,
-                __provider: resolvedProvider,
-                __projectId: projectId ?? undefined,
-                ...searchTarget,
-              };
-              if (project) {
-                handleProjectSelect(project);
-                const sessions = getProjectSessions(project);
-                const existing = sessions.find(s => s.id === sessionId);
-                if (existing) {
-                  handleSessionClick({ ...existing, ...searchTarget }, project.projectId);
-                } else {
-                  handleSessionClick(sessionObj, project.projectId);
-                }
-              } else {
-                handleSessionClick(sessionObj, projectId ?? '');
-              }
-            }}
-            onRefresh={() => {
-              void refreshProjects();
-            }}
-            isRefreshing={isRefreshing}
-            onCreateProject={() => setShowNewProject(true)}
-            onCreateCategory={() => setCategoryEditor({ mode: 'create' })}
-            onCollapseSidebar={handleCollapseSidebar}
-            updateAvailable={updateAvailable}
-            restartRequired={restartRequired}
-            releaseInfo={releaseInfo}
-            latestVersion={latestVersion}
-            currentVersion={currentVersion}
-            onShowVersionModal={() => setShowVersionModal(true)}
-            onShowSettings={onShowSettings}
-            onShowNotifications={() => setShowNotifications(true)}
-            unreadNotificationCount={unreadNotificationCount}
-            onShowMissionControl={() => setShowMissionControl(true)}
-            missionControlPendingCount={missionControlPendingCount}
-            projectListProps={projectListProps}
-            t={t}
-          />
-        </>
-      )}
+      <SidebarContent
+        isPWA={isPWA}
+        isMobile={isMobile}
+        isCollapsed={isSidebarCollapsed}
+        isLoading={isLoading}
+        projects={projects}
+        runningSessionsCount={runningSessionsCount}
+        archivedProjects={archivedProjects}
+        archivedSessions={archivedSessions}
+        archivedSessionsCount={archivedSessionsCount}
+        isArchivedSessionsLoading={isArchivedSessionsLoading}
+        searchFilter={searchFilter}
+        onSearchFilterChange={setSearchFilter}
+        onClearSearchFilter={() => setSearchFilter('')}
+        searchMode={searchMode}
+        onSearchModeChange={(mode) => {
+          setSearchMode(mode);
+          if (mode === 'projects') clearConversationResults();
+        }}
+        conversationResults={conversationResults}
+        isSearching={isSearching}
+        searchProgress={searchProgress}
+        onRestoreArchivedProject={restoreArchivedProject}
+        onArchivedSessionClick={openArchivedSession}
+        onRestoreArchivedSession={restoreArchivedSession}
+        onDeleteArchivedSession={(session) => {
+          showDeleteSessionConfirmation(
+            session.projectId,
+            session.sessionId,
+            session.sessionTitle,
+            session.provider,
+            { isArchived: true },
+          );
+        }}
+        onConversationResultClick={(projectId: string | null, sessionId: string, provider: string, messageTimestamp?: string | null, messageSnippet?: string | null) => {
+          // `projectId` (DB key) is the canonical identifier post-migration.
+          // The server emits null when it can't resolve a project row for
+          // the search hit; treat that as "no project" and still navigate
+          // to the session so the user can open it from the URL.
+          const resolvedProvider = (provider || 'claude') as LLMProvider;
+          const project = projectId ? projects.find(p => p.projectId === projectId) : null;
+          const searchTarget = { __searchTargetTimestamp: messageTimestamp || null, __searchTargetSnippet: messageSnippet || null };
+          const sessionObj = {
+            id: sessionId,
+            __provider: resolvedProvider,
+            __projectId: projectId ?? undefined,
+            ...searchTarget,
+          };
+          if (project) {
+            handleProjectSelect(project);
+            const sessions = getProjectSessions(project);
+            const existing = sessions.find(s => s.id === sessionId);
+            if (existing) {
+              handleSessionClick({ ...existing, ...searchTarget }, project.projectId);
+            } else {
+              handleSessionClick(sessionObj, project.projectId);
+            }
+          } else {
+            handleSessionClick(sessionObj, projectId ?? '');
+          }
+        }}
+        onRefresh={() => {
+          void refreshProjects();
+        }}
+        isRefreshing={isRefreshing}
+        onCreateProject={() => setShowNewProject(true)}
+        onCreateCategory={() => setCategoryEditor({ mode: 'create' })}
+        onCollapseSidebar={handleCollapseSidebar}
+        onExpandSidebar={handleExpandSidebar}
+        updateAvailable={updateAvailable}
+        restartRequired={restartRequired}
+        releaseInfo={releaseInfo}
+        latestVersion={latestVersion}
+        currentVersion={currentVersion}
+        onShowVersionModal={() => setShowVersionModal(true)}
+        onShowSettings={onShowSettings}
+        onShowNotifications={() => setShowNotifications(true)}
+        unreadNotificationCount={unreadNotificationCount}
+        onShowMissionControl={() => setShowMissionControl(true)}
+        missionControlPendingCount={missionControlPendingCount}
+        onShowKanban={() => setShowKanban(true)}
+        projectListProps={projectListProps}
+        t={t}
+      />
 
       <NotificationsPanel
         open={showNotifications}
@@ -399,6 +386,13 @@ function Sidebar({
         onClose={() => setShowMissionControl(false)}
         projects={projects}
         onPendingCountChange={handleMissionControlPendingChange}
+      />
+
+      <KanbanPanel
+        isOpen={showKanban}
+        onClose={() => setShowKanban(false)}
+        selectedProject={selectedProject}
+        projects={projects}
       />
 
     </>
