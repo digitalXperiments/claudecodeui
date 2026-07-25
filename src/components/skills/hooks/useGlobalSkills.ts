@@ -5,6 +5,8 @@ import type {
   ApiResponse,
   GlobalSkill,
   GlobalSkillContentUpdateResponse,
+  GlobalSkillScope,
+  GlobalSkillScopeUpdateResponse,
   GlobalSkillsResponse,
   ProviderSkillCreateEntryPayload,
   SkillContentResponse,
@@ -41,6 +43,8 @@ const normalizeGlobalSkill = (skill: Partial<GlobalSkill>): GlobalSkill => ({
   providers: Array.isArray(skill.providers) ? skill.providers : [],
   conflicts: Array.isArray(skill.conflicts) ? skill.conflicts : [],
   unsupported: Array.isArray(skill.unsupported) ? skill.unsupported : [],
+  scope: skill.scope === 'projects' ? 'projects' : 'all',
+  projects: Array.isArray(skill.projects) ? skill.projects : [],
   ...(skill.kind === 'memory-template' ? { kind: 'memory-template' as const } : {}),
 });
 
@@ -70,11 +74,14 @@ export function useGlobalSkills() {
     }
   }, []);
 
-  const addSkills = useCallback(async (entries: ProviderSkillCreateEntryPayload[]) => {
+  const addSkills = useCallback(async (
+    entries: ProviderSkillCreateEntryPayload[],
+    options?: { scope?: GlobalSkillScope; projects?: string[] },
+  ) => {
     try {
       const response = await authenticatedFetch('/api/global-skills', {
         method: 'POST',
-        body: JSON.stringify({ entries }),
+        body: JSON.stringify({ entries, ...options }),
       });
       const data = await toResponseJson<ApiResponse<GlobalSkillsResponse>>(response);
       if (!response.ok || !data.success) {
@@ -136,6 +143,28 @@ export function useGlobalSkills() {
     return data.data;
   }, [refreshSkills]);
 
+  const setSkillScope = useCallback(async (
+    directoryName: string,
+    scope: GlobalSkillScope,
+    projects: string[],
+  ): Promise<GlobalSkillScopeUpdateResponse> => {
+    const response = await authenticatedFetch(
+      `/api/global-skills/${encodeURIComponent(directoryName)}/scope`,
+      {
+        method: 'PUT',
+        body: JSON.stringify({ scope, projects }),
+      },
+    );
+    const data = await toResponseJson<ApiResponse<GlobalSkillScopeUpdateResponse>>(response);
+    if (!response.ok || !data.success) {
+      throw new Error(getApiErrorMessage(data, 'Failed to update skill scope'));
+    }
+
+    await refreshSkills();
+    setSaveStatus('success');
+    return data.data;
+  }, [refreshSkills]);
+
   useEffect(() => {
     void refreshSkills();
   }, [refreshSkills]);
@@ -158,6 +187,7 @@ export function useGlobalSkills() {
     removeSkill,
     getSkillContent,
     saveSkillContent,
+    setSkillScope,
     refreshSkills,
   };
 }

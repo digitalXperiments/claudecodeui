@@ -24,6 +24,8 @@ export default function AgentsSettingsTab({
   onCodexPermissionModeChange,
   agyPermissionMode,
   onAgyPermissionModeChange,
+  piPermissionMode,
+  onPiPermissionModeChange,
   projects,
 }: AgentsSettingsTabProps) {
   const { t } = useTranslation('settings');
@@ -42,13 +44,17 @@ export default function AgentsSettingsTab({
     if (selectedAgent === 'agy') {
       return ['account', 'permissions'];
     }
+    // Pi has no built-in MCP; skills live under ~/.pi/agent/skills.
+    if (selectedAgent === 'pi') {
+      return ['account', 'permissions', 'skills'];
+    }
     return selectedAgent === 'opencode'
       ? ['account', 'permissions', 'mcp']
       : ['account', 'permissions', 'mcp', 'skills'];
   }, [selectedAgent]);
 
   const visibleAgents = useMemo<AgentProvider[]>(() => {
-    return ['claude', 'cursor', 'codex', 'opencode', 'grok', 'kimi', 'agy'];
+    return ['claude', 'cursor', 'codex', 'opencode', 'grok', 'kimi', 'agy', 'pi'];
   }, []);
 
   const agentContextById = useMemo<Record<AgentProvider, AgentContext>>(() => ({
@@ -80,6 +86,10 @@ export default function AgentsSettingsTab({
       authStatus: providerAuthStatus.agy,
       onLogin: () => onProviderLogin('agy'),
     },
+    pi: {
+      authStatus: providerAuthStatus.pi,
+      onLogin: () => onProviderLogin('pi'),
+    },
   }), [
     onProviderLogin,
     providerAuthStatus.claude,
@@ -89,6 +99,7 @@ export default function AgentsSettingsTab({
     providerAuthStatus.grok,
     providerAuthStatus.kimi,
     providerAuthStatus.agy,
+    providerAuthStatus.pi,
   ]);
 
   useEffect(() => {
@@ -153,6 +164,8 @@ export default function AgentsSettingsTab({
           onCodexPermissionModeChange={onCodexPermissionModeChange}
           agyPermissionMode={agyPermissionMode}
           onAgyPermissionModeChange={onAgyPermissionModeChange}
+          piPermissionMode={piPermissionMode}
+          onPiPermissionModeChange={onPiPermissionModeChange}
           projects={projects}
         />
       </div>

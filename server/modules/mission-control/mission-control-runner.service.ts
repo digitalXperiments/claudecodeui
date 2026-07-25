@@ -7,14 +7,40 @@ import {
 } from '@/modules/mission-control/mission-control-agent.service.js';
 import { missionControlDb } from '@/modules/mission-control/mission-control.repository.js';
 import type {
+  McAction,
   McDraftItem,
   McItem,
   McSection,
 } from '@/modules/mission-control/mission-control.types.js';
+import { kanbanDb, COLUMN_BACKLOG } from '@/modules/kanban/index.js';
 import { AppError } from '@/shared/utils.js';
 
+/**
+ * Normalize produce JSON into a candidate list. Accepts a bare array, a single
+ * draft object, or a common wrapper ({ items | drafts | results }).
+ */
+function draftCandidates(raw: unknown): unknown[] {
+  if (Array.isArray(raw)) return raw;
+  if (raw && typeof raw === 'object') {
+    const o = raw as Record<string, unknown>;
+    for (const key of ['items', 'drafts', 'results', 'data'] as const) {
+      if (Array.isArray(o[key])) return o[key] as unknown[];
+    }
+    // Single draft object (has draft-ish keys) rather than an empty wrapper.
+    if (
+      typeof o.title === 'string' ||
+      typeof o.dedupeKey === 'string' ||
+      typeof o.dedupe_key === 'string'
+    ) {
+      return [raw];
+    }
+    return [];
+  }
+  return [];
+}
+
 function coerceDrafts(raw: unknown): McDraftItem[] {
-  const arr = Array.isArray(raw) ? raw : raw && typeof raw === 'object' ? [raw] : [];
+  const arr = draftCandidates(raw);
   const drafts: McDraftItem[] = [];
   for (const entry of arr) {
     if (!entry || typeof entry !== 'object') continue;
@@ -184,8 +210,21 @@ export async function runSectionProduce(sectionId: string): Promise<ProduceRunRe
 
     const drafts = coerceDrafts(parsed);
     if (drafts.length === 0) {
+      const candidateCount = draftCandidates(parsed).length;
+      // Empty produce is a normal no-op: nothing to queue and nothing to
+      // resolve/auto-approve. Only treat as an error when the model returned
+      // objects that were missing required title + dedupeKey.
+      if (candidateCount === 0) {
+        missionControlDb.markSectionRun(sectionId, { error: null });
+        return {
+          created: 0,
+          skipped: 0,
+          items: [],
+          message: 'Produce finished: nothing new to review.',
+        };
+      }
       const msg =
-        'Produce finished but returned 0 valid drafts (need title + dedupeKey on each item).';
+        'Produce finished but returned 0 valid drafts (each item needs title + dedupeKey).';
       missionControlDb.markSectionRun(sectionId, { error: msg });
       return {
         created: 0,
@@ -210,7 +249,10 @@ export async function runSectionProduce(sectionId: string): Promise<ProduceRunRe
       if (section.auto_approve) {
         const approve = current.actions.find((a) => a.kind === 'approve');
         if (approve) {
-          current = await applyItemAction(current.item_id, approve.id, undefined);
+          const next = await applyItemAction(current.item_id, approve.id, undefined);
+          // auto-approve should never hard-delete; if it did, skip the item
+          if (!next) continue;
+          current = next;
         }
       }
       createdItems.push(current);
@@ -241,11 +283,95 @@ export async function runSectionProduce(sectionId: string): Promise<ProduceRunRe
   }
 }
 
+/**
+ * Apply a review action. Returns the updated item, or `null` when the item
+ * was hard-deleted (kind `delete`) so the dedupe key is free for a re-run.
+ */
+/** Best-effort pull of a tracking reference (e.g. a JIRA key + URL) from a
+ * resolve result, so the bridged card links back to the created ticket. */
+function extractTicketRef(result: Record<string, unknown> | null): {
+  label: string | null;
+  url: string | null;
+} {
+  if (!result) {
+    return { label: null, url: null };
+  }
+  const pick = (keys: string[]): string | null => {
+    for (const key of keys) {
+      const value = result[key];
+      if (typeof value === 'string' && value.trim()) {
+        return value.trim();
+      }
+    }
+    return null;
+  };
+  return {
+    label: pick(['key', 'issueKey', 'issue_key', 'ticket', 'ticketKey', 'id']),
+    url: pick(['url', 'link', 'browseUrl', 'permalink', 'self']),
+  };
+}
+
+/**
+ * Mission Control → Kanban bridge. When an approved item resolves and its
+ * section opts in, create a backlog card on the single global board, pre-linked
+ * to the created ticket and (optionally) pre-assigned a default agent. The card
+ * starts with no project — the user attaches one, then moving it to In Progress
+ * auto-runs. Idempotent via `result.kanbanTaskId`; never fails the approval.
+ */
+function maybeBridgeToKanban(
+  section: McSection,
+  action: McAction,
+  item: McItem,
+): McItem {
+  if (!section.create_kanban_task || action.kind !== 'approve' || item.status !== 'resolved') {
+    return item;
+  }
+  const alreadyBridged =
+    item.result && typeof item.result.kanbanTaskId === 'string' && item.result.kanbanTaskId;
+  if (alreadyBridged) {
+    return item;
+  }
+  try {
+    const board = kanbanDb.getOrCreateGlobalBoard();
+    const { label, url } = extractTicketRef(item.result);
+    const lines: string[] = [];
+    if (item.summary) {
+      lines.push(item.summary);
+    }
+    const tracking = [label, url].filter(Boolean).join(' — ');
+    if (tracking) {
+      lines.push(`Tracking: ${tracking}`);
+    }
+    lines.push(`From Mission Control · ${section.title}`);
+
+    const task = kanbanDb.createTask({
+      boardId: board.board_id,
+      // No project yet — the user attaches one before moving to In Progress.
+      projectId: '',
+      title: item.title,
+      description: lines.join('\n\n'),
+      columnId: COLUMN_BACKLOG,
+      assigneeProvider: section.kanban_assignee_provider,
+      reviewProvider: section.kanban_review_provider,
+    });
+
+    return missionControlDb.setItemStatus(item.item_id, 'resolved', {
+      result: { ...(item.result ?? {}), kanbanTaskId: task.task_id },
+    });
+  } catch (error) {
+    console.error(
+      '[mission-control] kanban bridge failed:',
+      error instanceof Error ? error.message : error,
+    );
+    return item;
+  }
+}
+
 export async function applyItemAction(
   itemId: string,
   actionId: string,
   editedBody?: Record<string, unknown>,
-): Promise<McItem> {
+): Promise<McItem | null> {
   const item = missionControlDb.getItem(itemId);
   if (!item) {
     throw new AppError('Item not found', {
@@ -253,17 +379,37 @@ export async function applyItemAction(
       statusCode: 404,
     });
   }
-  if (item.status !== 'pending' && item.status !== 'failed') {
-    throw new AppError(`Item is '${item.status}', not actionable`, {
-      code: 'MC_ITEM_NOT_ACTIONABLE',
-      statusCode: 400,
-    });
-  }
 
   const action = item.actions.find((a) => a.id === actionId);
   if (!action) {
     throw new AppError(`Action ${actionId} not on item`, {
       code: 'MC_BAD_ACTION',
+      statusCode: 400,
+    });
+  }
+
+  // Hard delete frees the section+dedupe_key unique constraint so produce can
+  // recreate the draft. Allowed on terminal rows too (dismissed/resolved/…).
+  if (action.kind === 'delete') {
+    if (item.status === 'resolving') {
+      throw new AppError(`Item is 'resolving', not deletable yet`, {
+        code: 'MC_ITEM_NOT_ACTIONABLE',
+        statusCode: 400,
+      });
+    }
+    const removed = missionControlDb.deleteItem(itemId);
+    if (!removed) {
+      throw new AppError('Item not found', {
+        code: 'MC_ITEM_NOT_FOUND',
+        statusCode: 404,
+      });
+    }
+    return null;
+  }
+
+  if (item.status !== 'pending' && item.status !== 'failed') {
+    throw new AppError(`Item is '${item.status}', not actionable`, {
+      code: 'MC_ITEM_NOT_ACTIONABLE',
       statusCode: 400,
     });
   }
@@ -286,20 +432,22 @@ export async function applyItemAction(
   missionControlDb.setItemStatus(itemId, 'resolving', { body });
 
   if (section.dry_run) {
-    return missionControlDb.setItemStatus(itemId, 'resolved', {
+    const resolved = missionControlDb.setItemStatus(itemId, 'resolved', {
       result: { dryRun: true },
       resolvedAt: new Date().toISOString(),
       error: null,
     });
+    return maybeBridgeToKanban(section, action, resolved);
   }
 
   if (!section.resolve_prompt.trim()) {
     // Approve without resolve prompt just marks resolved with body.
-    return missionControlDb.setItemStatus(itemId, 'resolved', {
+    const resolved = missionControlDb.setItemStatus(itemId, 'resolved', {
       result: { approved: true, body },
       resolvedAt: new Date().toISOString(),
       error: null,
     });
+    return maybeBridgeToKanban(section, action, resolved);
   }
 
   try {
@@ -345,11 +493,12 @@ export async function applyItemAction(
       });
     }
 
-    return missionControlDb.setItemStatus(itemId, 'resolved', {
+    const resolved = missionControlDb.setItemStatus(itemId, 'resolved', {
       result,
       resolvedAt: new Date().toISOString(),
       error: null,
     });
+    return maybeBridgeToKanban(section, action, resolved);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return missionControlDb.setItemStatus(itemId, 'failed', {

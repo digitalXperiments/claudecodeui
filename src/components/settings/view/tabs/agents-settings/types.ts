@@ -7,6 +7,7 @@ import type {
   GrokPermissionsState,
   CodexPermissionMode,
   AgyPermissionMode,
+  PiPermissionMode,
   SettingsProject,
 } from '../../../types/types';
 
@@ -31,6 +32,8 @@ export type AgentsSettingsTabProps = {
   onCodexPermissionModeChange: (value: CodexPermissionMode) => void;
   agyPermissionMode: AgyPermissionMode;
   onAgyPermissionModeChange: (value: AgyPermissionMode) => void;
+  piPermissionMode: PiPermissionMode;
+  onPiPermissionModeChange: (value: PiPermissionMode) => void;
   projects: SettingsProject[];
 };
 
@@ -63,5 +66,7 @@ export type AgentCategoryContentSectionProps = {
   onCodexPermissionModeChange: (value: CodexPermissionMode) => void;
   agyPermissionMode: AgyPermissionMode;
   onAgyPermissionModeChange: (value: AgyPermissionMode) => void;
+  piPermissionMode: PiPermissionMode;
+  onPiPermissionModeChange: (value: PiPermissionMode) => void;
   projects: SettingsProject[];
 };

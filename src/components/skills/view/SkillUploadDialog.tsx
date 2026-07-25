@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { useDropzone } from 'react-dropzone';
 import {
   FileText,
@@ -16,6 +16,7 @@ import {
   DialogContent,
   DialogTitle,
 } from '../../../shared/view/ui';
+import { useProjectsOptions } from '../hooks/useProjectsOptions';
 import {
   buildQueuedSkillFolders,
   buildSkillCreateEntries,
@@ -24,14 +25,21 @@ import {
   MAX_SKILL_FOLDER_FILES,
   type QueuedSkillFile,
 } from '../lib/skillUpload';
-import type { ProviderSkillCreateEntryPayload } from '../types';
+import type { GlobalSkillScope, ProviderSkillCreateEntryPayload } from '../types';
+
+import SkillScopeField from './SkillScopeField';
 
 type SkillUploadDialogProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onInstall: (entries: ProviderSkillCreateEntryPayload[]) => Promise<unknown>;
+  onInstall: (
+    entries: ProviderSkillCreateEntryPayload[],
+    options?: { scope?: GlobalSkillScope; projects?: string[] },
+  ) => Promise<unknown>;
   title: string;
   description: string;
+  /** Show the "All projects / Selected projects" scope picker. */
+  allowScopeSelection?: boolean;
 };
 
 const MAX_QUEUED_SKILLS = 20;
@@ -47,12 +55,17 @@ export default function SkillUploadDialog({
   onInstall,
   title,
   description,
+  allowScopeSelection = false,
 }: SkillUploadDialogProps) {
   const [queuedFiles, setQueuedFiles] = useState<QueuedSkillFile[]>([]);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [scope, setScope] = useState<GlobalSkillScope>('all');
+  const [selectedProjects, setSelectedProjects] = useState<string[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement | null>(null);
+
+  const { projects: projectOptions, isLoading: projectsLoading } = useProjectsOptions();
 
   const setFolderInputRef = useCallback((node: HTMLInputElement | null) => {
     folderInputRef.current = node;
@@ -133,11 +146,23 @@ export default function SkillUploadDialog({
   const handleOpenChange = useCallback((nextOpen: boolean) => {
     setQueuedFiles([]);
     setSubmitError(null);
+    setScope('all');
+    setSelectedProjects([]);
     onOpenChange(nextOpen);
   }, [onOpenChange]);
 
-  const handleInstall = useCallback(async () => {
+  const canInstall = useMemo(() => {
     if (queuedFiles.length === 0) {
+      return false;
+    }
+    if (allowScopeSelection && scope === 'projects' && selectedProjects.length === 0) {
+      return false;
+    }
+    return true;
+  }, [queuedFiles, allowScopeSelection, scope, selectedProjects]);
+
+  const handleInstall = useCallback(async () => {
+    if (!canInstall) {
       setSubmitError('Add one or more markdown files first.');
       return;
     }
@@ -147,7 +172,10 @@ export default function SkillUploadDialog({
 
     try {
       const entries = await buildSkillCreateEntries(queuedFiles);
-      await onInstall(entries);
+      const options = allowScopeSelection && scope === 'projects'
+        ? { scope, projects: selectedProjects }
+        : undefined;
+      await onInstall(entries, options);
       setQueuedFiles([]);
       onOpenChange(false);
     } catch (error) {
@@ -155,7 +183,7 @@ export default function SkillUploadDialog({
     } finally {
       setIsSubmitting(false);
     }
-  }, [onInstall, onOpenChange, queuedFiles]);
+  }, [canInstall, onInstall, onOpenChange, queuedFiles, allowScopeSelection, scope, selectedProjects]);
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
@@ -206,7 +234,9 @@ export default function SkillUploadDialog({
                 <div className="space-y-1">
                   <div className="text-sm font-medium text-foreground">Drop a skill folder or SKILL.md</div>
                   <div className="text-sm text-muted-foreground">
-                    Installed into every agent&apos;s skill folder.
+                    {allowScopeSelection
+                      ? 'Installed into every agent\u2019s skill folder, or only into selected projects.'
+                      : 'Installed into every agent\u2019s skill folder.'}
                   </div>
                 </div>
                 <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
@@ -221,6 +251,19 @@ export default function SkillUploadDialog({
                 </div>
               </div>
             </div>
+
+            {allowScopeSelection && (
+              <SkillScopeField
+                scope={scope}
+                projects={selectedProjects}
+                options={projectOptions}
+                optionsLoading={projectsLoading}
+                onChange={(nextScope, nextProjects) => {
+                  setScope(nextScope);
+                  setSelectedProjects(nextProjects);
+                }}
+              />
+            )}
 
             {queuedFiles.length > 0 && (
               <div className="space-y-2">
@@ -273,7 +316,7 @@ export default function SkillUploadDialog({
             <Button type="button" variant="outline" size="sm" className="w-full sm:w-auto" disabled={isSubmitting} onClick={() => handleOpenChange(false)}>
               Cancel
             </Button>
-            <Button type="button" size="sm" className="w-full sm:w-auto" onClick={() => void handleInstall()} disabled={isSubmitting || queuedFiles.length === 0}>
+            <Button type="button" size="sm" className="w-full sm:w-auto" onClick={() => void handleInstall()} disabled={isSubmitting || !canInstall}>
               {isSubmitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
               Install {queuedFiles.length > 0 ? `${queuedFiles.length} Skill${queuedFiles.length === 1 ? '' : 's'}` : 'Skill'}
             </Button>

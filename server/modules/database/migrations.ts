@@ -568,6 +568,23 @@ const ensureProjectMemorySchema = (db: Database): void => {
   db.exec('CREATE INDEX IF NOT EXISTS idx_project_memory_enabled ON project_memory(enabled)');
 };
 
+/**
+ * Additive Mission Control columns for the kanban bridge: on approve, a section
+ * can also create a card on the global kanban backlog, optionally pre-assigning
+ * default implementation/review agents. Idempotent.
+ */
+const ensureMissionControlKanbanBridgeSchema = (db: Database): void => {
+  if (!tableExists(db, 'mc_sections')) {
+    return;
+  }
+  let columns = getTableInfo(db, 'mc_sections').map((column) => column.name);
+  addColumnToTableIfNotExists(db, 'mc_sections', columns, 'create_kanban_task', 'INTEGER DEFAULT 0');
+  columns = getTableInfo(db, 'mc_sections').map((column) => column.name);
+  addColumnToTableIfNotExists(db, 'mc_sections', columns, 'kanban_assignee_provider', 'TEXT');
+  columns = getTableInfo(db, 'mc_sections').map((column) => column.name);
+  addColumnToTableIfNotExists(db, 'mc_sections', columns, 'kanban_review_provider', 'TEXT');
+};
+
 export const runMigrations = (db: Database) => {
   try {
     const usersTableInfo = db.prepare('PRAGMA table_info(users)').all() as { name: string }[];
@@ -635,6 +652,7 @@ export const runMigrations = (db: Database) => {
 
     // Mission Control (sections + reviewable items).
     db.exec(MISSION_CONTROL_SCHEMA_SQL);
+    ensureMissionControlKanbanBridgeSchema(db);
 
     console.log('Database migrations completed successfully');
   } catch (error: any) {

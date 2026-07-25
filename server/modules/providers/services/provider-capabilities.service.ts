@@ -168,6 +168,28 @@ const PROVIDER_CAPABILITIES: Record<LLMProvider, ProviderCapabilities> = {
     // than claiming unverified support.
     supportsEffort: false,
   },
+  pi: {
+    provider: 'pi',
+    // Pi has no built-in permission popups. "plan" maps to a read-only tool
+    // allowlist (`--tools read,grep,find,ls`); everything else runs with the
+    // full default tool set. bypassPermissions is the default for headless
+    // chat so turns never stall.
+    permissionModes: ['plan', 'bypassPermissions'],
+    defaultPermissionMode: 'bypassPermissions',
+    // Images accepted as base64 in RPC prompt payloads; path refs also work
+    // via appendImagesInputTag for non-image files.
+    supportsImages: true,
+    supportsFiles: true,
+    supportsAbort: true,
+    // Pi philosophy: no permission popups. Extensions can add them later.
+    supportsPermissionRequests: false,
+    // Session stats are available via RPC get_session_stats but not yet
+    // wired to the /token-usage route.
+    supportsTokenUsage: false,
+    // Thinking level is a separate RPC control (set_thinking_level), not
+    // modeled as CloudCLI's effort picker yet.
+    supportsEffort: false,
+  },
 };
 
 /**

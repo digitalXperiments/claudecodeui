@@ -59,6 +59,8 @@ function Settings({ isOpen, onClose, projects = [], initialTab = 'agents' }: Set
     setCodexPermissionMode,
     agyPermissionMode,
     setAgyPermissionMode,
+    piPermissionMode,
+    setPiPermissionMode,
     providerAuthStatus,
     openLoginForProvider,
     showLoginModal,
@@ -143,14 +145,14 @@ function Settings({ isOpen, onClose, projects = [], initialTab = 'agents' }: Set
 
   return (
     <div
-      className="modal-backdrop fixed inset-0 z-[9999] flex items-center justify-center bg-background/80 backdrop-blur-sm md:p-4"
+      className="modal-backdrop fixed inset-0 z-[9999] flex items-stretch justify-center bg-background md:items-center md:bg-background/80 md:p-4 md:backdrop-blur-sm"
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="flex h-full w-full flex-col overflow-hidden border border-border bg-background shadow-2xl md:h-[90vh] md:max-w-4xl md:rounded-xl">
+      <div className="flex h-dvh max-h-dvh w-full flex-col overflow-hidden border-0 bg-background shadow-none md:h-[90vh] md:max-h-[90vh] md:max-w-4xl md:rounded-xl md:border md:border-border md:shadow-2xl">
         {/* Header */}
-        <div className="flex flex-shrink-0 items-center justify-between border-b border-border px-4 py-3 md:px-5">
+        <div className="flex flex-shrink-0 items-center justify-between border-b border-border px-4 py-3 pt-[max(0.75rem,env(safe-area-inset-top))] md:px-5 md:pt-3">
           <h2 className="text-base font-semibold text-foreground">{t('title')}</h2>
           <div className="flex items-center gap-2">
             {saveStatus === 'success' && (
@@ -202,6 +204,8 @@ function Settings({ isOpen, onClose, projects = [], initialTab = 'agents' }: Set
                   onCodexPermissionModeChange={setCodexPermissionMode}
                   agyPermissionMode={agyPermissionMode}
                   onAgyPermissionModeChange={setAgyPermissionMode}
+                  piPermissionMode={piPermissionMode}
+                  onPiPermissionModeChange={setPiPermissionMode}
                   projects={projects}
                 />
               )}

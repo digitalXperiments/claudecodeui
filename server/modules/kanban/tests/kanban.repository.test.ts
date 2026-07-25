@@ -35,7 +35,7 @@ async function withIsolatedDatabase(runTest: (projectId: string) => void | Promi
 
 test('createBoard seeds default columns with runOnEnter on in_progress/review', async () => {
   await withIsolatedDatabase((projectId) => {
-    const board = kanbanDb.createBoard({ projectId, name: 'Sprint 1' });
+    const board = kanbanDb.createBoard({ name: 'Sprint 1' });
     assert.equal(board.name, 'Sprint 1');
     assert.deepEqual(
       board.columns.map((c) => c.name),
@@ -50,7 +50,7 @@ test('createBoard seeds default columns with runOnEnter on in_progress/review', 
 
 test('task round-trips with tools + dual agents + dependency list', async () => {
   await withIsolatedDatabase((projectId) => {
-    const board = kanbanDb.createBoard({ projectId, name: 'Board' });
+    const board = kanbanDb.createBoard({ name: 'Board' });
     const task = kanbanDb.createTask({
       boardId: board.board_id,
       projectId,
@@ -74,7 +74,7 @@ test('task round-trips with tools + dual agents + dependency list', async () => 
 
 test('positions increment per column', async () => {
   await withIsolatedDatabase((projectId) => {
-    const board = kanbanDb.createBoard({ projectId, name: 'Board' });
+    const board = kanbanDb.createBoard({ name: 'Board' });
     const a = kanbanDb.createTask({ boardId: board.board_id, projectId, title: 'A' });
     const b = kanbanDb.createTask({ boardId: board.board_id, projectId, title: 'B' });
     assert.equal(a.position, 0);
@@ -84,7 +84,7 @@ test('positions increment per column', async () => {
 
 test('updateTask can move a task to another column', async () => {
   await withIsolatedDatabase((projectId) => {
-    const board = kanbanDb.createBoard({ projectId, name: 'Board' });
+    const board = kanbanDb.createBoard({ name: 'Board' });
     const task = kanbanDb.createTask({ boardId: board.board_id, projectId, title: 'Move me' });
     const moved = kanbanDb.updateTask(task.task_id, { columnId: 'in_progress', position: 2 });
     assert.equal(moved?.column_id, 'in_progress');
@@ -94,7 +94,7 @@ test('updateTask can move a task to another column', async () => {
 
 test('addDependency stores an edge and getTask lists it', async () => {
   await withIsolatedDatabase((projectId) => {
-    const board = kanbanDb.createBoard({ projectId, name: 'Board' });
+    const board = kanbanDb.createBoard({ name: 'Board' });
     const a = kanbanDb.createTask({ boardId: board.board_id, projectId, title: 'A' });
     const b = kanbanDb.createTask({ boardId: board.board_id, projectId, title: 'B' });
     // b depends on a
@@ -106,7 +106,7 @@ test('addDependency stores an edge and getTask lists it', async () => {
 
 test('addDependency rejects self-dependency', async () => {
   await withIsolatedDatabase((projectId) => {
-    const board = kanbanDb.createBoard({ projectId, name: 'Board' });
+    const board = kanbanDb.createBoard({ name: 'Board' });
     const a = kanbanDb.createTask({ boardId: board.board_id, projectId, title: 'A' });
     assert.throws(() => kanbanDb.addDependency(a.task_id, a.task_id), KanbanCycleError);
   });
@@ -114,7 +114,7 @@ test('addDependency rejects self-dependency', async () => {
 
 test('addDependency rejects a direct 2-cycle', async () => {
   await withIsolatedDatabase((projectId) => {
-    const board = kanbanDb.createBoard({ projectId, name: 'Board' });
+    const board = kanbanDb.createBoard({ name: 'Board' });
     const a = kanbanDb.createTask({ boardId: board.board_id, projectId, title: 'A' });
     const b = kanbanDb.createTask({ boardId: board.board_id, projectId, title: 'B' });
     kanbanDb.addDependency(b.task_id, a.task_id); // b -> a
@@ -124,7 +124,7 @@ test('addDependency rejects a direct 2-cycle', async () => {
 
 test('addDependency rejects a transitive cycle', async () => {
   await withIsolatedDatabase((projectId) => {
-    const board = kanbanDb.createBoard({ projectId, name: 'Board' });
+    const board = kanbanDb.createBoard({ name: 'Board' });
     const a = kanbanDb.createTask({ boardId: board.board_id, projectId, title: 'A' });
     const b = kanbanDb.createTask({ boardId: board.board_id, projectId, title: 'B' });
     const c = kanbanDb.createTask({ boardId: board.board_id, projectId, title: 'C' });
@@ -137,7 +137,7 @@ test('addDependency rejects a transitive cycle', async () => {
 
 test('deleting a task cascades its dependency edges and runs', async () => {
   await withIsolatedDatabase((projectId) => {
-    const board = kanbanDb.createBoard({ projectId, name: 'Board' });
+    const board = kanbanDb.createBoard({ name: 'Board' });
     const a = kanbanDb.createTask({ boardId: board.board_id, projectId, title: 'A' });
     const b = kanbanDb.createTask({ boardId: board.board_id, projectId, title: 'B' });
     kanbanDb.addDependency(b.task_id, a.task_id);
@@ -152,7 +152,7 @@ test('deleting a task cascades its dependency edges and runs', async () => {
 
 test('runs record and finish', async () => {
   await withIsolatedDatabase((projectId) => {
-    const board = kanbanDb.createBoard({ projectId, name: 'Board' });
+    const board = kanbanDb.createBoard({ name: 'Board' });
     const task = kanbanDb.createTask({ boardId: board.board_id, projectId, title: 'A' });
     const run = kanbanDb.createRun({
       taskId: task.task_id,
@@ -173,7 +173,7 @@ test('runs record and finish', async () => {
 
 test('deleting a board cascades its tasks', async () => {
   await withIsolatedDatabase((projectId) => {
-    const board = kanbanDb.createBoard({ projectId, name: 'Board' });
+    const board = kanbanDb.createBoard({ name: 'Board' });
     const task = kanbanDb.createTask({ boardId: board.board_id, projectId, title: 'A' });
     assert.equal(kanbanDb.deleteBoard(board.board_id), true);
     assert.equal(kanbanDb.getTask(task.task_id), null);

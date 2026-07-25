@@ -13,6 +13,7 @@ const PROVIDER_INPUT_LABELS: Record<string, string> = {
   grok: 'Grok Build',
   kimi: 'Kimi',
   agy: 'Antigravity',
+  pi: 'Pi',
 };
 
 export const AskUserQuestionPanel: React.FC<PermissionPanelProps> = ({

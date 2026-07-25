@@ -52,18 +52,34 @@
   },
   "voiceSettings": {
     "title": "Voice",
-    "description": "Speech-to-text input and read-aloud, via an OpenAI-compatible audio backend.",
+    "description": "Speech-to-text input and read-aloud. Prefer on-device WhisperKit on Apple Silicon — no cloud API required for dictation.",
     "enable": "Enable voice",
     "enableDescription": "Show the mic button and the read-aloud button on messages.",
-    "backendTitle": "Backend",
-    "backendDescription": "Point at OpenAI, Groq, or a local server (LocalAI, Speaches, Kokoro-FastAPI). Leave blank to use the server default.",
+    "sttTitle": "Speech-to-text",
+    "sttDescription": "On-device uses WhisperKit (Core ML / Neural Engine), the same class of stack apps like ParaSpeech use. Browser speech needs no install. API uses an OpenAI-compatible backend.",
+    "sttProvider": "STT engine",
+    "sttProviderAuto": "Auto (on-device if available, else API)",
+    "sttProviderLocal": "On-device (WhisperKit / Apple Silicon)",
+    "sttProviderBrowser": "Browser speech (Web Speech API)",
+    "sttProviderApi": "API backend (OpenAI-compatible)",
+    "localReady": "On-device STT ready ({{engine}})",
+    "localReadyDetail": "Default model: {{model}}. First run downloads Core ML weights into ~/.cloudcli/whisperkit/.",
+    "localMissingFfmpeg": "Install ffmpeg (brew install ffmpeg) to convert browser webm recordings.",
+    "localMissing": "On-device STT not detected on this server",
+    "localMissingHint": "Requires Apple Silicon macOS. Models download automatically on first transcription.",
+    "browserOk": "This browser supports the Web Speech API. Audio stays in the browser session (Chrome may use a cloud recognizer).",
+    "browserMissing": "Web Speech API is not available in this browser. Try Safari/Chrome or use on-device STT.",
+    "localModel": "On-device model",
+    "localModelHint": "WhisperKit names: tiny, base, small, large-v3-v20240930_626MB (recommended quality). Leave blank for server default (base). OpenAI whisper-1 is ignored for on-device.",
+    "backendTitle": "API backend (optional)",
+    "backendDescription": "For cloud STT/TTS or a local OpenAI-compatible server (LocalAI, Speaches, WhisperKit serve, Kokoro-FastAPI). Leave blank when using on-device STT only.",
     "baseUrl": "Base URL",
     "apiKey": "API key",
     "sttModel": "Speech-to-text model",
     "ttsModel": "Text-to-speech model",
     "voice": "Voice",
     "format": "Audio format",
-    "note": "A custom base URL is called directly by your browser and must allow browser CORS requests. Leave it blank to use the server-configured backend."
+    "note": "A custom base URL is called directly by your browser and must allow browser CORS requests. Leave it blank to use the server-configured backend. Read-aloud still needs an API TTS backend today."
   },
   "quickSettings": {
     "title": "Quick Settings",
@@ -150,9 +166,12 @@
     }
   },
   "appearanceSettings": {
-    "darkMode": {
-      "label": "Dark Mode",
-      "description": "Toggle between light and dark themes"
+    "theme": {
+      "label": "Theme",
+      "description": "Choose a light or dark theme, or follow your system setting",
+      "light": "Light",
+      "dark": "Dark",
+      "system": "System"
     },
     "projectSorting": {
       "label": "Project Sorting",

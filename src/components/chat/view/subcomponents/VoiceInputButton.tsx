@@ -41,7 +41,11 @@ export default function VoiceInputButton({
       })
     : state === 'recording'
       ? t('voice.stopRecording')
-      : t('voice.input');
+      : state === 'transcribing'
+        ? t('voice.cancelTranscribing', {
+            defaultValue: 'Transcribing… tap again to cancel',
+          })
+        : t('voice.input');
 
   return (
     <span className="relative inline-flex">

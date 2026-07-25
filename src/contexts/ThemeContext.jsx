@@ -10,49 +10,60 @@ export const useTheme = () => {
   return context;
 };
 
+const THEME_MODES = ['light', 'dark', 'system'];
+
+const getSystemDarkMode = () =>
+  typeof window !== 'undefined' &&
+  window.matchMedia &&
+  window.matchMedia('(prefers-color-scheme: dark)').matches;
+
+// Read the saved mode: 'light' | 'dark' | 'system'. Defaults to 'system'.
+// Legacy saves of 'light'/'dark' remain valid.
+const getSavedThemeMode = () => {
+  const savedTheme = localStorage.getItem('theme');
+  return THEME_MODES.includes(savedTheme) ? savedTheme : 'system';
+};
+
 export const ThemeProvider = ({ children }) => {
-  // Check for saved theme preference or default to system preference
+  const [themeMode, setThemeModeState] = useState(getSavedThemeMode);
+
   const [isDarkMode, setIsDarkMode] = useState(() => {
-    // Check localStorage first
     const savedTheme = localStorage.getItem('theme');
-    if (savedTheme) {
-      return savedTheme === 'dark';
-    }
-    
-    // Check system preference
-    if (window.matchMedia) {
-      return window.matchMedia('(prefers-color-scheme: dark)').matches;
-    }
-    
-    return false;
+    if (savedTheme === 'dark') return true;
+    if (savedTheme === 'light') return false;
+    return getSystemDarkMode();
   });
 
-  // Update document class and localStorage when theme changes
+  // Resolve the effective theme whenever the mode changes and persist it
+  useEffect(() => {
+    setIsDarkMode(themeMode === 'system' ? getSystemDarkMode() : themeMode === 'dark');
+    localStorage.setItem('theme', themeMode);
+  }, [themeMode]);
+
+  // Update document class and meta tags when the effective theme changes
   useEffect(() => {
     if (isDarkMode) {
       document.documentElement.classList.add('dark');
-      localStorage.setItem('theme', 'dark');
-      
+
       // Update iOS status bar style and theme color for dark mode
       const statusBarMeta = document.querySelector('meta[name="apple-mobile-web-app-status-bar-style"]');
       if (statusBarMeta) {
         statusBarMeta.setAttribute('content', 'black-translucent');
       }
-      
+
       const themeColorMeta = document.querySelector('meta[name="theme-color"]');
       if (themeColorMeta) {
         themeColorMeta.setAttribute('content', '#141414'); // Dark background color (hsl(0 0% 8%))
       }
     } else {
       document.documentElement.classList.remove('dark');
-      localStorage.setItem('theme', 'light');
-      
+
       // Update iOS status bar style and theme color for light mode
       const statusBarMeta = document.querySelector('meta[name="apple-mobile-web-app-status-bar-style"]');
       if (statusBarMeta) {
         statusBarMeta.setAttribute('content', 'default');
       }
-      
+
       const themeColorMeta = document.querySelector('meta[name="theme-color"]');
       if (themeColorMeta) {
         themeColorMeta.setAttribute('content', '#f6f4ef'); // Light background color (warm cream)
@@ -60,29 +71,34 @@ export const ThemeProvider = ({ children }) => {
     }
   }, [isDarkMode]);
 
-  // Listen for system theme changes
+  // Listen for system theme changes while in 'system' mode
   useEffect(() => {
-    if (!window.matchMedia) return;
+    if (themeMode !== 'system' || !window.matchMedia) return;
 
     const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
     const handleChange = (e) => {
-      // Only update if user hasn't manually set a preference
-      const savedTheme = localStorage.getItem('theme');
-      if (!savedTheme) {
-        setIsDarkMode(e.matches);
-      }
+      setIsDarkMode(e.matches);
     };
 
     mediaQuery.addEventListener('change', handleChange);
     return () => mediaQuery.removeEventListener('change', handleChange);
-  }, []);
+  }, [themeMode]);
 
+  const setThemeMode = (mode) => {
+    if (THEME_MODES.includes(mode)) {
+      setThemeModeState(mode);
+    }
+  };
+
+  // Toggling picks an explicit mode opposite to the current effective theme
   const toggleDarkMode = () => {
-    setIsDarkMode(prev => !prev);
+    setThemeModeState(isDarkMode ? 'light' : 'dark');
   };
 
   const value = {
     isDarkMode,
+    themeMode,
+    setThemeMode,
     toggleDarkMode,
   };
 

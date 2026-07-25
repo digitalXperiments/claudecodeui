@@ -30,45 +30,49 @@ export default function PermissionMatrix({ tasks, onOpenTask }: PermissionMatrix
   }
 
   return (
-    <div className="flex-1 overflow-auto p-4">
-      <table className="w-full border-collapse text-sm">
-        <thead>
-          <tr className="border-b border-border text-left text-xs uppercase text-muted-foreground">
-            <th className="px-3 py-2 font-medium">Task</th>
-            <th className="px-3 py-2 font-medium">Implement</th>
-            <th className="px-3 py-2 font-medium">Review</th>
-            <th className="px-3 py-2 font-medium">Permission mode</th>
-            <th className="px-3 py-2 font-medium">Allowed</th>
-            <th className="px-3 py-2 font-medium">Disallowed</th>
-            <th className="px-3 py-2 font-medium">Schedule</th>
-          </tr>
-        </thead>
-        <tbody>
-          {tasks.map((task) => (
-            <tr
-              key={task.task_id}
-              className="cursor-pointer border-b border-border/60 hover:bg-accent"
-              onClick={() => onOpenTask(task)}
-            >
-              <td className="px-3 py-2 font-medium text-foreground">{task.title}</td>
-              <td className="px-3 py-2">{providerLabel(task.assignee_provider)}</td>
-              <td className="px-3 py-2">{providerLabel(task.review_provider)}</td>
-              <td className="px-3 py-2 text-muted-foreground">
-                {permissionLabel(task.permission_mode)}
-              </td>
-              <td className="px-3 py-2 text-muted-foreground">
-                {task.tools?.allowedCommands?.length ?? 0}
-              </td>
-              <td className="px-3 py-2 text-muted-foreground">
-                {task.tools?.disallowedCommands?.length ?? 0}
-              </td>
-              <td className="px-3 py-2 font-mono text-xs text-muted-foreground">
-                {task.schedule_cron ?? '—'}
-              </td>
+    <div className="min-h-0 flex-1 overflow-auto p-3 pb-[max(1rem,env(safe-area-inset-bottom))] md:p-4">
+      <div className="min-w-0 overflow-x-auto">
+        <table className="w-full min-w-[40rem] border-collapse text-sm">
+          <thead>
+            <tr className="border-b border-border text-left text-xs uppercase text-muted-foreground">
+              <th className="sticky left-0 z-[1] bg-background px-3 py-2 font-medium">Task</th>
+              <th className="px-3 py-2 font-medium">Implement</th>
+              <th className="px-3 py-2 font-medium">Review</th>
+              <th className="px-3 py-2 font-medium">Permission mode</th>
+              <th className="px-3 py-2 font-medium">Allowed</th>
+              <th className="px-3 py-2 font-medium">Disallowed</th>
+              <th className="px-3 py-2 font-medium">Schedule</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {tasks.map((task) => (
+              <tr
+                key={task.task_id}
+                className="cursor-pointer border-b border-border/60 hover:bg-accent"
+                onClick={() => onOpenTask(task)}
+              >
+                <td className="sticky left-0 z-[1] max-w-40 truncate bg-background px-3 py-2 font-medium text-foreground md:max-w-none">
+                  {task.title}
+                </td>
+                <td className="whitespace-nowrap px-3 py-2">{providerLabel(task.assignee_provider)}</td>
+                <td className="whitespace-nowrap px-3 py-2">{providerLabel(task.review_provider)}</td>
+                <td className="whitespace-nowrap px-3 py-2 text-muted-foreground">
+                  {permissionLabel(task.permission_mode)}
+                </td>
+                <td className="px-3 py-2 text-muted-foreground">
+                  {task.tools?.allowedCommands?.length ?? 0}
+                </td>
+                <td className="px-3 py-2 text-muted-foreground">
+                  {task.tools?.disallowedCommands?.length ?? 0}
+                </td>
+                <td className="px-3 py-2 font-mono text-xs text-muted-foreground">
+                  {task.schedule_cron ?? '—'}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

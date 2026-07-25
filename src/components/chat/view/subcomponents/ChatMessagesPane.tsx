@@ -46,6 +46,8 @@ interface ChatMessagesPaneProps {
   setKimiModel: (model: string) => void;
   agyModel: string;
   setAgyModel: (model: string) => void;
+  piModel: string;
+  setPiModel: (model: string) => void;
   providerModelCatalog: Partial<Record<LLMProvider, ProviderModelsDefinition>>;
   providerModelsLoading: boolean;
   tasksEnabled: boolean;
@@ -100,6 +102,8 @@ function ChatMessagesPane({
   setKimiModel,
   agyModel,
   setAgyModel,
+  piModel,
+  setPiModel,
   providerModelCatalog,
   providerModelsLoading,
   tasksEnabled,
@@ -205,6 +209,8 @@ function ChatMessagesPane({
           setKimiModel={setKimiModel}
           agyModel={agyModel}
           setAgyModel={setAgyModel}
+          piModel={piModel}
+          setPiModel={setPiModel}
           providerModelCatalog={providerModelCatalog}
           providerModelsLoading={providerModelsLoading}
           tasksEnabled={tasksEnabled}

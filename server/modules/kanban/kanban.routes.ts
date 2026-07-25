@@ -168,45 +168,8 @@ router.get(
 );
 
 // --- Boards ---------------------------------------------------------------
-router.get(
-  '/boards',
-  asyncHandler(async (req, res) => {
-    const projectId = readString(req.query.projectId).trim();
-    if (!projectId) {
-      throw new AppError('projectId query parameter is required', {
-        code: 'KANBAN_PROJECT_ID_REQUIRED',
-        statusCode: 400,
-      });
-    }
-    const boards = kanbanDb.listBoardsByProject(projectId);
-    res.json({ success: true, boards });
-  }),
-);
-
-router.post(
-  '/boards',
-  asyncHandler(async (req, res) => {
-    const body = req.body as Record<string, unknown>;
-    const projectId = readString(body.projectId).trim();
-    const name = readString(body.name).trim();
-    if (!projectId) {
-      throw new AppError('projectId is required', {
-        code: 'KANBAN_PROJECT_ID_REQUIRED',
-        statusCode: 400,
-      });
-    }
-    if (!name) {
-      throw new AppError('name is required', { code: 'KANBAN_NAME_REQUIRED', statusCode: 400 });
-    }
-    const board = kanbanDb.createBoard({
-      projectId,
-      name,
-      columns: validateColumns(body.columns),
-    });
-    res.status(201).json({ success: true, board });
-  }),
-);
-
+// Boards are global-only. The single board is fetched via GET /global; the
+// only board mutation is editing its columns.
 router.get(
   '/boards/:boardId',
   asyncHandler(async (req, res) => {
@@ -228,18 +191,6 @@ router.put(
       columns: validateColumns(body.columns),
     });
     res.json({ success: true, board });
-  }),
-);
-
-router.delete(
-  '/boards/:boardId',
-  asyncHandler(async (req, res) => {
-    const boardId = readString(req.params.boardId);
-    const deleted = kanbanDb.deleteBoard(boardId);
-    if (!deleted) {
-      throw new AppError('Board not found', { code: 'KANBAN_BOARD_NOT_FOUND', statusCode: 404 });
-    }
-    res.json({ success: true });
   }),
 );
 
@@ -266,13 +217,11 @@ router.post(
     if (!title) {
       throw new AppError('title is required', { code: 'KANBAN_TITLE_REQUIRED', statusCode: 400 });
     }
-    const board = requireBoard(boardId);
-    // Project-scoped boards inherit their project; global boards require the
-    // caller to pick which project each task belongs to.
-    const projectId =
-      board.scope === 'global' ? readString(body.projectId).trim() : board.project_id;
+    requireBoard(boardId);
+    // The board is global; every task picks which project it belongs to.
+    const projectId = readString(body.projectId).trim();
     if (!projectId) {
-      throw new AppError('projectId is required for tasks on a global board', {
+      throw new AppError('projectId is required', {
         code: 'KANBAN_PROJECT_ID_REQUIRED',
         statusCode: 400,
       });
@@ -363,12 +312,16 @@ router.put(
       const enteredColumn = board?.columns.find((col) => col.id === task.column_id);
       const enteredId = task.column_id;
 
+      // A task can only auto-run once it has a project attached (its working
+      // directory). Bridged cards start without one until the user assigns it.
+      const hasProject = Boolean(task.project_id && task.project_id.trim());
+
       if (enteredId === COLUMN_REVIEW) {
-        if (task.review_provider) {
+        if (task.review_provider && hasProject) {
           enqueueTask(task.task_id, 'review');
         }
       } else if (enteredId === COLUMN_IN_PROGRESS || enteredColumn?.runOnEnter) {
-        if (task.assignee_provider) {
+        if (task.assignee_provider && hasProject) {
           enqueueTask(task.task_id, 'column_move');
         }
       }

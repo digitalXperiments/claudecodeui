@@ -122,9 +122,12 @@
     }
   },
   "appearanceSettings": {
-    "darkMode": {
-      "label": "Modalità scura",
-      "description": "Alterna tra tema chiaro e scuro"
+    "theme": {
+      "label": "Tema",
+      "description": "Scegli un tema chiaro o scuro, oppure segui l'impostazione di sistema",
+      "light": "Chiaro",
+      "dark": "Scuro",
+      "system": "Sistema"
     },
     "projectSorting": {
       "label": "Ordinamento progetti",

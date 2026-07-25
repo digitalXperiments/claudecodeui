@@ -46,7 +46,7 @@ test('every provider runs a task through the shared spawnFns map', async () => {
   const dispose = initKanbanAutomation();
 
   try {
-    const board = kanbanDb.createBoard({ projectId, name: 'Board' });
+    const board = kanbanDb.createBoard({ name: 'Board' });
     for (const provider of KANBAN_PROVIDERS) {
       const task = kanbanDb.createTask({
         boardId: board.board_id,

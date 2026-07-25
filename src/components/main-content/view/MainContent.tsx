@@ -6,7 +6,6 @@ import StandaloneShell from '../../standalone-shell/view/StandaloneShell';
 import GitPanel from '../../git-panel/view/GitPanel';
 import PluginTabContent from '../../plugins/view/PluginTabContent';
 import { BrowserUsePanel } from '../../browser-use';
-import KanbanView from '../../kanban/view/KanbanView';
 import type { MainContentProps } from '../types/types';
 import { useTaskMaster } from '../../../contexts/TaskMasterContext';
 import { usePaletteOpsRegister } from '../../../contexts/PaletteOpsContext';
@@ -205,14 +204,6 @@ function MainContent({
           )}
 
           {shouldShowTasksTab && <TaskMasterPanel isVisible={activeTab === 'tasks'} />}
-
-          {activeTab === 'kanban' && (
-            <div className="h-full overflow-hidden">
-              <ErrorBoundary showDetails>
-                <KanbanView selectedProject={selectedProject} isVisible={activeTab === 'kanban'} />
-              </ErrorBoundary>
-            </div>
-          )}
 
           {shouldShowBrowserTab && activeTab === 'browser' && (
             <div className="h-full overflow-hidden">

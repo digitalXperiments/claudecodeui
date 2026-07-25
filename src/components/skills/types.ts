@@ -69,11 +69,15 @@ export type ProjectSkillsResponse = {
 };
 
 /**
- * One cross-agent global skill. Authored once and fanned out to every agent's
- * user-scope skill folder, so it applies to every project. `unsupported` lists
- * agents that have no user-scope skill folder. `kind: 'memory-template'` marks
- * the managed memory skill template, which is edited here but never fanned out.
+ * One cross-agent global skill. Authored once and fanned out either to every
+ * agent's user-scope skill folder (`scope: 'all'`, applies to every project) or
+ * only to the selected workspaces' project-scope skill folders
+ * (`scope: 'projects'`). `unsupported` lists agents with no matching skill
+ * folder. `kind: 'memory-template'` marks the managed memory skill template,
+ * which is edited here but never fanned out.
  */
+export type GlobalSkillScope = 'all' | 'projects';
+
 export type GlobalSkill = {
   name: string;
   description: string;
@@ -83,10 +87,30 @@ export type GlobalSkill = {
   conflicts: SkillsProvider[];
   unsupported: SkillsProvider[];
   kind?: 'memory-template';
+  scope: GlobalSkillScope;
+  /** Workspace paths the skill applies to when scope is 'projects'. */
+  projects: string[];
+};
+
+export type GlobalSkillScopeUpdateResponse = {
+  directoryName: string;
+  scope: GlobalSkillScope;
+  projects: string[];
+  providers: SkillsProvider[];
+  conflicts: SkillsProvider[];
+  unsupported: SkillsProvider[];
 };
 
 export type GlobalSkillCreatePayload = {
   entries: ProviderSkillCreateEntryPayload[];
+  scope?: GlobalSkillScope;
+  projects?: string[];
+};
+
+/** One selectable workspace for scoping a global skill to specific projects. */
+export type SkillProjectOption = {
+  fullPath: string;
+  displayName: string;
 };
 
 export type GlobalSkillsResponse = {

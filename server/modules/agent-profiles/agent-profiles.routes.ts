@@ -17,6 +17,7 @@ const KNOWN_PROVIDERS: readonly LLMProvider[] = [
   'grok',
   'kimi',
   'agy',
+  'pi',
 ];
 
 const router = express.Router();

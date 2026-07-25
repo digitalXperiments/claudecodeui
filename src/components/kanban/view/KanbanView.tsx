@@ -9,10 +9,9 @@ import {
   type DragEndEvent,
   type DragStartEvent,
 } from '@dnd-kit/core';
-import { AlertTriangle, Globe, Loader2, Plus, RefreshCw, SquareKanban, Table2 } from 'lucide-react';
+import { AlertTriangle, Loader2, Plus, RefreshCw, SquareKanban, Table2 } from 'lucide-react';
 
 import { Button } from '../../../shared/view/ui';
-import { cn } from '../../../lib/utils';
 import type { Project } from '../../../types/app';
 import { useKanbanBoard } from '../hooks/useKanbanBoard';
 import { kanbanApi } from '../api/kanbanApi';
@@ -26,6 +25,8 @@ import PermissionMatrix from './PermissionMatrix';
 type KanbanViewProps = {
   selectedProject: Project | null;
   isVisible: boolean;
+  /** Optional project list from the sidebar so the picker is instant. */
+  projects?: Project[];
 };
 
 function columnIdFromOver(overId: string, tasks: KanbanTask[]): string | null {
@@ -36,11 +37,12 @@ function columnIdFromOver(overId: string, tasks: KanbanTask[]): string | null {
   return overTask ? overTask.column_id : null;
 }
 
-export default function KanbanView({ selectedProject, isVisible }: KanbanViewProps) {
-  const projectId = selectedProject?.projectId ?? null;
-  const [scope, setScope] = useState<'project' | 'global'>('project');
-  const board = useKanbanBoard(projectId, scope);
-  const isGlobal = scope === 'global';
+export default function KanbanView({ selectedProject, isVisible, projects: projectsProp }: KanbanViewProps) {
+  // The board is always the single cross-project global board.
+  const board = useKanbanBoard();
+  // The sidebar's selected project is only used to pre-select a project when
+  // creating a new task — it never scopes the board.
+  const defaultProjectId = selectedProject?.projectId ?? null;
 
   const [editorOpen, setEditorOpen] = useState(false);
   const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
@@ -69,14 +71,37 @@ export default function KanbanView({ selectedProject, isVisible }: KanbanViewPro
     return map;
   }, [boardTasks]);
 
-  // projectId -> display name, for the global board's per-card project badges.
+  // Prefer board-loaded projects; fall back to sidebar list for empty/loading states.
+  const projectOptions = useMemo(() => {
+    if ((board.projects ?? []).length > 0) {
+      return board.projects;
+    }
+    return (projectsProp ?? []).map((p) => ({
+      projectId: p.projectId,
+      displayName: p.displayName,
+    }));
+  }, [board.projects, projectsProp]);
+
+  // projectId -> display name, for badges + dependency labels.
   const projectNameById = useMemo(() => {
     const map = new Map<string, string>();
-    for (const project of board.projects ?? []) {
+    for (const project of projectOptions) {
       map.set(project.projectId, project.displayName);
     }
+    if (selectedProject?.projectId && selectedProject.displayName) {
+      map.set(selectedProject.projectId, selectedProject.displayName);
+    }
     return map;
-  }, [board.projects]);
+  }, [projectOptions, selectedProject]);
+
+  // taskId -> task, for card "blocked by" labels and dependency UI.
+  const taskById = useMemo(() => {
+    const map = new Map<string, KanbanTask>();
+    for (const task of boardTasks) {
+      map.set(task.task_id, task);
+    }
+    return map;
+  }, [boardTasks]);
 
   // While a run is queued/in flight, poll so implement→review→done transitions land.
   useEffect(() => {
@@ -92,20 +117,6 @@ export default function KanbanView({ selectedProject, isVisible }: KanbanViewPro
 
   if (!isVisible) {
     return null;
-  }
-
-  // The global board works without a selected project; the project board needs one.
-  if (!selectedProject && !isGlobal) {
-    return (
-      <div className="flex h-full w-full flex-col items-center justify-center gap-3 text-center text-muted-foreground">
-        <SquareKanban className="h-10 w-10 opacity-60" />
-        <div className="text-sm">Select a project to open its Kanban board.</div>
-        <Button variant="outline" size="sm" onClick={() => setScope('global')}>
-          <Globe className="h-4 w-4" />
-          Open the global board
-        </Button>
-      </div>
-    );
   }
 
   const openNewTask = (columnId: string) => {
@@ -173,65 +184,57 @@ export default function KanbanView({ selectedProject, isVisible }: KanbanViewPro
   const columns = board.board?.columns ?? [];
 
   return (
-    <div className="flex h-full w-full flex-col">
-      <div className="flex items-center justify-between gap-2 border-b border-border px-4 py-2">
-        <div className="flex items-center gap-2 text-sm font-semibold">
-          <SquareKanban className="h-4 w-4" />
-          {isGlobal ? 'Global board' : (selectedProject?.displayName ?? board.board?.name ?? 'Kanban')}
-        </div>
-        <div className="flex items-center gap-2">
-          <div className="mr-1 flex items-center rounded-md border border-border p-0.5 text-xs">
-            <button
-              type="button"
-              className={cn(
-                'rounded px-2 py-1 transition-colors',
-                !isGlobal ? 'bg-secondary text-secondary-foreground' : 'text-muted-foreground',
-              )}
-              onClick={() => setScope('project')}
-              disabled={!selectedProject}
-            >
-              Project
-            </button>
-            <button
-              type="button"
-              className={cn(
-                'inline-flex items-center gap-1 rounded px-2 py-1 transition-colors',
-                isGlobal ? 'bg-secondary text-secondary-foreground' : 'text-muted-foreground',
-              )}
-              onClick={() => setScope('global')}
-            >
-              <Globe className="h-3 w-3" />
-              Global
-            </button>
+    <div className="flex h-full min-h-0 w-full flex-col">
+      <div className="flex flex-shrink-0 flex-wrap items-center justify-between gap-2 border-b border-border px-3 py-2 pr-14 pt-[max(0.5rem,env(safe-area-inset-top))] md:px-4 md:pr-12 md:pt-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
+          <div className="flex items-center gap-2 text-sm font-semibold">
+            <SquareKanban className="h-4 w-4 shrink-0" />
+            <span className="truncate">Global board</span>
           </div>
+        </div>
+
+        <div className="flex shrink-0 items-center gap-1.5 md:gap-2">
           <Button
             variant={view === 'matrix' ? 'secondary' : 'ghost'}
             size="icon"
-            className="h-8 w-8"
+            className="h-10 w-10 touch-manipulation md:h-8 md:w-8"
             onClick={() => setView((prev) => (prev === 'board' ? 'matrix' : 'board'))}
             aria-label="Toggle permission matrix"
           >
             <Table2 className="h-4 w-4" />
           </Button>
-          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => void board.reload()}>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-10 w-10 touch-manipulation md:h-8 md:w-8"
+            onClick={() => void board.reload()}
+          >
             <RefreshCw className="h-4 w-4" />
           </Button>
           <Button
             size="sm"
+            className="h-10 touch-manipulation gap-1 md:h-8"
             onClick={() => openNewTask(columns[0]?.id ?? 'backlog')}
             disabled={!board.board}
           >
             <Plus className="h-4 w-4" />
-            New task
+            <span className="hidden sm:inline">New task</span>
+            <span className="sm:hidden">New</span>
           </Button>
         </div>
       </div>
 
+      <div className="hidden flex-shrink-0 border-b border-border bg-muted/30 px-4 py-1.5 text-[11px] text-muted-foreground md:block">
+        Cross-project board. Each task belongs to a project you pick. Link tasks with{' '}
+        <strong className="font-medium text-foreground/80">Depends on</strong> — when a dependency
+        finishes, the next task auto-runs if it has an implementation agent.
+      </div>
+
       {board.error ? (
-        <div className="flex items-center gap-2 border-b border-destructive/30 bg-destructive/10 px-4 py-2 text-sm text-destructive">
-          <AlertTriangle className="h-4 w-4" />
-          <span className="flex-1">{board.error}</span>
-          <Button variant="ghost" size="sm" onClick={board.clearError}>
+        <div className="flex flex-shrink-0 items-start gap-2 border-b border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive md:px-4">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+          <span className="min-w-0 flex-1 break-words">{board.error}</span>
+          <Button variant="ghost" size="sm" className="touch-manipulation" onClick={board.clearError}>
             Dismiss
           </Button>
         </div>
@@ -250,7 +253,7 @@ export default function KanbanView({ selectedProject, isVisible }: KanbanViewPro
           onDragStart={handleDragStart}
           onDragEnd={handleDragEnd}
         >
-          <div className="flex flex-1 gap-3 overflow-x-auto p-4">
+          <div className="flex min-h-0 flex-1 snap-x snap-mandatory gap-3 overflow-x-auto overflow-y-hidden p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:snap-none md:p-4">
             {columns.map((column) => (
               <KanbanColumn
                 key={column.id}
@@ -259,12 +262,15 @@ export default function KanbanView({ selectedProject, isVisible }: KanbanViewPro
                 onOpenTask={openEditTask}
                 onAddTask={openNewTask}
                 onToggleRunOnEnter={board.setColumnRunOnEnter}
-                projectNameById={isGlobal ? projectNameById : null}
+                projectNameById={projectNameById}
+                taskById={taskById}
               />
             ))}
           </div>
           <DragOverlay>
-            {activeTask ? <KanbanCard task={activeTask} onOpen={() => undefined} /> : null}
+            {activeTask ? (
+              <KanbanCard task={activeTask} onOpen={() => undefined} taskById={taskById} />
+            ) : null}
           </DragOverlay>
         </DndContext>
       )}
@@ -275,15 +281,22 @@ export default function KanbanView({ selectedProject, isVisible }: KanbanViewPro
         draft={draftColumnId ? { columnId: draftColumnId } : null}
         columns={columns}
         allTasks={boardTasks}
-        projects={board.projects}
-        requireProject={isGlobal}
-        projectNameById={isGlobal ? projectNameById : null}
+        projects={projectOptions}
+        requireProject
+        defaultProjectId={defaultProjectId}
+        projectNameById={projectNameById}
         onClose={() => setEditorOpen(false)}
         onCreate={async (input) => {
-          if (!board.board) {
+          // requireProject guarantees a project is picked before this fires.
+          if (!board.board || !input.projectId) {
             return;
           }
-          await board.createTask({ boardId: board.board.board_id, ...input });
+          const created = await board.createTask({
+            boardId: board.board.board_id,
+            ...input,
+            projectId: input.projectId,
+          });
+          return created;
         }}
         onUpdate={async (taskId, patch) => {
           await board.updateTask(taskId, patch);

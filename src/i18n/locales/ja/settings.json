@@ -122,9 +122,12 @@
     }
   },
   "appearanceSettings": {
-    "darkMode": {
-      "label": "ダークモード",
-      "description": "ライトテーマとダークテーマを切り替えます"
+    "theme": {
+      "label": "テーマ",
+      "description": "ライトまたはダークテーマを選択するか、システム設定に従います",
+      "light": "ライト",
+      "dark": "ダーク",
+      "system": "システム"
     },
     "projectSorting": {
       "label": "プロジェクトの並び順",

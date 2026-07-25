@@ -1,5 +1,7 @@
 import os from 'node:os';
 
+import { jsonrepair } from 'jsonrepair';
+
 import { projectsDb } from '@/modules/database/index.js';
 import { sessionsService } from '@/modules/providers/index.js';
 import {
@@ -23,54 +25,168 @@ export function configureMissionControlRuntimes(
 const PRODUCE_ENVELOPE =
   'Return ONLY a JSON array of items, each exactly ' +
   '{ "title": string, "summary": string, "body": object, "dedupeKey": string (a STABLE source id), "confidence": number }. ' +
-  'No prose, no code fences.';
-
+  'If there is nothing to produce, return [] (empty array) — do not invent items and do not write prose. ' +
+  'No tool narration, no code fences. ' +
+  'Strict JSON only: escape every " and \\ and newline inside strings (use \\n for line breaks). ' +
+  'Quotes that appear in Slack/message text must be escaped as \\".';
 function stripCodeFences(text: string): string {
   return text.replace(/^```[\w]*\n?/gm, '').replace(/^```$/gm, '').trim();
 }
 
-function findBalancedJson(text: string): string {
-  const startIdx = text.search(/[{[]/);
-  if (startIdx === -1) {
-    throw new Error('no JSON object or array found in text');
+/** Prefer ```json ... ``` / ``` ... ``` bodies when the model wrapped output. */
+function extractFencedBlocks(text: string): string[] {
+  const blocks: string[] = [];
+  const re = /```(?:json|JSON)?\s*\n?([\s\S]*?)```/g;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(text)) !== null) {
+    const body = match[1]?.trim();
+    if (body) blocks.push(body);
   }
-  const open = text[startIdx];
-  const close = open === '{' ? '}' : ']';
-  let depth = 0;
-  let inStr = false;
-  let escape = false;
-  for (let i = startIdx; i < text.length; i++) {
-    const c = text[i];
-    if (escape) {
-      escape = false;
-      continue;
-    }
-    if (c === '\\' && inStr) {
-      escape = true;
-      continue;
-    }
-    if (c === '"') {
-      inStr = !inStr;
-      continue;
-    }
-    if (inStr) continue;
-    if (c === open) depth++;
-    else if (c === close) {
-      depth--;
-      if (depth === 0) return text.slice(startIdx, i + 1);
-    }
-  }
-  throw new Error('unbalanced JSON in agent output');
+  return blocks;
 }
 
-export function parseJsonFromAgentText(raw: string): unknown {
-  const cleaned = stripCodeFences(raw.trim());
-  try {
-    return JSON.parse(cleaned);
-  } catch {
-    const slice = findBalancedJson(cleaned);
-    return JSON.parse(slice);
+/**
+ * Walk text and collect balanced `{...}` / `[...]` slices.
+ * Agents often emit tool narration before the real payload; we try every
+ * top-level candidate (preferring later ones via reverse iteration at parse time).
+ */
+function findBalancedJsonSlices(text: string): string[] {
+  const slices: string[] = [];
+  for (let startIdx = 0; startIdx < text.length; startIdx++) {
+    const open = text[startIdx];
+    if (open !== '{' && open !== '[') continue;
+    const close = open === '{' ? '}' : ']';
+    let depth = 0;
+    let inStr = false;
+    let escape = false;
+    for (let i = startIdx; i < text.length; i++) {
+      const c = text[i];
+      if (escape) {
+        escape = false;
+        continue;
+      }
+      if (c === '\\' && inStr) {
+        escape = true;
+        continue;
+      }
+      if (c === '"') {
+        inStr = !inStr;
+        continue;
+      }
+      if (inStr) continue;
+      if (c === open) depth++;
+      else if (c === close) {
+        depth--;
+        if (depth === 0) {
+          slices.push(text.slice(startIdx, i + 1));
+          // Skip past this value so we don't re-scan every nested `{`.
+          startIdx = i;
+          break;
+        }
+      }
+    }
   }
+  return slices;
+}
+
+function looksLikeJsonValue(text: string): boolean {
+  const t = text.trimStart();
+  return t.startsWith('{') || t.startsWith('[');
+}
+
+function tryParseJson(candidate: string): unknown {
+  try {
+    return JSON.parse(candidate);
+  } catch {
+    // Only repair when the candidate already looks like a JSON value.
+    // Running jsonrepair on prose+JSON invents garbage arrays like
+    // ["Now I'll fetch…", [actual payload]].
+    if (!looksLikeJsonValue(candidate)) {
+      throw new Error('candidate is not JSON-shaped');
+    }
+    // Models frequently emit almost-JSON: unescaped " in prose, trailing commas,
+    // single quotes, raw newlines inside strings.
+    return JSON.parse(jsonrepair(candidate));
+  }
+}
+
+/** Higher is better — prefer draft arrays over nested fragments / junk. */
+function scoreParsedJson(value: unknown): number {
+  if (Array.isArray(value)) {
+    if (value.length === 0) return 50;
+    let score = 100 + Math.min(value.length, 20);
+    for (const entry of value) {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+        // String/primitive elements usually mean repair glued narration into an array.
+        score -= 80;
+        continue;
+      }
+      const e = entry as Record<string, unknown>;
+      if (typeof e.title === 'string') score += 20;
+      if (typeof e.dedupeKey === 'string' || typeof e.dedupe_key === 'string') score += 30;
+      if (e.body && typeof e.body === 'object') score += 10;
+    }
+    return score;
+  }
+  if (value && typeof value === 'object') {
+    const e = value as Record<string, unknown>;
+    let score = 40;
+    if (typeof e.title === 'string') score += 20;
+    if (typeof e.dedupeKey === 'string' || typeof e.dedupe_key === 'string') score += 30;
+    return score;
+  }
+  return 0;
+}
+
+/**
+ * Parse structured output from a Mission Control agent turn.
+ * Tolerates preamble prose, code fences, and common LLM JSON mistakes.
+ */
+export function parseJsonFromAgentText(raw: string): unknown {
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    throw new Error('no JSON object or array found in text');
+  }
+
+  const candidates: string[] = [];
+  const pushUnique = (s: string) => {
+    const t = s.trim();
+    if (t && !candidates.includes(t)) candidates.push(t);
+  };
+
+  for (const block of extractFencedBlocks(trimmed)) pushUnique(block);
+  pushUnique(trimmed);
+  pushUnique(stripCodeFences(trimmed));
+  for (const slice of findBalancedJsonSlices(stripCodeFences(trimmed))) {
+    pushUnique(slice);
+  }
+  // Also scan the raw (un-stripped) text for balanced JSON in case fences
+  // were incomplete.
+  for (const slice of findBalancedJsonSlices(trimmed)) {
+    pushUnique(slice);
+  }
+
+  let lastError: Error | null = null;
+  let best: { value: unknown; score: number; length: number } | null = null;
+
+  for (const text of candidates) {
+    try {
+      const value = tryParseJson(text);
+      const score = scoreParsedJson(value);
+      if (
+        !best ||
+        score > best.score ||
+        (score === best.score && text.length > best.length)
+      ) {
+        best = { value, score, length: text.length };
+      }
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+    }
+  }
+
+  if (best) return best.value;
+  throw lastError ?? new Error('no JSON object or array found in text');
 }
 
 type McRunOutcome = {

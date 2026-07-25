@@ -72,7 +72,7 @@ async function withFlow(
 
 test('implement success without review agent moves task to Done', async () => {
   await withFlow(async (projectId) => {
-    const board = kanbanDb.createBoard({ projectId, name: 'Board' });
+    const board = kanbanDb.createBoard({ name: 'Board' });
     const task = kanbanDb.createTask({
       boardId: board.board_id,
       projectId,
@@ -97,7 +97,7 @@ test('implement success without review agent moves task to Done', async () => {
 
 test('implement success with review agent moves to Review and runs review', async () => {
   await withFlow(async (projectId) => {
-    const board = kanbanDb.createBoard({ projectId, name: 'Board' });
+    const board = kanbanDb.createBoard({ name: 'Board' });
     const task = kanbanDb.createTask({
       boardId: board.board_id,
       projectId,
@@ -151,7 +151,7 @@ test('failed implement stays failed and does not enter review', async () => {
   initKanbanQueue();
 
   try {
-    const board = kanbanDb.createBoard({ projectId, name: 'Board' });
+    const board = kanbanDb.createBoard({ name: 'Board' });
     const task = kanbanDb.createTask({
       boardId: board.board_id,
       projectId,
@@ -205,7 +205,7 @@ test('review brief carries the implementation output tail', async () => {
       },
     });
 
-    const board = kanbanDb.createBoard({ projectId, name: 'Board' });
+    const board = kanbanDb.createBoard({ name: 'Board' });
     const task = kanbanDb.createTask({
       boardId: board.board_id,
       projectId,
@@ -229,7 +229,6 @@ test('review brief carries the implementation output tail', async () => {
 test('board without review/done columns still runs review and finishes in place', async () => {
   await withFlow(async (projectId) => {
     const board = kanbanDb.createBoard({
-      projectId,
       name: 'Custom',
       columns: [
         { id: 'todo_col', name: 'To Do', order: 0 },
@@ -273,7 +272,7 @@ test('exitCode 0 without success flag still counts as success', async () => {
       },
     });
 
-    const board = kanbanDb.createBoard({ projectId, name: 'Board' });
+    const board = kanbanDb.createBoard({ name: 'Board' });
     const task = kanbanDb.createTask({
       boardId: board.board_id,
       projectId,

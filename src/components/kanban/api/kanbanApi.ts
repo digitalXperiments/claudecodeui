@@ -19,12 +19,7 @@ function normalizeBoard(board: KanbanBoard): KanbanBoard {
   return {
     ...board,
     columns: Array.isArray(board?.columns) ? board.columns : [],
-    scope: board?.scope === 'global' ? 'global' : 'project',
   };
-}
-
-function normalizeBoards(boards: KanbanBoard[] | undefined): KanbanBoard[] {
-  return Array.isArray(boards) ? boards.map(normalizeBoard) : [];
 }
 
 function normalizeTask(task: KanbanTask): KanbanTask {
@@ -77,21 +72,6 @@ export type TaskPatch = {
 };
 
 export const kanbanApi = {
-  async listBoards(projectId: string): Promise<KanbanBoard[]> {
-    const res = await authenticatedFetch(`${BASE}/boards?projectId=${encodeURIComponent(projectId)}`);
-    const data = await parse<{ boards?: KanbanBoard[] }>(res);
-    return normalizeBoards(data.boards);
-  },
-
-  async createBoard(projectId: string, name: string, columns?: KanbanColumn[]): Promise<KanbanBoard> {
-    const res = await authenticatedFetch(`${BASE}/boards`, {
-      method: 'POST',
-      body: JSON.stringify({ projectId, name, columns }),
-    });
-    const data = await parse<{ board: KanbanBoard }>(res);
-    return normalizeBoard(data.board);
-  },
-
   async getBoard(boardId: string): Promise<{ board: KanbanBoard; tasks: KanbanTask[] }> {
     const res = await authenticatedFetch(`${BASE}/boards/${boardId}`);
     const data = await parse<{ board: KanbanBoard; tasks?: KanbanTask[] }>(res);
@@ -128,14 +108,9 @@ export const kanbanApi = {
     return normalizeBoard(data.board);
   },
 
-  async deleteBoard(boardId: string): Promise<void> {
-    const res = await authenticatedFetch(`${BASE}/boards/${boardId}`, { method: 'DELETE' });
-    await parse(res);
-  },
-
   async createTask(input: {
     boardId: string;
-    projectId?: string;
+    projectId: string;
     title: string;
     description?: string;
     prompt?: string;

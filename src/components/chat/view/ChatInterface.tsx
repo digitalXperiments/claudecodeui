@@ -86,6 +86,8 @@ function ChatInterface({
     setKimiModel,
     agyModel,
     setAgyModel,
+    piModel,
+    setPiModel,
     permissionMode,
     pendingPermissionRequests,
     setPendingPermissionRequests,
@@ -222,6 +224,7 @@ function ChatInterface({
     grokModel,
     kimiModel,
     agyModel,
+    piModel,
     isLoading: isProcessing,
     canAbortSession,
     tokenBudget,
@@ -326,6 +329,7 @@ function ChatInterface({
       grok: grokModel,
       kimi: kimiModel,
       agy: agyModel,
+      pi: piModel,
     }[provider];
     const option = providerModelCatalog[provider]?.OPTIONS.find((o) => o.value === currentModel);
     return option?.label || currentModel || t('input.model', { defaultValue: 'Model' });
@@ -338,6 +342,7 @@ function ChatInterface({
     grokModel,
     kimiModel,
     agyModel,
+    piModel,
     providerModelCatalog,
     t,
   ]);
@@ -396,6 +401,8 @@ function ChatInterface({
           setKimiModel={setKimiModel}
           agyModel={agyModel}
           setAgyModel={setAgyModel}
+          piModel={piModel}
+          setPiModel={setPiModel}
           providerModelCatalog={providerModelCatalog}
           providerModelsLoading={providerModelsLoading}
           tasksEnabled={tasksEnabled}
@@ -512,7 +519,9 @@ function ChatInterface({
                         ? t('messageTypes.kimi', { defaultValue: 'Kimi' })
                         : provider === 'agy'
                           ? t('messageTypes.agy', { defaultValue: 'Antigravity' })
-                          : t('messageTypes.claude'),
+                          : provider === 'pi'
+                            ? t('messageTypes.pi', { defaultValue: 'Pi' })
+                            : t('messageTypes.claude'),
           })}
           isTextareaExpanded={isTextareaExpanded}
           sendByCtrlEnter={sendByCtrlEnter}

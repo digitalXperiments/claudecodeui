@@ -56,6 +56,7 @@ const PROVIDER_NAMES: Record<SkillsProvider, string> = {
   grok: 'Grok',
   kimi: 'Kimi',
   agy: 'Antigravity',
+  pi: 'Pi',
 };
 
 const createProjectTargets = (projects: SkillsProject[]): ProjectTarget[] => {

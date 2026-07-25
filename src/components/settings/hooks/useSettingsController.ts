@@ -12,6 +12,7 @@ import {
 import type {
   AgentProvider,
   AgyPermissionMode,
+  PiPermissionMode,
   ClaudePermissionsState,
   CodeEditorSettingsState,
   CodexPermissionMode,
@@ -57,6 +58,10 @@ type CodexSettingsStorage = {
 
 type AgySettingsStorage = {
   permissionMode?: AgyPermissionMode;
+};
+
+type PiSettingsStorage = {
+  permissionMode?: PiPermissionMode;
 };
 
 type NotificationPreferencesResponse = {
@@ -112,6 +117,14 @@ const toCodexPermissionMode = (value: unknown): CodexPermissionMode => {
 
 const toAgyPermissionMode = (value: unknown): AgyPermissionMode => {
   if (value === 'plan' || value === 'acceptEdits') {
+    return value;
+  }
+
+  return 'bypassPermissions';
+};
+
+const toPiPermissionMode = (value: unknown): PiPermissionMode => {
+  if (value === 'plan') {
     return value;
   }
 
@@ -200,6 +213,7 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
   ));
   const [codexPermissionMode, setCodexPermissionMode] = useState<CodexPermissionMode>('default');
   const [agyPermissionMode, setAgyPermissionMode] = useState<AgyPermissionMode>('bypassPermissions');
+  const [piPermissionMode, setPiPermissionMode] = useState<PiPermissionMode>('bypassPermissions');
 
   const [showLoginModal, setShowLoginModal] = useState(false);
   const [loginProvider, setLoginProvider] = useState<ActiveLoginProvider>('');
@@ -254,6 +268,12 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
       );
       setAgyPermissionMode(toAgyPermissionMode(savedAgySettings.permissionMode));
 
+      const savedPiSettings = parseJson<PiSettingsStorage>(
+        localStorage.getItem('pi-tools-settings'),
+        {},
+      );
+      setPiPermissionMode(toPiPermissionMode(savedPiSettings.permissionMode));
+
       try {
         const notificationResponse = await authenticatedFetch('/api/settings/notification-preferences');
         if (notificationResponse.ok) {
@@ -278,6 +298,7 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
       setNotificationPreferences(createDefaultNotificationPreferences());
       setCodexPermissionMode('default');
       setAgyPermissionMode('bypassPermissions');
+      setPiPermissionMode('bypassPermissions');
       setProjectSortOrder('name');
     }
   }, []);
@@ -340,6 +361,11 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
         lastUpdated: now,
       }));
 
+      localStorage.setItem('pi-tools-settings', JSON.stringify({
+        permissionMode: piPermissionMode,
+        lastUpdated: now,
+      }));
+
       const notificationResponse = await authenticatedFetch('/api/settings/notification-preferences', {
         method: 'PUT',
         body: JSON.stringify(notificationPreferences),
@@ -359,6 +385,7 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
     claudePermissions.skipPermissions,
     codexPermissionMode,
     agyPermissionMode,
+    piPermissionMode,
     cursorPermissions.allowedCommands,
     cursorPermissions.disallowedCommands,
     cursorPermissions.skipPermissions,
@@ -474,6 +501,8 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
     setCodexPermissionMode,
     agyPermissionMode,
     setAgyPermissionMode,
+    piPermissionMode,
+    setPiPermissionMode,
     providerAuthStatus,
     openLoginForProvider,
     showLoginModal,

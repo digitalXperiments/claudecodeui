@@ -836,6 +836,98 @@ type AgyPermissionsProps = {
   onPermissionModeChange: (value: AgyPermissionMode) => void;
 };
 
+type PiPermissionsProps = {
+  agent: 'pi';
+  permissionMode: import('../../../../../types/types').PiPermissionMode;
+  onPermissionModeChange: (value: import('../../../../../types/types').PiPermissionMode) => void;
+};
+
+function PiPermissions({
+  permissionMode,
+  onPermissionModeChange,
+}: Omit<PiPermissionsProps, 'agent'>) {
+  const { t } = useTranslation('settings');
+
+  return (
+    <div className="space-y-6">
+      <div className="space-y-4">
+        <div className="flex items-center gap-3">
+          <Shield className="h-5 w-5 text-violet-500" />
+          <h3 className="text-lg font-medium text-foreground">
+            {t('permissions.pi.permissionMode', { defaultValue: 'Permission Mode' })}
+          </h3>
+        </div>
+        <p className="text-sm text-muted-foreground">
+          {t('permissions.pi.description', {
+            defaultValue:
+              'Pi has no built-in permission popups. Plan mode restricts tools to read-only; full mode enables read/write/edit/bash.',
+          })}
+        </p>
+
+        <div
+          className={`cursor-pointer rounded-lg border p-4 transition-all ${
+            permissionMode === 'plan'
+              ? 'border-violet-400 bg-violet-50 dark:border-violet-600 dark:bg-violet-900/20'
+              : 'border-border bg-card/50 active:border-border active:bg-accent/50'
+          }`}
+          onClick={() => onPermissionModeChange('plan')}
+        >
+          <label className="flex cursor-pointer items-start gap-3">
+            <input
+              type="radio"
+              name="piPermissionMode"
+              checked={permissionMode === 'plan'}
+              onChange={() => onPermissionModeChange('plan')}
+              className="mt-1 h-4 w-4 text-violet-600"
+            />
+            <div>
+              <div className="font-medium text-violet-900 dark:text-violet-100">
+                {t('permissions.pi.modes.plan.title', { defaultValue: 'Plan (read-only)' })}
+              </div>
+              <div className="text-sm text-violet-700 dark:text-violet-300">
+                {t('permissions.pi.modes.plan.description', {
+                  defaultValue: 'Only read, grep, find, and ls tools (--tools read,grep,find,ls).',
+                })}
+              </div>
+            </div>
+          </label>
+        </div>
+
+        <div
+          className={`cursor-pointer rounded-lg border p-4 transition-all ${
+            permissionMode === 'bypassPermissions'
+              ? 'border-orange-400 bg-orange-50 dark:border-orange-600 dark:bg-orange-900/20'
+              : 'border-border bg-card/50 active:border-border active:bg-accent/50'
+          }`}
+          onClick={() => onPermissionModeChange('bypassPermissions')}
+        >
+          <label className="flex cursor-pointer items-start gap-3">
+            <input
+              type="radio"
+              name="piPermissionMode"
+              checked={permissionMode === 'bypassPermissions'}
+              onChange={() => onPermissionModeChange('bypassPermissions')}
+              className="mt-1 h-4 w-4 text-orange-600"
+            />
+            <div>
+              <div className="flex items-center gap-2 font-medium text-orange-900 dark:text-orange-100">
+                {t('permissions.pi.modes.bypassPermissions.title', { defaultValue: 'Full tools' })}
+                <AlertTriangle className="h-4 w-4" />
+              </div>
+              <div className="text-sm text-orange-700 dark:text-orange-300">
+                {t('permissions.pi.modes.bypassPermissions.description', {
+                  defaultValue:
+                    'All built-in tools (read, write, edit, bash, …). Recommended for coding sessions.',
+                })}
+              </div>
+            </div>
+          </label>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function AgyPermissions({ permissionMode, onPermissionModeChange }: Omit<AgyPermissionsProps, 'agent'>) {
   const { t } = useTranslation('settings');
 
@@ -931,7 +1023,13 @@ function AgyPermissions({ permissionMode, onPermissionModeChange }: Omit<AgyPerm
   );
 }
 
-type PermissionsContentProps = ClaudePermissionsProps | CursorPermissionsProps | GrokPermissionsProps | CodexPermissionsProps | AgyPermissionsProps;
+type PermissionsContentProps =
+  | ClaudePermissionsProps
+  | CursorPermissionsProps
+  | GrokPermissionsProps
+  | CodexPermissionsProps
+  | AgyPermissionsProps
+  | PiPermissionsProps;
 
 export default function PermissionsContent(props: PermissionsContentProps) {
   if (props.agent === 'claude') {
@@ -948,6 +1046,10 @@ export default function PermissionsContent(props: PermissionsContentProps) {
 
   if (props.agent === 'agy') {
     return <AgyPermissions {...props} />;
+  }
+
+  if (props.agent === 'pi') {
+    return <PiPermissions {...props} />;
   }
 
   return <CodexPermissions {...props} />;

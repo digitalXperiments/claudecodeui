@@ -66,6 +66,7 @@ const PROVIDER_LABELS: Record<string, string> = {
   grok: 'Grok',
   kimi: 'Kimi',
   agy: 'Antigravity',
+  pi: 'Pi',
 };
 
 const FALLBACK_COMMANDS: CommandEntry[] = [

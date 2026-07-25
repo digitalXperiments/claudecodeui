@@ -8,6 +8,7 @@ export const MC_PROVIDERS = [
   'grok',
   'kimi',
   'agy',
+  'pi',
 ] as const satisfies readonly LLMProvider[];
 
 export type McProvider = (typeof MC_PROVIDERS)[number];
@@ -38,10 +39,28 @@ export type McAction = {
   terminal?: boolean;
 };
 
+/** Always offered on items so a re-run can free the dedupe key. */
+export const MC_DELETE_ACTION: McAction = {
+  id: 'delete',
+  label: 'Delete',
+  kind: 'delete',
+  style: 'destructive',
+  terminal: true,
+};
+
 export const DEFAULT_MC_ACTIONS: McAction[] = [
   { id: 'approve', label: 'Approve', kind: 'approve', style: 'primary', terminal: true },
-  { id: 'deny', label: 'Deny', kind: 'dismiss', style: 'destructive', terminal: true },
+  { id: 'deny', label: 'Deny', kind: 'dismiss', style: 'secondary', terminal: true },
+  MC_DELETE_ACTION,
 ];
+
+/** Ensure the system Delete action is present (older items / custom action lists). */
+export function withSystemItemActions(actions: McAction[]): McAction[] {
+  if (actions.some((a) => a.id === 'delete' || a.kind === 'delete')) {
+    return actions;
+  }
+  return [...actions, MC_DELETE_ACTION];
+}
 
 export type McSection = {
   section_id: string;
@@ -63,6 +82,12 @@ export type McSection = {
   resolve_prompt: string;
   resolve_tools: string[];
   actions: McAction[];
+  /** On approve, also create a card on the global kanban backlog. */
+  create_kanban_task: boolean;
+  /** Default implementation agent pre-assigned to bridged kanban cards. */
+  kanban_assignee_provider: McProvider | null;
+  /** Default review agent pre-assigned to bridged kanban cards. */
+  kanban_review_provider: McProvider | null;
   last_run_at: string | null;
   last_run_error: string | null;
   created_at: string;
@@ -108,6 +133,9 @@ export type CreateMcSectionInput = {
   resolve_prompt?: string;
   resolve_tools?: string[];
   actions?: McAction[];
+  create_kanban_task?: boolean;
+  kanban_assignee_provider?: McProvider | null;
+  kanban_review_provider?: McProvider | null;
 };
 
 export type UpdateMcSectionInput = Partial<CreateMcSectionInput>;

@@ -53,6 +53,7 @@ const PROVIDER_NAMES: Record<SkillsProvider, string> = {
   grok: 'Grok Build',
   kimi: 'Kimi',
   agy: 'Antigravity',
+  pi: 'Pi',
 };
 
 const PROVIDER_SKILL_PATHS: Record<Exclude<SkillsProvider, 'opencode'>, string> = {
@@ -62,6 +63,7 @@ const PROVIDER_SKILL_PATHS: Record<Exclude<SkillsProvider, 'opencode'>, string> 
   grok: '~/.grok/skills/<skill-name>/SKILL.md',
   kimi: '~/.kimi-code/skills/<skill-name>/SKILL.md',
   agy: '~/.gemini/antigravity-cli/skills/<skill-name>/SKILL.md',
+  pi: '~/.pi/agent/skills/<skill-name>/SKILL.md',
 };
 
 const SCOPE_LABELS: Record<SkillsScope, string> = {

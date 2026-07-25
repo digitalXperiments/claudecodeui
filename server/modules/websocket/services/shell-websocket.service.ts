@@ -6,6 +6,7 @@ import pty, { type IPty } from 'node-pty';
 import { WebSocket, type RawData } from 'ws';
 
 import { parseIncomingJsonObject } from '@/shared/utils.js';
+import { ensureManagedGrokHome } from '@/shared/grok-home.js';
 
 type ShellIncomingMessage = {
   type?: string;
@@ -130,7 +131,10 @@ function shellSingleQuote(value: string): string {
  * reconnecting to a live Grok TUI after wiping the client leaves a blank frame.
  */
 function buildGrokShellCommand(resumeSessionId: string, projectPath: string): string {
-  const managedHome = path.join(os.homedir(), '.cloudcli', 'grok-runtime', 'auto');
+  // Resolve via ensureManagedGrokHome so the credential sync (newest-wins
+  // across real ~/.grok and all managed homes) runs before the TUI starts —
+  // otherwise the shell tab keeps using a stale, rotated-out token.
+  const managedHome = ensureManagedGrokHome('auto');
   const resolvedCwd = projectPath ? path.resolve(projectPath) : '';
   // Fullscreen alt-screen is what Grok's TUI expects; xterm.js handles it when
   // we don't mix in plain-text dumps or half-reconnects.
@@ -218,6 +222,13 @@ function buildShellCommand(
       return `agy --conversation "${resumeSessionId}"`;
     }
     return 'agy';
+  }
+
+  if (provider === 'pi') {
+    if (resumeSessionId) {
+      return `pi --session "${resumeSessionId}"`;
+    }
+    return 'pi';
   }
 
   const command = initialCommand || 'claude';
@@ -554,7 +565,9 @@ export function handleShellConnection(
                       ? 'Kimi'
                       : provider === 'agy'
                         ? 'Antigravity'
-                        : 'Claude';
+                        : provider === 'pi'
+                          ? 'Pi'
+                          : 'Claude';
           welcomeMsg = hasSession && resumeSessionId
             ? provider === 'grok'
               ? `\x1b[36mResuming ${providerName} session ${resumeSessionId} in: ${projectPath}\x1b[0m\r\n` +

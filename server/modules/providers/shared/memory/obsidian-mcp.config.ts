@@ -22,7 +22,7 @@ export const buildObsidianMcpServerInput = (
   name: OBSIDIAN_MCP_SERVER_NAME,
   transport: 'stdio',
   command: 'npx',
-  args: ['-y', '@fazer-ai/mcp-obsidian@latest'],
+  args: ['-y', '@fazer-ai/mcp-obsidian@1.2.0'],
   env: {
     OBSIDIAN_API_KEY: settings.restApiKey,
     OBSIDIAN_PROTOCOL: settings.restProtocol,

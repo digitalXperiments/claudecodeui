@@ -32,6 +32,7 @@ const PROVIDER_META: { id: LLMProvider; name: string }[] = [
   { id: "grok", name: "xAI" },
   { id: "kimi", name: "Moonshot AI" },
   { id: "agy", name: "Google Antigravity" },
+  { id: "pi", name: "Pi" },
 ];
 
 const MOD_KEY =
@@ -68,6 +69,8 @@ type ProviderSelectionEmptyStateProps = {
   setKimiModel: (model: string) => void;
   agyModel: string;
   setAgyModel: (model: string) => void;
+  piModel: string;
+  setPiModel: (model: string) => void;
   providerModelCatalog: Partial<Record<LLMProvider, ProviderModelsDefinition>>;
   providerModelsLoading: boolean;
   tasksEnabled: boolean;
@@ -99,6 +102,7 @@ function getCurrentModel(
   g: string,
   k: string,
   a: string,
+  pi: string,
 ) {
   if (p === "claude") return c;
   if (p === "codex") return co;
@@ -106,6 +110,7 @@ function getCurrentModel(
   if (p === "grok") return g;
   if (p === "kimi") return k;
   if (p === "agy") return a;
+  if (p === "pi") return pi;
   return cu;
 }
 
@@ -117,6 +122,7 @@ function getProviderDisplayName(p: LLMProvider) {
   if (p === "grok") return "Grok Build";
   if (p === "kimi") return "Kimi";
   if (p === "agy") return "Antigravity";
+  if (p === "pi") return "Pi";
   return "Claude";
 }
 
@@ -140,6 +146,8 @@ export default function ProviderSelectionEmptyState({
   setKimiModel,
   agyModel,
   setAgyModel,
+  piModel,
+  setPiModel,
   providerModelCatalog,
   providerModelsLoading,
   tasksEnabled,
@@ -172,6 +180,7 @@ export default function ProviderSelectionEmptyState({
     grokModel,
     kimiModel,
     agyModel,
+    piModel,
   );
 
   const currentModelLabel = useMemo(() => {
@@ -199,12 +208,18 @@ export default function ProviderSelectionEmptyState({
       } else if (providerId === "agy") {
         setAgyModel(modelValue);
         localStorage.setItem("agy-model", modelValue);
+      } else if (providerId === "pi") {
+        setPiModel(modelValue);
+        localStorage.setItem("pi-model", modelValue);
+      } else if (providerId === "grok") {
+        setGrokModel(modelValue);
+        localStorage.setItem("grok-model", modelValue);
       } else {
         setCursorModel(modelValue);
         localStorage.setItem("cursor-model", modelValue);
       }
     },
-    [setClaudeModel, setCursorModel, setCodexModel, setOpenCodeModel, setKimiModel, setAgyModel],
+    [setClaudeModel, setCursorModel, setCodexModel, setOpenCodeModel, setKimiModel, setAgyModel, setPiModel, setGrokModel],
   );
 
   const handleModelSelect = useCallback(
@@ -362,6 +377,10 @@ export default function ProviderSelectionEmptyState({
                 agy: t("providerSelection.readyPrompt.agy", {
                   model: agyModel,
                   defaultValue: "Ready with Antigravity {{model}}",
+                }),
+                pi: t("providerSelection.readyPrompt.pi", {
+                  model: piModel,
+                  defaultValue: "Ready with Pi {{model}}",
                 }),
               }[provider]
             }

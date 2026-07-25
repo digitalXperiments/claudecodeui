@@ -1,5 +1,5 @@
 import { useTranslation } from 'react-i18next';
-import { DarkModeToggle } from '../../../../shared/view/ui';
+import { useTheme } from '../../../../contexts/ThemeContext';
 import type { CodeEditorSettingsState, ProjectSortOrder } from '../../types/types';
 import LanguageSelector from '../../../../shared/view/ui/LanguageSelector';
 import SettingsCard from '../SettingsCard';
@@ -27,16 +27,29 @@ export default function AppearanceSettingsTab({
   onCodeEditorFontSizeChange,
 }: AppearanceSettingsTabProps) {
   const { t } = useTranslation('settings');
+  const { themeMode, setThemeMode } = useTheme() as {
+    themeMode: string;
+    setThemeMode: (mode: string) => void;
+  };
 
   return (
     <div className="space-y-8">
-      <SettingsSection title={t('appearanceSettings.darkMode.label')}>
+      <SettingsSection title={t('appearanceSettings.theme.label')}>
         <SettingsCard>
           <SettingsRow
-            label={t('appearanceSettings.darkMode.label')}
-            description={t('appearanceSettings.darkMode.description')}
+            label={t('appearanceSettings.theme.label')}
+            description={t('appearanceSettings.theme.description')}
           >
-            <DarkModeToggle ariaLabel={t('appearanceSettings.darkMode.label')} />
+            <select
+              value={themeMode}
+              onChange={(event) => setThemeMode(event.target.value)}
+              aria-label={t('appearanceSettings.theme.label')}
+              className="w-full rounded-lg border border-input bg-card p-2.5 text-sm text-foreground touch-manipulation focus:border-primary focus:ring-1 focus:ring-primary sm:w-36"
+            >
+              <option value="light">{t('appearanceSettings.theme.light')}</option>
+              <option value="dark">{t('appearanceSettings.theme.dark')}</option>
+              <option value="system">{t('appearanceSettings.theme.system')}</option>
+            </select>
           </SettingsRow>
         </SettingsCard>
       </SettingsSection>

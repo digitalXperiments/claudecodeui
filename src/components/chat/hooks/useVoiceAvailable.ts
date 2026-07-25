@@ -1,21 +1,37 @@
 import { useEffect, useState } from 'react';
 
 import { authenticatedFetch } from '../../../utils/api';
-import { readVoiceConfig, VOICE_CONFIG_SYNC_EVENT } from '../../../hooks/useVoiceConfig';
+import {
+  browserSpeechSupported,
+  readVoiceConfig,
+  VOICE_CONFIG_SYNC_EVENT,
+} from '../../../hooks/useVoiceConfig';
 
 // Voice UI is gated on the `voiceEnabled` UI preference (toggled in Quick Settings /
-// the Settings modal) and a configured voice backend.
+// the Settings modal) and a usable STT path (on-device, API, browser speech, or custom base URL).
 const STORAGE_KEY = 'uiPreferences';
 const SYNC_EVENT = 'ui-preferences:sync';
-let healthRequest: Promise<boolean> | null = null;
+let healthRequest: Promise<HealthSnapshot> | null = null;
 
-function checkVoiceHealth(): Promise<boolean> {
+type HealthSnapshot = {
+  configured: boolean;
+  localStt: boolean;
+  api: boolean;
+  tts: boolean;
+};
+
+function checkVoiceHealth(): Promise<HealthSnapshot> {
   if (healthRequest) return healthRequest;
   const request = authenticatedFetch('/api/voice/health')
     .then(async (response) => {
       if (!response.ok) throw new Error(`Voice health check failed (${response.status})`);
       const data = await response.json();
-      return data?.configured === true;
+      return {
+        configured: data?.configured === true,
+        localStt: data?.localStt?.available === true,
+        api: data?.api === true,
+        tts: data?.tts === true || data?.api === true,
+      };
     })
     .finally(() => {
       healthRequest = null;
@@ -33,6 +49,18 @@ function readVoiceEnabled(): boolean {
   } catch {
     return false;
   }
+}
+
+function sttAvailableFromConfigAndHealth(health: HealthSnapshot | null): boolean {
+  const config = readVoiceConfig();
+  if (config.baseUrl.trim()) return true;
+  if (config.sttProvider === 'browser') return browserSpeechSupported();
+  if (config.sttProvider === 'local') return health?.localStt === true;
+  if (config.sttProvider === 'api') return health?.api === true || Boolean(config.baseUrl.trim());
+  // auto
+  if (health?.configured) return true;
+  if (browserSpeechSupported()) return true;
+  return false;
 }
 
 export function useVoiceAvailable(): boolean {
@@ -60,16 +88,30 @@ export function useVoiceAvailable(): boolean {
         setAvailable(false);
         return;
       }
-      if (readVoiceConfig().baseUrl.trim()) {
+      const config = readVoiceConfig();
+      if (config.baseUrl.trim()) {
+        setAvailable(true);
+        return;
+      }
+      if (config.sttProvider === 'browser' && browserSpeechSupported()) {
         setAvailable(true);
         return;
       }
       const id = ++requestId;
       try {
-        const result = await checkVoiceHealth();
-        if (active && id === requestId) setAvailable(result);
+        const health = await checkVoiceHealth();
+        if (active && id === requestId) {
+          setAvailable(sttAvailableFromConfigAndHealth(health));
+        }
       } catch {
-        if (active && id === requestId) setAvailable(false);
+        if (active && id === requestId) {
+          // Offline health: still allow browser speech in auto/browser mode.
+          setAvailable(
+            config.sttProvider === 'browser' || config.sttProvider === 'auto'
+              ? browserSpeechSupported()
+              : false,
+          );
+        }
       }
     };
 

@@ -324,6 +324,10 @@ CREATE TABLE IF NOT EXISTS mc_sections (
     resolve_prompt      TEXT DEFAULT '',
     resolve_tools_json  TEXT DEFAULT '[]',
     actions_json        TEXT DEFAULT '[]',
+    -- Bridge: on approve, also create a card on the global kanban backlog.
+    create_kanban_task        INTEGER DEFAULT 0,
+    kanban_assignee_provider  TEXT,   -- default implementation agent for bridged cards
+    kanban_review_provider    TEXT,   -- default review agent for bridged cards
     last_run_at         DATETIME,
     last_run_error      TEXT,
     created_at          DATETIME DEFAULT CURRENT_TIMESTAMP,

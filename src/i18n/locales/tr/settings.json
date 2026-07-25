@@ -123,9 +123,12 @@
     }
   },
   "appearanceSettings": {
-    "darkMode": {
-      "label": "Koyu Mod",
-      "description": "Açık ve koyu temalar arasında geçiş yap"
+    "theme": {
+      "label": "Tema",
+      "description": "Açık veya koyu tema seçin ya da sistem ayarını izleyin",
+      "light": "Açık",
+      "dark": "Koyu",
+      "system": "Sistem"
     },
     "projectSorting": {
       "label": "Proje Sıralama",

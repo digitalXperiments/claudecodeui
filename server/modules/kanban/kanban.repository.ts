@@ -66,15 +66,17 @@ function mapRun(row: KanbanRunRow): KanbanRunRow {
 
 export const kanbanDb = {
   // --- Boards -------------------------------------------------------------
+  // Boards are global-only: there is a single cross-project board and tasks
+  // carry their own `project_id`. `scope` is still written for legacy schema
+  // compatibility but is always 'global'.
   createBoard(input: CreateBoardInput): KanbanBoard {
     const db = getConnection();
     const boardId = randomUUID();
     const columns = input.columns && input.columns.length > 0 ? input.columns : DEFAULT_COLUMNS;
-    const scope = input.scope ?? 'project';
     db.prepare(
       `INSERT INTO kanban_boards (board_id, project_id, name, columns_json, scope)
-       VALUES (?, ?, ?, ?, ?)`,
-    ).run(boardId, input.projectId, input.name, JSON.stringify(columns), scope);
+       VALUES (?, NULL, ?, ?, 'global')`,
+    ).run(boardId, input.name, JSON.stringify(columns));
     return kanbanDb.getBoard(boardId)!;
   },
 
@@ -87,7 +89,7 @@ export const kanbanDb = {
     if (row) {
       return mapBoard(row);
     }
-    return kanbanDb.createBoard({ projectId: null, name: 'Global', scope: 'global' });
+    return kanbanDb.createBoard({ name: 'Global' });
   },
 
   getBoard(boardId: string): KanbanBoard | null {
@@ -96,14 +98,6 @@ export const kanbanDb = {
       .prepare(`SELECT * FROM kanban_boards WHERE board_id = ?`)
       .get(boardId) as KanbanBoardRow | undefined;
     return row ? mapBoard(row) : null;
-  },
-
-  listBoardsByProject(projectId: string): KanbanBoard[] {
-    const db = getConnection();
-    const rows = db
-      .prepare(`SELECT * FROM kanban_boards WHERE project_id = ? ORDER BY created_at ASC`)
-      .all(projectId) as KanbanBoardRow[];
-    return rows.map(mapBoard);
   },
 
   updateBoard(boardId: string, patch: { name?: string; columns?: KanbanColumn[] }): KanbanBoard | null {

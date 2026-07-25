@@ -12,7 +12,7 @@ Checking MCP server health…
 
 claude.ai Superhuman Docs: https://docs.superhuman.com/apis/mcp - ! Needs authentication
 claude.ai Slack: https://mcp.slack.com/mcp - ✔ Connected
-obsidian: npx -y @fazer-ai/mcp-obsidian@latest - ✔ Connected
+obsidian: npx -y @fazer-ai/mcp-obsidian@1.2.0 - ✔ Connected
 cloudcli-browser: /usr/bin/node /path/to/browser-use-mcp.js - ✔ Connected
 leong-associates-mcp: https://example.com/mcp (HTTP) - ✔ Connected
 `;
@@ -39,7 +39,7 @@ test('parseCliMcpListOutput parses grok project marker', () => {
   const raw = `
   Composio: https://connect.composio.dev/mcp
   x-mcp: npx -y @xdevplatform/xurl mcp https://api.x.com/mcp
-  obsidian: npx -y @fazer-ai/mcp-obsidian@latest (project)
+  obsidian: npx -y @fazer-ai/mcp-obsidian@1.2.0 (project)
 `;
   const entries = parseCliMcpListOutput(raw);
   assert.equal(entries.length, 3);
@@ -57,12 +57,12 @@ test('mergeCliMcpEntries prefers existing file config', () => {
       scope: 'user' as const,
       transport: 'stdio' as const,
       command: 'npx',
-      args: ['-y', '@fazer-ai/mcp-obsidian@latest'],
+      args: ['-y', '@fazer-ai/mcp-obsidian@1.2.0'],
       env: { OBSIDIAN_API_KEY: 'secret' },
     },
   ];
   const cli = parseCliMcpListOutput(`
-obsidian: npx -y @fazer-ai/mcp-obsidian@latest - ✔ Connected
+obsidian: npx -y @fazer-ai/mcp-obsidian@1.2.0 - ✔ Connected
 claude.ai Slack: https://mcp.slack.com/mcp - ✔ Connected
 `);
   const merged = mergeCliMcpEntries('claude', 'user', existing, cli);

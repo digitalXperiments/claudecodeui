@@ -65,7 +65,7 @@ export type AuthenticatedWebSocketRequest = IncomingMessage & {
  * Use this as the source of truth whenever a function or payload needs to identify
  * a specific LLM integration.
  */
-export type LLMProvider = 'claude' | 'codex' | 'cursor' | 'opencode' | 'grok' | 'kimi' | 'agy';
+export type LLMProvider = 'claude' | 'codex' | 'cursor' | 'opencode' | 'grok' | 'kimi' | 'agy' | 'pi';
 
 /**
  * One selectable model row in a provider model catalog.
@@ -396,11 +396,16 @@ export type ProjectSkillRemoveInput = {
 
 /**
  * Input for installing one or more cross-agent global skills. Each entry is
- * fanned out into every agent's user-scope skill directory so the skill applies
- * to every project on this machine.
+ * fanned out according to `scope`: `all` installs into every agent's user-scope
+ * skill directory; `projects` installs only into the given workspaces' project-
+ * scope skill directories.
  */
 export type GlobalSkillCreateInput = {
   entries: ProviderSkillCreateEntry[];
+  /** Defaults to `all`. */
+  scope?: GlobalSkillScope;
+  /** Required and non-empty when scope is `projects`. */
+  projects?: string[];
 };
 
 export type GlobalSkillRemoveInput = {
@@ -441,6 +446,13 @@ export type GlobalSkillContentUpdateInput = GlobalSkillContentInput & {
  * memory template, and `unsupported` listing agents that have no writable
  * user-scope skill directory.
  */
+/**
+ * Where a global skill applies: `all` fans out to every agent's user-scope
+ * skill folder (every project); `projects` fans out only to the selected
+ * workspaces' project-scope skill folders.
+ */
+export type GlobalSkillScope = 'all' | 'projects';
+
 export type GlobalSkill = {
   name: string;
   description: string;
@@ -450,6 +462,16 @@ export type GlobalSkill = {
   conflicts: LLMProvider[];
   unsupported: LLMProvider[];
   kind?: 'memory-template';
+  scope: GlobalSkillScope;
+  /** Resolved workspace paths the skill is scoped to when scope is `projects`. */
+  projects: string[];
+};
+
+export type GlobalSkillScopeUpdateInput = {
+  directoryName: string;
+  scope: GlobalSkillScope;
+  /** Workspace paths; required and non-empty when scope is `projects`. */
+  projects?: string[];
 };
 
 /**

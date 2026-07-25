@@ -21,9 +21,11 @@ import {
   Input,
 } from '../../../shared/view/ui';
 import { useGlobalSkills } from '../hooks/useGlobalSkills';
+import { useProjectsOptions } from '../hooks/useProjectsOptions';
 import type { GlobalSkill, SkillsProvider } from '../types';
 
 import SkillEditorDialog from './SkillEditorDialog';
+import SkillScopeControl from './SkillScopeControl';
 import SkillUploadDialog from './SkillUploadDialog';
 
 const PROVIDER_NAMES: Record<SkillsProvider, string> = {
@@ -34,6 +36,7 @@ const PROVIDER_NAMES: Record<SkillsProvider, string> = {
   grok: 'Grok',
   kimi: 'Kimi',
   agy: 'Antigravity',
+  pi: 'Pi',
 };
 
 const providerLabel = (provider: SkillsProvider): string => PROVIDER_NAMES[provider] ?? provider;
@@ -53,8 +56,10 @@ export default function GlobalSkills() {
     removeSkill,
     getSkillContent,
     saveSkillContent,
+    setSkillScope,
     refreshSkills,
   } = useGlobalSkills();
+  const { projects: projectOptions, isLoading: projectsLoading } = useProjectsOptions();
 
   const [searchQuery, setSearchQuery] = useState('');
   const [isUploadOpen, setIsUploadOpen] = useState(false);
@@ -106,8 +111,7 @@ export default function GlobalSkills() {
         <div className="min-w-0 space-y-1">
           <h3 className="text-lg font-medium text-foreground">Global Skills</h3>
           <p className="text-sm text-muted-foreground">
-            Author a skill once and install it into every agent&apos;s user skill folder, so it applies to all
-            projects on this machine.
+            Author a skill once, then apply it to every project or only to the projects you select.
           </p>
         </div>
       </div>
@@ -284,6 +288,17 @@ export default function GlobalSkills() {
                   ))}
                 </div>
               )}
+
+              {skill.kind !== 'memory-template' && (
+                <SkillScopeControl
+                  skill={skill}
+                  projects={projectOptions}
+                  projectsLoading={projectsLoading}
+                  onApplyScope={async (scope, projects) => {
+                    await setSkillScope(skill.directoryName, scope, projects);
+                  }}
+                />
+              )}
             </div>
           ))}
         </div>
@@ -292,12 +307,13 @@ export default function GlobalSkills() {
       <SkillUploadDialog
         open={isUploadOpen}
         onOpenChange={setIsUploadOpen}
-        onInstall={async (entries) => {
-          await addSkills(entries);
+        onInstall={async (entries, options) => {
+          await addSkills(entries, options);
           setJustInstalled(true);
         }}
+        allowScopeSelection
         title="Add Global Skill"
-        description="Upload a SKILL.md file or a complete skill folder. It installs into every agent's user skill folder and applies to all projects."
+        description="Upload a SKILL.md file or a complete skill folder. Choose whether it applies to all projects or only selected ones."
       />
 
       <SkillEditorDialog
@@ -307,8 +323,9 @@ export default function GlobalSkills() {
         skill={editorState?.skill ?? null}
         loadContent={getSkillContent}
         saveContent={saveSkillContent}
-        createSkill={async (entries) => {
-          await addSkills(entries);
+        allowScopeSelection
+        createSkill={async (entries, options) => {
+          await addSkills(entries, options);
           setJustInstalled(true);
         }}
       />

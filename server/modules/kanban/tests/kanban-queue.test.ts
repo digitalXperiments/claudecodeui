@@ -65,7 +65,7 @@ const neverComplete: Behavior = () => undefined;
 
 test('dependency cascade: finishing A enqueues and runs dependent B', async () => {
   await withQueue(completeSuccess, {}, (projectId) => {
-    const board = kanbanDb.createBoard({ projectId, name: 'Board' });
+    const board = kanbanDb.createBoard({ name: 'Board' });
     const a = kanbanDb.createTask({ boardId: board.board_id, projectId, title: 'A', assigneeProvider: 'claude' });
     const b = kanbanDb.createTask({ boardId: board.board_id, projectId, title: 'B', assigneeProvider: 'claude' });
     kanbanDb.addDependency(b.task_id, a.task_id); // B depends on A
@@ -80,7 +80,7 @@ test('dependency cascade: finishing A enqueues and runs dependent B', async () =
 
 test('dependency cascade does not fire until every dependency is done', async () => {
   await withQueue(completeSuccess, {}, (projectId) => {
-    const board = kanbanDb.createBoard({ projectId, name: 'Board' });
+    const board = kanbanDb.createBoard({ name: 'Board' });
     const a = kanbanDb.createTask({ boardId: board.board_id, projectId, title: 'A', assigneeProvider: 'claude' });
     const b = kanbanDb.createTask({ boardId: board.board_id, projectId, title: 'B', assigneeProvider: 'claude' });
     const c = kanbanDb.createTask({ boardId: board.board_id, projectId, title: 'C', assigneeProvider: 'claude' });
@@ -100,7 +100,7 @@ test('dependency cascade does not fire until every dependency is done', async ()
 
 test('concurrency cap bounds simultaneously running tasks', async () => {
   await withQueue(neverComplete, { concurrency: 2 }, (projectId) => {
-    const board = kanbanDb.createBoard({ projectId, name: 'Board' });
+    const board = kanbanDb.createBoard({ name: 'Board' });
     const ids = [1, 2, 3, 4].map(
       (n) =>
         kanbanDb.createTask({
@@ -123,7 +123,7 @@ test('concurrency cap bounds simultaneously running tasks', async () => {
 
 test('enqueue dedupes an already-queued task', async () => {
   await withQueue(neverComplete, { concurrency: 1 }, (projectId) => {
-    const board = kanbanDb.createBoard({ projectId, name: 'Board' });
+    const board = kanbanDb.createBoard({ name: 'Board' });
     const a = kanbanDb.createTask({ boardId: board.board_id, projectId, title: 'A', assigneeProvider: 'claude' });
     const b = kanbanDb.createTask({ boardId: board.board_id, projectId, title: 'B', assigneeProvider: 'claude' });
     enqueueTask(a.task_id, 'schedule'); // starts running (cap 1)

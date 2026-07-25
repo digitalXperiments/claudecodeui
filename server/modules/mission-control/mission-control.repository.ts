@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { getConnection } from '@/modules/database/index.js';
 import {
   DEFAULT_MC_ACTIONS,
+  withSystemItemActions,
   type CreateMcSectionInput,
   type McAction,
   type McItem,
@@ -35,6 +36,9 @@ type SectionRow = {
   resolve_prompt: string;
   resolve_tools_json: string;
   actions_json: string;
+  create_kanban_task: number | null;
+  kanban_assignee_provider: string | null;
+  kanban_review_provider: string | null;
   last_run_at: string | null;
   last_run_error: string | null;
   created_at: string;
@@ -127,6 +131,9 @@ function mapSection(row: SectionRow): McSection {
     resolve_prompt: row.resolve_prompt ?? '',
     resolve_tools: parseTools(row.resolve_tools_json),
     actions: parseActions(row.actions_json),
+    create_kanban_task: Boolean(row.create_kanban_task),
+    kanban_assignee_provider: (row.kanban_assignee_provider || null) as McProvider | null,
+    kanban_review_provider: (row.kanban_review_provider || null) as McProvider | null,
     last_run_at: row.last_run_at,
     last_run_error: row.last_run_error,
     created_at: row.created_at,
@@ -143,7 +150,7 @@ function mapItem(row: ItemRow): McItem {
     summary: row.summary ?? '',
     body: parseJsonObject(row.body_json),
     source: parseJsonObject(row.source_json),
-    actions: parseActions(row.actions_json),
+    actions: withSystemItemActions(parseActions(row.actions_json)),
     confidence: typeof row.confidence === 'number' ? row.confidence : 0,
     provider: row.provider ?? '',
     model: row.model ?? '',
@@ -202,12 +209,14 @@ export const missionControlDb = {
         section_id, title, icon, sort_order, enabled, scope, project_id, mode,
         schedule_cron, provider, model, permission_mode, dry_run, auto_approve,
         produce_prompt, produce_tools_json, resolve_prompt, resolve_tools_json,
-        actions_json, created_at, updated_at
+        actions_json, create_kanban_task, kanban_assignee_provider, kanban_review_provider,
+        created_at, updated_at
       ) VALUES (
         ?, ?, ?, ?, ?, ?, ?, ?,
         ?, ?, ?, ?, ?, ?,
         ?, ?, ?, ?,
-        ?, ?, ?
+        ?, ?, ?, ?,
+        ?, ?
       )`,
     ).run(
       sectionId,
@@ -229,6 +238,9 @@ export const missionControlDb = {
       input.resolve_prompt ?? '',
       JSON.stringify(input.resolve_tools ?? []),
       JSON.stringify(actions),
+      input.create_kanban_task ? 1 : 0,
+      input.kanban_assignee_provider ?? null,
+      input.kanban_review_provider ?? null,
       ts,
       ts,
     );
@@ -275,6 +287,18 @@ export const missionControlDb = {
       resolve_tools:
         input.resolve_tools !== undefined ? input.resolve_tools : existing.resolve_tools,
       actions: input.actions !== undefined ? input.actions : existing.actions,
+      create_kanban_task:
+        input.create_kanban_task !== undefined
+          ? input.create_kanban_task
+          : existing.create_kanban_task,
+      kanban_assignee_provider:
+        input.kanban_assignee_provider !== undefined
+          ? input.kanban_assignee_provider
+          : existing.kanban_assignee_provider,
+      kanban_review_provider:
+        input.kanban_review_provider !== undefined
+          ? input.kanban_review_provider
+          : existing.kanban_review_provider,
     };
 
     const db = getConnection();
@@ -283,7 +307,9 @@ export const missionControlDb = {
         title = ?, icon = ?, sort_order = ?, enabled = ?, scope = ?, project_id = ?,
         mode = ?, schedule_cron = ?, provider = ?, model = ?, permission_mode = ?,
         dry_run = ?, auto_approve = ?, produce_prompt = ?, produce_tools_json = ?,
-        resolve_prompt = ?, resolve_tools_json = ?, actions_json = ?, updated_at = ?
+        resolve_prompt = ?, resolve_tools_json = ?, actions_json = ?,
+        create_kanban_task = ?, kanban_assignee_provider = ?, kanban_review_provider = ?,
+        updated_at = ?
        WHERE section_id = ?`,
     ).run(
       next.title,
@@ -304,6 +330,9 @@ export const missionControlDb = {
       next.resolve_prompt,
       JSON.stringify(next.resolve_tools),
       JSON.stringify(next.actions),
+      next.create_kanban_task ? 1 : 0,
+      next.kanban_assignee_provider ?? null,
+      next.kanban_review_provider ?? null,
       nowIso(),
       sectionId,
     );
@@ -394,7 +423,9 @@ export const missionControlDb = {
     const db = getConnection();
     const itemId = randomUUID();
     const ts = nowIso();
-    const actions = draft.actions?.length ? draft.actions : section.actions;
+    const actions = withSystemItemActions(
+      draft.actions?.length ? draft.actions : section.actions,
+    );
     try {
       db.prepare(
         `INSERT INTO mc_items (
@@ -448,7 +479,9 @@ export const missionControlDb = {
       return { item, created: true };
     }
 
-    const actions = draft.actions?.length ? draft.actions : section.actions;
+    const actions = withSystemItemActions(
+      draft.actions?.length ? draft.actions : section.actions,
+    );
     const ts = nowIso();
     db.prepare(
       `UPDATE mc_items SET
@@ -514,5 +547,15 @@ export const missionControlDb = {
       itemId,
     );
     return this.getItem(itemId)!;
+  },
+
+  /**
+   * Hard-delete an item so its dedupe_key can be reused on the next produce run.
+   * (Dismiss only soft-closes and keeps the unique key.)
+   */
+  deleteItem(itemId: string): boolean {
+    const db = getConnection();
+    const result = db.prepare(`DELETE FROM mc_items WHERE item_id = ?`).run(itemId);
+    return result.changes > 0;
   },
 };

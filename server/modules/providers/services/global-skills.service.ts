@@ -1,6 +1,6 @@
 import os from 'node:os';
 import path from 'node:path';
-import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 
 import { providerRegistry } from '@/modules/providers/provider.registry.js';
 import {
@@ -18,7 +18,10 @@ import type {
   GlobalSkillContentUpdateInput,
   GlobalSkillCreateInput,
   GlobalSkillRemoveInput,
+  GlobalSkillScope,
+  GlobalSkillScopeUpdateInput,
   LLMProvider,
+  ProviderSkillCreateEntry,
   SkillContentResult,
 } from '@/shared/types.js';
 import {
@@ -35,12 +38,15 @@ import {
  * Cross-agent global skills.
  *
  * A global skill is authored once into the machine-wide managed canonical folder
- * (`~/.cloudcli/skills/<name>`) and then fanned out into every agent's
- * user-scope skill directory (for example `~/.claude/skills` and
- * `~/.kimi-code/skills`), so the skill applies to every project on this machine.
+ * (`~/.cloudcli/skills/<name>`) and then fanned out according to its scope:
+ * - `all` (the default): into every agent's user-scope skill directory (for
+ *   example `~/.claude/skills` and `~/.kimi-code/skills`), so the skill applies
+ *   to every project on this machine.
+ * - `projects`: only into the selected workspaces' project-scope skill
+ *   directories (for example `<workspace>/.claude/skills`).
  * A manifest (`~/.cloudcli/skills/.managed.json`) records which agent folders
- * each skill was written to, so removal is exact and hand-authored per-agent
- * skills of the same name are never clobbered.
+ * each skill was written to, so removal and re-scoping are exact and
+ * hand-authored per-agent skills of the same name are never clobbered.
  *
  * The reserved `project-memory` directory holds the editable memory skill
  * template. It is never fanned out; projects that enable memory render it with
@@ -54,6 +60,8 @@ type ManifestEntry = {
   targets: string[];
   providers: LLMProvider[];
   updatedAt: string;
+  scope?: GlobalSkillScope;
+  projects?: string[];
 };
 
 type Manifest = {
@@ -131,6 +139,81 @@ const resolveTargets = async (): Promise<{ targets: ResolvedTarget[]; unsupporte
   return { targets: [...byRootDir.values()], unsupported };
 };
 
+/**
+ * Resolves the deduplicated set of writable project-scope skill directories
+ * across every installed agent for the given workspaces. Agents without a
+ * project-scope skill directory are reported as unsupported.
+ */
+const resolveProjectTargets = async (
+  workspacePaths: string[],
+): Promise<{ targets: ResolvedTarget[]; unsupported: LLMProvider[] }> => {
+  const byRootDir = new Map<string, ResolvedTarget>();
+  const supportedProviders = new Set<LLMProvider>();
+  const allProviders = providerRegistry.listProviders();
+
+  for (const workspacePath of workspacePaths) {
+    for (const provider of allProviders) {
+      const source = await provider.skills.getProjectSkillTarget(workspacePath);
+      if (!source) {
+        continue;
+      }
+
+      supportedProviders.add(provider.id);
+      const key = path.resolve(source.rootDir);
+      const existing = byRootDir.get(key);
+      if (existing) {
+        if (!existing.providers.includes(provider.id)) {
+          existing.providers.push(provider.id);
+        }
+        continue;
+      }
+
+      byRootDir.set(key, { rootDir: source.rootDir, providers: [provider.id] });
+    }
+  }
+
+  const unsupported = allProviders
+    .map((provider) => provider.id)
+    .filter((providerId) => !supportedProviders.has(providerId));
+
+  return { targets: [...byRootDir.values()], unsupported };
+};
+
+/**
+ * Reads the canonical copy of a managed skill back into an installable entry:
+ * the SKILL.md markdown plus every supporting file (base64-encoded so binary
+ * assets survive re-installation). Used when re-scoping re-materializes the
+ * skill into a different set of agent folders.
+ */
+const readCanonicalSkillEntry = async (
+  managedRoot: string,
+  directoryName: string,
+): Promise<ProviderSkillCreateEntry> => {
+  const skillDirectoryPath = path.join(managedRoot, directoryName);
+  const content = (await readFile(path.join(skillDirectoryPath, 'SKILL.md'), 'utf8')).trim();
+
+  const files: NonNullable<ProviderSkillCreateEntry['files']> = [];
+  const walk = async (currentDir: string): Promise<void> => {
+    const dirents = await readdir(currentDir, { withFileTypes: true });
+    for (const dirent of dirents) {
+      const absolutePath = path.join(currentDir, dirent.name);
+      if (dirent.isDirectory()) {
+        await walk(absolutePath);
+        continue;
+      }
+      if (!dirent.isFile() || dirent.name === 'SKILL.md') {
+        continue;
+      }
+      const relativePath = path.relative(skillDirectoryPath, absolutePath).split(path.sep).join('/');
+      const fileContent = await readFile(absolutePath);
+      files.push({ relativePath, content: fileContent.toString('base64'), encoding: 'base64' });
+    }
+  };
+  await walk(skillDirectoryPath);
+
+  return { content, directoryName, ...(files.length > 0 ? { files } : {}) };
+};
+
 const readManifest = async (): Promise<Manifest> => {
   const raw = await readJsonConfig(getManifestPath());
   const skills = readObjectRecord(raw.skills) ?? {};
@@ -150,6 +233,10 @@ const readManifest = async (): Promise<Manifest> => {
         ? entry.providers.filter((item): item is LLMProvider => typeof item === 'string') as LLMProvider[]
         : [],
       updatedAt: typeof entry.updatedAt === 'string' ? entry.updatedAt : '',
+      scope: entry.scope === 'projects' ? 'projects' : 'all',
+      projects: Array.isArray(entry.projects)
+        ? entry.projects.filter((item): item is string => typeof item === 'string')
+        : [],
     };
   }
 
@@ -247,6 +334,8 @@ export const globalSkillsService = {
           providers: manifestEntry?.providers ?? [],
           conflicts: [],
           unsupported,
+          scope: manifestEntry?.scope ?? 'all',
+          projects: manifestEntry?.projects ?? [],
           ...(directoryName === MEMORY_SKILL_DIRECTORY_NAME ? { kind: 'memory-template' as const } : {}),
         });
       } catch {
@@ -266,9 +355,11 @@ export const globalSkillsService = {
   },
 
   /**
-   * Installs one or more global skills and fans them out to every agent's
-   * user-scope skill directory. A target agent folder is skipped when a
-   * non-managed skill of the same name already exists there.
+   * Installs one or more global skills and fans them out according to `scope`.
+   * `all` writes to every agent's user-scope skill directory (every project);
+   * `projects` writes only to the given workspaces' project-scope skill
+   * directories. A target agent folder is skipped when a non-managed skill of
+   * the same name already exists there.
    */
   async addGlobalSkills(input: GlobalSkillCreateInput): Promise<GlobalSkill[]> {
     if (!Array.isArray(input.entries) || input.entries.length === 0) {
@@ -278,8 +369,26 @@ export const globalSkillsService = {
       });
     }
 
+    const scope: GlobalSkillScope = input.scope === 'projects' ? 'projects' : 'all';
+    const projects = scope === 'projects'
+      ? [...new Set(
+          (input.projects ?? [])
+            .map((workspacePath) => (typeof workspacePath === 'string' ? workspacePath.trim() : ''))
+            .filter((workspacePath) => workspacePath.length > 0)
+            .map((workspacePath) => path.resolve(workspacePath)),
+        )]
+      : [];
+    if (scope === 'projects' && projects.length === 0) {
+      throw new AppError('Select at least one project for a project-scoped skill.', {
+        code: 'GLOBAL_SKILL_PROJECTS_REQUIRED',
+        statusCode: 400,
+      });
+    }
+
     const managedRoot = getManagedRoot();
-    const { targets, unsupported } = await resolveTargets();
+    const { targets, unsupported } = scope === 'projects'
+      ? await resolveProjectTargets(projects)
+      : await resolveTargets();
     const manifest = await readManifest();
 
     // Validate every entry against the canonical root before touching disk so a
@@ -330,6 +439,8 @@ export const globalSkillsService = {
         targets: writtenTargets,
         providers: coveredProviders,
         updatedAt: new Date().toISOString(),
+        scope,
+        projects,
       };
 
       results.push({
@@ -337,9 +448,11 @@ export const globalSkillsService = {
         description: canonicalInstall.definition.description,
         directoryName,
         sourcePath: canonicalInstall.skillPath,
-        providers: coveredProviders,
-        conflicts: conflictProviders,
+        providers: [...new Set(coveredProviders)],
+        conflicts: [...new Set(conflictProviders)],
         unsupported,
+        scope,
+        projects,
       });
     }
 
@@ -395,6 +508,108 @@ export const globalSkillsService = {
     }
 
     return { removed, directoryName, providers };
+  },
+
+  /**
+   * Re-scopes a global skill. `all` fans the canonical copy out to every
+   * agent's user-scope skill folder; `projects` installs it only into the
+   * given workspaces' project-scope skill folders. Copies in folders that fall
+   * out of scope are removed; folders that already hold a non-managed skill of
+   * the same name are reported as conflicts and left untouched. The managed
+   * memory template cannot be re-scoped.
+   */
+  async setGlobalSkillScope(
+    input: GlobalSkillScopeUpdateInput,
+  ): Promise<Pick<GlobalSkill, 'directoryName' | 'scope' | 'projects' | 'providers' | 'conflicts' | 'unsupported'>> {
+    const directoryName = requireManagedDirectoryName(input.directoryName);
+    const scope: GlobalSkillScope = input.scope === 'projects' ? 'projects' : 'all';
+
+    const managedRoot = getManagedRoot();
+    const canonicalSkillPath = path.join(managedRoot, directoryName, 'SKILL.md');
+    try {
+      await stat(canonicalSkillPath);
+    } catch {
+      throw new AppError(`Global skill "${directoryName}" was not found.`, {
+        code: 'GLOBAL_SKILL_NOT_FOUND',
+        statusCode: 404,
+      });
+    }
+
+    const projects = scope === 'projects'
+      ? [...new Set(
+          (input.projects ?? [])
+            .map((workspacePath) => (typeof workspacePath === 'string' ? workspacePath.trim() : ''))
+            .filter((workspacePath) => workspacePath.length > 0)
+            .map((workspacePath) => path.resolve(workspacePath)),
+        )]
+      : [];
+    if (scope === 'projects' && projects.length === 0) {
+      throw new AppError('Select at least one project for a project-scoped skill.', {
+        code: 'GLOBAL_SKILL_PROJECTS_REQUIRED',
+        statusCode: 400,
+      });
+    }
+
+    const { targets, unsupported } = scope === 'projects'
+      ? await resolveProjectTargets(projects)
+      : await resolveTargets();
+
+    const manifest = await readManifest();
+    const previousTargets = new Set(manifest.skills[directoryName]?.targets ?? []);
+    const nextTargetRoots = new Set(targets.map((target) => path.resolve(target.rootDir)));
+
+    // Tear down copies in folders that fall out of scope.
+    for (const previousRoot of previousTargets) {
+      if (nextTargetRoots.has(previousRoot)) {
+        continue;
+      }
+
+      const targetSkillDir = path.join(previousRoot, directoryName);
+      if (!isPathInsideRoot(previousRoot, targetSkillDir) || path.resolve(targetSkillDir) === path.resolve(previousRoot)) {
+        continue;
+      }
+
+      await rm(targetSkillDir, { recursive: true, force: true });
+    }
+
+    const entry = await readCanonicalSkillEntry(managedRoot, directoryName);
+    const writtenTargets: string[] = [];
+    const coveredProviders: LLMProvider[] = [];
+    const conflictProviders: LLMProvider[] = [];
+
+    for (const target of targets) {
+      const resolvedRootDir = path.resolve(target.rootDir);
+      const targetSkillDir = path.join(target.rootDir, directoryName);
+      const alreadyExists = await directoryExists(targetSkillDir);
+      const ownedByUs = previousTargets.has(resolvedRootDir);
+
+      if (alreadyExists && !ownedByUs) {
+        conflictProviders.push(...target.providers);
+        continue;
+      }
+
+      const targetSeen = new Set<string>();
+      const targetInstall = prepareSkillInstall(target.rootDir, entry, 0, targetSeen);
+      await writeSkillInstall(targetInstall);
+      writtenTargets.push(resolvedRootDir);
+      coveredProviders.push(...target.providers);
+    }
+
+    // One provider can cover several target roots (one per scoped workspace) —
+    // report each agent once.
+    const uniqueProviders = [...new Set(coveredProviders)];
+    const uniqueConflicts = [...new Set(conflictProviders)];
+
+    manifest.skills[directoryName] = {
+      targets: writtenTargets,
+      providers: uniqueProviders,
+      updatedAt: new Date().toISOString(),
+      scope,
+      projects,
+    };
+    await writeManifest(manifest);
+
+    return { directoryName, scope, projects, providers: uniqueProviders, conflicts: uniqueConflicts, unsupported };
   },
 
   /**
@@ -454,6 +669,11 @@ export const globalSkillsService = {
 
     await overwriteSkillMarkdown(managedRoot, directoryName, content);
     for (const rootDir of targetRootDirs) {
+      // A scoped target (for example a deleted project's skill folder) may have
+      // vanished from disk — skip it instead of failing the whole edit.
+      if (!(await directoryExists(path.join(rootDir, directoryName)))) {
+        continue;
+      }
       await overwriteSkillMarkdown(rootDir, directoryName, content);
     }
 

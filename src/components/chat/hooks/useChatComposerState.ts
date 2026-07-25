@@ -41,6 +41,7 @@ const PROVIDER_MODEL_LABELS: Record<LLMProvider, string> = {
   grok: 'Grok Build',
   kimi: 'Kimi',
   agy: 'Antigravity',
+  pi: 'Pi',
 };
 
 interface UseChatComposerStateArgs {
@@ -59,6 +60,7 @@ interface UseChatComposerStateArgs {
   grokModel: string;
   kimiModel: string;
   agyModel: string;
+  piModel: string;
   isLoading: boolean;
   canAbortSession: boolean;
   tokenBudget: Record<string, unknown> | null;
@@ -254,6 +256,7 @@ export function useChatComposerState({
   grokModel,
   kimiModel,
   agyModel,
+  piModel,
   isLoading,
   canAbortSession,
   tokenBudget,
@@ -395,6 +398,7 @@ export function useChatComposerState({
       grok: grokModel,
       kimi: kimiModel,
       agy: agyModel,
+      pi: piModel,
     };
     setCommandModalPayload({
       kind: 'models',
@@ -406,7 +410,7 @@ export function useChatComposerState({
         },
       },
     });
-  }, [provider, claudeModel, cursorModel, codexModel, opencodeModel, grokModel, kimiModel, agyModel]);
+  }, [provider, claudeModel, cursorModel, codexModel, opencodeModel, grokModel, kimiModel, agyModel, piModel]);
 
   const handleCustomCommand = useCallback(async (result: CommandExecutionResult) => {
     const { content, hasBashCommands } = result;
@@ -468,7 +472,9 @@ export function useChatComposerState({
                       ? kimiModel
                       : provider === 'agy'
                         ? agyModel
-                        : claudeModel,
+                        : provider === 'pi'
+                          ? piModel
+                          : claudeModel,
           tokenUsage: tokenBudget,
         };
 
@@ -525,6 +531,7 @@ export function useChatComposerState({
       grokModel,
       kimiModel,
       agyModel,
+      piModel,
       handleBuiltInCommand,
       handleCustomCommand,
       input,
@@ -727,6 +734,8 @@ export function useChatComposerState({
                   ? 'grok-tools-settings'
                 : provider === 'agy'
                   ? 'agy-tools-settings'
+                : provider === 'pi'
+                  ? 'pi-tools-settings'
                 : 'claude-settings';
         const savedSettings = safeLocalStorage.getItem(settingsKey);
         if (savedSettings) {
@@ -757,7 +766,9 @@ export function useChatComposerState({
                 ? kimiModel
                 : provider === 'agy'
                   ? agyModel
-                  : claudeModel;
+                  : provider === 'pi'
+                    ? piModel
+                    : claudeModel;
 
     return {
       model,
@@ -776,6 +787,7 @@ export function useChatComposerState({
     grokModel,
     kimiModel,
     agyModel,
+    piModel,
     permissionMode,
     provider,
     resolvePermissionModeForProvider,

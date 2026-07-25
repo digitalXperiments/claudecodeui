@@ -122,9 +122,12 @@
     }
   },
   "appearanceSettings": {
-    "darkMode": {
-      "label": "Darkmode",
-      "description": "Zwischen hellem und dunklem Design wechseln"
+    "theme": {
+      "label": "Design",
+      "description": "Helles oder dunkles Design wählen oder der Systemeinstellung folgen",
+      "light": "Hell",
+      "dark": "Dunkel",
+      "system": "System"
     },
     "projectSorting": {
       "label": "Projektsortierung",

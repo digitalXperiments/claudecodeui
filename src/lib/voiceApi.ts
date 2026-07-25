@@ -9,17 +9,29 @@ export function voiceConfigSignature(): string {
   return JSON.stringify(readVoiceConfig());
 }
 
-export function transcribeVoice(blob: Blob, filename: string): Promise<Response> {
+export function transcribeVoice(
+  blob: Blob,
+  filename: string,
+  signal?: AbortSignal,
+): Promise<Response> {
   const config = readVoiceConfig();
   const body = new FormData();
 
-  if (config.baseUrl.trim()) {
+  // Direct browser → OpenAI-compatible only when STT provider is API (or auto with a base URL)
+  // and not forcing on-device WhisperKit.
+  const useDirectApi =
+    Boolean(config.baseUrl.trim()) &&
+    config.sttProvider !== 'local' &&
+    config.sttProvider !== 'browser';
+
+  if (useDirectApi) {
     body.append('file', blob, filename);
     body.append('model', config.sttModel || 'whisper-1');
     return fetch(directUrl(config.baseUrl.trim(), '/audio/transcriptions'), {
       method: 'POST',
       headers: config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {},
       body,
+      signal,
     });
   }
 
@@ -28,6 +40,7 @@ export function transcribeVoice(blob: Blob, filename: string): Promise<Response>
     method: 'POST',
     headers: voiceConfigHeaders(),
     body,
+    signal,
   });
 }
 

@@ -55,6 +55,11 @@ const getProviderCommand = ({
     return 'agy';
   }
 
+  if (provider === 'pi') {
+    // Pi authenticates via the interactive /login command inside the TUI.
+    return 'pi';
+  }
+
   return 'claude --dangerously-skip-permissions /login';
 };
 
@@ -66,6 +71,7 @@ const getProviderTitle = (provider: LLMProvider) => {
   if (provider === 'grok') return 'Grok Build CLI Login';
   if (provider === 'kimi') return 'Kimi CLI Login';
   if (provider === 'agy') return 'Antigravity CLI Login';
+  if (provider === 'pi') return 'Pi CLI Login';
   return 'Claude CLI Login';
 };
 

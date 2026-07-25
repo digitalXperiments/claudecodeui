@@ -27,9 +27,16 @@ type KanbanCardProps = {
   onOpen: (task: KanbanTask) => void;
   /** Project name to badge on the card (global board only). */
   projectName?: string | null;
+  /** Board task map for resolving dependency titles. */
+  taskById?: Map<string, KanbanTask>;
 };
 
-export default function KanbanCard({ task, onOpen, projectName = null }: KanbanCardProps) {
+export default function KanbanCard({
+  task,
+  onOpen,
+  projectName = null,
+  taskById,
+}: KanbanCardProps) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: task.task_id,
     data: { type: 'task', columnId: task.column_id },
@@ -42,6 +49,15 @@ export default function KanbanCard({ task, onOpen, projectName = null }: KanbanC
 
   const implementLabel = providerLabel(task.assignee_provider);
   const reviewLabel = providerLabel(task.review_provider);
+  const deps = task.dependsOn ?? [];
+  const openDeps: KanbanTask[] = [];
+  for (const id of deps) {
+    const dep = taskById?.get(id);
+    if (dep && dep.status !== 'done') {
+      openDeps.push(dep);
+    }
+  }
+  const blockedByTitles = openDeps.slice(0, 2).map((t) => t.title);
 
   return (
     <div
@@ -51,8 +67,9 @@ export default function KanbanCard({ task, onOpen, projectName = null }: KanbanC
       {...listeners}
       onClick={() => onOpen(task)}
       className={cn(
-        'group cursor-grab select-none rounded-md border border-border bg-card p-3 text-left shadow-sm transition-colors hover:border-primary/50',
+        'group cursor-grab touch-manipulation select-none rounded-md border border-border bg-card p-3 text-left shadow-sm transition-colors hover:border-primary/50 active:border-primary/40',
         isDragging && 'opacity-50',
+        task.status === 'blocked' && 'border-amber-500/40',
       )}
     >
       <div className="flex items-start justify-between gap-2">
@@ -66,6 +83,13 @@ export default function KanbanCard({ task, onOpen, projectName = null }: KanbanC
 
       {task.description ? (
         <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{task.description}</p>
+      ) : null}
+
+      {blockedByTitles.length > 0 ? (
+        <p className="mt-1.5 line-clamp-2 text-[11px] text-amber-700 dark:text-amber-400">
+          Waiting on: {blockedByTitles.join(', ')}
+          {openDeps.length > 2 ? ` +${openDeps.length - 2}` : ''}
+        </p>
       ) : null}
 
       <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
@@ -85,13 +109,13 @@ export default function KanbanCard({ task, onOpen, projectName = null }: KanbanC
             rev: {reviewLabel}
           </Badge>
         ) : null}
-        {(task.dependsOn?.length ?? 0) > 0 ? (
+        {deps.length > 0 ? (
           <span
             className="inline-flex items-center gap-0.5"
-            title={`Depends on ${task.dependsOn?.length ?? 0} task(s)`}
+            title={`Depends on ${deps.length} task(s); auto-runs when all are done`}
           >
             <GitBranch className="h-3 w-3" />
-            {task.dependsOn?.length ?? 0}
+            {deps.length}
           </span>
         ) : null}
         {task.schedule_cron ? (

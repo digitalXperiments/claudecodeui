@@ -5,7 +5,10 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { closeConnection, initializeDatabase, sessionsDb } from '@/modules/database/index.js';
-import { extractRunOutcome } from '@/modules/mission-control/mission-control-agent.service.js';
+import {
+  extractRunOutcome,
+  parseJsonFromAgentText,
+} from '@/modules/mission-control/mission-control-agent.service.js';
 import { chatRunRegistry } from '@/modules/websocket/index.js';
 
 const DETACHED_CONNECTION = { readyState: -1, send: () => undefined };
@@ -93,4 +96,55 @@ test('benign error event with zero exit is not a failure and stays out of the te
     assert.equal(outcome.text, '[{"title":"b","dedupeKey":"k"}]');
     assert.equal(outcome.errorMessage, 'warning: noisy stderr');
   });
+});
+
+test('parseJsonFromAgentText: plain array', () => {
+  const parsed = parseJsonFromAgentText(
+    '[{"title":"a","summary":"s","body":{},"dedupeKey":"k","confidence":1}]',
+  );
+  assert.ok(Array.isArray(parsed));
+  assert.equal((parsed as { title: string }[])[0]?.title, 'a');
+});
+
+test('parseJsonFromAgentText: fenced json with tool-narration preamble', () => {
+  const text = `Now I'll fetch the channel histories and search for mentions/DMs in parallel.
+Found all three channel IDs. Now reading full channel history for yesterday's window.
+\`\`\`json
+[
+  {
+    "title": "Slack Summary — 2026-07-22",
+    "summary": "Outage day",
+    "body": { "date": "2026-07-22", "markdown": "all clear" },
+    "dedupeKey": "slack-summary-2026-07-22",
+    "confidence": 0.9
+  }
+]
+\`\`\``;
+  const parsed = parseJsonFromAgentText(text);
+  assert.ok(Array.isArray(parsed));
+  assert.equal((parsed as { dedupeKey: string }[])[0]?.dedupeKey, 'slack-summary-2026-07-22');
+});
+
+test('parseJsonFromAgentText: repairs unescaped quotes inside string values', () => {
+  // Real failure mode from Daily Slack Summaries: model quoted a phrase inside
+  // markdown without escaping, which breaks strict JSON.parse.
+  const text = `Now reading history.
+\`\`\`json
+[
+  {
+    "title": "Slack Summary",
+    "summary": "brief",
+    "body": {
+      "markdown": "showed things "operating normal" again by ~18:05 IST."
+    },
+    "dedupeKey": "slack-summary-2026-07-22",
+    "confidence": 0.8
+  }
+]
+\`\`\``;
+  const parsed = parseJsonFromAgentText(text);
+  assert.ok(Array.isArray(parsed));
+  const item = (parsed as { body: { markdown: string }; dedupeKey: string }[])[0];
+  assert.equal(item?.dedupeKey, 'slack-summary-2026-07-22');
+  assert.match(item?.body.markdown ?? '', /operating normal/);
 });

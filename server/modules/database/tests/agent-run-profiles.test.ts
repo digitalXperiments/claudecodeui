@@ -69,7 +69,7 @@ test('agent run profiles CRUD + seed + kanban run resolves model/effort', async 
     assert.equal(updated?.name, 'Grok High Effort');
 
     const projectId = projectsDb.createProjectPath(tempDirectory).project!.project_id;
-    const board = kanbanDb.createBoard({ projectId, name: 'Board' });
+    const board = kanbanDb.createBoard({ name: 'Board' });
 
     let seenOptions: AnyRecord = {};
     let ran = false;

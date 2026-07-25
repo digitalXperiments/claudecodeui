@@ -12,7 +12,10 @@ import {
   DialogTitle,
   Input,
 } from '../../../shared/view/ui';
-import type { ProviderSkillCreateEntryPayload } from '../types';
+import { useProjectsOptions } from '../hooks/useProjectsOptions';
+import type { GlobalSkillScope, ProviderSkillCreateEntryPayload } from '../types';
+
+import SkillScopeField from './SkillScopeField';
 
 type EditableSkillRef = {
   directoryName: string;
@@ -27,7 +30,12 @@ type SkillEditorDialogProps = {
   skill: EditableSkillRef | null;
   loadContent: (directoryName: string) => Promise<{ content: string }>;
   saveContent: (directoryName: string, content: string) => Promise<unknown>;
-  createSkill: (entries: ProviderSkillCreateEntryPayload[]) => Promise<unknown>;
+  createSkill: (
+    entries: ProviderSkillCreateEntryPayload[],
+    options?: { scope?: GlobalSkillScope; projects?: string[] },
+  ) => Promise<unknown>;
+  /** Show the "All projects / Selected projects" scope picker in create mode. */
+  allowScopeSelection?: boolean;
 };
 
 const normalizeDirectoryName = (value: string): string => (
@@ -69,13 +77,17 @@ export default function SkillEditorDialog({
   loadContent,
   saveContent,
   createSkill,
+  allowScopeSelection = false,
 }: SkillEditorDialogProps) {
   const { isDarkMode } = useTheme();
+  const { projects: projectOptions, isLoading: projectsLoading } = useProjectsOptions();
 
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [content, setContent] = useState('');
   const [originalContent, setOriginalContent] = useState('');
+  const [scope, setScope] = useState<GlobalSkillScope>('all');
+  const [selectedProjects, setSelectedProjects] = useState<string[]>([]);
   const [isLoadingContent, setIsLoadingContent] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -93,6 +105,8 @@ export default function SkillEditorDialog({
       setDescription('');
       setContent(CREATE_BODY_SKELETON);
       setOriginalContent('');
+      setScope('all');
+      setSelectedProjects([]);
       setIsLoadingContent(false);
       return;
     }
@@ -104,6 +118,8 @@ export default function SkillEditorDialog({
     setIsLoadingContent(true);
     setContent('');
     setOriginalContent('');
+    setScope('all');
+    setSelectedProjects([]);
     let cancelled = false;
     loadContent(skill.directoryName)
       .then((result) => {
@@ -132,10 +148,26 @@ export default function SkillEditorDialog({
 
   const isDirty = useMemo(() => {
     if (mode === 'create') {
-      return Boolean(name.trim()) || content !== CREATE_BODY_SKELETON;
+      return Boolean(name.trim())
+        || content !== CREATE_BODY_SKELETON
+        || scope !== 'all'
+        || selectedProjects.length > 0;
     }
     return content !== originalContent;
-  }, [mode, name, content, originalContent]);
+  }, [mode, name, content, originalContent, scope, selectedProjects]);
+
+  const canCreate = useMemo(() => {
+    if (mode !== 'create') {
+      return true;
+    }
+    if (!name.trim()) {
+      return false;
+    }
+    if (allowScopeSelection && scope === 'projects' && selectedProjects.length === 0) {
+      return false;
+    }
+    return true;
+  }, [mode, name, allowScopeSelection, scope, selectedProjects]);
 
   const handleOpenChange = useCallback((nextOpen: boolean) => {
     if (!nextOpen && isDirty && !window.confirm('Discard unsaved changes?')) {
@@ -154,10 +186,13 @@ export default function SkillEditorDialog({
         if (!directoryName) {
           throw new Error('Enter a skill name first.');
         }
+        const options = allowScopeSelection && scope === 'projects'
+          ? { scope, projects: selectedProjects }
+          : undefined;
         await createSkill([{
           content: buildCreateContent(directoryName, description, content),
           directoryName,
-        }]);
+        }], options);
       } else if (skill) {
         await saveContent(skill.directoryName, content.trim());
       }
@@ -167,7 +202,7 @@ export default function SkillEditorDialog({
     } finally {
       setIsSaving(false);
     }
-  }, [mode, name, description, content, skill, createSkill, saveContent, onOpenChange]);
+  }, [mode, name, description, content, skill, allowScopeSelection, scope, selectedProjects, createSkill, saveContent, onOpenChange]);
 
   const isMemoryTemplate = skill?.kind === 'memory-template';
   const title = mode === 'create'
@@ -186,7 +221,9 @@ export default function SkillEditorDialog({
           <div className="text-base font-medium text-foreground">{title}</div>
           <div className="mt-1 text-sm text-muted-foreground">
             {mode === 'create'
-              ? 'Author a skill from scratch. It installs into every agent\u2019s skill folder.'
+              ? allowScopeSelection
+                ? 'Author a skill from scratch, then choose whether it applies to every project or only selected projects.'
+                : 'Author a skill from scratch. It installs into every agent\u2019s project skill folder.'
               : 'Changes are written to the canonical copy and every agent folder it was installed into.'}
           </div>
         </div>
@@ -218,6 +255,21 @@ export default function SkillEditorDialog({
                 className="h-9 w-full"
               />
             </label>
+          </div>
+        )}
+
+        {mode === 'create' && allowScopeSelection && (
+          <div className="flex-shrink-0 border-b border-border/60 px-4 py-3">
+            <SkillScopeField
+              scope={scope}
+              projects={selectedProjects}
+              options={projectOptions}
+              optionsLoading={projectsLoading}
+              onChange={(nextScope, nextProjects) => {
+                setScope(nextScope);
+                setSelectedProjects(nextProjects);
+              }}
+            />
           </div>
         )}
 
@@ -269,7 +321,7 @@ export default function SkillEditorDialog({
               size="sm"
               className="w-full sm:w-auto"
               onClick={() => void handleSave()}
-              disabled={isSaving || isLoadingContent || (mode === 'edit' && !isDirty)}
+              disabled={isSaving || isLoadingContent || (mode === 'edit' && !isDirty) || (mode === 'create' && !canCreate)}
             >
               {isSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
               {mode === 'create' ? 'Create Skill' : 'Save Changes'}

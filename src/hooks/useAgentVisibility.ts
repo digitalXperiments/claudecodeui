@@ -10,7 +10,7 @@ import type { LLMProvider } from '../types/app';
  * via a custom event (same pattern as `useUiPreferences`).
  */
 
-export const ALL_AGENT_PROVIDERS: LLMProvider[] = ['claude', 'cursor', 'codex', 'opencode', 'grok', 'kimi', 'agy'];
+export const ALL_AGENT_PROVIDERS: LLMProvider[] = ['claude', 'cursor', 'codex', 'opencode', 'grok', 'kimi', 'agy', 'pi'];
 
 const STORAGE_KEY = 'disabledAgents';
 const SYNC_EVENT = 'agent-visibility:sync';

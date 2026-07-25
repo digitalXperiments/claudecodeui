@@ -25,9 +25,10 @@ const FALLBACK_DEFAULT_MODEL: Record<LLMProvider, string> = {
   grok: 'grok-4.5',
   kimi: 'kimi-code/kimi-for-coding',
   agy: 'Gemini 3.5 Flash (Medium)',
+  pi: 'anthropic/claude-sonnet-4-20250514',
 };
 
-const PROVIDERS: LLMProvider[] = ['claude', 'cursor', 'codex', 'opencode', 'grok', 'kimi', 'agy'];
+const PROVIDERS: LLMProvider[] = ['claude', 'cursor', 'codex', 'opencode', 'grok', 'kimi', 'agy', 'pi'];
 
 const readStoredProvider = (): LLMProvider => {
   const storedProvider = localStorage.getItem('selected-provider');
@@ -51,6 +52,7 @@ const FALLBACK_PERMISSION_MODES: Record<LLMProvider, PermissionMode[]> = {
   grok: ['default', 'acceptEdits', 'auto', 'bypassPermissions', 'plan'],
   kimi: ['default', 'plan', 'auto', 'bypassPermissions'],
   agy: ['plan', 'acceptEdits', 'bypassPermissions'],
+  pi: ['plan', 'bypassPermissions'],
 };
 
 /**
@@ -67,6 +69,7 @@ const FALLBACK_SUPPORTS_IMAGES: Record<LLMProvider, boolean> = {
   grok: true,
   kimi: true,
   agy: true,
+  pi: true,
 };
 
 /** Fallback document-attachment support: every agent reads path-referenced files. */
@@ -78,6 +81,7 @@ const FALLBACK_SUPPORTS_FILES: Record<LLMProvider, boolean> = {
   grok: true,
   kimi: true,
   agy: true,
+  pi: true,
 };
 
 type ProviderCapabilities = {
@@ -158,6 +162,9 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
   const [agyModel, setAgyModel] = useState<string>(() => {
     return localStorage.getItem('agy-model') || FALLBACK_DEFAULT_MODEL.agy;
   });
+  const [piModel, setPiModel] = useState<string>(() => {
+    return localStorage.getItem('pi-model') || FALLBACK_DEFAULT_MODEL.pi;
+  });
 
   /**
    * Backend-owned capability matrix keyed by provider. Drives the permission
@@ -215,6 +222,12 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     if (targetProvider === 'agy') {
       setAgyModel(model);
       localStorage.setItem('agy-model', model);
+      return;
+    }
+
+    if (targetProvider === 'pi') {
+      setPiModel(model);
+      localStorage.setItem('pi-model', model);
       return;
     }
 
@@ -441,7 +454,8 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     grok: grokModel,
     kimi: kimiModel,
     agy: agyModel,
-  }), [claudeModel, cursorModel, codexModel, opencodeModel, grokModel, kimiModel, agyModel]);
+    pi: piModel,
+  }), [claudeModel, cursorModel, codexModel, opencodeModel, grokModel, kimiModel, agyModel, piModel]);
 
   useEffect(() => {
     const claude = providerModelCatalog.claude;
@@ -533,6 +547,19 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
       }
     }
   }, [providerModelCatalog.agy, agyModel]);
+
+  useEffect(() => {
+    const pi = providerModelCatalog.pi;
+    if (pi) {
+      const next = pickStoredOrCurrent('pi-model', piModel, pi);
+      if (next !== piModel) {
+        setPiModel(next);
+      }
+      if (localStorage.getItem('pi-model') !== next) {
+        localStorage.setItem('pi-model', next);
+      }
+    }
+  }, [providerModelCatalog.pi, piModel]);
 
   useEffect(() => {
     const nextEfforts: Partial<Record<LLMProvider, string>> = {};
@@ -720,6 +747,8 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     setKimiModel,
     agyModel,
     setAgyModel,
+    piModel,
+    setPiModel,
     permissionMode,
     setPermissionMode,
     pendingPermissionRequests,

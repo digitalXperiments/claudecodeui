@@ -1,16 +1,55 @@
-// Optional voice proxy — forwards STT/TTS to an OpenAI-compatible audio backend.
+// Voice proxy — STT/TTS via OpenAI-compatible backends, plus on-device STT.
 //
-// The backend is whatever the user points at: OpenAI, Groq, or a local server
-// (LocalAI / Speaches / Kokoro-FastAPI / openedai-speech / etc.). It must expose the
-// standard OpenAI audio endpoints:
+// STT backends (in priority order when none is forced):
+//   1. OpenAI-compatible API (VOICE_API_BASE_URL / server env)
+//   2. Local Apple Silicon engines (whisperkit-cli / whisper-cli)
+//
+// Remote backends expose:
 //     POST {base}/audio/transcriptions   (multipart 'file' + 'model')      -> { text }
 //     POST {base}/audio/speech           ({ model, voice, input })         -> audio bytes
+//
+// Local STT uses WhisperKit (Core ML / Neural Engine) when `whisperkit-cli` is on PATH:
+//     brew install whisperkit-cli
 //
 // Config is resolved per-request from headers (set by the client's voice settings),
 // falling back to server env defaults. Mounted at /api/voice behind authenticateToken.
 import { Readable } from 'node:stream';
+import { appendFile, writeFile, mkdir } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 
 import express from 'express';
+
+import { getLocalSttStatus, transcribeLocal } from './modules/voice/local-stt.js';
+
+// Opt-in diagnostics (set VOICE_DEBUG=1). Logs one JSON line per transcribe request and
+// saves the raw uploaded audio so a failing recording can be inspected offline.
+const VOICE_DEBUG = process.env.VOICE_DEBUG === '1' || process.env.VOICE_DEBUG === 'true';
+const VOICE_DEBUG_DIR = process.env.VOICE_DEBUG_DIR || path.join(os.homedir(), '.cloudcli', 'voice-debug');
+let _debugCounter = 0;
+
+async function voiceDebugLog(entry, buffer) {
+  if (!VOICE_DEBUG) return;
+  try {
+    await mkdir(VOICE_DEBUG_DIR, { recursive: true });
+    let savedAs = null;
+    if (buffer && buffer.length) {
+      const ext = (entry.mime || '').includes('mp4')
+        ? 'm4a'
+        : (entry.mime || '').includes('ogg')
+          ? 'ogg'
+          : 'webm';
+      savedAs = path.join(VOICE_DEBUG_DIR, `rec-${_debugCounter++}.${ext}`);
+      await writeFile(savedAs, buffer);
+    }
+    await appendFile(
+      path.join(VOICE_DEBUG_DIR, 'transcribe.log'),
+      `${JSON.stringify({ t: new Date().toISOString(), ...entry, savedAs })}\n`,
+    );
+  } catch {
+    /* diagnostics must never break the request */
+  }
+}
 
 const ENV = {
   baseUrl: (process.env.VOICE_API_BASE_URL || '').replace(/\/$/, ''),
@@ -18,16 +57,18 @@ const ENV = {
   sttModel: process.env.VOICE_STT_MODEL || 'whisper-1',
   ttsModel: process.env.VOICE_TTS_MODEL || 'tts-1',
   ttsVoice: process.env.VOICE_TTS_VOICE || 'alloy',
+  // Prefer local STT when no remote base URL is set (default true).
+  preferLocal: process.env.VOICE_PREFER_LOCAL !== '0' && process.env.VOICE_PREFER_LOCAL !== 'false',
 };
 
 /**
  * Resolve the voice backend config for a request. Client headers (set from the
  * user's in-app voice settings) take precedence over the server env defaults.
  * @param {import('express').Request} req
- * @returns {{baseUrl: string, apiKey: string, sttModel: string, ttsModel: string, ttsVoice: string, ttsFormat: string}}
  */
 function resolveConfig(req) {
   const h = req.headers;
+  const sttProvider = String(h['x-voice-stt-provider'] || '').trim().toLowerCase();
   return {
     // Security: do not allow clients to control the outbound backend host.
     // Always use the server-side configured base URL.
@@ -37,6 +78,8 @@ function resolveConfig(req) {
     ttsModel: String(h['x-voice-tts-model'] || '') || ENV.ttsModel,
     ttsVoice: String(h['x-voice-tts-voice'] || '') || ENV.ttsVoice,
     ttsFormat: String(h['x-voice-tts-format'] || '').trim(),
+    // Client can force: local | api | auto (default)
+    sttProvider: sttProvider || 'auto',
   };
 }
 
@@ -145,24 +188,126 @@ function authHeader(apiKey) {
 }
 
 /**
- * GET /api/voice/health -> { configured } (true when a backend base URL is set).
+ * Whether this request should use on-device STT.
+ * @param {{ baseUrl: string, sttProvider: string }} cfg
+ * @param {{ available: boolean }} local
  */
-router.get('/health', (req, res) => {
-  res.json({ configured: Boolean(resolveConfig(req).baseUrl) });
+function shouldUseLocalStt(cfg, local) {
+  if (cfg.sttProvider === 'local') return true;
+  if (cfg.sttProvider === 'api') return false;
+  // auto: local when available and no remote base URL (or prefer local)
+  if (!local.available) return false;
+  if (!cfg.baseUrl) return true;
+  return ENV.preferLocal && cfg.sttProvider === 'auto';
+}
+
+/**
+ * GET /api/voice/health -> capability snapshot for the client.
+ */
+router.get('/health', async (req, res) => {
+  const cfg = resolveConfig(req);
+  let local;
+  try {
+    local = await getLocalSttStatus();
+  } catch {
+    local = { available: false, engine: null, binary: null, model: '', modelCacheDir: '', ffmpeg: null };
+  }
+  const apiConfigured = Boolean(cfg.baseUrl);
+  const sttReady = apiConfigured || local.available;
+  res.json({
+    configured: sttReady,
+    api: apiConfigured,
+    tts: apiConfigured,
+    localStt: {
+      available: local.available,
+      engine: local.engine,
+      model: local.model,
+      hasFfmpeg: Boolean(local.ffmpeg),
+    },
+  });
 });
 
 /**
  * POST /api/voice/transcribe (multipart 'audio') -> { text }.
- * Forwards the uploaded audio to the backend's /audio/transcriptions endpoint.
+ * Uses on-device WhisperKit when available / requested; otherwise OpenAI-compatible API.
  */
 router.post('/transcribe', async (req, res) => {
   const cfg = resolveConfig(req);
-  if (!cfg.baseUrl) return res.status(503).json({ error: 'No voice backend configured' });
-  if (!isAllowedBackendUrl(cfg.baseUrl)) return res.status(400).json({ error: 'Invalid voice backend URL.' });
   const upload = await getUpload();
   upload.single('audio')(req, res, async (err) => {
     if (err) return res.status(400).json({ error: err.message });
     if (!req.file) return res.status(400).json({ error: 'No audio uploaded' });
+
+    let local;
+    try {
+      local = await getLocalSttStatus();
+    } catch {
+      local = { available: false };
+    }
+
+    const useLocal = shouldUseLocalStt(cfg, local);
+
+    const debugBase = {
+      provider: cfg.sttProvider,
+      useLocal,
+      localAvailable: Boolean(local.available),
+      localEngine: local.engine || null,
+      mime: req.file.mimetype || null,
+      filename: req.file.originalname || null,
+      bytes: req.file.size ?? (req.file.buffer ? req.file.buffer.length : 0),
+      sttModel: cfg.sttModel || null,
+      hasBaseUrl: Boolean(cfg.baseUrl),
+    };
+
+    if (useLocal) {
+      try {
+        // For local path, sttModel may be a WhisperKit name (tiny, base, small, …)
+        // rather than OpenAI's whisper-1.
+        const localModel =
+          cfg.sttModel && !/^whisper-1$/i.test(cfg.sttModel)
+            ? cfg.sttModel
+            : undefined;
+        const result = await transcribeLocal(req.file.buffer, {
+          filename: req.file.originalname || 'recording.webm',
+          mimeType: req.file.mimetype || 'audio/webm',
+          model: localModel,
+        });
+        await voiceDebugLog(
+          { ...debugBase, ok: true, textLen: (result.text || '').length, textPreview: (result.text || '').slice(0, 120), engine: result.engine },
+          req.file.buffer,
+        );
+        return res.json({ text: result.text, engine: result.engine });
+      } catch (e) {
+        await voiceDebugLog(
+          { ...debugBase, ok: false, error: e instanceof Error ? e.message : String(e) },
+          req.file.buffer,
+        );
+        // If user forced local, surface the error; otherwise fall through to API.
+        if (cfg.sttProvider === 'local' || !cfg.baseUrl) {
+          const message = e instanceof Error ? e.message : String(e);
+          if (/timed out/i.test(message)) {
+            return res.status(504).json({ error: message });
+          }
+          return res.status(502).json({ error: message });
+        }
+      }
+    }
+
+    if (!useLocal) {
+      await voiceDebugLog({ ...debugBase, note: 'not-using-local; routing to API path' }, req.file.buffer);
+    }
+
+    if (!cfg.baseUrl) {
+      return res.status(503).json({
+        error:
+          'No voice backend configured. Install on-device STT (brew install whisperkit-cli) ' +
+          'or set VOICE_API_BASE_URL / a Base URL in Settings → Voice.',
+      });
+    }
+    if (!isAllowedBackendUrl(cfg.baseUrl)) {
+      return res.status(400).json({ error: 'Invalid voice backend URL.' });
+    }
+
     try {
       const fd = new FormData();
       fd.append(
@@ -180,7 +325,7 @@ router.post('/transcribe', async (req, res) => {
       if (!r.ok) return upstreamError(res, r.status, text);
       let data;
       try { data = JSON.parse(text); } catch { data = { text }; }
-      res.json({ text: data.text ?? '' });
+      res.json({ text: data.text ?? '', engine: 'api' });
     } catch (e) {
       backendError(res, e);
     }
@@ -193,7 +338,7 @@ router.post('/transcribe', async (req, res) => {
  */
 router.post('/tts', async (req, res) => {
   const cfg = resolveConfig(req);
-  if (!cfg.baseUrl) return res.status(503).json({ error: 'No voice backend configured' });
+  if (!cfg.baseUrl) return res.status(503).json({ error: 'No voice backend configured for text-to-speech' });
   if (!isAllowedBackendUrl(cfg.baseUrl)) return res.status(400).json({ error: 'Invalid voice backend URL.' });
   const text = req.body?.text;
   if (typeof text !== 'string' || !text.trim()) return res.status(400).json({ error: 'text required' });

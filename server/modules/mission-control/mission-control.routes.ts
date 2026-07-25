@@ -13,6 +13,7 @@ import {
   type CreateMcSectionInput,
   type McAction,
   type McItemStatus,
+  type McProvider,
   type McSectionMode,
   type McSectionScope,
   type UpdateMcSectionInput,
@@ -164,7 +165,30 @@ function parseSectionBody(body: Record<string, unknown>, partial: boolean): Crea
       ? { resolve_tools: parseTools(body.resolve_tools) }
       : {}),
     ...(body.actions !== undefined ? { actions: parseActions(body.actions) } : {}),
+    ...(body.create_kanban_task !== undefined
+      ? { create_kanban_task: readBoolean(body.create_kanban_task, false) }
+      : {}),
+    ...(body.kanban_assignee_provider !== undefined
+      ? { kanban_assignee_provider: parseKanbanProvider(body.kanban_assignee_provider) }
+      : {}),
+    ...(body.kanban_review_provider !== undefined
+      ? { kanban_review_provider: parseKanbanProvider(body.kanban_review_provider) }
+      : {}),
   };
+}
+
+/** Optional agent provider for bridged kanban cards; null clears it. */
+function parseKanbanProvider(value: unknown): McProvider | null {
+  if (value === null || value === undefined || value === '') {
+    return null;
+  }
+  if (!isMcProvider(value)) {
+    throw new AppError(`Invalid kanban agent: ${String(value)}`, {
+      code: 'MC_INVALID_PROVIDER',
+      statusCode: 400,
+    });
+  }
+  return value;
 }
 
 // GET /summary — badge counts
@@ -301,8 +325,15 @@ router.post(
       req.body?.body && typeof req.body.body === 'object' && !Array.isArray(req.body.body)
         ? (req.body.body as Record<string, unknown>)
         : undefined;
-    const item = await applyItemAction(paramId(req.params.id), actionId, body);
-    res.json({ item, pendingCount: missionControlDb.countPending() });
+    const itemId = paramId(req.params.id);
+    const item = await applyItemAction(itemId, actionId, body);
+    const pendingCount = missionControlDb.countPending();
+    if (item === null) {
+      // Hard delete — row is gone; free dedupe key for a re-run.
+      res.json({ deleted: true, itemId, item: null, pendingCount });
+      return;
+    }
+    res.json({ deleted: false, item, pendingCount });
   }),
 );
 

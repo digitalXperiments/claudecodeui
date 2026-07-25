@@ -40,6 +40,7 @@ import ActivityIndicator from './ActivityIndicator';
 import ImageAttachment from './ImageAttachment';
 import FileAttachmentChip from './FileAttachmentChip';
 import VoiceInputButton from './VoiceInputButton';
+import MicDevicePicker from './MicDevicePicker';
 import PermissionRequestsBanner from './PermissionRequestsBanner';
 import TokenUsageSummary from './TokenUsageSummary';
 import QueuedMessageCard from './QueuedMessageCard';
@@ -458,20 +459,23 @@ export default function ChatComposer({
             </PromptInputButton>
 
             {onVoiceTranscript ? (
-              <VoiceInputButton
-                state={voiceState}
-                onToggle={voiceToggle}
-                errorMsg={voiceError}
-                available={voiceAvailable}
-                disabledReason={
-                  voiceAvailable
-                    ? null
-                    : t('voice.enableInSettings', {
-                        defaultValue:
-                          'Enable Voice in Settings → Voice and configure STT to use the mic',
-                      })
-                }
-              />
+              <span className="inline-flex items-center">
+                <VoiceInputButton
+                  state={voiceState}
+                  onToggle={voiceToggle}
+                  errorMsg={voiceError}
+                  available={voiceAvailable}
+                  disabledReason={
+                    voiceAvailable
+                      ? null
+                      : t('voice.enableInSettings', {
+                          defaultValue:
+                            'Enable Voice in Settings → Voice and configure STT to use the mic',
+                        })
+                  }
+                />
+                {voiceAvailable ? <MicDevicePicker disabled={isRecording || isTranscribing} /> : null}
+              </span>
             ) : null}
 
             {(() => {

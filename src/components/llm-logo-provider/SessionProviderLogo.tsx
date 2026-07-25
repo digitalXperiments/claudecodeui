@@ -6,6 +6,7 @@ import OpenCodeLogo from './OpenCodeLogo';
 import GrokLogo from './GrokLogo';
 import KimiLogo from './KimiLogo';
 import AgyLogo from './AgyLogo';
+import PiLogo from './PiLogo';
 
 type SessionProviderLogoProps = {
   provider?: LLMProvider | string | null;
@@ -38,6 +39,10 @@ export default function SessionProviderLogo({
 
   if (provider === 'agy') {
     return <AgyLogo className={className} />;
+  }
+
+  if (provider === 'pi') {
+    return <PiLogo className={className} />;
   }
 
   return <ClaudeLogo className={className} />;

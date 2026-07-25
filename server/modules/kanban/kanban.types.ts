@@ -9,6 +9,7 @@ export const KANBAN_PROVIDERS: readonly LLMProvider[] = [
   'grok',
   'kimi',
   'agy',
+  'pi',
 ] as const;
 
 export function isKanbanProvider(value: unknown): value is LLMProvider {
@@ -55,15 +56,16 @@ export type KanbanTaskTools = {
   [key: string]: unknown;
 };
 
-export type KanbanBoardScope = 'project' | 'global';
-
 /** Raw board row as stored in SQLite. */
 export type KanbanBoardRow = {
   board_id: string;
+  /**
+   * Kept for schema compatibility only. Boards are global-only now, so this is
+   * always null — a task's own `project_id` is the load-bearing project link.
+   */
   project_id: string | null;
   name: string;
   columns_json: string;
-  scope: KanbanBoardScope;
   created_at: string;
   updated_at: string;
 };
@@ -145,10 +147,8 @@ export type CreateCommentInput = {
 };
 
 export type CreateBoardInput = {
-  projectId: string | null;
   name: string;
   columns?: KanbanColumn[];
-  scope?: KanbanBoardScope;
 };
 
 export type CreateTaskInput = {

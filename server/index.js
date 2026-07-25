@@ -44,6 +44,10 @@ import {
     abortAgySession,
 } from './agy-cli.js';
 import {
+    spawnPi,
+    abortPiSession,
+} from './pi-cli.js';
+import {
     queryCodex,
     abortCodexSession,
 } from './openai-codex.js';
@@ -144,6 +148,7 @@ const providerSpawnFns = {
     grok: spawnGrok,
     kimi: spawnKimi,
     agy: spawnAgy,
+    pi: spawnPi,
 };
 
 // Kanban runner reuses the same runtimes; automation reconciles task/run status
@@ -172,6 +177,7 @@ const wss = createWebSocketServer(server, {
             grok: abortGrokSession,
             kimi: abortKimiSession,
             agy: abortAgySession,
+            pi: abortPiSession,
         },
         resolveToolApproval,
         getPendingApprovalsForSession,

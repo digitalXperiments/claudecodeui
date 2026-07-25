@@ -28,6 +28,9 @@ export type McSection = {
   resolve_prompt: string;
   resolve_tools: string[];
   actions: McAction[];
+  create_kanban_task: boolean;
+  kanban_assignee_provider: string | null;
+  kanban_review_provider: string | null;
   last_run_at: string | null;
   last_run_error: string | null;
   created_at: string;
@@ -73,6 +76,9 @@ export type McSectionInput = {
   resolve_prompt?: string;
   resolve_tools?: string[];
   actions?: McAction[];
+  create_kanban_task?: boolean;
+  kanban_assignee_provider?: string | null;
+  kanban_review_provider?: string | null;
 };
 
 async function parseJson<T>(res: Response): Promise<T> {
@@ -155,7 +161,12 @@ export const missionControlApi = {
     itemId: string,
     actionId: string,
     body?: Record<string, unknown>,
-  ): Promise<{ item: McItem; pendingCount: number }> {
+  ): Promise<{
+    item: McItem | null;
+    deleted?: boolean;
+    itemId?: string;
+    pendingCount: number;
+  }> {
     const res = await authenticatedFetch(
       `/api/mission-control/items/${encodeURIComponent(itemId)}/actions`,
       {

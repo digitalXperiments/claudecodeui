@@ -21,6 +21,8 @@ export default function AgentCategoryContentSection({
   onCodexPermissionModeChange,
   agyPermissionMode,
   onAgyPermissionModeChange,
+  piPermissionMode,
+  onPiPermissionModeChange,
   projects,
 }: AgentCategoryContentSectionProps) {
   return (
@@ -82,6 +84,14 @@ export default function AgentCategoryContentSection({
           agent="agy"
           permissionMode={agyPermissionMode}
           onPermissionModeChange={onAgyPermissionModeChange}
+        />
+      )}
+
+      {selectedCategory === 'permissions' && selectedAgent === 'pi' && (
+        <PermissionsContent
+          agent="pi"
+          permissionMode={piPermissionMode}
+          onPermissionModeChange={onPiPermissionModeChange}
         />
       )}
 

@@ -122,9 +122,12 @@
     }
   },
   "appearanceSettings": {
-    "darkMode": {
-      "label": "다크 모드",
-      "description": "라이트/다크 테마 전환"
+    "theme": {
+      "label": "테마",
+      "description": "라이트 또는 다크 테마를 선택하거나 시스템 설정을 따릅니다",
+      "light": "라이트",
+      "dark": "다크",
+      "system": "시스템"
     },
     "projectSorting": {
       "label": "프로젝트 정렬",

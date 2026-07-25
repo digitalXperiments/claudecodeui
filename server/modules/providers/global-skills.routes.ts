@@ -5,6 +5,7 @@ import { projectMemoryService } from '@/modules/providers/services/project-memor
 import { MEMORY_SKILL_DIRECTORY_NAME } from '@/modules/providers/shared/memory/memory-skill.template.js';
 import type {
   GlobalSkillCreateInput,
+  GlobalSkillScope,
   ProviderSkillCreateEntry,
   ProviderSkillCreateFile,
 } from '@/shared/types.js';
@@ -110,7 +111,26 @@ const parseGlobalSkillCreatePayload = (payload: unknown): GlobalSkillCreateInput
     } satisfies ProviderSkillCreateEntry;
   });
 
-  return { entries };
+  const scope: GlobalSkillScope | undefined = readOptionalString(body.scope) as GlobalSkillScope | undefined;
+  if (scope && scope !== 'all' && scope !== 'projects') {
+    throw new AppError('scope must be "all" or "projects".', {
+      code: 'GLOBAL_SKILL_SCOPE_INVALID',
+      statusCode: 400,
+    });
+  }
+
+  let projects: string[] | undefined;
+  if (scope === 'projects') {
+    if (!Array.isArray(body.projects) || body.projects.length === 0) {
+      throw new AppError('projects must be a non-empty array of workspace paths.', {
+        code: 'GLOBAL_SKILL_PROJECTS_REQUIRED',
+        statusCode: 400,
+      });
+    }
+    projects = body.projects.map((project, index) => readRequiredString(project, `projects[${index}]`));
+  }
+
+  return { entries, ...(scope ? { scope } : {}), projects };
 };
 
 const readPathParam = (value: unknown, name: string): string => {
@@ -162,6 +182,35 @@ router.get(
     const result = await globalSkillsService.getGlobalSkillContent({
       directoryName: readPathParam(req.params.directoryName, 'directoryName'),
     });
+    res.json(createApiSuccessResponse(result));
+  }),
+);
+
+router.put(
+  '/:directoryName/scope',
+  asyncHandler(async (req: Request, res: Response) => {
+    const directoryName = readPathParam(req.params.directoryName, 'directoryName');
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const scope = readRequiredString(body.scope, 'scope');
+    if (scope !== 'all' && scope !== 'projects') {
+      throw new AppError('scope must be "all" or "projects".', {
+        code: 'GLOBAL_SKILL_SCOPE_INVALID',
+        statusCode: 400,
+      });
+    }
+
+    let projects: string[] | undefined;
+    if (scope === 'projects') {
+      if (!Array.isArray(body.projects) || body.projects.length === 0) {
+        throw new AppError('projects must be a non-empty array of workspace paths.', {
+          code: 'GLOBAL_SKILL_PROJECTS_REQUIRED',
+          statusCode: 400,
+        });
+      }
+      projects = body.projects.map((project, index) => readRequiredString(project, `projects[${index}]`));
+    }
+
+    const result = await globalSkillsService.setGlobalSkillScope({ directoryName, scope, projects });
     res.json(createApiSuccessResponse(result));
   }),
 );

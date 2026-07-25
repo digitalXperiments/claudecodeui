@@ -14,7 +14,7 @@ import {
   X,
 } from 'lucide-react';
 
-import { Button } from '../../../shared/view/ui';
+import { Button, Pill, PillBar } from '../../../shared/view/ui';
 import type { Project } from '../../../types/app';
 import { authenticatedFetch } from '../../../utils/api';
 import {
@@ -33,7 +33,7 @@ type MissionControlPanelProps = {
 
 type ModelOption = { value: string; label: string };
 
-const PROVIDERS = ['claude', 'grok', 'opencode', 'codex', 'cursor', 'kimi', 'agy'] as const;
+const PROVIDERS = ['claude', 'grok', 'opencode', 'codex', 'cursor', 'kimi', 'agy', 'pi'] as const;
 
 const emptyForm = (): McSectionInput => ({
   title: '',
@@ -50,6 +50,9 @@ const emptyForm = (): McSectionInput => ({
   produce_tools: [],
   resolve_prompt: '',
   resolve_tools: [],
+  create_kanban_task: false,
+  kanban_assignee_provider: null,
+  kanban_review_provider: null,
   enabled: true,
 });
 
@@ -344,6 +347,9 @@ export default function MissionControlPanel({
       produce_tools: section.produce_tools,
       resolve_prompt: section.resolve_prompt,
       resolve_tools: section.resolve_tools,
+      create_kanban_task: section.create_kanban_task,
+      kanban_assignee_provider: section.kanban_assignee_provider,
+      kanban_review_provider: section.kanban_review_provider,
       enabled: section.enabled,
     });
     setProduceMcp(extractServerNamesFromTools(section.produce_tools));
@@ -462,11 +468,19 @@ export default function MissionControlPanel({
   };
 
   const actOnItem = async (item: McItem, actionId: string) => {
+    const action = item.actions.find((a) => a.id === actionId);
+    if (action?.kind === 'delete') {
+      const ok = window.confirm(
+        `Delete “${item.title}” permanently?\n\nThis frees its dedupe key so a re-run can recreate it. Dismiss keeps the key and blocks re-create.`,
+      );
+      if (!ok) return;
+    }
+
     setActingItemId(item.item_id);
     setError(null);
     try {
       let body: Record<string, unknown> | undefined;
-      if (editingBodyId === item.item_id) {
+      if (editingBodyId === item.item_id && action?.kind !== 'delete') {
         const parsed = parseBodyDraft();
         if (!parsed) {
           setActingItemId(null);
@@ -477,8 +491,13 @@ export default function MissionControlPanel({
       const result = await missionControlApi.applyAction(item.item_id, actionId, body);
       setPendingCount(result.pendingCount);
       onPendingCountChange?.(result.pendingCount);
-      cancelBodyEdit();
-      await refresh();
+      if (result.deleted) {
+        setItems((prev) => prev.filter((i) => i.item_id !== item.item_id));
+        cancelBodyEdit();
+      } else {
+        cancelBodyEdit();
+        await refresh();
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Action failed');
     } finally {
@@ -530,34 +549,44 @@ export default function MissionControlPanel({
 
   if (!isOpen) return null;
 
+  const selectedSection =
+    selectedSectionId === 'all'
+      ? null
+      : sections.find((s) => s.section_id === selectedSectionId) ?? null;
+
   return (
     <div
-      className="modal-backdrop fixed inset-0 z-[9999] flex items-center justify-center bg-background/80 backdrop-blur-sm md:p-4"
+      className="modal-backdrop fixed inset-0 z-[9999] flex items-stretch justify-center bg-background md:items-center md:bg-background/80 md:p-4 md:backdrop-blur-sm"
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="relative flex h-full w-full flex-col overflow-hidden border border-border bg-background shadow-2xl md:h-[92vh] md:max-w-6xl md:rounded-xl">
+      <div className="relative flex h-dvh max-h-dvh w-full flex-col overflow-hidden border-0 bg-background shadow-none md:h-[92vh] md:max-h-[92vh] md:max-w-6xl md:rounded-xl md:border md:border-border md:shadow-2xl">
         {/* Header */}
-        <div className="flex flex-shrink-0 items-center justify-between border-b border-border px-4 py-3 md:px-5">
-          <div className="flex items-center gap-2.5">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
+        <div className="flex flex-shrink-0 items-center justify-between gap-2 border-b border-border px-3 py-2.5 pt-[max(0.625rem,env(safe-area-inset-top))] md:px-5 md:py-3">
+          <div className="flex min-w-0 items-center gap-2.5">
+            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/10">
               <Radar className="h-4 w-4 text-primary" />
             </div>
-            <div>
-              <h2 className="text-base font-semibold text-foreground">Mission Control</h2>
-              <p className="text-[11px] text-muted-foreground">
+            <div className="min-w-0">
+              <h2 className="truncate text-base font-semibold text-foreground">Mission Control</h2>
+              <p className="hidden truncate text-[11px] text-muted-foreground sm:block">
                 Produce → review → resolve automations
                 {pendingCount > 0 ? ` · ${pendingCount} need attention` : ''}
               </p>
+              {pendingCount > 0 ? (
+                <p className="truncate text-[11px] text-muted-foreground sm:hidden">
+                  {pendingCount} need attention
+                </p>
+              ) : null}
             </div>
           </div>
-          <div className="flex items-center gap-1.5">
+          <div className="flex shrink-0 items-center gap-1">
             <Button
               variant="ghost"
               size="sm"
               onClick={() => void openImport()}
-              className="h-9 gap-1.5 px-2 text-xs"
+              className="h-10 touch-manipulation gap-1.5 px-2 text-xs md:h-9"
               title="Import from legacy Mission Control DB"
             >
               <Download className="h-3.5 w-3.5" />
@@ -568,30 +597,116 @@ export default function MissionControlPanel({
               size="sm"
               onClick={() => void refresh()}
               disabled={loading}
-              className="h-9 w-9 p-0"
+              className="h-10 w-10 touch-manipulation p-0 md:h-9 md:w-9"
               title="Refresh"
             >
               <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
             </Button>
-            <Button variant="ghost" size="sm" onClick={onClose} className="h-9 w-9 p-0">
-              <X className="h-4 w-4" />
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={onClose}
+              className="h-10 w-10 touch-manipulation p-0 md:h-9 md:w-9"
+            >
+              <X className="h-5 w-5 md:h-4 md:w-4" />
             </Button>
           </div>
         </div>
 
         {error ? (
-          <div className="flex items-start gap-2 border-b border-amber-500/20 bg-amber-500/10 px-4 py-2 text-sm text-amber-800 dark:text-amber-200">
+          <div className="flex items-start gap-2 border-b border-amber-500/20 bg-amber-500/10 px-3 py-2 text-sm text-amber-800 dark:text-amber-200 md:px-4">
             <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
-            <span className="min-w-0 flex-1">{error}</span>
-            <button type="button" className="shrink-0 text-xs underline" onClick={() => setError(null)}>
+            <span className="min-w-0 flex-1 break-words">{error}</span>
+            <button
+              type="button"
+              className="shrink-0 touch-manipulation text-xs underline"
+              onClick={() => setError(null)}
+            >
               Dismiss
             </button>
           </div>
         ) : null}
 
-        <div className="flex min-h-0 flex-1 flex-col md:flex-row">
-          {/* Sections sidebar */}
-          <aside className="flex w-full flex-shrink-0 flex-col border-b border-border md:w-64 md:border-b-0 md:border-r">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col md:flex-row">
+          {/* Mobile: horizontal section pills */}
+          <div className="flex flex-shrink-0 flex-col gap-2 border-b border-border px-3 py-2 md:hidden">
+            <div className="flex items-center gap-2">
+              <PillBar className="scrollbar-hide min-w-0 flex-1 overflow-x-auto">
+                <Pill
+                  isActive={selectedSectionId === 'all'}
+                  onClick={() => setSelectedSectionId('all')}
+                  className="flex-shrink-0 whitespace-nowrap"
+                >
+                  All
+                </Pill>
+                {sections.map((section) => (
+                  <Pill
+                    key={section.section_id}
+                    isActive={selectedSectionId === section.section_id}
+                    onClick={() => setSelectedSectionId(section.section_id)}
+                    className="max-w-40 flex-shrink-0 truncate whitespace-nowrap"
+                  >
+                    {section.title}
+                    {!section.enabled ? ' (off)' : ''}
+                  </Pill>
+                ))}
+              </PillBar>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-9 w-9 shrink-0 touch-manipulation p-0"
+                onClick={openCreate}
+                title="New section"
+              >
+                <Plus className="h-4 w-4" />
+              </Button>
+            </div>
+            {selectedSection ? (
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">
+                  {selectedSection.scope === 'project'
+                    ? projectNameById.get(selectedSection.project_id ?? '') || 'Project'
+                    : 'Global'}
+                  {' · '}
+                  {selectedSection.mode === 'fire_and_forget' ? 'Fire & forget' : 'Review'}
+                  {selectedSection.schedule_cron ? ` · ${selectedSection.schedule_cron}` : ''}
+                </span>
+                <button
+                  type="button"
+                  className="inline-flex touch-manipulation items-center gap-1 rounded-md bg-muted px-2 py-1.5 text-[11px] font-medium text-foreground"
+                  onClick={() => void runNow(selectedSection.section_id)}
+                  disabled={runningSectionId === selectedSection.section_id}
+                >
+                  {runningSectionId === selectedSection.section_id ? (
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                  ) : (
+                    <Play className="h-3 w-3" />
+                  )}
+                  Run
+                </button>
+                <button
+                  type="button"
+                  className="touch-manipulation rounded-md bg-muted px-2 py-1.5 text-[11px] font-medium text-foreground"
+                  onClick={() => openEdit(selectedSection)}
+                >
+                  Edit
+                </button>
+                <button
+                  type="button"
+                  className="touch-manipulation rounded-md bg-muted px-2 py-1.5 text-[11px] text-red-600 dark:text-red-400"
+                  onClick={() => void deleteSection(selectedSection.section_id)}
+                  aria-label="Delete section"
+                >
+                  <Trash2 className="h-3 w-3" />
+                </button>
+              </div>
+            ) : sections.length === 0 && !loading ? (
+              <p className="text-[11px] text-muted-foreground">No sections yet. Tap + to create one.</p>
+            ) : null}
+          </div>
+
+          {/* Desktop: vertical sections sidebar */}
+          <aside className="hidden w-64 flex-shrink-0 flex-col border-r border-border md:flex">
             <div className="flex items-center justify-between px-3 py-2">
               <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
                 Sections
@@ -690,12 +805,12 @@ export default function MissionControlPanel({
 
           {/* Queue */}
           <main className="flex min-h-0 min-w-0 flex-1 flex-col">
-            <div className="flex flex-shrink-0 items-center justify-between gap-2 border-b border-border px-4 py-2">
-              <div className="flex items-center gap-2">
+            <div className="flex flex-shrink-0 items-center justify-between gap-2 border-b border-border px-3 py-2 md:px-4">
+              <div className="scrollbar-hide flex min-w-0 items-center gap-1 overflow-x-auto sm:gap-2">
                 <button
                   type="button"
                   onClick={() => setStatusFilter('actionable')}
-                  className={`rounded-md px-2 py-1 text-xs ${
+                  className={`touch-manipulation whitespace-nowrap rounded-md px-2.5 py-1.5 text-xs ${
                     statusFilter === 'actionable'
                       ? 'bg-accent font-medium text-foreground'
                       : 'text-muted-foreground'
@@ -706,7 +821,7 @@ export default function MissionControlPanel({
                 <button
                   type="button"
                   onClick={() => setStatusFilter('all')}
-                  className={`rounded-md px-2 py-1 text-xs ${
+                  className={`touch-manipulation whitespace-nowrap rounded-md px-2.5 py-1.5 text-xs ${
                     statusFilter === 'all'
                       ? 'bg-accent font-medium text-foreground'
                       : 'text-muted-foreground'
@@ -719,7 +834,7 @@ export default function MissionControlPanel({
                 <Button
                   size="sm"
                   variant="outline"
-                  className="h-8 gap-1.5 text-xs"
+                  className="hidden h-8 shrink-0 touch-manipulation gap-1.5 text-xs md:inline-flex"
                   disabled={runningSectionId === selectedSectionId}
                   onClick={() => void runNow(selectedSectionId)}
                 >
@@ -733,7 +848,7 @@ export default function MissionControlPanel({
               ) : null}
             </div>
 
-            <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
+            <div className="min-h-0 flex-1 space-y-3 overflow-y-auto overflow-x-hidden p-3 pb-[max(1rem,env(safe-area-inset-bottom))] md:p-4">
               {loading && items.length === 0 ? (
                 <div className="flex items-center justify-center gap-2 py-16 text-sm text-muted-foreground">
                   <Loader2 className="h-4 w-4 animate-spin" /> Loading…
@@ -741,7 +856,7 @@ export default function MissionControlPanel({
               ) : null}
 
               {!loading && items.length === 0 ? (
-                <div className="flex flex-col items-center justify-center gap-2 py-16 text-center">
+                <div className="flex flex-col items-center justify-center gap-2 px-2 py-16 text-center">
                   <Clock className="h-8 w-8 text-muted-foreground/40" />
                   <p className="text-sm text-muted-foreground">
                     {statusFilter === 'actionable'
@@ -758,15 +873,15 @@ export default function MissionControlPanel({
                 return (
                   <article
                     key={item.item_id}
-                    className="rounded-xl border border-border bg-card p-4 shadow-sm"
+                    className="rounded-xl border border-border bg-card p-3 shadow-sm sm:p-4"
                   >
                     <div className="mb-2 flex flex-wrap items-start justify-between gap-2">
-                      <div className="min-w-0">
-                        <h3 className="text-sm font-semibold text-foreground">{item.title}</h3>
+                      <div className="min-w-0 flex-1">
+                        <h3 className="break-words text-sm font-semibold text-foreground">{item.title}</h3>
                         {item.summary ? (
-                          <p className="mt-0.5 text-xs text-muted-foreground">{item.summary}</p>
+                          <p className="mt-0.5 break-words text-xs text-muted-foreground">{item.summary}</p>
                         ) : null}
-                        <p className="mt-1 text-[10px] text-muted-foreground/80">
+                        <p className="mt-1 break-words text-[10px] text-muted-foreground/80">
                           {section?.title ?? item.section_id}
                           {item.provider ? ` · ${item.provider}` : ''}
                           {item.model ? `/${item.model}` : ''}
@@ -775,28 +890,31 @@ export default function MissionControlPanel({
                         </p>
                       </div>
                       <span
-                        className={`rounded-full px-2 py-0.5 text-[10px] font-medium capitalize ${statusBadgeClass(item.status)}`}
+                        className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium capitalize ${statusBadgeClass(item.status)}`}
                       >
                         {item.status}
                       </span>
                     </div>
 
                     {item.error ? (
-                      <p className="mb-2 rounded-md bg-red-500/10 px-2 py-1.5 text-xs text-red-700 dark:text-red-300">
+                      <p className="mb-2 break-words rounded-md bg-red-500/10 px-2 py-1.5 text-xs text-red-700 dark:text-red-300">
                         {item.error}
                       </p>
                     ) : null}
 
-                    <div className="mb-1 flex items-center justify-between">
+                    <div className="mb-1 flex items-center justify-between gap-2">
                       <p className="text-[10px] font-medium uppercase text-muted-foreground">Body</p>
                       {actionable ? (
                         <button
                           type="button"
-                          className="inline-flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground"
+                          className="inline-flex touch-manipulation items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground"
                           onClick={() => (isEditingBody ? cancelBodyEdit() : startBodyEdit(item))}
                         >
                           <Pencil className="h-3 w-3" />
-                          {isEditingBody ? 'Cancel edit' : 'Edit before approve'}
+                          <span className="sm:hidden">{isEditingBody ? 'Cancel' : 'Edit'}</span>
+                          <span className="hidden sm:inline">
+                            {isEditingBody ? 'Cancel edit' : 'Edit before approve'}
+                          </span>
                         </button>
                       ) : null}
                     </div>
@@ -804,7 +922,7 @@ export default function MissionControlPanel({
                     {isEditingBody ? (
                       <div className="mb-3">
                         <textarea
-                          className="field-input min-h-[140px] font-mono text-[11px]"
+                          className="field-input min-h-[120px] font-mono text-[11px] sm:min-h-[140px]"
                           value={bodyDraft}
                           onChange={(e) => {
                             setBodyDraft(e.target.value);
@@ -820,7 +938,7 @@ export default function MissionControlPanel({
                         )}
                       </div>
                     ) : (
-                      <pre className="mb-3 max-h-48 overflow-auto rounded-lg bg-muted/50 p-2.5 text-[11px] leading-relaxed text-foreground/90">
+                      <pre className="mb-3 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-muted/50 p-2.5 text-[11px] leading-relaxed text-foreground/90 sm:max-h-48 sm:whitespace-pre sm:break-normal">
                         {JSON.stringify(item.body, null, 2)}
                       </pre>
                     )}
@@ -830,32 +948,46 @@ export default function MissionControlPanel({
                         <p className="mb-1 text-[10px] font-medium uppercase text-muted-foreground">
                           Result
                         </p>
-                        <pre className="max-h-32 overflow-auto rounded-lg bg-emerald-500/5 p-2.5 text-[11px]">
+                        <pre className="max-h-28 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-emerald-500/5 p-2.5 text-[11px] sm:max-h-32 sm:whitespace-pre sm:break-normal">
                           {JSON.stringify(item.result, null, 2)}
                         </pre>
                       </div>
                     ) : null}
 
-                    {actionable && item.actions.length > 0 ? (
-                      <div className="flex flex-wrap gap-2">
-                        {item.actions.map((action) => (
-                          <button
-                            key={action.id}
-                            type="button"
-                            disabled={actingItemId === item.item_id}
-                            onClick={() => void actOnItem(item, action.id)}
-                            className={`inline-flex items-center gap-1 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors disabled:opacity-50 ${actionButtonClass(action.style)}`}
-                          >
-                            {actingItemId === item.item_id ? (
-                              <Loader2 className="h-3 w-3 animate-spin" />
-                            ) : action.kind === 'approve' ? (
-                              <Check className="h-3 w-3" />
-                            ) : null}
-                            {action.label}
-                          </button>
-                        ))}
-                      </div>
-                    ) : null}
+                    {(() => {
+                      // Full review actions on pending/failed; Delete alone on
+                      // terminal rows so history can free a dedupe key for re-run.
+                      const visibleActions = actionable
+                        ? item.actions
+                        : item.status !== 'resolving'
+                          ? item.actions.filter((a) => a.kind === 'delete' || a.id === 'delete')
+                          : [];
+                      if (visibleActions.length === 0) return null;
+                      return (
+                        <div className="flex flex-wrap gap-2">
+                          {visibleActions.map((action) => (
+                            <button
+                              key={action.id}
+                              type="button"
+                              disabled={actingItemId === item.item_id}
+                              onClick={() => void actOnItem(item, action.id)}
+                              className={`inline-flex min-h-9 touch-manipulation items-center gap-1 rounded-lg px-3 py-2 text-xs font-medium transition-colors disabled:opacity-50 sm:min-h-0 sm:py-1.5 ${actionButtonClass(action.style)}`}
+                            >
+                              {actingItemId === item.item_id ? (
+                                <Loader2 className="h-3 w-3 animate-spin" />
+                              ) : action.kind === 'approve' ? (
+                                <Check className="h-3 w-3" />
+                              ) : action.kind === 'delete' ? (
+                                <Trash2 className="h-3 w-3" />
+                              ) : action.kind === 'dismiss' ? (
+                                <X className="h-3 w-3" />
+                              ) : null}
+                              {action.label}
+                            </button>
+                          ))}
+                        </div>
+                      );
+                    })()}
                   </article>
                 );
               })}
@@ -863,19 +995,24 @@ export default function MissionControlPanel({
           </main>
         </div>
 
-        {/* Section editor */}
+        {/* Section editor — full screen on mobile */}
         {showEditor ? (
-          <div className="absolute inset-0 z-10 flex items-end justify-center bg-background/70 p-0 backdrop-blur-sm md:items-center md:p-6">
-            <div className="flex max-h-[95vh] w-full flex-col overflow-hidden rounded-t-xl border border-border bg-background shadow-2xl md:max-h-[85vh] md:max-w-2xl md:rounded-xl">
-              <div className="flex items-center justify-between border-b border-border px-4 py-3">
+          <div className="absolute inset-0 z-10 flex items-stretch justify-center bg-background md:items-center md:bg-background/70 md:p-6 md:backdrop-blur-sm">
+            <div className="flex h-full max-h-dvh w-full flex-col overflow-hidden border-0 bg-background shadow-none md:h-auto md:max-h-[85vh] md:max-w-2xl md:rounded-xl md:border md:border-border md:shadow-2xl">
+              <div className="flex items-center justify-between border-b border-border px-4 py-3 pt-[max(0.75rem,env(safe-area-inset-top))] md:pt-3">
                 <h3 className="text-sm font-semibold">
                   {editingId ? 'Edit section' : 'New section'}
                 </h3>
-                <Button variant="ghost" size="sm" className="h-8 w-8 p-0" onClick={() => setShowEditor(false)}>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-10 w-10 touch-manipulation p-0 md:h-8 md:w-8"
+                  onClick={() => setShowEditor(false)}
+                >
                   <X className="h-4 w-4" />
                 </Button>
               </div>
-              <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
+              <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
                 <Field label="Title">
                   <input
                     className="field-input"
@@ -885,7 +1022,7 @@ export default function MissionControlPanel({
                   />
                 </Field>
 
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                   <Field label="Scope">
                     <select
                       className="field-input"
@@ -937,7 +1074,7 @@ export default function MissionControlPanel({
                   </Field>
                 ) : null}
 
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                   <Field label="Provider">
                     <select
                       className="field-input"
@@ -1024,6 +1161,65 @@ export default function MissionControlPanel({
                         onToggle={(name) => toggleMcp(resolveMcp, setResolveMcp, name)}
                       />
                     </Field>
+
+                    <div className="rounded-md border border-border p-3">
+                      <label className="flex items-center gap-2 text-xs font-medium">
+                        <input
+                          type="checkbox"
+                          checked={Boolean(form.create_kanban_task)}
+                          onChange={(e) =>
+                            setForm((f) => ({ ...f, create_kanban_task: e.target.checked }))
+                          }
+                        />
+                        Create a Kanban card on approval
+                      </label>
+                      <p className="mt-1 text-[11px] text-muted-foreground">
+                        On Approve, add a card to the global board&apos;s backlog (linked to the
+                        created ticket). Attach a project and move it to In Progress to auto-run.
+                      </p>
+                      {form.create_kanban_task ? (
+                        <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                          <Field label="Default implementation agent">
+                            <select
+                              className="field-input"
+                              value={form.kanban_assignee_provider ?? ''}
+                              onChange={(e) =>
+                                setForm((f) => ({
+                                  ...f,
+                                  kanban_assignee_provider: e.target.value || null,
+                                }))
+                              }
+                            >
+                              <option value="">None (set per card)</option>
+                              {PROVIDERS.map((p) => (
+                                <option key={p} value={p}>
+                                  {p}
+                                </option>
+                              ))}
+                            </select>
+                          </Field>
+                          <Field label="Default review agent">
+                            <select
+                              className="field-input"
+                              value={form.kanban_review_provider ?? ''}
+                              onChange={(e) =>
+                                setForm((f) => ({
+                                  ...f,
+                                  kanban_review_provider: e.target.value || null,
+                                }))
+                              }
+                            >
+                              <option value="">None</option>
+                              {PROVIDERS.map((p) => (
+                                <option key={p} value={p}>
+                                  {p}
+                                </option>
+                              ))}
+                            </select>
+                          </Field>
+                        </div>
+                      ) : null}
+                    </div>
                   </>
                 ) : null}
 
@@ -1056,11 +1252,11 @@ export default function MissionControlPanel({
                   </label>
                 </div>
               </div>
-              <div className="flex justify-end gap-2 border-t border-border px-4 py-3">
-                <Button variant="ghost" size="sm" onClick={() => setShowEditor(false)}>
+              <div className="flex justify-end gap-2 border-t border-border px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:pb-3">
+                <Button variant="ghost" size="sm" className="touch-manipulation" onClick={() => setShowEditor(false)}>
                   Cancel
                 </Button>
-                <Button size="sm" onClick={() => void saveSection()} disabled={saving}>
+                <Button size="sm" className="touch-manipulation" onClick={() => void saveSection()} disabled={saving}>
                   {saving ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : null}
                   {editingId ? 'Save' : 'Create'}
                 </Button>
@@ -1071,8 +1267,8 @@ export default function MissionControlPanel({
 
         {/* Import dialog */}
         {showImport ? (
-          <div className="absolute inset-0 z-20 flex items-center justify-center bg-background/70 p-4 backdrop-blur-sm">
-            <div className="w-full max-w-md rounded-xl border border-border bg-background p-4 shadow-2xl">
+          <div className="absolute inset-0 z-20 flex items-end justify-center bg-background/70 p-0 backdrop-blur-sm sm:items-center sm:p-4">
+            <div className="w-full max-w-md rounded-t-xl border border-border bg-background p-4 pb-[max(1rem,env(safe-area-inset-bottom))] shadow-2xl sm:rounded-xl sm:pb-4">
               <h3 className="mb-1 text-sm font-semibold">Import from Mission Control</h3>
               <p className="mb-3 text-xs text-muted-foreground">
                 Import section configs (prompts, MCP, schedule, engine) from the legacy
@@ -1161,7 +1357,7 @@ function McpMultiSelect({
           <label
             key={name}
             className={`flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-xs transition-colors ${
-              checked ? 'bg-primary/10 text-foreground' : 'hover:bg-muted/60 text-muted-foreground'
+              checked ? 'bg-primary/10 text-foreground' : 'text-muted-foreground hover:bg-muted/60'
             }`}
           >
             <input

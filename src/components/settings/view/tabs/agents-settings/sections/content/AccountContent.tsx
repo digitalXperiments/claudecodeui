@@ -81,6 +81,15 @@ const agentConfig: Record<AgentProvider, AgentVisualConfig> = {
     subtextClass: 'text-sky-700 dark:text-sky-300',
     buttonClass: 'bg-sky-600 hover:bg-sky-700 active:bg-sky-800',
   },
+  pi: {
+    name: 'Pi',
+    description: 'Pi terminal coding agent (pi.dev)',
+    bgClass: 'bg-violet-50 dark:bg-violet-900/20',
+    borderClass: 'border-violet-200 dark:border-violet-800',
+    textClass: 'text-violet-900 dark:text-violet-100',
+    subtextClass: 'text-violet-700 dark:text-violet-300',
+    buttonClass: 'bg-violet-600 hover:bg-violet-700 active:bg-violet-800',
+  },
 };
 
 export default function AccountContent({ agent, authStatus, onLogin }: AccountContentProps) {

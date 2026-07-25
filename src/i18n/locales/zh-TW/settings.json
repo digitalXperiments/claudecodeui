@@ -123,9 +123,12 @@
     }
   },
   "appearanceSettings": {
-    "darkMode": {
-      "label": "深色模式",
-      "description": "切換淺色和深色佈景主題"
+    "theme": {
+      "label": "佈景主題",
+      "description": "選擇淺色或深色佈景主題，或跟隨系統設定",
+      "light": "淺色",
+      "dark": "深色",
+      "system": "跟隨系統"
     },
     "projectSorting": {
       "label": "專案排序",

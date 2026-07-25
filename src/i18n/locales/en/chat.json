@@ -21,7 +21,8 @@
     "opencode": "OpenCode",
     "grok": "Grok Build",
     "kimi": "Kimi",
-    "agy": "Antigravity"
+    "agy": "Antigravity",
+    "pi": "Pi"
   },
   "tools": {
     "settings": "Tool Settings",

@@ -37,7 +37,7 @@ async function withDb(runTest: (projectId: string) => void | Promise<void>): Pro
 
 test('scheduler registers a job per scheduled task and drops removed ones', async () => {
   await withDb((projectId) => {
-    const board = kanbanDb.createBoard({ projectId, name: 'Board' });
+    const board = kanbanDb.createBoard({ name: 'Board' });
     const task = kanbanDb.createTask({
       boardId: board.board_id,
       projectId,
@@ -58,7 +58,7 @@ test('scheduler registers a job per scheduled task and drops removed ones', asyn
 
 test('syncSchedules is a no-op before the scheduler is started', async () => {
   await withDb((projectId) => {
-    const board = kanbanDb.createBoard({ projectId, name: 'Board' });
+    const board = kanbanDb.createBoard({ name: 'Board' });
     kanbanDb.createTask({
       boardId: board.board_id,
       projectId,
@@ -73,7 +73,7 @@ test('syncSchedules is a no-op before the scheduler is started', async () => {
 
 test('an invalid cron expression is skipped without throwing', async () => {
   await withDb((projectId) => {
-    const board = kanbanDb.createBoard({ projectId, name: 'Board' });
+    const board = kanbanDb.createBoard({ name: 'Board' });
     kanbanDb.createTask({
       boardId: board.board_id,
       projectId,

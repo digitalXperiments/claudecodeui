@@ -66,7 +66,7 @@ test('runTask drives a successful implement run to Done when no review agent', a
       writer.send({ kind: 'complete', provider: 'claude', exitCode: 0, success: true });
     },
     async ({ projectId }) => {
-      const board = kanbanDb.createBoard({ projectId, name: 'Board' });
+      const board = kanbanDb.createBoard({ name: 'Board' });
       const task = kanbanDb.createTask({
         boardId: board.board_id,
         projectId,
@@ -98,7 +98,7 @@ test('successful implement with review agent moves to Review', async () => {
       writer.send({ kind: 'complete', provider: 'claude', exitCode: 0, success: true });
     },
     async ({ projectId }) => {
-      const board = kanbanDb.createBoard({ projectId, name: 'Board' });
+      const board = kanbanDb.createBoard({ name: 'Board' });
       const task = kanbanDb.createTask({
         boardId: board.board_id,
         projectId,
@@ -124,7 +124,7 @@ test('runTask marks the task failed on a non-zero exit', async () => {
       writer.send({ kind: 'complete', provider: 'claude', exitCode: 2, success: false });
     },
     async ({ projectId }) => {
-      const board = kanbanDb.createBoard({ projectId, name: 'Board' });
+      const board = kanbanDb.createBoard({ name: 'Board' });
       const task = kanbanDb.createTask({
         boardId: board.board_id,
         projectId,
@@ -143,7 +143,7 @@ test('runTask rejects a task with no assignee', async () => {
   await withRunner(
     () => undefined,
     async ({ projectId }) => {
-      const board = kanbanDb.createBoard({ projectId, name: 'Board' });
+      const board = kanbanDb.createBoard({ name: 'Board' });
       const task = kanbanDb.createTask({ boardId: board.board_id, projectId, title: 'Orphan' });
       await assert.rejects(
         () => kanbanRunner.runTask(task.task_id, 'manual'),

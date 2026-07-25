@@ -179,6 +179,18 @@ export const PERMISSION_MODE_COPY: Record<
       technical: 'agy --dangerously-skip-permissions',
     },
   },
+  pi: {
+    plan: {
+      label: 'Plan',
+      summary: 'Read-only tools only (read, grep, find, ls).',
+      technical: 'pi --tools read,grep,find,ls',
+    },
+    bypassPermissions: {
+      label: 'Full tools',
+      summary: 'All built-in tools (read, write, edit, bash). Pi has no permission popups.',
+      technical: 'pi (default tool set)',
+    },
+  },
 };
 
 export function getPermissionModeCopy(

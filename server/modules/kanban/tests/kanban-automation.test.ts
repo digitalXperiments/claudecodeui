@@ -33,7 +33,7 @@ async function withDb(runTest: (projectId: string) => void | Promise<void>): Pro
 
 test('reconcileKanbanOnBoot fails runs left running with no live registry entry', async () => {
   await withDb((projectId) => {
-    const board = kanbanDb.createBoard({ projectId, name: 'Board' });
+    const board = kanbanDb.createBoard({ name: 'Board' });
     const task = kanbanDb.createTask({
       boardId: board.board_id,
       projectId,
@@ -72,7 +72,7 @@ test('handleRunCompletion ignores sessions with no kanban run', async () => {
 
 test('handleRunCompletion treats exitCode 0 as success even without success flag', async () => {
   await withDb((projectId) => {
-    const board = kanbanDb.createBoard({ projectId, name: 'Board' });
+    const board = kanbanDb.createBoard({ name: 'Board' });
     const task = kanbanDb.createTask({
       boardId: board.board_id,
       projectId,
@@ -104,7 +104,7 @@ test('handleRunCompletion treats exitCode 0 as success even without success flag
 
 test('handleRunCompletion implement success with review agent moves to review', async () => {
   await withDb((projectId) => {
-    const board = kanbanDb.createBoard({ projectId, name: 'Board' });
+    const board = kanbanDb.createBoard({ name: 'Board' });
     const task = kanbanDb.createTask({
       boardId: board.board_id,
       projectId,
@@ -139,7 +139,7 @@ test('handleRunCompletion implement success with review agent moves to review', 
 
 test('handleRunCompletion review success moves to done', async () => {
   await withDb((projectId) => {
-    const board = kanbanDb.createBoard({ projectId, name: 'Board' });
+    const board = kanbanDb.createBoard({ name: 'Board' });
     const task = kanbanDb.createTask({
       boardId: board.board_id,
       projectId,

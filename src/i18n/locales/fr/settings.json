@@ -122,9 +122,12 @@
     }
   },
   "appearanceSettings": {
-    "darkMode": {
-      "label": "Mode sombre",
-      "description": "Basculer entre les thèmes clair et sombre"
+    "theme": {
+      "label": "Thème",
+      "description": "Choisissez un thème clair ou sombre, ou suivez le réglage du système",
+      "light": "Clair",
+      "dark": "Sombre",
+      "system": "Système"
     },
     "projectSorting": {
       "label": "Tri des projets",

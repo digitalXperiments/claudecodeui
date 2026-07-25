@@ -19,14 +19,11 @@ export type KanbanTaskTools = {
   [key: string]: unknown;
 };
 
-export type KanbanBoardScope = 'project' | 'global';
-
 export type KanbanBoard = {
   board_id: string;
   project_id: string | null;
   name: string;
   columns: KanbanColumn[];
-  scope: KanbanBoardScope;
   created_at: string;
   updated_at: string;
 };
@@ -99,6 +96,7 @@ export const KANBAN_PROVIDERS: { value: LLMProvider; label: string }[] = [
   { value: 'grok', label: 'Grok' },
   { value: 'kimi', label: 'Kimi' },
   { value: 'agy', label: 'Agy' },
+  { value: 'pi', label: 'Pi' },
 ];
 
 export const KANBAN_PERMISSION_MODES: { value: string; label: string }[] = [

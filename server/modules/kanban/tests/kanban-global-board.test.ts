@@ -32,7 +32,6 @@ async function withDb(runTest: (projectA: string, projectB: string) => void | Pr
 test('getOrCreateGlobalBoard is idempotent and has null project', async () => {
   await withDb(() => {
     const first = kanbanDb.getOrCreateGlobalBoard();
-    assert.equal(first.scope, 'global');
     assert.equal(first.project_id, null);
     const second = kanbanDb.getOrCreateGlobalBoard();
     assert.equal(second.board_id, first.board_id);
