@@ -56,7 +56,21 @@ the \`.md\` extension**, e.g. \`${MEMORY_SKILL_VAULT_FOLDER_TOKEN}/00-Overview.m
 | --- | --- | --- | --- |
 | Create / overwrite a note | \`obsidian_put_file\` | \`filename\`, \`content\` (strings) | Replaces the whole file. |
 | Append to a note (creates if missing) | \`obsidian_post_file\` | \`filename\`, \`content\` (strings) | Use this for Session logs. |
-| Insert at a heading / block | \`obsidian_patch_file\` | \`filename\`, \`operation\`, \`targetType\`, \`target\`, \`content\` | \`operation\`: \`append\`/\`prepend\`/\`replace\`; \`targetType\`: \`heading\`/\`block\`/\`frontmatter\`. |
+| Insert at a heading / block | \`obsidian_patch_file\` | \`filename\`, \`operation\`, \`targetType\`, \`target\`, \`content\`, **\`contentType: "text/markdown"\`** | \`operation\`: \`append\`/\`prepend\`/\`replace\`; \`targetType\`: \`heading\`/\`block\`/\`frontmatter\`. **Always pass \`contentType\`** — see below. |
+
+### ⚠️ \`obsidian_patch_file\` needs an explicit \`contentType\` or it genuinely fails
+
+Unlike \`obsidian_put_file\`/\`obsidian_post_file\` (which always send
+\`Content-Type: text/markdown\` for you), the underlying \`patch_file\` client only
+sets a \`Content-Type\` header when you pass \`contentType\` yourself — omitting it
+sends no header at all, and the Local REST API rejects the request with
+**\`Unknown or invalid Content-Type specified in Content-Type header. (40012)\`**.
+This is a **real failure** (nothing was written), not the false-positive below.
+
+Always call \`obsidian_patch_file\` with \`"contentType": "text/markdown"\` included.
+If you still get a 40012 error, the patch did not apply — fall back to
+\`obsidian_get_file\` + \`obsidian_put_file\` (read the note, edit it in full,
+overwrite) instead of retrying \`patch_file\`.
 
 ### ⚠️ Writes report a false error — treat \`Unexpected end of JSON input\` as SUCCESS
 

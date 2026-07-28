@@ -87,8 +87,9 @@ test('buildObsidianMcpServerInput produces a stdio server carrying REST creds', 
 
   assert.equal(input.name, OBSIDIAN_MCP_SERVER_NAME);
   assert.equal(input.transport, 'stdio');
-  assert.equal(input.command, 'npx');
-  assert.deepEqual(input.args, ['-y', '@fazer-ai/mcp-obsidian@1.2.0']);
+  assert.equal(input.command, 'node');
+  assert.equal(input.args?.length, 1);
+  assert.ok(input.args?.[0].endsWith(path.join('mcp-obsidian', 'dist', 'index.js')));
   assert.equal(input.env?.OBSIDIAN_API_KEY, 'secret-key');
   assert.equal(input.env?.OBSIDIAN_PROTOCOL, 'http');
   assert.equal(input.env?.OBSIDIAN_HOST, '127.0.0.1');
