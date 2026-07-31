@@ -161,12 +161,13 @@ const PROVIDER_CAPABILITIES: Record<LLMProvider, ProviderCapabilities> = {
     // per-turn usage IS persisted to disk as `usage.record` entries in the
     // session's agents/main/wire.jsonl - summed by the /token-usage route.
     supportsTokenUsage: true,
-    // The "thinking" configOption only ever showed a single "on" value in
-    // live testing, even after switching to the k3 model (whose catalog
-    // entry separately advertises supportEfforts low/high/max) - no working
-    // per-invocation effort control was found via ACP, so left false rather
-    // than claiming unverified support.
-    supportsEffort: false,
+    // kimi-code 0.30.0 exposes a real "thinking" configOption over ACP whose
+    // values mirror the model's support_efforts from config.toml (e.g.
+    // low/high/max for k3); kimi-cli.js applies it per session via
+    // session/set_config_option. Models without support_efforts (e.g.
+    // kimi-for-coding) simply get no picker, since the catalog drives the
+    // frontend options. (Verified live 2026-07-29 via scripts/probe-kimi-acp.mjs.)
+    supportsEffort: true,
   },
   pi: {
     provider: 'pi',

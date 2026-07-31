@@ -11,8 +11,11 @@ import {
   type ProviderSpawnFn,
 } from '@/modules/websocket/index.js';
 import type { AnyRecord, LLMProvider } from '@/shared/types.js';
+import { expandMcpSelectionsToTools } from '@/shared/mcp-tool-expand.js';
 import { AppError } from '@/shared/utils.js';
 import type { McSection } from '@/modules/mission-control/mission-control.types.js';
+
+export { expandMcpSelectionsToTools };
 
 let runtimeSpawnFns: Partial<Record<LLMProvider, ProviderSpawnFn>> = {};
 
@@ -248,46 +251,19 @@ function resolveProjectPath(section: McSection): string {
   return os.homedir();
 }
 
-/**
- * Expand selected MCP server names into provider tool allow-list entries.
- * Values that already look like tool patterns (mcp__, Bash(, etc.) are kept as-is.
- */
-export function expandMcpSelectionsToTools(selections: string[], provider: string): string[] {
-  const out = new Set<string>();
-  for (const raw of selections) {
-    const entry = raw.trim();
-    if (!entry) continue;
-    if (
-      entry.startsWith('mcp__') ||
-      entry.startsWith('Bash(') ||
-      entry.includes('*') ||
-      entry.includes('(')
-    ) {
-      out.add(entry);
-      continue;
-    }
-    // Normalize server display names into Claude-style MCP tool prefixes.
-    // Claude tool names look like mcp__Server_Name__tool_name.
-    const normalized = entry.replace(/[^a-zA-Z0-9]+/g, '_').replace(/^_+|_+$/g, '');
-    if (!normalized) continue;
-    if (provider === 'claude' || provider === 'cursor') {
-      out.add(`mcp__${normalized}`);
-      out.add(`mcp__${normalized}__*`);
-    } else {
-      // Other providers typically key MCP by server name or free-form allow list.
-      out.add(entry);
-      out.add(normalized);
-    }
-  }
-  return [...out];
-}
-
 function buildRuntimeOptions(section: McSection, tools: string[]): AnyRecord {
   const provider = section.provider;
   const permissionMode = section.permission_mode || 'bypassPermissions';
-  const options: AnyRecord = { permissionMode };
+  // Mission Control sections always run detached (no websocket/human on the
+  // other end) — see startProviderRun's DETACHED_CONNECTION below. Providers
+  // use this to fail fast on an interactive permission prompt instead of
+  // hanging forever.
+  const options: AnyRecord = { permissionMode, unattended: true };
   if (section.model) {
     options.model = section.model;
+  }
+  if (tools.length > 0) {
+    options.mcpServers = tools;
   }
 
   const expandedTools = expandMcpSelectionsToTools(tools, provider);
@@ -348,7 +324,7 @@ export async function runMissionControlAgent(params: {
   const created = sessionsService.createAppSession(provider, projectPath);
   const appSessionId = created.sessionId;
 
-  const result = startProviderRun({
+  const result = await startProviderRun({
     appSessionId,
     provider,
     providerSessionId: null,

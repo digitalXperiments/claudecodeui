@@ -14,6 +14,7 @@ import {
   readOptionalString,
   readStringArray,
   readStringRecord,
+  updateJsonConfig,
   writeJsonConfig,
 } from '@/shared/utils.js';
 
@@ -78,20 +79,25 @@ export class ClaudeMcpProvider extends McpProvider {
       return;
     }
 
+    // `~/.claude.json` is owned by the Claude Code CLI, which rewrites it
+    // constantly (session metrics, trust flags, `oauthAccount`). Merge under the
+    // write lock against a freshly-read copy and touch only the `mcpServers` keys
+    // we own, so we never write back a stale snapshot of everything else — a lost
+    // update there reverts the user's Claude login state.
     const filePath = path.join(os.homedir(), '.claude.json');
-    const config = await readJsonConfig(filePath);
-    if (scope === 'user') {
-      config.mcpServers = servers;
-      await writeJsonConfig(filePath, config);
-      return;
-    }
+    await updateJsonConfig(filePath, (config) => {
+      if (scope === 'user') {
+        config.mcpServers = servers;
+        return config;
+      }
 
-    const projects = readObjectRecord(config.projects) ?? {};
-    const projectConfig = readObjectRecord(projects[workspacePath]) ?? {};
-    projectConfig.mcpServers = servers;
-    projects[workspacePath] = projectConfig;
-    config.projects = projects;
-    await writeJsonConfig(filePath, config);
+      const projects = readObjectRecord(config.projects) ?? {};
+      const projectConfig = readObjectRecord(projects[workspacePath]) ?? {};
+      projectConfig.mcpServers = servers;
+      projects[workspacePath] = projectConfig;
+      config.projects = projects;
+      return config;
+    });
   }
 
   protected buildServerConfig(input: UpsertProviderMcpServerInput): Record<string, unknown> {

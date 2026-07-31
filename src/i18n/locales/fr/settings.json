@@ -94,7 +94,8 @@
     "tasks": "Tâches",
     "notifications": "Notifications",
     "plugins": "Plugins",
-    "about": "À propos"
+    "about": "À propos",
+    "security": "Sécurité"
   },
   "notifications": {
     "title": "Notifications",
@@ -542,5 +543,42 @@
     "installAriaLabel": "URL du dépôt git du plugin",
     "tab": "onglet",
     "runningStatus": "en cours"
+  },
+  "security": {
+    "title": "Sécurité",
+    "description": "Gérer la sécurité de connexion de votre compte",
+    "twofa": {
+      "label": "Authentification à deux facteurs (2FA)"
+    },
+    "status": {
+      "enabled": "Activée — un code de votre application d'authentification est requis à la connexion",
+      "disabled": "Désactivée — seul votre mot de passe est requis à la connexion",
+      "protected": "Votre compte est protégé par l'authentification à deux facteurs"
+    },
+    "setup": {
+      "scanQr": "Scannez ce code QR avec votre application d'authentification (ex. Google Authenticator, Authy, 1Password).",
+      "qrAlt": "Code QR pour l'application d'authentification",
+      "manualEntry": "Ou saisissez ce secret manuellement :",
+      "codeLabel": "Saisissez le code à 6 chiffres de votre application"
+    },
+    "disable": {
+      "confirmHelp": "Saisissez votre mot de passe pour désactiver l'authentification à deux facteurs.",
+      "passwordLabel": "Mot de passe"
+    },
+    "actions": {
+      "enable": "Activer la 2FA",
+      "starting": "Démarrage…",
+      "disable": "Désactiver la 2FA",
+      "verifyAndEnable": "Vérifier et activer",
+      "verifying": "Vérification…",
+      "cancel": "Annuler",
+      "confirmDisable": "Confirmer la désactivation",
+      "disabling": "Désactivation…"
+    },
+    "errors": {
+      "generic": "Une erreur s'est produite. Veuillez réessayer.",
+      "invalidCode": "Code d'authentification invalide",
+      "invalidPassword": "Mot de passe invalide"
+    }
   }
 }

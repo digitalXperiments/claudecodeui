@@ -7,17 +7,19 @@ import { Button } from '../../../shared/view/ui';
 import SettingsSidebar from '../view/SettingsSidebar';
 import AgentsSettingsTab from '../view/tabs/agents-settings/AgentsSettingsTab';
 import AgentProfilesSettingsTab from '../view/tabs/AgentProfilesSettingsTab';
-import ProjectSkillsSettingsTab from '../view/tabs/ProjectSkillsSettingsTab';
-import GlobalSkillsSettingsTab from '../view/tabs/GlobalSkillsSettingsTab';
+import SkillsSettingsTab from '../view/tabs/SkillsSettingsTab';
+import McpSettingsTab from '../view/tabs/McpSettingsTab';
 import MemorySettingsTab from '../view/tabs/MemorySettingsTab';
 import AppearanceSettingsTab from '../view/tabs/AppearanceSettingsTab';
 import CredentialsSettingsTab from '../view/tabs/api-settings/CredentialsSettingsTab';
+import WebhooksSettingsTab from '../view/tabs/webhooks/WebhooksSettingsTab';
 import VoiceSettingsTab from '../view/tabs/VoiceSettingsTab';
 import GitSettingsTab from '../view/tabs/git-settings/GitSettingsTab';
 import BrowserUseSettingsTab from '../view/tabs/browser-use-settings/BrowserUseSettingsTab';
 import NotificationsSettingsTab from '../view/tabs/NotificationsSettingsTab';
 import TasksSettingsTab from '../view/tabs/tasks-settings/TasksSettingsTab';
 import PluginSettingsTab from '../../plugins/view/PluginSettingsTab';
+import SecuritySettingsTab from '../view/tabs/security-settings/SecuritySettingsTab';
 import AboutTab from '../view/tabs/AboutTab';
 import { useSettingsController } from '../hooks/useSettingsController';
 import { useWebPush } from '../../../hooks/useWebPush';
@@ -64,9 +66,11 @@ function Settings({ isOpen, onClose, projects = [], initialTab = 'agents' }: Set
     providerAuthStatus,
     openLoginForProvider,
     showLoginModal,
-    setShowLoginModal,
+    closeLoginModal,
     loginProvider,
     handleLoginComplete,
+    checkProviderAuthStatus,
+    refreshProviderAuthStatuses,
   } = useSettingsController({
     isOpen,
     initialTab
@@ -194,6 +198,13 @@ function Settings({ isOpen, onClose, projects = [], initialTab = 'agents' }: Set
                 <AgentsSettingsTab
                   providerAuthStatus={providerAuthStatus}
                   onProviderLogin={openLoginForProvider}
+                  onProviderAuthRefresh={(provider) => {
+                    if (provider) {
+                      void checkProviderAuthStatus(provider);
+                      return;
+                    }
+                    void refreshProviderAuthStatuses();
+                  }}
                   claudePermissions={claudePermissions}
                   onClaudePermissionsChange={setClaudePermissions}
                   cursorPermissions={cursorPermissions}
@@ -212,9 +223,9 @@ function Settings({ isOpen, onClose, projects = [], initialTab = 'agents' }: Set
 
               {activeTab === 'agent-profiles' && <AgentProfilesSettingsTab />}
 
-              {activeTab === 'skills' && <ProjectSkillsSettingsTab projects={projects} />}
+              {activeTab === 'mcp' && <McpSettingsTab projects={projects} />}
 
-              {activeTab === 'global-skills' && <GlobalSkillsSettingsTab />}
+              {activeTab === 'skills' && <SkillsSettingsTab projects={projects} />}
 
               {activeTab === 'memory' && <MemorySettingsTab projects={projects} />}
 
@@ -240,9 +251,13 @@ function Settings({ isOpen, onClose, projects = [], initialTab = 'agents' }: Set
 
               {activeTab === 'api' && <CredentialsSettingsTab />}
 
+              {activeTab === 'webhooks' && <WebhooksSettingsTab />}
+
               {activeTab === 'voice' && <VoiceSettingsTab />}
 
               {activeTab === 'plugins' && <PluginSettingsTab />}
+
+              {activeTab === 'security' && <SecuritySettingsTab />}
 
               {activeTab === 'about' && <AboutTab />}
             </div>
@@ -253,7 +268,7 @@ function Settings({ isOpen, onClose, projects = [], initialTab = 'agents' }: Set
       <ProviderLoginModal
         key={loginProvider || 'claude'}
         isOpen={showLoginModal}
-        onClose={() => setShowLoginModal(false)}
+        onClose={closeLoginModal}
         provider={loginProvider || 'claude'}
         onComplete={handleLoginComplete}
         isAuthenticated={isAuthenticated}

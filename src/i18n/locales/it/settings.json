@@ -94,7 +94,8 @@
     "tasks": "Attività",
     "notifications": "Notifiche",
     "plugins": "Plugin",
-    "about": "Informazioni"
+    "about": "Informazioni",
+    "security": "Sicurezza"
   },
   "notifications": {
     "title": "Notifiche",
@@ -490,5 +491,42 @@
     "installAriaLabel": "URL repository git del plugin",
     "tab": "scheda",
     "runningStatus": "in esecuzione"
+  },
+  "security": {
+    "title": "Sicurezza",
+    "description": "Gestisci la sicurezza di accesso del tuo account",
+    "twofa": {
+      "label": "Autenticazione a due fattori (2FA)"
+    },
+    "status": {
+      "enabled": "Attiva — all'accesso è richiesto un codice dalla tua app di autenticazione",
+      "disabled": "Disattivata — all'accesso è richiesta solo la password",
+      "protected": "Il tuo account è protetto con l’autenticazione a due fattori"
+    },
+    "setup": {
+      "scanQr": "Scansiona questo codice QR con la tua app di autenticazione (es. Google Authenticator, Authy, 1Password).",
+      "qrAlt": "Codice QR per l'app di autenticazione",
+      "manualEntry": "Oppure inserisci manualmente questo segreto:",
+      "codeLabel": "Inserisci il codice a 6 cifre dalla tua app"
+    },
+    "disable": {
+      "confirmHelp": "Inserisci la tua password per disattivare l’autenticazione a due fattori.",
+      "passwordLabel": "Password"
+    },
+    "actions": {
+      "enable": "Attiva 2FA",
+      "starting": "Avvio…",
+      "disable": "Disattiva 2FA",
+      "verifyAndEnable": "Verifica e attiva",
+      "verifying": "Verifica…",
+      "cancel": "Annulla",
+      "confirmDisable": "Conferma disattivazione",
+      "disabling": "Disattivazione…"
+    },
+    "errors": {
+      "generic": "Si è verificato un errore. Riprova.",
+      "invalidCode": "Codice di autenticazione non valido",
+      "invalidPassword": "Password non valida"
+    }
   }
 }

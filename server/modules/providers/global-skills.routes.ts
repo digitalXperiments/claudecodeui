@@ -130,7 +130,26 @@ const parseGlobalSkillCreatePayload = (payload: unknown): GlobalSkillCreateInput
     projects = body.projects.map((project, index) => readRequiredString(project, `projects[${index}]`));
   }
 
-  return { entries, ...(scope ? { scope } : {}), projects };
+  let providers: import('@/shared/types.js').LLMProvider[] | undefined;
+  if (body.providers !== undefined && body.providers !== null) {
+    if (!Array.isArray(body.providers)) {
+      throw new AppError('providers must be an array of provider ids.', {
+        code: 'GLOBAL_SKILL_PROVIDERS_INVALID',
+        statusCode: 400,
+      });
+    }
+    providers = body.providers.map((entry, index) => {
+      if (typeof entry !== 'string' || !entry.trim()) {
+        throw new AppError(`providers[${index}] must be a non-empty string.`, {
+          code: 'GLOBAL_SKILL_PROVIDERS_INVALID',
+          statusCode: 400,
+        });
+      }
+      return entry.trim().toLowerCase() as import('@/shared/types.js').LLMProvider;
+    });
+  }
+
+  return { entries, ...(scope ? { scope } : {}), projects, ...(providers ? { providers } : {}) };
 };
 
 const readPathParam = (value: unknown, name: string): string => {
@@ -210,7 +229,31 @@ router.put(
       projects = body.projects.map((project, index) => readRequiredString(project, `projects[${index}]`));
     }
 
-    const result = await globalSkillsService.setGlobalSkillScope({ directoryName, scope, projects });
+    let providers: import('@/shared/types.js').LLMProvider[] | undefined;
+    if (body.providers !== undefined && body.providers !== null) {
+      if (!Array.isArray(body.providers)) {
+        throw new AppError('providers must be an array of provider ids.', {
+          code: 'GLOBAL_SKILL_PROVIDERS_INVALID',
+          statusCode: 400,
+        });
+      }
+      providers = body.providers.map((entry, index) => {
+        if (typeof entry !== 'string' || !entry.trim()) {
+          throw new AppError(`providers[${index}] must be a non-empty string.`, {
+            code: 'GLOBAL_SKILL_PROVIDERS_INVALID',
+            statusCode: 400,
+          });
+        }
+        return entry.trim().toLowerCase() as import('@/shared/types.js').LLMProvider;
+      });
+    }
+
+    const result = await globalSkillsService.setGlobalSkillScope({
+      directoryName,
+      scope,
+      projects,
+      ...(providers ? { providers } : {}),
+    });
     res.json(createApiSuccessResponse(result));
   }),
 );

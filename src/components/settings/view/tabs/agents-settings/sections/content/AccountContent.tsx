@@ -1,4 +1,4 @@
-import { LogIn } from 'lucide-react';
+import { LogIn, RefreshCw } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Badge, Button } from '../../../../../../../shared/view/ui';
 import SessionProviderLogo from '../../../../../../llm-logo-provider/SessionProviderLogo';
@@ -8,6 +8,7 @@ type AccountContentProps = {
   agent: AgentProvider;
   authStatus: AuthStatus;
   onLogin: () => void;
+  onRefresh?: () => void;
 };
 
 type AgentVisualConfig = {
@@ -92,7 +93,7 @@ const agentConfig: Record<AgentProvider, AgentVisualConfig> = {
   },
 };
 
-export default function AccountContent({ agent, authStatus, onLogin }: AccountContentProps) {
+export default function AccountContent({ agent, authStatus, onLogin, onRefresh }: AccountContentProps) {
   const { t } = useTranslation('settings');
   const config = agentConfig[agent];
 
@@ -129,7 +130,21 @@ export default function AccountContent({ agent, authStatus, onLogin }: AccountCo
                 )}
               </div>
             </div>
-            <div>
+            <div className="flex items-center gap-2">
+              {onRefresh && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-8 w-8 p-0"
+                  onClick={onRefresh}
+                  disabled={authStatus.loading}
+                  title={t('agents.authStatus.refresh', { defaultValue: 'Refresh status' })}
+                  aria-label={t('agents.authStatus.refresh', { defaultValue: 'Refresh status' })}
+                >
+                  <RefreshCw className={`h-3.5 w-3.5 ${authStatus.loading ? 'animate-spin' : ''}`} />
+                </Button>
+              )}
               {authStatus.loading ? (
                 <Badge variant="secondary" className="bg-muted">
                   {t('agents.authStatus.checking')}

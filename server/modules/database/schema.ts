@@ -8,7 +8,9 @@ CREATE TABLE IF NOT EXISTS users (
     is_active BOOLEAN DEFAULT 1,
     git_name TEXT,
     git_email TEXT,
-    has_completed_onboarding BOOLEAN DEFAULT 0
+    has_completed_onboarding BOOLEAN DEFAULT 0,
+    totp_secret TEXT,
+    totp_enabled BOOLEAN DEFAULT 0
 );
 `;
 
@@ -328,6 +330,7 @@ CREATE TABLE IF NOT EXISTS mc_sections (
     create_kanban_task        INTEGER DEFAULT 0,
     kanban_assignee_provider  TEXT,   -- default implementation agent for bridged cards
     kanban_review_provider    TEXT,   -- default review agent for bridged cards
+    kanban_mcp_tools_json     TEXT DEFAULT '[]', -- MCP servers for bridged kanban tasks
     last_run_at         DATETIME,
     last_run_error      TEXT,
     created_at          DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -368,6 +371,54 @@ CREATE INDEX IF NOT EXISTS idx_mc_items_created ON mc_items(created_at DESC);
 export const MISSION_CONTROL_SCHEMA_SQL = `
 ${MC_SECTIONS_TABLE_SCHEMA_SQL}
 ${MC_ITEMS_TABLE_SCHEMA_SQL}
+`;
+
+/** Inbound webhooks — source-routed headless agent runs. */
+export const WEBHOOK_SOURCES_TABLE_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS webhook_sources (
+    source_id        TEXT PRIMARY KEY NOT NULL,
+    source           TEXT NOT NULL UNIQUE,
+    name             TEXT NOT NULL,
+    description      TEXT DEFAULT '',
+    enabled          INTEGER DEFAULT 1,
+    provider         TEXT NOT NULL DEFAULT 'claude',
+    model            TEXT,
+    prompt           TEXT DEFAULT '',
+    permission_mode  TEXT DEFAULT 'bypassPermissions',
+    mcp_tools_json   TEXT DEFAULT '[]',
+    skills_json      TEXT DEFAULT '[]',
+    profile_id       TEXT,
+    scope            TEXT DEFAULT 'global',
+    project_id       TEXT,
+    created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at       DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_webhook_sources_enabled ON webhook_sources(enabled);
+CREATE INDEX IF NOT EXISTS idx_webhook_sources_source ON webhook_sources(source);
+`;
+
+export const WEBHOOK_DELIVERIES_TABLE_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS webhook_deliveries (
+    delivery_id      TEXT PRIMARY KEY NOT NULL,
+    source_id        TEXT NOT NULL,
+    status           TEXT DEFAULT 'accepted',
+    request_json     TEXT DEFAULT '{}',
+    app_session_id   TEXT,
+    error_message    TEXT,
+    result_preview   TEXT,
+    created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
+    finished_at      DATETIME,
+    FOREIGN KEY (source_id) REFERENCES webhook_sources(source_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_source ON webhook_deliveries(source_id);
+CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_created ON webhook_deliveries(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_session ON webhook_deliveries(app_session_id);
+CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_status ON webhook_deliveries(status);
+`;
+
+export const WEBHOOKS_SCHEMA_SQL = `
+${WEBHOOK_SOURCES_TABLE_SCHEMA_SQL}
+${WEBHOOK_DELIVERIES_TABLE_SCHEMA_SQL}
 `;
 
 export const INIT_SCHEMA_SQL = `
@@ -425,4 +476,6 @@ ${SYSTEM_NOTIFICATIONS_TABLE_SCHEMA_SQL}
 ${KANBAN_SCHEMA_SQL}
 
 ${MISSION_CONTROL_SCHEMA_SQL}
+
+${WEBHOOKS_SCHEMA_SQL}
 `;

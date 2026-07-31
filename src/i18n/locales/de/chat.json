@@ -116,6 +116,7 @@
     },
     "clickToChangeMode": "Klicken, um den Berechtigungsmodus zu ändern (oder Tab in der Eingabe drücken)",
     "showAllCommands": "Alle Befehle anzeigen",
+    "saveAsSkill": "Save as skill",
     "clearInput": "Eingabe leeren",
     "scrollToBottom": "Nach unten scrollen"
   },

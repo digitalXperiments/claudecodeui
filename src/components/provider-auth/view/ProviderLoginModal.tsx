@@ -26,7 +26,10 @@ const getProviderCommand = ({
   }
 
   if (provider === 'claude') {
-    return 'claude --dangerously-skip-permissions /login';
+    // Prefer the dedicated auth subcommand — it writes keychain-backed OAuth
+    // tokens the same way an interactive `/login` would, and exits cleanly so
+    // CloudCLI can refresh status when the shell process ends.
+    return 'claude auth login';
   }
 
   if (provider === 'cursor') {

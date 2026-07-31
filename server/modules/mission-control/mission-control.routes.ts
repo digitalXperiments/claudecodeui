@@ -174,6 +174,9 @@ function parseSectionBody(body: Record<string, unknown>, partial: boolean): Crea
     ...(body.kanban_review_provider !== undefined
       ? { kanban_review_provider: parseKanbanProvider(body.kanban_review_provider) }
       : {}),
+    ...(body.kanban_mcp_tools !== undefined
+      ? { kanban_mcp_tools: parseTools(body.kanban_mcp_tools) }
+      : {}),
   };
 }
 

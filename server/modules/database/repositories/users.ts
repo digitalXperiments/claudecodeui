@@ -18,6 +18,8 @@ type UserRow = {
   git_name: string | null;
   git_email: string | null;
   has_completed_onboarding: number;
+  totp_secret: string | null;
+  totp_enabled: number;
 };
 
 type UserPublicRow = Pick<UserRow, 'id' | 'username' | 'created_at' | 'last_login'>;
@@ -136,5 +138,44 @@ export const userDb = {
       .prepare('SELECT has_completed_onboarding FROM users WHERE id = ?')
       .get(userId) as { has_completed_onboarding: number } | undefined;
     return row?.has_completed_onboarding === 1;
+  },
+
+  /** Stores a pending TOTP secret (not yet active until enableTotp runs). */
+  setTotpSecret(userId: number, secret: string): void {
+    const db = getConnection();
+    db.prepare(
+      'UPDATE users SET totp_secret = ?, totp_enabled = 0 WHERE id = ?'
+    ).run(secret, userId);
+  },
+
+  /** Activates TOTP for the user (secret must already be stored). */
+  enableTotp(userId: number): void {
+    const db = getConnection();
+    db.prepare('UPDATE users SET totp_enabled = 1 WHERE id = ?').run(userId);
+  },
+
+  /** Disables TOTP and clears the stored secret. */
+  disableTotp(userId: number): void {
+    const db = getConnection();
+    db.prepare(
+      'UPDATE users SET totp_secret = NULL, totp_enabled = 0 WHERE id = ?'
+    ).run(userId);
+  },
+
+  /**
+   * Returns the TOTP state for a user.
+   * `pending` means a secret was generated but not yet verified/enabled.
+   */
+  getTotpStatus(userId: number): { enabled: boolean; pending: boolean } {
+    const db = getConnection();
+    const row = db
+      .prepare('SELECT totp_secret, totp_enabled FROM users WHERE id = ?')
+      .get(userId) as
+      | { totp_secret: string | null; totp_enabled: number }
+      | undefined;
+    return {
+      enabled: row?.totp_enabled === 1,
+      pending: row?.totp_enabled !== 1 && row?.totp_secret != null,
+    };
   },
 };

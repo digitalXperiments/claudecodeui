@@ -95,6 +95,7 @@ export const kanbanApi = {
       .map((p) => ({
         projectId: String(p.projectId ?? p.project_id ?? ''),
         displayName: String(p.displayName ?? p.custom_project_name ?? p.projectId ?? 'Project'),
+        path: String(p.path ?? p.fullPath ?? p.project_path ?? '') || undefined,
       }))
       .filter((p) => p.projectId);
   },
@@ -129,6 +130,34 @@ export const kanbanApi = {
     });
     const data = await parse<{ task: KanbanTask }>(res);
     return normalizeTask(data.task);
+  },
+
+  /**
+   * Ask a provider to expand title/notes into an exhaustive description and
+   * an implementer prompt for the TaskEditor.
+   */
+  async generateTaskFields(input: {
+    title: string;
+    notes?: string;
+    description?: string;
+    prompt?: string;
+    provider: LLMProvider;
+    projectId?: string | null;
+  }): Promise<{ description: string; prompt: string; provider: LLMProvider }> {
+    const res = await authenticatedFetch(`${BASE}/generate-task-fields`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+    const data = await parse<{
+      description: string;
+      prompt: string;
+      provider: LLMProvider;
+    }>(res);
+    return {
+      description: data.description ?? '',
+      prompt: data.prompt ?? '',
+      provider: data.provider,
+    };
   },
 
   async getTask(taskId: string): Promise<{ task: KanbanTask; runs: KanbanRun[] }> {

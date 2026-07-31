@@ -11,7 +11,7 @@ import type {
   RefObject,
   TouchEvent,
 } from 'react';
-import { Paperclip, MessageSquareIcon, XIcon, Loader2, ChevronDown, Check, ArrowUpIcon, Cpu } from 'lucide-react';
+import { Paperclip, MessageSquareIcon, XIcon, Loader2, ChevronDown, Check, ArrowUpIcon, Cpu, Sparkles } from 'lucide-react';
 
 import { useVoiceInput } from '../../hooks/useVoiceInput';
 import { useVoiceAvailable } from '../../hooks/useVoiceAvailable';
@@ -83,6 +83,10 @@ interface ChatComposerProps {
   onShowTokenUsage: () => void;
   slashCommandsCount: number;
   onToggleCommandMenu: () => void;
+  /** Opens the skill wizard seeded with this conversation's transcript. */
+  onSaveAsSkill?: () => void;
+  /** Disabled when the active session has no text messages to distill. */
+  saveAsSkillDisabled?: boolean;
   hasInput: boolean;
   onClearInput: () => void;
   onSubmit: (event: FormEvent<HTMLFormElement> | MouseEvent<HTMLButtonElement> | TouchEvent<HTMLButtonElement>) => void;
@@ -144,6 +148,8 @@ export default function ChatComposer({
   onShowTokenUsage,
   slashCommandsCount,
   onToggleCommandMenu,
+  onSaveAsSkill,
+  saveAsSkillDisabled = false,
   hasInput,
   onClearInput,
   onSubmit,
@@ -485,7 +491,7 @@ export default function ChatComposer({
                 || String(permissionMode);
               const clickHint = t('input.clickToChangeMode');
               const tooltipContent = (
-                <div className="max-w-[16rem] space-y-1 text-left">
+                <div className="max-w-64 space-y-1 text-left">
                   <div className="font-semibold">{modeLabel}</div>
                   <div className="text-[11px] leading-snug opacity-95">{modeCopy.summary}</div>
                   {modeCopy.technical ? (
@@ -500,7 +506,7 @@ export default function ChatComposer({
                   content={tooltipContent}
                   position="top"
                   delay={250}
-                  className="max-w-[16rem] whitespace-normal px-2.5 py-2 text-left font-normal"
+                  className="max-w-64 whitespace-normal px-2.5 py-2 text-left font-normal"
                 >
                   <button
                     type="button"
@@ -615,6 +621,16 @@ export default function ChatComposer({
             )}
 
             <TokenUsageSummary usage={tokenBudget} onClick={onShowTokenUsage} />
+
+            {onSaveAsSkill && (
+              <PromptInputButton
+                tooltip={{ content: t('input.saveAsSkill', { defaultValue: 'Save as skill' }) }}
+                onClick={onSaveAsSkill}
+                disabled={saveAsSkillDisabled}
+              >
+                <Sparkles />
+              </PromptInputButton>
+            )}
 
             <PromptInputButton
               tooltip={{ content: t('input.showAllCommands') }}

@@ -96,13 +96,42 @@ async function chooseServerPort(host) {
   return getFreePort();
 }
 
+/**
+ * Builds the PATH handed to the bundled server.
+ *
+ * A GUI-launched Electron app inherits launchd's minimal PATH
+ * (`/usr/bin:/bin:/usr/sbin:/sbin`), so per-user tool installs are invisible.
+ * Provider CLIs live in those per-user dirs — notably Claude Code's native
+ * installer, which symlinks `claude` into `~/.local/bin`. Without them the
+ * server reports every provider as "not installed" and keeps prompting for
+ * auth. User dirs come first so the desktop app picks the same binaries the
+ * user's shell does.
+ */
 function getDesktopPath() {
   const currentPath = process.env.PATH || '';
-  const commonPaths = process.platform === 'win32'
-    ? []
-    : ['/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin'];
+  if (process.platform === 'win32') {
+    return currentPath;
+  }
 
-  return [...commonPaths, currentPath].filter(Boolean).join(path.delimiter);
+  const home = os.homedir();
+  const userPaths = [
+    path.join(home, '.local', 'bin'), // Claude Code native installer
+    path.join(home, '.claude', 'local'), // Claude Code legacy local installer
+    path.join(home, 'bin'),
+    path.join(home, '.bun', 'bin'),
+    path.join(home, '.npm-global', 'bin'),
+    path.join(home, '.deno', 'bin'),
+    path.join(home, '.cargo', 'bin'),
+    path.join(home, '.grok', 'bin'),
+    path.join(home, '.opencode', 'bin'),
+  ];
+  const commonPaths = ['/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin'];
+
+  const seen = new Set();
+  return [...userPaths, ...commonPaths, ...currentPath.split(path.delimiter)]
+    .map((entry) => entry.trim())
+    .filter((entry) => entry && !seen.has(entry) && seen.add(entry))
+    .join(path.delimiter);
 }
 
 function getNodeRuntime(usePackagedElectronRuntime) {

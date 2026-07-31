@@ -5,7 +5,8 @@
     "permissions": "Permissions",
     "mcpServers": "MCP Servers",
     "skills": "Skills",
-    "appearance": "Appearance"
+    "appearance": "Appearance",
+    "models": "Models"
   },
   "account": {
     "title": "Account",
@@ -120,18 +121,21 @@
   "mainTabs": {
     "label": "Settings",
     "agents": "Agents",
-    "skills": "Project Skills",
+    "mcpServers": "MCP",
+    "skills": "Skills",
     "globalSkills": "Global Skills",
     "memory": "Memory",
     "appearance": "Appearance",
     "git": "Git",
     "apiTokens": "API & Tokens",
+    "webhooks": "Webhooks",
     "voice": "Voice",
     "tasks": "Tasks",
     "browser": "Browser",
     "notifications": "Notifications",
     "plugins": "Plugins",
-    "about": "About"
+    "about": "About",
+    "security": "Security"
   },
   "notifications": {
     "title": "Notifications",
@@ -389,6 +393,14 @@
       "label": "Show {{agent}} in chat",
       "description": "When disabled, {{agent}} and its models are hidden from the chat model picker.",
       "lastEnabledHint": "At least one agent must stay enabled for chat."
+    },
+    "models": {
+      "title": "Models",
+      "description": "Choose the model {{agent}} loads by default when you open chat.",
+      "defaultLabel": "Default model",
+      "defaultDescription": "Used the next time chat loads for this agent.",
+      "loading": "Loading…",
+      "loadError": "Could not load models for this agent."
     }
   },
   "permissions": {
@@ -608,5 +620,42 @@
     "installAriaLabel": "Plugin git repository URL",
     "tab": "tab",
     "runningStatus": "running"
+  },
+  "security": {
+    "title": "Security",
+    "description": "Manage sign-in security for your account",
+    "twofa": {
+      "label": "Two-factor authentication (2FA)"
+    },
+    "status": {
+      "enabled": "Enabled — a code from your authenticator app is required at sign-in",
+      "disabled": "Disabled — only your password is required at sign-in",
+      "protected": "Your account is protected with two-factor authentication"
+    },
+    "setup": {
+      "scanQr": "Scan this QR code with your authenticator app (e.g. Google Authenticator, Authy, 1Password).",
+      "qrAlt": "QR code for authenticator app",
+      "manualEntry": "Or enter this secret manually:",
+      "codeLabel": "Enter the 6-digit code from your app"
+    },
+    "disable": {
+      "confirmHelp": "Enter your password to disable two-factor authentication.",
+      "passwordLabel": "Password"
+    },
+    "actions": {
+      "enable": "Enable 2FA",
+      "starting": "Starting…",
+      "disable": "Disable 2FA",
+      "verifyAndEnable": "Verify & Enable",
+      "verifying": "Verifying…",
+      "cancel": "Cancel",
+      "confirmDisable": "Confirm Disable",
+      "disabling": "Disabling…"
+    },
+    "errors": {
+      "generic": "Something went wrong. Please try again.",
+      "invalidCode": "Invalid authentication code",
+      "invalidPassword": "Invalid password"
+    }
   }
 }

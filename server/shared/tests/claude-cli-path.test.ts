@@ -59,3 +59,55 @@ test('resolveClaudeCodeExecutablePath falls back to the configured command when 
 
   assert.equal(resolved, 'claude');
 });
+
+// A GUI-launched Electron app inherits launchd's minimal PATH, so `claude` is
+// not on it even though the user's shell is logged in. Resolving to the native
+// installer keeps CloudCLI on the same binary — and therefore the same OAuth
+// profile — instead of reporting "not installed" and prompting for auth.
+test('resolveClaudeCodeExecutablePath finds the native installer when PATH is the minimal GUI default', () => {
+  const nativePath = '/Users/dev/.local/bin/claude';
+
+  const resolved = resolveClaudeCodeExecutablePath('claude', {
+    platform: 'darwin',
+    pathEnv: '/usr/bin:/bin:/usr/sbin:/sbin',
+    homedir: (() => '/Users/dev') as ResolveClaudeCodeExecutablePathDependencies['homedir'],
+    existsSync: (candidate) => candidate === nativePath,
+  });
+
+  assert.equal(resolved, nativePath);
+});
+
+test('resolveClaudeCodeExecutablePath prefers PATH over the install-location probe on posix', () => {
+  const onPath = '/opt/custom/bin/claude';
+
+  const resolved = resolveClaudeCodeExecutablePath('claude', {
+    platform: 'darwin',
+    pathEnv: '/opt/custom/bin',
+    homedir: (() => '/Users/dev') as ResolveClaudeCodeExecutablePathDependencies['homedir'],
+    // Both exist; PATH must win so the server matches the user's shell.
+    existsSync: (candidate) => candidate === onPath || candidate === '/Users/dev/.local/bin/claude',
+  });
+
+  assert.equal(resolved, onPath);
+});
+
+test('resolveClaudeCodeExecutablePath honours an explicit posix CLAUDE_CLI_PATH verbatim', () => {
+  const resolved = resolveClaudeCodeExecutablePath('/custom/claude', {
+    platform: 'darwin',
+    pathEnv: '/usr/bin:/bin',
+    existsSync: () => false,
+  });
+
+  assert.equal(resolved, '/custom/claude');
+});
+
+test('resolveClaudeCodeExecutablePath keeps the bare command when nothing is installed on posix', () => {
+  const resolved = resolveClaudeCodeExecutablePath('claude', {
+    platform: 'darwin',
+    pathEnv: '/nowhere',
+    homedir: (() => '/Users/dev') as ResolveClaudeCodeExecutablePathDependencies['homedir'],
+    existsSync: () => false,
+  });
+
+  assert.equal(resolved, 'claude');
+});

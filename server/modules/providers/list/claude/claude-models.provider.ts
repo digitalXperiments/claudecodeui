@@ -1,6 +1,10 @@
 import { readFile } from 'node:fs/promises';
 
 import { sessionsDb } from '@/modules/database/index.js';
+import {
+  buildClaudeModelsDefinition,
+  probeClaudeCliModels,
+} from '@/modules/providers/list/claude/claude-models.probe.js';
 import type { IProviderModels } from '@/shared/interfaces.js';
 import type {
   ProviderChangeActiveModelInput,
@@ -14,112 +18,95 @@ import {
   writeProviderSessionActiveModelChange,
 } from '@/shared/utils.js';
 
+const FULL_EFFORT = {
+  default: 'high',
+  values: [
+    { value: 'low' },
+    { value: 'medium' },
+    { value: 'high' },
+    { value: 'xhigh' },
+    { value: 'max' },
+  ],
+} as const;
+
+/**
+ * Last-resort catalog used only when the installed Claude CLI cannot be probed.
+ *
+ * Descriptions here are deliberately generation-agnostic: model aliases are
+ * remapped to newer generations by CLI releases, so naming a version in this
+ * file guarantees it will eventually lie to the user. The live probe in
+ * `claude-models.probe.ts` is the source of truth for versioned labels.
+ */
 export const CLAUDE_FALLBACK_MODELS: ProviderModelsDefinition = {
   OPTIONS: [
     {
       value: 'default',
       label: 'Default (recommended)',
-      description: 'Use the Claude Code default model (currently Sonnet 4.6)',
-      effort: {
-        default: 'high',
-        values: [
-          { value: 'low' },
-          { value: 'medium' },
-          { value: 'high' },
-          { value: 'max' },
-        ],
-      },
+      description: 'Use the Claude Code default model',
+      effort: { ...FULL_EFFORT, values: [...FULL_EFFORT.values] },
     },
     {
       value: 'fable',
       label: 'Fable',
-      description: 'Fable 5 · Most capable for your hardest and longest-running tasks · Uses your limits ~2× faster than Opus',
-      effort: {
-        default: 'high',
-        values: [
-          { value: 'low' },
-          { value: 'medium' },
-          { value: 'high' },
-          { value: 'xhigh' },
-          { value: 'max' },
-        ],
-      },
+      description: 'Most capable for your hardest and longest-running tasks',
+      effort: { ...FULL_EFFORT, values: [...FULL_EFFORT.values] },
     },
     {
-      value: "sonnet",
-      label: "Sonnet",
-      description: "Sonnet 4.6 · Best for everyday tasks · $3/$15 per Mtok",
-      effort: {
-        default: 'high',
-        values: [
-          { value: 'low' },
-          { value: 'medium' },
-          { value: 'high' },
-          { value: 'max' },
-        ],
-      },
+      value: 'sonnet',
+      label: 'Sonnet',
+      description: 'Efficient for routine tasks',
+      effort: { ...FULL_EFFORT, values: [...FULL_EFFORT.values] },
     },
     {
       value: 'sonnet[1m]',
       label: 'Sonnet (1M context)',
-      description: 'Sonnet 4.6 for long sessions · $3/$15 per Mtok',
-      effort: {
-        default: 'high',
-        values: [
-          { value: 'low' },
-          { value: 'medium' },
-          { value: 'high' },
-          { value: 'max' },
-        ],
-      },
+      description: 'Sonnet for long sessions',
+      effort: { ...FULL_EFFORT, values: [...FULL_EFFORT.values] },
     },
     {
       value: 'opus',
       label: 'Opus',
-      description: 'Opus 4.8 · Best for everyday, complex tasks · ~2× usage vs Sonnet',
-      effort: {
-        default: 'high',
-        values: [
-          { value: 'low' },
-          { value: 'medium' },
-          { value: 'high' },
-          { value: 'xhigh' },
-          { value: 'max' },
-        ],
-      },
+      description: 'Best for everyday, complex tasks',
+      effort: { ...FULL_EFFORT, values: [...FULL_EFFORT.values] },
     },
     {
       value: 'opus[1m]',
-      label: 'Opus 4.8 (1M context)',
-      description: 'Opus 4.8 with 1M context · Most capable for complex work · $5/$25 per Mtok',
-      effort: {
-        default: 'high',
-        values: [
-          { value: 'low' },
-          { value: 'medium' },
-          { value: 'high' },
-          { value: 'xhigh' },
-          { value: 'max' },
-        ],
-      },
+      label: 'Opus (1M context)',
+      description: 'Opus with 1M context · Best for everyday, complex tasks',
+      effort: { ...FULL_EFFORT, values: [...FULL_EFFORT.values] },
     },
     {
       value: 'haiku',
       label: 'Haiku',
-      description: 'Haiku 4.5 · Fastest for quick answers · $1/$5 per Mtok',
+      description: 'Fastest for quick answers',
     },
   ],
   DEFAULT: 'default',
 };
 
-export const findClaudeModelOption = (model: string | undefined | null): ProviderModelOption | null => {
+/**
+ * Resolves one model identifier against a catalog.
+ *
+ * Sessions and settings can carry either the CLI alias (`opus[1m]`) or the
+ * concrete model id the CLI resolved it to (`claude-opus-5[1m]`), so both are
+ * accepted.
+ */
+export const findClaudeModelOptionIn = (
+  definition: ProviderModelsDefinition,
+  model: string | undefined | null,
+): ProviderModelOption | null => {
   const normalizedModel = typeof model === 'string' ? model.trim() : '';
   if (!normalizedModel) {
     return null;
   }
 
-  return CLAUDE_FALLBACK_MODELS.OPTIONS.find((option) => option.value === normalizedModel) ?? null;
+  return definition.OPTIONS.find((option) => option.value === normalizedModel)
+    ?? definition.OPTIONS.find((option) => option.resolvedModel === normalizedModel)
+    ?? null;
 };
+
+export const findClaudeModelOption = (model: string | undefined | null): ProviderModelOption | null =>
+  findClaudeModelOptionIn(CLAUDE_FALLBACK_MODELS, model);
 type ClaudeInitEvent = {
   sessionId?: string;
   session_id?: string;
@@ -229,20 +216,70 @@ const readClaudeSessionModelFromJsonl = async (
   return null;
 };
 
+/**
+ * Short-lived memo around the CLI probe.
+ *
+ * The probe spawns a CLI subprocess (~0.4s), and `getSupportedModels()` runs on
+ * every chat turn to resolve effort levels, so an unmemoized probe would spawn
+ * one process per message. The window stays small so a CLI upgrade shows up in
+ * the picker almost immediately.
+ */
+const PROBE_MEMO_TTL_MS = 60_000;
+
+let memoizedModels: { models: ProviderModelsDefinition; expiresAt: number } | null = null;
+let inFlightProbe: Promise<ProviderModelsDefinition> | null = null;
+
+export const clearClaudeModelsProbeCache = (): void => {
+  memoizedModels = null;
+  inFlightProbe = null;
+};
+
+const loadClaudeModels = async (): Promise<ProviderModelsDefinition> => {
+  try {
+    const probed = await probeClaudeCliModels();
+    const definition = buildClaudeModelsDefinition(probed, CLAUDE_FALLBACK_MODELS.DEFAULT);
+    if (definition) {
+      return definition;
+    }
+
+    console.warn('Claude CLI reported no usable models; using the built-in catalog.');
+  } catch (error) {
+    console.warn(
+      'Unable to read models from the Claude CLI; using the built-in catalog:',
+      error instanceof Error ? error.message : error,
+    );
+  }
+
+  return CLAUDE_FALLBACK_MODELS;
+};
+
 export class ClaudeProviderModels implements IProviderModels {
+  /**
+   * Reads the model catalog from the installed Claude CLI.
+   *
+   * Anything hardcoded here drifts the moment a CLI release remaps an alias to
+   * a new model generation, which is why the CLI is asked directly and the
+   * static catalog is only a fallback.
+   */
   async getSupportedModels(): Promise<ProviderModelsDefinition> {
-    // claude creates a new jsonl file as a separate session for this request.
-    // As a result, it lists the workspace where this is invoked when it shouldn't.
-    //
-    // Disabled for now:
-    // const queryInstance = query({
-    //   prompt: 'Get supported models',
-    //   options: buildClaudeQueryOptions(),
-    // });
-    // const supportedModels = await queryInstance.supportedModels();
-    // queryInstance.close();
-    // return buildClaudeModelsDefinition(supportedModels);
-    return CLAUDE_FALLBACK_MODELS;
+    if (memoizedModels && memoizedModels.expiresAt > Date.now()) {
+      return memoizedModels.models;
+    }
+
+    if (inFlightProbe) {
+      return inFlightProbe;
+    }
+
+    inFlightProbe = loadClaudeModels()
+      .then((models) => {
+        memoizedModels = { models, expiresAt: Date.now() + PROBE_MEMO_TTL_MS };
+        return models;
+      })
+      .finally(() => {
+        inFlightProbe = null;
+      });
+
+    return inFlightProbe;
   }
 
   async getCurrentActiveModel(sessionId?: string): Promise<ProviderCurrentActiveModel> {

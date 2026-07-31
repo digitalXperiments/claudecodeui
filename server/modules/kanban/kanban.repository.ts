@@ -177,6 +177,36 @@ export const kanbanDb = {
     return mapTask(row, kanbanDb.listDependencies(taskId));
   },
 
+  /**
+   * Find a task on a board whose description or prompt contains any of the
+   * given markers (e.g. Trello card id, shortLink, trello:card:… key).
+   * Used by Mission Control → Kanban bridge for cross-run idempotency.
+   */
+  findTaskByTextMarkers(boardId: string, markers: string[]): KanbanTask | null {
+    const cleaned = [...new Set(markers.map((m) => m.trim()).filter((m) => m.length >= 4))];
+    if (!cleaned.length) return null;
+    const db = getConnection();
+    // Prefer longer / more specific markers first (full ids before shortLinks).
+    cleaned.sort((a, b) => b.length - a.length);
+    for (const marker of cleaned) {
+      const row = db
+        .prepare(
+          `SELECT * FROM kanban_tasks
+           WHERE board_id = ?
+             AND (description LIKE ? OR prompt LIKE ? OR title LIKE ?)
+           ORDER BY created_at ASC
+           LIMIT 1`,
+        )
+        .get(boardId, `%${marker}%`, `%${marker}%`, `%${marker}%`) as
+        | KanbanTaskRow
+        | undefined;
+      if (row) {
+        return mapTask(row, kanbanDb.listDependencies(row.task_id));
+      }
+    }
+    return null;
+  },
+
   listTasksByBoard(boardId: string): KanbanTask[] {
     const db = getConnection();
     const rows = db
@@ -312,6 +342,15 @@ export const kanbanDb = {
         `SELECT * FROM kanban_tasks WHERE schedule_cron IS NOT NULL AND TRIM(schedule_cron) != ''`,
       )
       .all() as KanbanTaskRow[];
+    return rows.map((row) => mapTask(row, kanbanDb.listDependencies(row.task_id)));
+  },
+
+  /** All tasks currently sitting in a given column (across every board). */
+  listTasksByColumn(columnId: string): KanbanTask[] {
+    const db = getConnection();
+    const rows = db
+      .prepare(`SELECT * FROM kanban_tasks WHERE column_id = ?`)
+      .all(columnId) as KanbanTaskRow[];
     return rows.map((row) => mapTask(row, kanbanDb.listDependencies(row.task_id)));
   },
 

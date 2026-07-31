@@ -106,6 +106,7 @@ function Sidebar({
     searchProgress,
     clearConversationResults,
     runningSessionsCount,
+    recentSessions,
     deletingProjects,
     deleteConfirmation,
     sessionDeleteConfirmation,
@@ -308,6 +309,13 @@ function Sidebar({
         onSearchModeChange={(mode) => {
           setSearchMode(mode);
           if (mode === 'projects') clearConversationResults();
+        }}
+        recentSessions={recentSessions}
+        onRecentSessionClick={({ project, session }) => {
+          // Selecting a conversation also selects its owning project so the
+          // chat view has full project context (mirrors session rows).
+          handleProjectSelect(project);
+          handleSessionClick(session, project.projectId);
         }}
         conversationResults={conversationResults}
         isSearching={isSearching}

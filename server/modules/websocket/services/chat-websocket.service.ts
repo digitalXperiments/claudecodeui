@@ -22,6 +22,13 @@ type ChatWebSocketDependencies = {
   /** Provider runtimes keyed by provider id. */
   spawnFns: Record<LLMProvider, ProviderSpawnFn>;
   /**
+   * Optional mid-run injection hooks keyed by provider id (Claude today).
+   * When a session already has a running run, the message is offered to this
+   * hook — attaching it to the live run — instead of rejecting the send
+   * with RUN_IN_PROGRESS.
+   */
+  injectFns?: Partial<Record<LLMProvider, (command: string, options: AnyRecord) => Promise<boolean>>>;
+  /**
    * Abort functions keyed by provider id. They are addressed with the
    * provider-native session id (that is how runtimes key their process maps).
    * The Claude abort is async; the rest are sync — both shapes are accepted.
@@ -134,12 +141,13 @@ async function handleChatSend(
   const clientOptions = (data.options ?? {}) as AnyRecord;
   const command = typeof data.content === 'string' ? data.content : '';
 
-  const result = startProviderRun({
+  const result = await startProviderRun({
     appSessionId: sessionId,
     provider,
     providerSessionId: session.provider_session_id,
     projectPath: session.project_path,
     spawnFn,
+    injectFn: dependencies.injectFns?.[provider],
     content: command,
     options: clientOptions,
     connection: ws,
@@ -332,6 +340,13 @@ export function handleChatConnection(
           return;
         case 'chat.permission-response':
           handlePermissionResponse(data, dependencies);
+          return;
+        case 'chat.ping':
+          // Application-level liveness check: the browser WebSocket API has no
+          // way to send/observe protocol-level ping frames, so a client that
+          // suspects its socket is half-open (e.g. after laptop sleep) needs an
+          // explicit round-trip it can time out on.
+          sendJson(ws, { kind: 'pong', timestamp: new Date().toISOString() });
           return;
         default:
           sendProtocolError(ws, 'UNKNOWN_MESSAGE_TYPE', `Unknown message type "${messageType}".`);

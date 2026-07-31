@@ -75,6 +75,60 @@ export type GlobalMcpServerResult = {
   error?: string;
 };
 
+export type McpCatalogBinding = {
+  enabled: boolean;
+};
+
+export type McpCatalogSyncResult = {
+  provider: McpProvider;
+  ok: boolean;
+  error?: string;
+};
+
+export type McpCatalogEntry = {
+  name: string;
+  transport: McpTransport;
+  scope: Exclude<McpScope, 'local'>;
+  workspacePath?: string;
+  command?: string;
+  args?: string[];
+  env?: KeyValueMap;
+  cwd?: string;
+  url?: string;
+  headers?: KeyValueMap;
+  bindings: Partial<Record<McpProvider, McpCatalogBinding>>;
+  source: 'cloudcli';
+  updatedAt?: string;
+  syncResults?: McpCatalogSyncResult[];
+};
+
+export type McpInventorySource = 'cloudcli' | 'provider_cloud' | 'provider_native' | 'managed';
+
+export type McpInventoryItem = {
+  name: string;
+  source: McpInventorySource;
+  transport?: McpTransport;
+  scope?: McpScope;
+  command?: string;
+  args?: string[];
+  env?: KeyValueMap;
+  cwd?: string;
+  url?: string;
+  headers?: KeyValueMap;
+  workspacePath?: string;
+  providers: McpProvider[];
+  bindings?: Partial<Record<McpProvider, McpCatalogBinding>>;
+  connected?: boolean | null;
+  needsAuth?: boolean;
+  originProvider?: McpProvider;
+  kind?: 'memory';
+  cloudLabel?: string;
+  /** Real config file paths this row was read from. */
+  configPaths?: string[];
+  /** Kind tags for each path (catalog, claude_user, grok_user, mcp_json, …). */
+  configKinds?: string[];
+};
+
 export type ApiSuccessResponse<T> = {
   success: true;
   data: T;

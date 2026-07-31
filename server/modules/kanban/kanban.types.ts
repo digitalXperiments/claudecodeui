@@ -53,6 +53,17 @@ export type KanbanColumn = {
 export type KanbanTaskTools = {
   allowedCommands?: string[];
   disallowedCommands?: string[];
+  /**
+   * Selected MCP server names (display names from the provider list).
+   * Expanded into provider allow-list patterns at run time so the agent is
+   * steered toward the right integrations without free-form tool strings.
+   */
+  mcpServers?: string[];
+  /**
+   * Project skill directory names to apply for this task (e.g. project-memory).
+   * Injected into the run prompt so the agent reads project do/don't context.
+   */
+  skills?: string[];
   [key: string]: unknown;
 };
 

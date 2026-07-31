@@ -6,11 +6,15 @@ export type AuthUser = {
   [key: string]: unknown;
 };
 
-export type AuthActionResult = { success: true } | { success: false; error: string };
+export type AuthActionResult =
+  | { success: true }
+  | { success: false; error: string }
+  | { success: false; requiresTotp: true };
 
 export type AuthSessionPayload = {
   token?: string;
   user?: AuthUser;
+  requiresTotp?: boolean;
   error?: string;
   message?: string;
 };
@@ -39,7 +43,7 @@ export type AuthContextValue = {
   needsSetup: boolean;
   hasCompletedOnboarding: boolean;
   error: string | null;
-  login: (username: string, password: string) => Promise<AuthActionResult>;
+  login: (username: string, password: string, totpCode?: string) => Promise<AuthActionResult>;
   register: (username: string, password: string) => Promise<AuthActionResult>;
   logout: () => void;
   refreshOnboardingStatus: () => Promise<void>;

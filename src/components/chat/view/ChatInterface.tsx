@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ArrowDownIcon } from 'lucide-react';
 
@@ -12,6 +12,9 @@ import { useChatSessionState } from '../hooks/useChatSessionState';
 import { useChatRealtimeHandlers } from '../hooks/useChatRealtimeHandlers';
 import { useChatComposerState } from '../hooks/useChatComposerState';
 import { useSessionStore } from '../../../stores/useSessionStore';
+import { resolveProviderModelLabel } from '../../../utils/providerModels';
+import { flattenTranscript } from '../../skills/lib/skillWizardPrompt';
+import SkillWizardDialog from '../../skills/view/SkillWizardDialog';
 
 import ChatMessagesPane from './subcomponents/ChatMessagesPane';
 import ChatComposer from './subcomponents/ChatComposer';
@@ -97,8 +100,10 @@ function ChatInterface({
     providerModelsLoading,
     providerModelsRefreshing,
     hardRefreshProviderModels,
+    currentProviderModel,
     selectProviderModel,
-    setStoredProviderEffort,
+    selectProviderEffort,
+    persistSessionModelEffort,
     resolvePermissionModeForProvider,
     supportsImages,
     supportsFiles,
@@ -151,6 +156,9 @@ function ChatInterface({
     sessionStore,
   });
 
+  const [skillWizardOpen, setSkillWizardOpen] = useState(false);
+  const [skillWizardTranscript, setSkillWizardTranscript] = useState<string | undefined>(undefined);
+
   // Brand-new conversation: the composer allocated a stable session id via
   // the session gateway before the first send. Record it locally and put it
   // in the URL — this id never changes again, so there is no later handoff.
@@ -159,6 +167,19 @@ function ChatInterface({
     onSessionEstablished?.(sessionId, context);
     onNavigateToSession?.(sessionId);
   }, [setCurrentSessionId, onSessionEstablished, onNavigateToSession]);
+
+  const handleSaveAsSkill = useCallback(() => {
+    const activeSessionId = currentSessionId || selectedSession?.id || null;
+    if (!activeSessionId) {
+      return;
+    }
+    const transcript = flattenTranscript(sessionStore.getMessages(activeSessionId));
+    if (!transcript) {
+      return;
+    }
+    setSkillWizardTranscript(transcript);
+    setSkillWizardOpen(true);
+  }, [currentSessionId, selectedSession?.id, sessionStore]);
 
   const {
     input,
@@ -209,6 +230,8 @@ function ChatInterface({
     closeCommandModal,
     openModelSelector,
     showCostModal,
+    onSaveAsSkill,
+    saveAsSkillDisabled,
   } = useChatComposerState({
     selectedProject,
     selectedSession,
@@ -216,15 +239,9 @@ function ChatInterface({
     provider,
     permissionMode,
     cyclePermissionMode,
-    cursorModel,
-    claudeModel,
-    codexModel,
+    currentProviderModel,
     currentProviderEffort,
-    opencodeModel,
-    grokModel,
-    kimiModel,
-    agyModel,
-    piModel,
+    persistSessionModelEffort,
     isLoading: isProcessing,
     canAbortSession,
     tokenBudget,
@@ -242,24 +259,38 @@ function ChatInterface({
     resolvePermissionModeForProvider,
     supportsImages,
     supportsFiles,
+    onSaveAsSkill: handleSaveAsSkill,
+    sessionStore,
   });
 
   // On WebSocket reconnect, re-fetch the current session's messages from the
   // server so missed streaming events are shown, then re-subscribe — the
   // `chat_subscribed` ack restores or clears the activity indicator, replays
   // missed live events, and re-attaches a still-running stream to this socket.
+  //
+  // Every session still marked "processing" (not just the one currently open)
+  // needs the same re-subscribe, or a run in another session never receives
+  // its `complete` frame after a reconnect and stays "running" forever.
   const handleWebSocketReconnect = useCallback(async () => {
-    if (!selectedProject || !selectedSession) return;
-    await sessionStore.refreshFromServer(selectedSession.id);
-    statusCheckSentAtRef.current.set(selectedSession.id, Date.now());
-    sendMessage({
-      type: 'chat.subscribe',
-      sessions: [{
-        sessionId: selectedSession.id,
-        lastSeq: lastSeqRef.current.get(selectedSession.id) ?? 0,
-      }],
+    const sessionIds = new Set<string>(processingSessions ? processingSessions.keys() : []);
+    if (selectedSession) {
+      sessionIds.add(selectedSession.id);
+    }
+    if (sessionIds.size === 0) {
+      return;
+    }
+
+    if (selectedProject && selectedSession) {
+      await sessionStore.refreshFromServer(selectedSession.id);
+    }
+
+    const now = Date.now();
+    const sessions = [...sessionIds].map((sessionId) => {
+      statusCheckSentAtRef.current.set(sessionId, now);
+      return { sessionId, lastSeq: lastSeqRef.current.get(sessionId) ?? 0 };
     });
-  }, [selectedProject, selectedSession, sendMessage, sessionStore]);
+    sendMessage({ type: 'chat.subscribe', sessions });
+  }, [processingSessions, selectedProject, selectedSession, sendMessage, sessionStore]);
 
   useChatRealtimeHandlers({
     subscribe,
@@ -317,32 +348,16 @@ function ChatInterface({
   // overlapping the last message.
   const hasActivityIndicator = Boolean(sessionActivity && pendingPermissionRequests.length === 0);
 
-  // Label shown on the composer's model button. Resolve the active provider's
-  // current model value against the live catalog so the button reads the
-  // friendly label ("Claude Sonnet 4.5") rather than the raw model id.
+  // Label shown on the composer's model button. Uses the effective model for
+  // the open conversation (its own recorded choice, or the provider default)
+  // and resolves it against the live catalog so the button reads the friendly
+  // label ("Claude Sonnet 4.5") rather than the raw model id.
   const currentModelLabel = useMemo(() => {
-    const currentModel = {
-      claude: claudeModel,
-      cursor: cursorModel,
-      codex: codexModel,
-      opencode: opencodeModel,
-      grok: grokModel,
-      kimi: kimiModel,
-      agy: agyModel,
-      pi: piModel,
-    }[provider];
-    const option = providerModelCatalog[provider]?.OPTIONS.find((o) => o.value === currentModel);
-    return option?.label || currentModel || t('input.model', { defaultValue: 'Model' });
+    return resolveProviderModelLabel(providerModelCatalog[provider], currentProviderModel)
+      || t('input.model', { defaultValue: 'Model' });
   }, [
     provider,
-    claudeModel,
-    cursorModel,
-    codexModel,
-    opencodeModel,
-    grokModel,
-    kimiModel,
-    agyModel,
-    piModel,
+    currentProviderModel,
     providerModelCatalog,
     t,
   ]);
@@ -457,13 +472,17 @@ function ChatInterface({
           onModeSwitch={cyclePermissionMode}
           effort={currentProviderEffort}
           availableEffortOptions={currentProviderEffortOptions}
-          onSelectEffort={(nextEffort) => setStoredProviderEffort(provider, nextEffort)}
+          onSelectEffort={(nextEffort) =>
+            selectProviderEffort(provider, nextEffort, currentSessionId || selectedSession?.id || null)
+          }
           modelLabel={currentModelLabel}
           onOpenModelSelector={openModelSelector}
           tokenBudget={tokenBudget}
           onShowTokenUsage={showCostModal}
           slashCommandsCount={slashCommandsCount}
           onToggleCommandMenu={handleToggleCommandMenu}
+          onSaveAsSkill={onSaveAsSkill}
+          saveAsSkillDisabled={saveAsSkillDisabled}
           hasInput={Boolean(input.trim())}
           onClearInput={handleClearInput}
           onSubmit={handleSubmit}
@@ -541,6 +560,17 @@ function ChatInterface({
         currentSessionId={currentSessionId || selectedSession?.id || null}
         onSelectProviderModel={selectProviderModel}
       />
+
+      {skillWizardOpen && (
+        <SkillWizardDialog
+          open={skillWizardOpen}
+          onOpenChange={setSkillWizardOpen}
+          seedTranscript={skillWizardTranscript}
+          defaultProvider={provider}
+          projectPath={selectedProject.fullPath || selectedProject.path}
+          defaultSaveTarget="project"
+        />
+      )}
     </PermissionContext.Provider>
   );
 }

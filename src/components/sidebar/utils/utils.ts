@@ -212,6 +212,9 @@ export const groupProjectsByCategory = (
 
 const COLLAPSED_CATEGORIES_STORAGE_KEY = 'sidebarCollapsedCategories';
 
+/** Pseudo-id for the implicit Uncategorized group in the projects sidebar. */
+export const UNCATEGORIZED_CATEGORY_KEY = 'uncategorized';
+
 /**
  * Reads collapsed sidebar category ids from localStorage. The pseudo-id
  * 'uncategorized' covers the uncategorized group.
@@ -239,6 +242,90 @@ export const readCollapsedCategoryIds = (): string[] => {
 export const writeCollapsedCategoryIds = (categoryIds: string[]) => {
   try {
     localStorage.setItem(COLLAPSED_CATEGORIES_STORAGE_KEY, JSON.stringify(categoryIds));
+  } catch {
+    // Keep UI responsive even if storage is unavailable.
+  }
+};
+
+/**
+ * All category keys currently rendered in the projects sidebar (real categories
+ * plus the implicit uncategorized bucket).
+ */
+export const getSidebarCategoryKeys = (categories: ProjectCategory[]): string[] => [
+  ...categories.map((category) => category.categoryId),
+  UNCATEGORIZED_CATEGORY_KEY,
+];
+
+/**
+ * Accordion helper: at most one category may be expanded. Returns the collapsed
+ * set that keeps `expandedCategoryKey` open (or collapses everything when null).
+ */
+export const buildAccordionCollapsedCategoryIds = (
+  allCategoryKeys: string[],
+  expandedCategoryKey: string | null,
+): Set<string> => {
+  if (!expandedCategoryKey) {
+    return new Set(allCategoryKeys);
+  }
+
+  return new Set(allCategoryKeys.filter((key) => key !== expandedCategoryKey));
+};
+
+/**
+ * If more than one category is expanded, keep the first expanded key (in
+ * sidebar order) and collapse the rest. No-op when already accordion-valid.
+ */
+export const enforceSingleExpandedCategory = (
+  collapsedCategoryIds: Set<string>,
+  allCategoryKeys: string[],
+): Set<string> => {
+  if (allCategoryKeys.length === 0) {
+    return collapsedCategoryIds;
+  }
+
+  const expandedKeys = allCategoryKeys.filter((key) => !collapsedCategoryIds.has(key));
+  if (expandedKeys.length <= 1) {
+    // Still ensure known keys that should be collapsed are present (e.g. after
+    // new categories appear while another is open).
+    if (expandedKeys.length === 1) {
+      const next = buildAccordionCollapsedCategoryIds(allCategoryKeys, expandedKeys[0]);
+      if (
+        next.size === collapsedCategoryIds.size &&
+        [...next].every((key) => collapsedCategoryIds.has(key))
+      ) {
+        return collapsedCategoryIds;
+      }
+      return next;
+    }
+    // Zero expanded: collapse any newly-seen keys so they stay closed.
+    const next = new Set(collapsedCategoryIds);
+    let changed = false;
+    for (const key of allCategoryKeys) {
+      if (!next.has(key)) {
+        next.add(key);
+        changed = true;
+      }
+    }
+    return changed ? next : collapsedCategoryIds;
+  }
+
+  return buildAccordionCollapsedCategoryIds(allCategoryKeys, expandedKeys[0]);
+};
+
+const PROJECTS_PANEL_COLLAPSED_STORAGE_KEY = 'sidebarProjectsPanelCollapsed';
+
+/** Whether the Projects column is collapsed (desktop focus mode). */
+export const readProjectsPanelCollapsed = (): boolean => {
+  try {
+    return localStorage.getItem(PROJECTS_PANEL_COLLAPSED_STORAGE_KEY) === '1';
+  } catch {
+    return false;
+  }
+};
+
+export const writeProjectsPanelCollapsed = (collapsed: boolean) => {
+  try {
+    localStorage.setItem(PROJECTS_PANEL_COLLAPSED_STORAGE_KEY, collapsed ? '1' : '0');
   } catch {
     // Keep UI responsive even if storage is unavailable.
   }

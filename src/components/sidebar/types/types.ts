@@ -2,7 +2,7 @@ import type { LoadingProgress, Project, ProjectCategory, ProjectSession, LLMProv
 import type { SessionActivityMap } from '../../../hooks/useSessionProtection';
 
 export type ProjectSortOrder = 'name' | 'date';
-export type SidebarSearchMode = 'projects' | 'conversations' | 'running' | 'archived';
+export type SidebarSearchMode = 'projects' | 'conversations' | 'running' | 'archived' | 'recent';
 export type ArchivedProjectListItem = Project & { isArchived: true };
 
 // `null` category represents the implicit "Uncategorized" group.
@@ -22,6 +22,13 @@ export type DeleteCategoryConfirmation = {
 
 export type SessionWithProvider = ProjectSession & {
   __provider: LLMProvider;
+};
+
+// Flat row for the "Recent conversations" view: a session paired with its
+// owning project, sorted by last activity (not grouped by project/category).
+export type RecentSessionListItem = {
+  session: SessionWithProvider;
+  project: Project;
 };
 
 export type ArchivedSessionListItem = {

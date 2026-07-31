@@ -129,11 +129,16 @@ export function AuthProvider({ children }: AuthProviderProps) {
   }, [checkAuthStatus, checkOnboardingStatus]);
 
   const login = useCallback<AuthContextValue['login']>(
-    async (username, password) => {
+    async (username, password, totpCode) => {
       try {
         setError(null);
-        const response = await api.auth.login(username, password);
+        const response = await api.auth.login(username, password, totpCode);
         const payload = await parseJsonSafely<AuthSessionPayload>(response);
+
+        // Password accepted but the account has 2FA enabled: ask for the code
+        if (response.ok && payload?.requiresTotp) {
+          return { success: false, requiresTotp: true };
+        }
 
         if (!response.ok || !payload?.token || !payload.user) {
           const message = resolveApiErrorMessage(payload, AUTH_ERROR_MESSAGES.loginFailed);

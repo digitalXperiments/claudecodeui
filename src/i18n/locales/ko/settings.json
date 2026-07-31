@@ -94,7 +94,8 @@
     "tasks": "작업",
     "notifications": "알림",
     "plugins": "플러그인",
-    "about": "정보"
+    "about": "정보",
+    "security": "보안"
   },
   "notifications": {
     "title": "알림",
@@ -484,5 +485,42 @@
     "installAriaLabel": "플러그인 git 저장소 URL",
     "tab": "탭",
     "runningStatus": "실행 중"
+  },
+  "security": {
+    "title": "보안",
+    "description": "계정의 로그인 보안을 관리합니다",
+    "twofa": {
+      "label": "2단계 인증(2FA)"
+    },
+    "status": {
+      "enabled": "활성화됨 — 로그인 시 인증 앱의 코드가 필요합니다",
+      "disabled": "비활성화됨 — 로그인 시 비밀번호만 필요합니다",
+      "protected": "계정이 2단계 인증으로 보호되고 있습니다"
+    },
+    "setup": {
+      "scanQr": "인증 앱(예: Google Authenticator, Authy, 1Password)으로 이 QR 코드를 스캔하세요.",
+      "qrAlt": "인증 앱용 QR 코드",
+      "manualEntry": "또는 이 시크릿을 수동으로 입력하세요:",
+      "codeLabel": "앱에 표시된 6자리 코드를 입력하세요"
+    },
+    "disable": {
+      "confirmHelp": "2단계 인증을 비활성화하려면 비밀번호를 입력하세요.",
+      "passwordLabel": "비밀번호"
+    },
+    "actions": {
+      "enable": "2FA 활성화",
+      "starting": "시작 중…",
+      "disable": "2FA 비활성화",
+      "verifyAndEnable": "확인 후 활성화",
+      "verifying": "확인 중…",
+      "cancel": "취소",
+      "confirmDisable": "비활성화 확인",
+      "disabling": "비활성화 중…"
+    },
+    "errors": {
+      "generic": "문제가 발생했습니다. 다시 시도하세요.",
+      "invalidCode": "인증 코드가 올바르지 않습니다",
+      "invalidPassword": "비밀번호가 올바르지 않습니다"
+    }
   }
 }

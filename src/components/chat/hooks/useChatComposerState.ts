@@ -13,6 +13,7 @@ import { useDropzone } from 'react-dropzone';
 
 import { authenticatedFetch } from '../../../utils/api';
 import type { MarkSessionProcessing } from '../../../hooks/useSessionProtection';
+import type { SessionStore } from '../../../stores/useSessionStore';
 import { grantClaudeToolPermission } from '../utils/chatPermissions';
 import {
   clearQueuedMessage,
@@ -52,19 +53,20 @@ interface UseChatComposerStateArgs {
   permissionMode: PermissionMode | string;
   cyclePermissionMode: () => void;
   resolvePermissionModeForProvider: (provider: LLMProvider, requestedMode: PermissionMode | string) => PermissionMode;
-  cursorModel: string;
-  claudeModel: string;
-  codexModel: string;
+  /** Effective model for the open conversation (its own choice, or the provider default). */
+  currentProviderModel: string;
   currentProviderEffort: string;
-  opencodeModel: string;
-  grokModel: string;
-  kimiModel: string;
-  agyModel: string;
-  piModel: string;
+  /** Pins a session to the model/effort a message was actually sent with. */
+  persistSessionModelEffort: (
+    provider: LLMProvider,
+    sessionId: string | null | undefined,
+    model: string,
+    effort: string,
+  ) => void;
   isLoading: boolean;
   canAbortSession: boolean;
   tokenBudget: Record<string, unknown> | null;
-  sendMessage: (message: unknown) => void;
+  sendMessage: (message: unknown) => boolean;
   sendByCtrlEnter?: boolean;
   onSessionProcessing?: MarkSessionProcessing;
   /**
@@ -78,6 +80,10 @@ interface UseChatComposerStateArgs {
   onInputFocusChange?: (focused: boolean) => void;
   onFileOpen?: (filePath: string, diffInfo?: unknown) => void;
   onShowSettings?: () => void;
+  /** Handed through to ChatComposer's "Save as skill" toolbar button. */
+  onSaveAsSkill?: () => void;
+  /** Live session store so the hook can decide when there is nothing to distill. */
+  sessionStore: SessionStore;
   scrollToBottom: () => void;
   addMessage: (msg: ChatMessage) => void;
   setIsUserScrolledUp: (isScrolledUp: boolean) => void;
@@ -248,15 +254,9 @@ export function useChatComposerState({
   permissionMode,
   cyclePermissionMode,
   resolvePermissionModeForProvider,
-  cursorModel,
-  claudeModel,
-  codexModel,
+  currentProviderModel,
   currentProviderEffort,
-  opencodeModel,
-  grokModel,
-  kimiModel,
-  agyModel,
-  piModel,
+  persistSessionModelEffort,
   isLoading,
   canAbortSession,
   tokenBudget,
@@ -268,6 +268,8 @@ export function useChatComposerState({
   onFileOpen,
   onShowSettings,
   scrollToBottom,
+  onSaveAsSkill,
+  sessionStore,
   addMessage,
   setIsUserScrolledUp,
   setPendingPermissionRequests,
@@ -303,6 +305,16 @@ export function useChatComposerState({
   // to currentSessionId for a just-established session that hasn't been
   // handed back to the parent's `selectedSession` prop yet.
   const sessionKey = selectedSession?.id || currentSessionId || null;
+
+  // Computed on every render, NOT memoized: store updates don't change the
+  // memo deps (sessionStore/sessionKey stay identical as messages arrive), so
+  // a memoized value would stay stuck at the initial "nothing to save" state.
+  const saveAsSkillDisabled = !sessionKey
+    || !sessionStore.getMessages(sessionKey).some(
+      (message) => message.kind === 'text'
+        && typeof message.content === 'string'
+        && message.content.trim().length > 0,
+    );
 
   const [queuedDraft, setQueuedDraft] = useState<QueuedDraft | null>(() => {
     if (typeof window === 'undefined' || !sessionKey) {
@@ -390,27 +402,17 @@ export function useChatComposerState({
   // brand-new chat it becomes the default. `ModelsContent` derives the option
   // list and labels from the live catalog, so we only seed the active model.
   const openModelSelector = useCallback(() => {
-    const modelByProvider: Record<LLMProvider, string> = {
-      claude: claudeModel,
-      cursor: cursorModel,
-      codex: codexModel,
-      opencode: opencodeModel,
-      grok: grokModel,
-      kimi: kimiModel,
-      agy: agyModel,
-      pi: piModel,
-    };
     setCommandModalPayload({
       kind: 'models',
       data: {
         current: {
           provider,
           providerLabel: PROVIDER_MODEL_LABELS[provider],
-          model: modelByProvider[provider],
+          model: currentProviderModel,
         },
       },
     });
-  }, [provider, claudeModel, cursorModel, codexModel, opencodeModel, grokModel, kimiModel, agyModel, piModel]);
+  }, [provider, currentProviderModel]);
 
   const handleCustomCommand = useCallback(async (result: CommandExecutionResult) => {
     const { content, hasBashCommands } = result;
@@ -460,21 +462,7 @@ export function useChatComposerState({
           projectId: selectedProject.projectId,
           sessionId: currentSessionId,
           provider,
-          model: provider === 'cursor'
-            ? cursorModel
-            : provider === 'codex'
-              ? codexModel
-              : provider === 'opencode'
-                  ? opencodeModel
-                  : provider === 'grok'
-                    ? grokModel
-                    : provider === 'kimi'
-                      ? kimiModel
-                      : provider === 'agy'
-                        ? agyModel
-                        : provider === 'pi'
-                          ? piModel
-                          : claudeModel,
+          model: currentProviderModel,
           tokenUsage: tokenBudget,
         };
 
@@ -523,15 +511,8 @@ export function useChatComposerState({
       }
     },
     [
-      claudeModel,
-      codexModel,
+      currentProviderModel,
       currentSessionId,
-      cursorModel,
-      opencodeModel,
-      grokModel,
-      kimiModel,
-      agyModel,
-      piModel,
       handleBuiltInCommand,
       handleCustomCommand,
       input,
@@ -753,25 +734,9 @@ export function useChatComposerState({
     };
 
     const toolsSettings = getToolsSettings();
-    const model =
-      provider === 'cursor'
-        ? cursorModel
-        : provider === 'codex'
-          ? codexModel
-          : provider === 'opencode'
-            ? opencodeModel
-            : provider === 'grok'
-              ? grokModel
-              : provider === 'kimi'
-                ? kimiModel
-                : provider === 'agy'
-                  ? agyModel
-                  : provider === 'pi'
-                    ? piModel
-                    : claudeModel;
 
     return {
-      model,
+      model: currentProviderModel,
       effort: currentProviderEffort,
       permissionMode: resolvePermissionModeForProvider(provider, permissionMode),
       toolsSettings,
@@ -779,15 +744,8 @@ export function useChatComposerState({
       sessionSummary: getNotificationSessionSummary(selectedSession, currentInput),
     };
   }, [
-    claudeModel,
-    codexModel,
+    currentProviderModel,
     currentProviderEffort,
-    cursorModel,
-    opencodeModel,
-    grokModel,
-    kimiModel,
-    agyModel,
-    piModel,
     permissionMode,
     provider,
     resolvePermissionModeForProvider,
@@ -804,10 +762,15 @@ export function useChatComposerState({
         return;
       }
 
-      // A turn is already in flight: stash this message instead of sending it.
-      // It's auto-flushed (re-running this same function) once the turn ends,
-      // so it still goes through slash-command interception, image upload, etc.
-      if (isLoading) {
+      // A turn is already in flight. Providers without mid-run injection
+      // stash the message here; it's auto-flushed (re-running this same
+      // function) once the turn ends, so it still goes through slash-command
+      // interception, image upload, etc.
+      // Claude instead attaches the message to the live run (Claude
+      // Code-style "type while working"), so it falls through to the normal
+      // send path below.
+      const isMidRunInject = isLoading && provider === 'claude';
+      if (isLoading && !isMidRunInject) {
         queuedDraftSessionRef.current = sessionKey;
         setQueuedDraft({
           content: currentInput,
@@ -831,9 +794,11 @@ export function useChatComposerState({
 
       // Intercept slash commands only when "/" is the first input character.
       // Also accept exact "help" as a convenience alias for users who expect CLI-style help.
+      // Mid-run injections skip interception: the text rides into the live
+      // run as a normal message instead of executing a local command.
       const commandInput = currentInput.trimEnd();
       const isHelpAlias = commandInput.trim().toLowerCase() === 'help';
-      if (commandInput.startsWith('/') || isHelpAlias) {
+      if (!isMidRunInject && (commandInput.startsWith('/') || isHelpAlias)) {
         const firstSpace = commandInput.indexOf(' ');
         const commandName = isHelpAlias
           ? '/help'
@@ -881,17 +846,32 @@ export function useChatComposerState({
           });
 
           if (!response.ok) {
-            throw new Error('Failed to upload images');
+            // Surface the server's real reason ({error} body + status) instead
+            // of a bare generic message — e.g. "Invalid token" (expired session
+            // in a long-lived tab), "Unsupported file type.", "File too large".
+            let serverMessage = '';
+            try {
+              const errorBody = await response.json();
+              if (errorBody && typeof errorBody.error === 'string') {
+                serverMessage = errorBody.error;
+              }
+            } catch {
+              // Non-JSON error body — fall through to the status-only message.
+            }
+            if (response.status === 401 || response.status === 403) {
+              throw new Error('Your session has expired — please log in again.');
+            }
+            throw new Error(serverMessage || `Upload failed (HTTP ${response.status})`);
           }
 
           const result = await response.json();
           uploadedImages = result.images;
         } catch (error) {
           const message = error instanceof Error ? error.message : 'Unknown error';
-          console.error('Image upload failed:', error);
+          console.error('Attachment upload failed:', error);
           addMessage({
             type: 'error',
-            content: `Failed to upload images: ${message}`,
+            content: `Failed to upload attachments: ${message}`,
             timestamp: new Date(),
           });
           return;
@@ -954,6 +934,45 @@ export function useChatComposerState({
         timestamp: new Date(),
       };
 
+      // One message shape for every provider. The backend resolves the
+      // provider, project path, and provider-native resume id from the
+      // session row; `options` only carries composer-level preferences.
+      //
+      // Check the result before touching any UI state: a dropped send (socket
+      // not OPEN, e.g. after laptop sleep or a network switch) must not show
+      // the message as sent and spin the processing indicator forever with no
+      // `complete` frame ever coming back.
+      const sendOptions = buildSendOptions(messageContent);
+      const sent = sendMessage({
+        type: 'chat.send',
+        sessionId: targetSessionId,
+        content: messageContent,
+        options: {
+          ...sendOptions,
+          images: uploadedImages,
+        },
+      });
+
+      if (!sent) {
+        addMessage({
+          type: 'error',
+          content: 'Not connected — message was not sent. Reconnecting; please try again once back online.',
+          timestamp: new Date(),
+        });
+        return;
+      }
+
+      // Pin this session to the model/effort the message was sent with, so
+      // revisiting the chat shows its own values rather than the last global
+      // pick. Covers the first message of a brand-new chat too: its session
+      // id was allocated just above.
+      persistSessionModelEffort(
+        provider,
+        targetSessionId,
+        sendOptions.model as string,
+        sendOptions.effort as string,
+      );
+
       addMessage(userMessage);
       // Mark this request as processing in the per-session activity map (the
       // single source of truth the indicator derives from). The id is always
@@ -965,19 +984,6 @@ export function useChatComposerState({
 
       setIsUserScrolledUp(false);
       setTimeout(() => scrollToBottom(), 100);
-
-      // One message shape for every provider. The backend resolves the
-      // provider, project path, and provider-native resume id from the
-      // session row; `options` only carries composer-level preferences.
-      sendMessage({
-        type: 'chat.send',
-        sessionId: targetSessionId,
-        content: messageContent,
-        options: {
-          ...buildSendOptions(messageContent),
-          images: uploadedImages,
-        },
-      });
 
       setInput('');
       inputValueRef.current = '';
@@ -1002,6 +1008,7 @@ export function useChatComposerState({
       isLoading,
       onSessionProcessing,
       onSessionEstablished,
+      persistSessionModelEffort,
       provider,
       resetCommandMenuState,
       scrollToBottom,
@@ -1370,5 +1377,7 @@ export function useChatComposerState({
     closeCommandModal,
     openModelSelector,
     showCostModal,
+    onSaveAsSkill,
+    saveAsSkillDisabled,
   };
 }

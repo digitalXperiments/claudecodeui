@@ -21,7 +21,8 @@ type ServerEventListener = (event: ServerEvent) => void;
 
 type WebSocketContextType = {
   ws: WebSocket | null;
-  sendMessage: (message: unknown) => void;
+  /** Returns false when the message could not be sent (socket not OPEN) so callers can roll back optimistic UI instead of assuming delivery. */
+  sendMessage: (message: unknown) => boolean;
   /**
    * Subscribes to every websocket frame. Returns an unsubscribe function.
    *
@@ -51,6 +52,15 @@ export const useWebSocket = () => {
   return context;
 };
 
+// The browser WebSocket API has no way to send/observe protocol-level ping
+// frames, so `readyState` can stay OPEN for minutes on a half-open connection
+// (e.g. after laptop sleep or a network switch) even though the server can
+// never be reached. An application-level ping/pong round-trip is the only way
+// the client can detect that and force a reconnect instead of chat going into
+// a silent black hole.
+const HEARTBEAT_INTERVAL_MS = 20_000;
+const HEARTBEAT_TIMEOUT_MS = 8_000;
+
 const buildWebSocketUrl = (token: string | null) => {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   if (IS_PLATFORM) return `${protocol}//${window.location.host}/ws`; // Platform mode: Use same domain as the page (goes through proxy)
@@ -71,7 +81,42 @@ const useWebSocketProviderState = (): WebSocketContextType => {
   const [latestMessage, setLatestMessage] = useState<ServerEvent | null>(null);
   const [isConnected, setIsConnected] = useState(false);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const heartbeatIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const heartbeatTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const { token } = useAuth();
+
+  const stopHeartbeat = useCallback(() => {
+    if (heartbeatIntervalRef.current) {
+      clearInterval(heartbeatIntervalRef.current);
+      heartbeatIntervalRef.current = null;
+    }
+    if (heartbeatTimeoutRef.current) {
+      clearTimeout(heartbeatTimeoutRef.current);
+      heartbeatTimeoutRef.current = null;
+    }
+  }, []);
+
+  const startHeartbeat = useCallback((socket: WebSocket) => {
+    stopHeartbeat();
+    heartbeatIntervalRef.current = setInterval(() => {
+      if (socket.readyState !== WebSocket.OPEN) {
+        return;
+      }
+      try {
+        socket.send(JSON.stringify({ type: 'chat.ping' }));
+      } catch (error) {
+        console.warn('WebSocket heartbeat ping failed to send:', error);
+      }
+      if (heartbeatTimeoutRef.current) {
+        clearTimeout(heartbeatTimeoutRef.current);
+      }
+      heartbeatTimeoutRef.current = setTimeout(() => {
+        console.warn('WebSocket heartbeat timed out — connection appears half-open, forcing reconnect');
+        // Triggers the existing onclose -> scheduled-reconnect flow below.
+        socket.close();
+      }, HEARTBEAT_TIMEOUT_MS);
+    }, HEARTBEAT_INTERVAL_MS);
+  }, [stopHeartbeat]);
 
   const dispatch = useCallback((event: ServerEvent) => {
     for (const listener of listenersRef.current) {
@@ -96,11 +141,12 @@ const useWebSocketProviderState = (): WebSocketContextType => {
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);
       }
+      stopHeartbeat();
       if (wsRef.current) {
         wsRef.current.close();
       }
     };
-  }, [token]); // everytime token changes, we reconnect
+  }, [token, stopHeartbeat]); // everytime token changes, we reconnect
 
   const connect = useCallback(() => {
     if (unmountedRef.current) return; // Prevent connection if unmounted
@@ -120,11 +166,20 @@ const useWebSocketProviderState = (): WebSocketContextType => {
           dispatch({ kind: 'websocket_reconnected', timestamp: Date.now() });
         }
         hasConnectedRef.current = true;
+        startHeartbeat(websocket);
       };
 
       websocket.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data) as ServerEvent;
+          if (data.kind === 'pong') {
+            // Heartbeat reply — proves the round-trip is alive; not app data.
+            if (heartbeatTimeoutRef.current) {
+              clearTimeout(heartbeatTimeoutRef.current);
+              heartbeatTimeoutRef.current = null;
+            }
+            return;
+          }
           dispatch(data);
         } catch (error) {
           console.error('Error parsing WebSocket message:', error);
@@ -134,6 +189,7 @@ const useWebSocketProviderState = (): WebSocketContextType => {
       websocket.onclose = () => {
         setIsConnected(false);
         wsRef.current = null;
+        stopHeartbeat();
 
         // Attempt to reconnect after 3 seconds
         reconnectTimeoutRef.current = setTimeout(() => {
@@ -149,15 +205,21 @@ const useWebSocketProviderState = (): WebSocketContextType => {
     } catch (error) {
       console.error('Error creating WebSocket connection:', error);
     }
-  }, [token, dispatch]); // everytime token changes, we reconnect
+  }, [token, dispatch, startHeartbeat, stopHeartbeat]); // everytime token changes, we reconnect
 
-  const sendMessage = useCallback((message: unknown) => {
+  const sendMessage = useCallback((message: unknown): boolean => {
     const socket = wsRef.current;
     if (socket && socket.readyState === WebSocket.OPEN) {
-      socket.send(JSON.stringify(message));
-    } else {
-      console.warn('WebSocket not connected');
+      try {
+        socket.send(JSON.stringify(message));
+        return true;
+      } catch (error) {
+        console.error('WebSocket send failed:', error);
+        return false;
+      }
     }
+    console.warn('WebSocket not connected');
+    return false;
   }, []);
 
   const subscribe = useCallback((listener: ServerEventListener) => {

@@ -94,7 +94,8 @@
     "tasks": "タスク",
     "notifications": "通知",
     "plugins": "プラグイン",
-    "about": "概要"
+    "about": "概要",
+    "security": "セキュリティ"
   },
   "notifications": {
     "title": "通知",
@@ -484,5 +485,42 @@
     "installAriaLabel": "プラグインのgitリポジトリURL",
     "tab": "タブ",
     "runningStatus": "実行中"
+  },
+  "security": {
+    "title": "セキュリティ",
+    "description": "アカウントのサインインセキュリティを管理します",
+    "twofa": {
+      "label": "二要素認証（2FA）"
+    },
+    "status": {
+      "enabled": "有効 — サインイン時に認証アプリのコードが必要です",
+      "disabled": "無効 — サインイン時はパスワードのみ必要です",
+      "protected": "アカウントは二要素認証で保護されています"
+    },
+    "setup": {
+      "scanQr": "認証アプリ（Google Authenticator、Authy、1Password など）でこの QR コードをスキャンしてください。",
+      "qrAlt": "認証アプリ用 QR コード",
+      "manualEntry": "またはこのシークレットを手動で入力してください：",
+      "codeLabel": "アプリに表示される 6 桁のコードを入力してください"
+    },
+    "disable": {
+      "confirmHelp": "二要素認証を無効にするにはパスワードを入力してください。",
+      "passwordLabel": "パスワード"
+    },
+    "actions": {
+      "enable": "2FA を有効化",
+      "starting": "開始中…",
+      "disable": "2FA を無効化",
+      "verifyAndEnable": "確認して有効化",
+      "verifying": "確認中…",
+      "cancel": "キャンセル",
+      "confirmDisable": "無効化を確定",
+      "disabling": "無効化中…"
+    },
+    "errors": {
+      "generic": "問題が発生しました。もう一度お試しください。",
+      "invalidCode": "認証コードが正しくありません",
+      "invalidPassword": "パスワードが正しくありません"
+    }
   }
 }

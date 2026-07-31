@@ -2,6 +2,7 @@ import { Plus } from 'lucide-react';
 import type { TFunction } from 'i18next';
 
 import { Button } from '../../../../shared/view/ui';
+import { cn } from '../../../../lib/utils';
 import type { SessionActivityMap } from '../../../../hooks/useSessionProtection';
 import type { Project, ProjectSession, LLMProvider } from '../../../../types/app';
 import type { SessionWithProvider } from '../../types/types';
@@ -35,6 +36,10 @@ type SidebarProjectSessionsProps = {
   ) => void;
   onLoadMoreSessions: (projectId: string) => void;
   onNewSession: (project: Project) => void;
+  /** Render a "New session" button at the top of the list. */
+  showNewSessionButton?: boolean;
+  /** Indent the list and show a left border (for inline project expansion). */
+  indent?: boolean;
   t: TFunction;
 };
 
@@ -78,6 +83,8 @@ export default function SidebarProjectSessions({
   onDeleteSession,
   onLoadMoreSessions,
   onNewSession,
+  showNewSessionButton = true,
+  indent = true,
   t,
 }: SidebarProjectSessionsProps) {
   if (!isExpanded) {
@@ -87,29 +94,33 @@ export default function SidebarProjectSessions({
   const hasSessions = sessions.length > 0;
 
   return (
-    <div className="ml-3 space-y-1 border-l border-border pl-3">
-      <div className="px-3 pb-1 pt-1 md:hidden">
-        <button
-          className="flex h-8 w-full items-center justify-center gap-2 rounded-md bg-primary text-xs font-medium text-primary-foreground transition-all duration-150 hover:bg-primary/90 active:scale-[0.98]"
-          onClick={() => {
-            onProjectSelect(project);
-            onNewSession(project);
-          }}
-        >
-          <Plus className="h-3 w-3" />
-          {t('sessions.newSession')}
-        </button>
-      </div>
+    <div className={cn(indent ? 'ml-3 space-y-1 border-l border-border pl-3' : 'space-y-1 px-2')}>
+      {showNewSessionButton && (
+        <>
+          <div className="px-3 pb-1 pt-1 md:hidden">
+            <button
+              className="flex h-8 w-full items-center justify-center gap-2 rounded-md bg-primary text-xs font-medium text-primary-foreground transition-all duration-150 hover:bg-primary/90 active:scale-[0.98]"
+              onClick={() => {
+                onProjectSelect(project);
+                onNewSession(project);
+              }}
+            >
+              <Plus className="h-3 w-3" />
+              {t('sessions.newSession')}
+            </button>
+          </div>
 
-      <Button
-        variant="default"
-        size="sm"
-        className="hidden h-8 w-full justify-start gap-2 bg-primary text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 md:flex"
-        onClick={() => onNewSession(project)}
-      >
-        <Plus className="h-3 w-3" />
-        {t('sessions.newSession')}
-      </Button>
+          <Button
+            variant="default"
+            size="sm"
+            className="hidden h-8 w-full justify-start gap-2 bg-primary text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 md:flex"
+            onClick={() => onNewSession(project)}
+          >
+            <Plus className="h-3 w-3" />
+            {t('sessions.newSession')}
+          </Button>
+        </>
+      )}
 
       {!initialSessionsLoaded ? (
         <SessionListSkeleton />

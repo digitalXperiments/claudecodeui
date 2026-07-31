@@ -4,9 +4,13 @@ import type { TFunction } from 'i18next';
 
 import { cn } from '../../../../lib/utils';
 import type { ProjectCategory } from '../../../../types/app';
-import { CATEGORY_DRAG_MIME, PROJECT_DRAG_MIME } from '../../utils/utils';
+import {
+  CATEGORY_DRAG_MIME,
+  PROJECT_DRAG_MIME,
+  UNCATEGORIZED_CATEGORY_KEY,
+} from '../../utils/utils';
 
-export const UNCATEGORIZED_CATEGORY_KEY = 'uncategorized';
+export { UNCATEGORIZED_CATEGORY_KEY };
 
 type SidebarCategoryHeaderProps = {
   // `null` renders the implicit "Uncategorized" group: it accepts project

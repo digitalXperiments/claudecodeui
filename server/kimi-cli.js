@@ -27,7 +27,9 @@ const spawnFunction = crossSpawn;
 //     (same configOptions shape) - used when reconnecting to a session this
 //     process instance doesn't have a live child for.
 //   - session/set_config_option { sessionId, configId, value } -> notifies
-//     back a config_option_update; confirmed for configId "mode" and "model".
+//     back a config_option_update; confirmed for configId "mode" and "model",
+//     and (since kimi-code 0.30.0) "thinking" - which now exposes the model's
+//     real effort values (e.g. low/high/max for k3) instead of a single "on".
 //   - session/prompt { sessionId, prompt: [{type:"text", text}] } -> streams
 //     session/update notifications, resolves with { stopReason }.
 //   - session/cancel { sessionId } sent as a NOTIFICATION (no id, no response
@@ -81,6 +83,12 @@ function createJsonRpcClient(child) {
   };
   child.on('error', rejectAllPending);
   child.on('exit', () => rejectAllPending(new Error('Kimi ACP process exited')));
+  // Writing to stdin after the child has already exited raises EPIPE on the
+  // stream itself, not on `child`'s 'error' event above. Unhandled, that
+  // crashes the whole Node process and drops every session, not just this one.
+  child.stdin.on('error', (error) => {
+    console.error('[kimi-cli] stdin write failed (process likely exited):', error?.message || error);
+  });
 
   rl.on('line', (line) => {
     const trimmed = line.trim();
@@ -296,6 +304,7 @@ async function spawnKimi(command, options = {}, ws) {
     projectPath,
     cwd,
     model,
+    effort,
     sessionSummary,
     permissionMode = 'bypassPermissions',
   } = options;
@@ -303,6 +312,16 @@ async function spawnKimi(command, options = {}, ws) {
   const workingDir = cwd || projectPath || process.cwd();
   const resolvedModel = await providerModelsService.resolveResumeModel('kimi', sessionId, model);
   const kimiMode = KIMI_MODE_MAP[permissionMode] || 'yolo';
+
+  // Effort only makes sense when the selected model's catalog entry advertises
+  // it (support_efforts from config.toml, surfaced by kimi-models.provider);
+  // anything else falls back to the CLI's own default for that model.
+  const catalog = (await providerModelsService.getProviderModels('kimi')).models;
+  const selectedModel = catalog.OPTIONS.find((option) => option.value === resolvedModel) || null;
+  const allowedEfforts = selectedModel?.effort?.values?.map((value) => value.value) || [];
+  const resolvedEffort = typeof effort === 'string' && effort !== 'default' && allowedEfforts.includes(effort)
+    ? effort
+    : undefined;
 
   const processKey = sessionId || `new:${Date.now()}`;
   let handle = acpSessions.get(processKey);
@@ -350,8 +369,24 @@ async function spawnKimi(command, options = {}, ws) {
         value: resolvedModel,
       });
       handle.currentModel = resolvedModel;
+      // Switching models resets the "thinking" configOption to the new
+      // model's default, so any previously applied effort must be re-applied.
+      handle.currentEffort = undefined;
     } catch (error) {
       console.error('Failed to set Kimi model:', error);
+    }
+  }
+
+  if (resolvedEffort && handle.currentEffort !== resolvedEffort) {
+    try {
+      await handle.rpc.request('session/set_config_option', {
+        sessionId: handle.kimiSessionId,
+        configId: 'thinking',
+        value: resolvedEffort,
+      });
+      handle.currentEffort = resolvedEffort;
+    } catch (error) {
+      console.error('Failed to set Kimi thinking effort:', error);
     }
   }
 

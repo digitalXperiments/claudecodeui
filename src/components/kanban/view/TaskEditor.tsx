@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState } from 'react';
-import { GitBranch, Loader2, Play, Search, Trash2 } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { GitBranch, Loader2, Play, Search, Sparkles, Trash2 } from 'lucide-react';
 
 import { Badge, Button, Dialog, DialogContent, DialogTitle, Input } from '../../../shared/view/ui';
 import { cn } from '../../../lib/utils';
 import type { LLMProvider } from '../../../types/app';
+import { authenticatedFetch } from '../../../utils/api';
 import PermissionsContent from '../../settings/view/tabs/agents-settings/sections/content/PermissionsContent';
 import type { AgyPermissionMode, CodexPermissionMode, PiPermissionMode } from '../../settings/types/types';
 import {
@@ -18,7 +19,21 @@ import {
   type KanbanTaskStatus,
   type ProjectRef,
 } from '../types';
-import type { TaskPatch } from '../api/kanbanApi';
+import { kanbanApi, type TaskPatch } from '../api/kanbanApi';
+
+const GENERATE_PROVIDER_KEY = 'kanban.generateTaskFields.provider';
+
+function readStoredGenerateProvider(): LLMProvider {
+  try {
+    const raw = localStorage.getItem(GENERATE_PROVIDER_KEY);
+    if (raw && KANBAN_PROVIDERS.some((p) => p.value === raw)) {
+      return raw as LLMProvider;
+    }
+  } catch {
+    // ignore
+  }
+  return 'claude';
+}
 
 import TaskRunOutput from './TaskRunOutput';
 import TaskComments from './TaskComments';
@@ -52,7 +67,12 @@ type TaskEditorProps = {
     implementProfileId?: string | null;
     reviewProfileId?: string | null;
     permissionMode?: string;
-    tools?: { allowedCommands?: string[]; disallowedCommands?: string[] };
+    tools?: {
+      allowedCommands?: string[];
+      disallowedCommands?: string[];
+      mcpServers?: string[];
+      skills?: string[];
+    };
     scheduleCron?: string | null;
   }) => Promise<KanbanTask | void>;
   onUpdate: (taskId: string, patch: TaskPatch) => Promise<void>;
@@ -132,13 +152,25 @@ export default function TaskEditor(props: TaskEditorProps) {
   const [skipPermissions, setSkipPermissions] = useState(false);
   const [allowed, setAllowed] = useState<string[]>([]);
   const [disallowed, setDisallowed] = useState<string[]>([]);
+  const [mcpServersSelected, setMcpServersSelected] = useState<string[]>([]);
+  const [mcpCatalog, setMcpCatalog] = useState<string[]>([]);
+  const [mcpLoading, setMcpLoading] = useState(false);
+  const [skillsSelected, setSkillsSelected] = useState<string[]>([]);
+  const [projectSkillOptions, setProjectSkillOptions] = useState<
+    { directoryName: string; name: string; description: string }[]
+  >([]);
+  const [skillsLoading, setSkillsLoading] = useState(false);
   const [scheduleCron, setScheduleCron] = useState('');
   /** Draft dependency ids while creating; applied after create. Live task uses task.dependsOn. */
   const [draftDependsOn, setDraftDependsOn] = useState<string[]>([]);
   const [depSearch, setDepSearch] = useState('');
   const [saving, setSaving] = useState(false);
   const [running, setRunning] = useState(false);
+  const [generating, setGenerating] = useState(false);
+  const [generateProvider, setGenerateProvider] = useState<LLMProvider>(readStoredGenerateProvider);
   const [error, setError] = useState<string | null>(null);
+  /** Track whether skills were user-edited so auto-default does not clobber. */
+  const skillsTouchedRef = useRef(false);
 
   useEffect(() => {
     if (!open) return;
@@ -156,13 +188,21 @@ export default function TaskEditor(props: TaskEditorProps) {
     };
   }, [open]);
 
-  // Reset local form state whenever the target task/draft changes.
+  // Reset local form state whenever the target task/draft *identity* changes.
+  // Keyed on task_id (not the `task` object) because the board polls every
+  // 2.5s while any run is active and replaces every task object with a fresh
+  // reference on each tick — depending on `task`/`columns`/`projects` directly
+  // here reset the form (wiping in-progress edits, or a blank new-task draft)
+  // on every poll tick even though nothing the user cares about changed.
+  const taskIdentity = task?.task_id ?? null;
+  const draftColumnIdentity = draft?.columnId ?? null;
   useEffect(() => {
     if (!open) {
       return;
     }
     setError(null);
     setDepSearch('');
+    skillsTouchedRef.current = false;
     if (task) {
       setTitle(task.title);
       setDescription(task.description ?? '');
@@ -182,6 +222,13 @@ export default function TaskEditor(props: TaskEditorProps) {
       setSkipPermissions((task.permission_mode || 'default') === 'bypassPermissions');
       setAllowed(task.tools?.allowedCommands ?? []);
       setDisallowed(task.tools?.disallowedCommands ?? []);
+      setMcpServersSelected(
+        Array.isArray(task.tools?.mcpServers) ? task.tools.mcpServers : [],
+      );
+      setSkillsSelected(Array.isArray(task.tools?.skills) ? task.tools.skills : []);
+      if (Array.isArray(task.tools?.skills) && task.tools.skills.length > 0) {
+        skillsTouchedRef.current = true;
+      }
       setScheduleCron(task.schedule_cron ?? '');
       setDraftDependsOn([]);
     } else {
@@ -202,10 +249,16 @@ export default function TaskEditor(props: TaskEditorProps) {
       setSkipPermissions(false);
       setAllowed([]);
       setDisallowed([]);
+      setMcpServersSelected([]);
+      setSkillsSelected([]);
       setScheduleCron('');
       setDraftDependsOn([]);
     }
-  }, [open, task, draft, columns, projects, defaultProjectId]);
+    // Intentionally keyed on identity, not the task/draft/columns/projects
+    // object refs (see comment above); those are still read fresh from the
+    // closure whenever this does run.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, taskIdentity, draftColumnIdentity]);
 
   const implementProfile = useMemo(
     () => profiles.find((p) => p.profile_id === implementProfileId) ?? null,
@@ -215,6 +268,102 @@ export default function TaskEditor(props: TaskEditorProps) {
     () => profiles.find((p) => p.profile_id === reviewProfileId) ?? null,
     [profiles, reviewProfileId],
   );
+
+  // Load MCP servers for the implementation provider (profile or raw).
+  const mcpProvider = useMemo((): LLMProvider | '' => {
+    if (implementProfile?.provider) {
+      return implementProfile.provider as LLMProvider;
+    }
+    return assignee;
+  }, [implementProfile, assignee]);
+
+  useEffect(() => {
+    if (!open || !mcpProvider) {
+      setMcpCatalog([]);
+      return;
+    }
+    let cancelled = false;
+    setMcpLoading(true);
+    const params = new URLSearchParams();
+    const project = projects.find((p) => p.projectId === projectId);
+    if (project?.path) {
+      params.set('projectPath', project.path);
+      params.set('workspacePath', project.path);
+    }
+    const qs = params.toString() ? `?${params.toString()}` : '';
+    void authenticatedFetch(`/api/providers/${mcpProvider}/mcp/servers${qs}`)
+      .then(async (res) => {
+        if (!res.ok) throw new Error('failed');
+        const data = await res.json();
+        const servers = data?.data?.servers ?? data?.servers ?? [];
+        const names = new Set<string>();
+        for (const s of Array.isArray(servers) ? servers : []) {
+          const name = typeof s === 'string' ? s : s?.name;
+          if (typeof name === 'string' && name.trim()) names.add(name.trim());
+        }
+        if (!cancelled) setMcpCatalog([...names].sort((a, b) => a.localeCompare(b)));
+      })
+      .catch(() => {
+        if (!cancelled) setMcpCatalog([]);
+      })
+      .finally(() => {
+        if (!cancelled) setMcpLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, mcpProvider, projectId, projects]);
+
+  // Load project skills when a project is selected; auto-select when empty / new task.
+  useEffect(() => {
+    if (!open || !projectId) {
+      setProjectSkillOptions([]);
+      return;
+    }
+    const project = projects.find((p) => p.projectId === projectId);
+    const workspacePath = project?.path;
+    if (!workspacePath) {
+      setProjectSkillOptions([]);
+      return;
+    }
+    let cancelled = false;
+    setSkillsLoading(true);
+    const params = new URLSearchParams({ workspacePath });
+    void authenticatedFetch(`/api/project-skills?${params.toString()}`)
+      .then(async (res) => {
+        if (!res.ok) throw new Error('failed');
+        const data = await res.json();
+        const skills = data?.data?.skills ?? data?.skills ?? [];
+        const list = (Array.isArray(skills) ? skills : [])
+          .map((s: { directoryName?: string; name?: string; description?: string }) => ({
+            directoryName: String(s.directoryName ?? ''),
+            name: String(s.name ?? s.directoryName ?? ''),
+            description: String(s.description ?? ''),
+          }))
+          .filter((s: { directoryName: string }) => s.directoryName);
+        if (cancelled) return;
+        setProjectSkillOptions(list);
+        // Auto-select all project skills for new tasks or when none chosen yet.
+        if (!skillsTouchedRef.current && list.length > 0) {
+          setSkillsSelected(list.map((s: { directoryName: string }) => s.directoryName));
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setProjectSkillOptions([]);
+      })
+      .finally(() => {
+        if (!cancelled) setSkillsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, projectId, projects]);
+
+  const mcpOptions = useMemo(() => {
+    const set = new Set(mcpCatalog);
+    for (const n of mcpServersSelected) set.add(n);
+    return [...set].sort((a, b) => a.localeCompare(b));
+  }, [mcpCatalog, mcpServersSelected]);
 
   const selectedDependsOn = useMemo(() => {
     if (task) {
@@ -289,14 +438,37 @@ export default function TaskEditor(props: TaskEditorProps) {
   const usesAllowDeny = assignee !== '' && ALLOW_DENY_PROVIDERS.includes(assignee);
 
   const buildTools = () => {
-    const tools: { allowedCommands?: string[]; disallowedCommands?: string[] } = {};
+    const tools: {
+      allowedCommands?: string[];
+      disallowedCommands?: string[];
+      mcpServers?: string[];
+      skills?: string[];
+    } = {};
     if (allowed.length > 0) {
       tools.allowedCommands = allowed;
     }
     if (disallowed.length > 0) {
       tools.disallowedCommands = disallowed;
     }
+    if (mcpServersSelected.length > 0) {
+      tools.mcpServers = mcpServersSelected;
+    }
+    if (skillsSelected.length > 0) {
+      tools.skills = skillsSelected;
+    }
     return tools;
+  };
+
+  const toggleInList = (
+    list: string[],
+    setList: (next: string[]) => void,
+    name: string,
+  ) => {
+    if (list.includes(name)) {
+      setList(list.filter((n) => n !== name));
+    } else {
+      setList([...list, name]);
+    }
   };
 
   // Resolve the stored permission_mode from the provider-appropriate control:
@@ -375,6 +547,39 @@ export default function TaskEditor(props: TaskEditorProps) {
         ))}
       </select>
     );
+  };
+
+  const handleGenerateFields = async () => {
+    if (!title.trim()) {
+      setError('Enter a title first, then generate description & prompt');
+      return;
+    }
+    setGenerating(true);
+    setError(null);
+    try {
+      try {
+        localStorage.setItem(GENERATE_PROVIDER_KEY, generateProvider);
+      } catch {
+        // ignore storage failures
+      }
+      const result = await kanbanApi.generateTaskFields({
+        title: title.trim(),
+        description: description.trim() || undefined,
+        prompt: prompt.trim() || undefined,
+        provider: generateProvider,
+        projectId: projectId || null,
+      });
+      if (result.description) {
+        setDescription(result.description);
+      }
+      if (result.prompt) {
+        setPrompt(result.prompt);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to generate task fields');
+    } finally {
+      setGenerating(false);
+    }
   };
 
   const handleSave = async () => {
@@ -476,7 +681,7 @@ export default function TaskEditor(props: TaskEditorProps) {
   return (
     <Dialog open={open} onOpenChange={(next) => (!next ? onClose() : undefined)}>
       <DialogContent
-        className="fixed inset-0 left-0 top-0 z-50 flex h-dvh max-h-dvh w-full max-w-none translate-x-0 translate-y-0 flex-col rounded-none border-0 p-0 shadow-none md:inset-auto md:left-1/2 md:top-1/2 md:h-auto md:max-h-[85vh] md:w-full md:max-w-xl md:-translate-x-1/2 md:-translate-y-1/2 md:rounded-xl md:border md:shadow-lg"
+        className="z-50 flex h-dvh max-h-dvh w-full max-w-none flex-col overflow-hidden rounded-none border-0 p-0 shadow-none sm:h-auto sm:max-h-[85vh] sm:max-w-xl sm:rounded-xl sm:border sm:shadow-lg"
         onEscapeKeyDown={onClose}
         onPointerDownOutside={onClose}
       >
@@ -505,6 +710,53 @@ export default function TaskEditor(props: TaskEditorProps) {
               />
             </div>
 
+            <div className="rounded-md border border-border bg-muted/30 p-3">
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
+                <div className="flex min-w-0 flex-1 flex-col gap-1">
+                  <label className={labelClass} htmlFor="kanban-generate-provider">
+                    Generate with
+                  </label>
+                  <select
+                    id="kanban-generate-provider"
+                    className={selectClass}
+                    value={generateProvider}
+                    onChange={(e) => setGenerateProvider(e.target.value as LLMProvider)}
+                    disabled={generating}
+                  >
+                    {KANBAN_PROVIDERS.map((p) => (
+                      <option key={p.value} value={p.value}>
+                        {p.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="secondary"
+                  className="touch-manipulation shrink-0"
+                  onClick={() => void handleGenerateFields()}
+                  disabled={generating || !title.trim()}
+                  title={
+                    title.trim()
+                      ? 'Generate exhaustive description and implementer prompt'
+                      : 'Enter a title first'
+                  }
+                >
+                  {generating ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Sparkles className="h-4 w-4" />
+                  )}
+                  {generating ? 'Generating…' : 'Generate description & prompt'}
+                </Button>
+              </div>
+              <p className="mt-2 text-[11px] text-muted-foreground">
+                Uses the selected provider to expand the title into an exhaustive description and a
+                ready-to-run agent prompt. Existing text is refined rather than discarded.
+              </p>
+            </div>
+
             <div className="flex flex-col gap-1">
               <label className={labelClass} htmlFor="kanban-description">
                 Description
@@ -512,10 +764,10 @@ export default function TaskEditor(props: TaskEditorProps) {
               <textarea
                 id="kanban-description"
                 className={textareaClass}
-                rows={2}
+                rows={6}
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
-                placeholder="Optional notes"
+                placeholder="Exhaustive task brief (or generate from title)"
               />
             </div>
 
@@ -526,14 +778,14 @@ export default function TaskEditor(props: TaskEditorProps) {
               <textarea
                 id="kanban-prompt"
                 className={textareaClass}
-                rows={4}
+                rows={6}
                 value={prompt}
                 onChange={(e) => setPrompt(e.target.value)}
-                placeholder="Describe what the agent should do"
+                placeholder="Describe what the agent should do (or generate from title)"
               />
             </div>
 
-            {requireProject ? (
+            {requireProject || projects.length > 0 ? (
               <div className="flex flex-col gap-1">
                 <label className={labelClass} htmlFor="kanban-project">
                   Project
@@ -542,9 +794,13 @@ export default function TaskEditor(props: TaskEditorProps) {
                   id="kanban-project"
                   className={selectClass}
                   value={projectId}
-                  onChange={(e) => setProjectId(e.target.value)}
+                  onChange={(e) => {
+                    skillsTouchedRef.current = false;
+                    setSkillsSelected([]);
+                    setProjectId(e.target.value);
+                  }}
                 >
-                  <option value="">Select a project…</option>
+                  <option value="">{requireProject ? 'Select a project…' : 'None'}</option>
                   {projects.map((project) => (
                     <option key={project.projectId} value={project.projectId}>
                       {project.displayName}
@@ -553,6 +809,110 @@ export default function TaskEditor(props: TaskEditorProps) {
                 </select>
               </div>
             ) : null}
+
+            <div className="space-y-2 rounded-md border border-border p-3">
+              <div>
+                <p className="text-xs font-medium text-foreground">MCP servers for this task</p>
+                <p className="text-[11px] text-muted-foreground">
+                  Steer the agent to the correct integrations. Expanded into allow-list patterns at
+                  run time for Claude / Cursor / Grok.
+                </p>
+              </div>
+              {!mcpProvider ? (
+                <p className="text-[11px] text-muted-foreground">
+                  Assign an implementation agent/profile to load MCP servers for that provider.
+                </p>
+              ) : mcpLoading ? (
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading MCP servers…
+                </div>
+              ) : mcpOptions.length === 0 ? (
+                <p className="text-[11px] text-muted-foreground">
+                  No MCP servers found. Configure them in Settings → MCP.
+                </p>
+              ) : (
+                <div className="flex max-h-36 flex-wrap gap-1.5 overflow-y-auto">
+                  {mcpOptions.map((name) => {
+                    const selected = mcpServersSelected.includes(name);
+                    return (
+                      <button
+                        key={name}
+                        type="button"
+                        className={cn(
+                          'rounded-full border px-2.5 py-1 text-[11px] transition-colors',
+                          selected
+                            ? 'border-primary bg-primary/10 text-primary'
+                            : 'border-border bg-background text-muted-foreground hover:border-primary/40',
+                        )}
+                        onClick={() =>
+                          toggleInList(mcpServersSelected, setMcpServersSelected, name)
+                        }
+                      >
+                        {name}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            <div className="space-y-2 rounded-md border border-border p-3">
+              <div>
+                <p className="text-xs font-medium text-foreground">Project skills</p>
+                <p className="text-[11px] text-muted-foreground">
+                  When a project has skills, they are selected by default so the agent gets
+                  do/don&apos;t context. Deselect any you do not want for this task.
+                </p>
+              </div>
+              {!projectId ? (
+                <p className="text-[11px] text-muted-foreground">
+                  Attach a project to load and select project skills.
+                </p>
+              ) : skillsLoading ? (
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading project skills…
+                </div>
+              ) : projectSkillOptions.length === 0 ? (
+                <p className="text-[11px] text-muted-foreground">
+                  No managed project skills found for this workspace.
+                </p>
+              ) : (
+                <div className="flex max-h-36 flex-col gap-1.5 overflow-y-auto">
+                  {projectSkillOptions.map((skill) => {
+                    const selected = skillsSelected.includes(skill.directoryName);
+                    return (
+                      <label
+                        key={skill.directoryName}
+                        className={cn(
+                          'flex cursor-pointer items-start gap-2 rounded-md border px-2 py-1.5 text-xs',
+                          selected ? 'border-primary/40 bg-primary/5' : 'border-border',
+                        )}
+                      >
+                        <input
+                          type="checkbox"
+                          className="mt-0.5"
+                          checked={selected}
+                          onChange={() => {
+                            skillsTouchedRef.current = true;
+                            toggleInList(skillsSelected, setSkillsSelected, skill.directoryName);
+                          }}
+                        />
+                        <span className="min-w-0">
+                          <span className="font-medium text-foreground">
+                            {skill.name || skill.directoryName}
+                          </span>
+                          {skill.description ? (
+                            <span className="mt-0.5 block text-[11px] text-muted-foreground line-clamp-2">
+                              {skill.description}
+                            </span>
+                          ) : null}
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
 
             <div className="flex flex-col gap-1">
               <label className={labelClass} htmlFor="kanban-column">
@@ -917,10 +1277,21 @@ export default function TaskEditor(props: TaskEditorProps) {
               </Button>
             ) : null}
             <div className="flex items-center gap-2">
-              <Button variant="outline" size="sm" className="touch-manipulation" onClick={onClose} disabled={saving}>
+              <Button
+                variant="outline"
+                size="sm"
+                className="touch-manipulation"
+                onClick={onClose}
+                disabled={saving || generating}
+              >
                 Cancel
               </Button>
-              <Button size="sm" className="touch-manipulation" onClick={handleSave} disabled={saving}>
+              <Button
+                size="sm"
+                className="touch-manipulation"
+                onClick={handleSave}
+                disabled={saving || generating}
+              >
                 {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
                 {isEdit ? 'Save' : 'Create'}
               </Button>

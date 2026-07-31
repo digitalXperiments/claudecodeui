@@ -53,6 +53,7 @@ const emptyForm = (): McSectionInput => ({
   create_kanban_task: false,
   kanban_assignee_provider: null,
   kanban_review_provider: null,
+  kanban_mcp_tools: [],
   enabled: true,
 });
 
@@ -113,6 +114,8 @@ export default function MissionControlPanel({
   const [statusFilter, setStatusFilter] = useState<'actionable' | 'all'>('actionable');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** Non-error run/import feedback (success banners). Kept separate so success is not red/amber. */
+  const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [runningSectionId, setRunningSectionId] = useState<string | null>(null);
   const [actingItemId, setActingItemId] = useState<string | null>(null);
   const [showEditor, setShowEditor] = useState(false);
@@ -120,6 +123,7 @@ export default function MissionControlPanel({
   const [form, setForm] = useState<McSectionInput>(emptyForm);
   const [produceMcp, setProduceMcp] = useState<string[]>([]);
   const [resolveMcp, setResolveMcp] = useState<string[]>([]);
+  const [kanbanMcp, setKanbanMcp] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
   const [pendingCount, setPendingCount] = useState(0);
   const [importing, setImporting] = useState(false);
@@ -327,6 +331,7 @@ export default function MissionControlPanel({
     setForm(emptyForm());
     setProduceMcp([]);
     setResolveMcp([]);
+    setKanbanMcp([]);
     setShowEditor(true);
   };
 
@@ -350,10 +355,16 @@ export default function MissionControlPanel({
       create_kanban_task: section.create_kanban_task,
       kanban_assignee_provider: section.kanban_assignee_provider,
       kanban_review_provider: section.kanban_review_provider,
+      kanban_mcp_tools: section.kanban_mcp_tools ?? [],
       enabled: section.enabled,
     });
     setProduceMcp(extractServerNamesFromTools(section.produce_tools));
     setResolveMcp(extractServerNamesFromTools(section.resolve_tools));
+    setKanbanMcp(
+      Array.isArray(section.kanban_mcp_tools)
+        ? section.kanban_mcp_tools
+        : extractServerNamesFromTools(section.kanban_mcp_tools ?? []),
+    );
     setShowEditor(true);
   };
 
@@ -361,6 +372,7 @@ export default function MissionControlPanel({
     setForm((f) => ({ ...f, provider, model: '' }));
     setProduceMcp([]);
     setResolveMcp([]);
+    setKanbanMcp([]);
     setModels([]);
     setMcpServers([]);
   };
@@ -390,6 +402,7 @@ export default function MissionControlPanel({
         ...form,
         produce_tools: produceMcp,
         resolve_tools: resolveMcp,
+        kanban_mcp_tools: kanbanMcp,
         schedule_cron: form.schedule_cron?.trim() || null,
         model: form.model?.trim() || null,
         project_id: form.scope === 'project' ? form.project_id : null,
@@ -422,6 +435,7 @@ export default function MissionControlPanel({
   const runNow = async (sectionId: string) => {
     setRunningSectionId(sectionId);
     setError(null);
+    setStatusMessage(null);
     try {
       const result = await missionControlApi.runSection(sectionId);
       const banner =
@@ -429,8 +443,14 @@ export default function MissionControlPanel({
         result.error ||
         `Run finished: ${result.created} new` +
           (result.skipped ? `, ${result.skipped} skipped (already seen)` : '');
-      // Banner explains empty queues after a long run (e.g. all drafts deduped).
-      setError(banner);
+      // Real provider/runtime failures go to the error banner; success/skip
+      // summaries use a neutral status line so "4 skipped" does not look like
+      // the old `Provider "grok" run failed` alert.
+      if (result.error) {
+        setError(banner);
+      } else {
+        setStatusMessage(banner);
+      }
       await refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Run failed');
@@ -547,6 +567,12 @@ export default function MissionControlPanel({
     return [...set].sort((a, b) => a.localeCompare(b));
   }, [mcpServers, resolveMcp]);
 
+  const kanbanMcpOptions = useMemo(() => {
+    const set = new Set(mcpServers);
+    for (const n of kanbanMcp) set.add(n);
+    return [...set].sort((a, b) => a.localeCompare(b));
+  }, [mcpServers, kanbanMcp]);
+
   if (!isOpen) return null;
 
   const selectedSection =
@@ -614,13 +640,26 @@ export default function MissionControlPanel({
         </div>
 
         {error ? (
-          <div className="flex items-start gap-2 border-b border-amber-500/20 bg-amber-500/10 px-3 py-2 text-sm text-amber-800 dark:text-amber-200 md:px-4">
+          <div className="flex items-start gap-2 border-b border-red-500/20 bg-red-500/10 px-3 py-2 text-sm text-red-800 dark:text-red-200 md:px-4">
             <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
             <span className="min-w-0 flex-1 break-words">{error}</span>
             <button
               type="button"
               className="shrink-0 touch-manipulation text-xs underline"
               onClick={() => setError(null)}
+            >
+              Dismiss
+            </button>
+          </div>
+        ) : null}
+
+        {!error && statusMessage ? (
+          <div className="flex items-start gap-2 border-b border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-900 dark:text-emerald-200 md:px-4">
+            <span className="min-w-0 flex-1 break-words">{statusMessage}</span>
+            <button
+              type="button"
+              className="shrink-0 touch-manipulation text-xs underline"
+              onClick={() => setStatusMessage(null)}
             >
               Dismiss
             </button>
@@ -1174,48 +1213,63 @@ export default function MissionControlPanel({
                         Create a Kanban card on approval
                       </label>
                       <p className="mt-1 text-[11px] text-muted-foreground">
-                        On Approve, add a card to the global board&apos;s backlog (linked to the
-                        created ticket). Attach a project and move it to In Progress to auto-run.
+                        On Approve, add a card to the global board&apos;s backlog with an exhaustive
+                        description and a generated implementer prompt (linked to the created
+                        ticket). Attach a project and move it to In Progress to auto-run.
                       </p>
                       {form.create_kanban_task ? (
-                        <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
-                          <Field label="Default implementation agent">
-                            <select
-                              className="field-input"
-                              value={form.kanban_assignee_provider ?? ''}
-                              onChange={(e) =>
-                                setForm((f) => ({
-                                  ...f,
-                                  kanban_assignee_provider: e.target.value || null,
-                                }))
-                              }
-                            >
-                              <option value="">None (set per card)</option>
-                              {PROVIDERS.map((p) => (
-                                <option key={p} value={p}>
-                                  {p}
-                                </option>
-                              ))}
-                            </select>
-                          </Field>
-                          <Field label="Default review agent">
-                            <select
-                              className="field-input"
-                              value={form.kanban_review_provider ?? ''}
-                              onChange={(e) =>
-                                setForm((f) => ({
-                                  ...f,
-                                  kanban_review_provider: e.target.value || null,
-                                }))
-                              }
-                            >
-                              <option value="">None</option>
-                              {PROVIDERS.map((p) => (
-                                <option key={p} value={p}>
-                                  {p}
-                                </option>
-                              ))}
-                            </select>
+                        <div className="mt-3 space-y-3">
+                          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                            <Field label="Default implementation agent">
+                              <select
+                                className="field-input"
+                                value={form.kanban_assignee_provider ?? ''}
+                                onChange={(e) =>
+                                  setForm((f) => ({
+                                    ...f,
+                                    kanban_assignee_provider: e.target.value || null,
+                                  }))
+                                }
+                              >
+                                <option value="">None (set per card)</option>
+                                {PROVIDERS.map((p) => (
+                                  <option key={p} value={p}>
+                                    {p}
+                                  </option>
+                                ))}
+                              </select>
+                            </Field>
+                            <Field label="Default review agent">
+                              <select
+                                className="field-input"
+                                value={form.kanban_review_provider ?? ''}
+                                onChange={(e) =>
+                                  setForm((f) => ({
+                                    ...f,
+                                    kanban_review_provider: e.target.value || null,
+                                  }))
+                                }
+                              >
+                                <option value="">None</option>
+                                {PROVIDERS.map((p) => (
+                                  <option key={p} value={p}>
+                                    {p}
+                                  </option>
+                                ))}
+                              </select>
+                            </Field>
+                          </div>
+                          <Field label="Kanban task MCP servers (multi-select)">
+                            <McpMultiSelect
+                              loading={mcpLoading}
+                              options={kanbanMcpOptions}
+                              selected={kanbanMcp}
+                              onToggle={(name) => toggleMcp(kanbanMcp, setKanbanMcp, name)}
+                            />
+                            <p className="mt-1 text-[11px] text-muted-foreground">
+                              Attached to each bridged Kanban card so the implementer is steered to
+                              the right integrations (e.g. Leong Associates for platform work).
+                            </p>
                           </Field>
                         </div>
                       ) : null}
@@ -1345,7 +1399,7 @@ function McpMultiSelect({
   if (options.length === 0) {
     return (
       <div className="rounded-lg border border-dashed border-border px-3 py-3 text-xs text-muted-foreground">
-        No MCP servers found for this provider. Configure them in Settings → Agents / MCP.
+        No MCP servers found for this provider. Configure them in Settings → MCP.
       </div>
     );
   }

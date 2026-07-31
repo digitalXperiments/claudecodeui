@@ -94,7 +94,8 @@
     "tasks": "Aufgaben",
     "notifications": "Benachrichtigungen",
     "plugins": "Plugins",
-    "about": "Info"
+    "about": "Info",
+    "security": "Sicherheit"
   },
   "notifications": {
     "title": "Benachrichtigungen",
@@ -484,5 +485,42 @@
     "installAriaLabel": "Git-Repository-URL des Plugins",
     "tab": "Tab",
     "runningStatus": "läuft"
+  },
+  "security": {
+    "title": "Sicherheit",
+    "description": "Anmeldesicherheit für Ihr Konto verwalten",
+    "twofa": {
+      "label": "Zwei-Faktor-Authentifizierung (2FA)"
+    },
+    "status": {
+      "enabled": "Aktiviert — bei der Anmeldung ist ein Code aus Ihrer Authenticator-App erforderlich",
+      "disabled": "Deaktiviert — bei der Anmeldung ist nur Ihr Passwort erforderlich",
+      "protected": "Ihr Konto ist durch Zwei-Faktor-Authentifizierung geschützt"
+    },
+    "setup": {
+      "scanQr": "Scannen Sie diesen QR-Code mit Ihrer Authenticator-App (z. B. Google Authenticator, Authy, 1Password).",
+      "qrAlt": "QR-Code für Authenticator-App",
+      "manualEntry": "Oder geben Sie dieses Geheimnis manuell ein:",
+      "codeLabel": "Geben Sie den 6-stelligen Code aus Ihrer App ein"
+    },
+    "disable": {
+      "confirmHelp": "Geben Sie Ihr Passwort ein, um die Zwei-Faktor-Authentifizierung zu deaktivieren.",
+      "passwordLabel": "Passwort"
+    },
+    "actions": {
+      "enable": "2FA aktivieren",
+      "starting": "Wird gestartet…",
+      "disable": "2FA deaktivieren",
+      "verifyAndEnable": "Prüfen & aktivieren",
+      "verifying": "Wird geprüft…",
+      "cancel": "Abbrechen",
+      "confirmDisable": "Deaktivieren bestätigen",
+      "disabling": "Wird deaktiviert…"
+    },
+    "errors": {
+      "generic": "Etwas ist schiefgelaufen. Bitte versuchen Sie es erneut.",
+      "invalidCode": "Ungültiger Authentifizierungscode",
+      "invalidPassword": "Ungültiges Passwort"
+    }
   }
 }

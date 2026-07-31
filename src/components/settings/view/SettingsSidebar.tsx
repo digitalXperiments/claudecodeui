@@ -1,7 +1,8 @@
-import { Bell, Bot, BrainCircuit, FileCode2, GitBranch, Globe, Info, Key, ListChecks, Mic, MonitorPlay, Palette, Puzzle, UserCog } from 'lucide-react';
+import { Bell, Bot, BrainCircuit, FileCode2, GitBranch, Info, Key, ListChecks, Mic, MonitorPlay, Palette, Puzzle, Server, ShieldCheck, UserCog, Webhook } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import { cn } from '../../../lib/utils';
+import { IS_PLATFORM } from '../../../constants/config';
 import { PillBar, Pill } from '../../../shared/view/ui';
 import type { SettingsMainTab } from '../types/types';
 
@@ -26,17 +27,22 @@ const NAV_ITEMS: NavItem[] = [
     fallbackLabel: 'Agent profiles',
     icon: UserCog,
   },
+  { id: 'mcp', labelKey: 'mainTabs.mcpServers', fallbackLabel: 'MCP', icon: Server },
   { id: 'skills', labelKey: 'mainTabs.skills', fallbackLabel: 'Skills', icon: FileCode2 },
-  { id: 'global-skills', labelKey: 'mainTabs.globalSkills', fallbackLabel: 'Global skills', icon: Globe },
   { id: 'memory', labelKey: 'mainTabs.memory', fallbackLabel: 'Memory', icon: BrainCircuit },
   { id: 'appearance', labelKey: 'mainTabs.appearance', fallbackLabel: 'Appearance', icon: Palette },
   { id: 'git', labelKey: 'mainTabs.git', fallbackLabel: 'Git', icon: GitBranch },
   { id: 'api', labelKey: 'mainTabs.apiTokens', fallbackLabel: 'API Tokens', icon: Key },
+  { id: 'webhooks', labelKey: 'mainTabs.webhooks', fallbackLabel: 'Webhooks', icon: Webhook },
   { id: 'voice', labelKey: 'mainTabs.voice', fallbackLabel: 'Voice', icon: Mic },
   { id: 'tasks', labelKey: 'mainTabs.tasks', fallbackLabel: 'Tasks', icon: ListChecks },
   { id: 'browser', labelKey: 'mainTabs.browser', fallbackLabel: 'Browser', icon: MonitorPlay },
   { id: 'plugins', labelKey: 'mainTabs.plugins', fallbackLabel: 'Plugins', icon: Puzzle },
   { id: 'notifications', labelKey: 'mainTabs.notifications', fallbackLabel: 'Notifications', icon: Bell },
+  // 2FA only exists in self-hosted mode — platform mode bypasses auth entirely.
+  ...(!IS_PLATFORM
+    ? [{ id: 'security', labelKey: 'mainTabs.security', fallbackLabel: 'Security', icon: ShieldCheck } as NavItem]
+    : []),
   { id: 'about', labelKey: 'mainTabs.about', fallbackLabel: 'About', icon: Info },
 ];
 

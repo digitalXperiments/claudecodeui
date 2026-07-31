@@ -49,7 +49,11 @@ test('approve bridges an item to a global-board backlog card', async () => {
     const item = missionControlDb.insertItemIfNew(section, {
       title: 'Fix checkout bug',
       summary: 'Users cannot pay',
-      body: {},
+      body: {
+        steps: ['Reproduce payment failure', 'Fix null cart id'],
+        acceptanceCriteria: ['Checkout completes with valid card'],
+        severity: 'high',
+      },
       dedupeKey: 'k1',
     });
     assert.ok(item);
@@ -70,6 +74,70 @@ test('approve bridges an item to a global-board backlog card', async () => {
     assert.equal(card.assignee_provider, 'claude');
     // No project attached yet — the user picks one before moving to In Progress.
     assert.equal(card.project_id, '');
+
+    // Description should be exhaustive: summary, body fields, metadata.
+    assert.match(card.description, /## Summary/);
+    assert.match(card.description, /Users cannot pay/);
+    assert.match(card.description, /## Details/);
+    assert.match(card.description, /Acceptance Criteria/);
+    assert.match(card.description, /Checkout completes with valid card/);
+    assert.match(card.description, /## Metadata/);
+    assert.match(card.description, /Jira drafts/);
+
+    // Prompt is generated at create time for the implementer agent.
+    assert.ok(card.prompt.trim().length > 0);
+    assert.match(card.prompt, /Fix checkout bug/);
+    assert.match(card.prompt, /## Your job/);
+    assert.match(card.prompt, /Requirements \/ context/);
+  });
+});
+
+test('bridge uses explicit body.prompt when produce supplied one', async () => {
+  await withIsolatedDatabase(async () => {
+    const section = seedSection();
+    const item = missionControlDb.insertItemIfNew(section, {
+      title: 'Add dark mode',
+      summary: 'Theme toggle',
+      body: {
+        prompt: 'Implement a dark-mode toggle in settings and persist the preference.',
+        notes: 'Use existing CSS variables.',
+      },
+      dedupeKey: 'k-prompt',
+    });
+    assert.ok(item);
+
+    const resolved = await applyItemAction(item.item_id, 'approve');
+    const taskId = resolved?.result?.kanbanTaskId as string;
+    assert.ok(taskId);
+    const card = kanbanDb.getTask(taskId);
+    assert.ok(card);
+    assert.match(card.prompt, /Implement a dark-mode toggle/);
+    assert.match(card.prompt, /Add dark mode/);
+    // Explicit prompt body field is not duplicated under Details.
+    assert.doesNotMatch(card.description, /\*\*Prompt:\*\*/);
+    assert.match(card.description, /Use existing CSS variables/);
+  });
+});
+
+test('bridge attaches section kanban MCP tools to the card', async () => {
+  await withIsolatedDatabase(async () => {
+    const section = seedSection({
+      kanban_mcp_tools: ['leong_associates_mcp', 'Composio'],
+    });
+    const item = missionControlDb.insertItemIfNew(section, {
+      title: 'Platform work',
+      summary: 'Needs client MCP',
+      body: {},
+      dedupeKey: 'k-mcp',
+    });
+    assert.ok(item);
+
+    const resolved = await applyItemAction(item.item_id, 'approve');
+    const taskId = resolved?.result?.kanbanTaskId as string;
+    assert.ok(taskId);
+    const card = kanbanDb.getTask(taskId);
+    assert.ok(card);
+    assert.deepEqual(card.tools.mcpServers, ['leong_associates_mcp', 'Composio']);
   });
 });
 

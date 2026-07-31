@@ -23,6 +23,7 @@ import { getConnectableHost } from '../shared/networkHosts.js';
 import { findAppRoot, getModuleDir } from './utils/runtime-paths.js';
 import {
     queryClaudeSDK,
+    injectClaudeMessage,
     abortClaudeSDKSession,
     resolveToolApproval,
     getPendingApprovalsForSession,
@@ -94,13 +95,22 @@ import {
 import missionControlRoutes from './modules/mission-control/mission-control.routes.js';
 import {
     configureMissionControlRuntimes,
+    ensureMissionControlSeedSections,
     startMissionControlScheduler,
     stopMissionControlScheduler,
 } from './modules/mission-control/index.js';
 import agentProfilesRoutes from './modules/agent-profiles/agent-profiles.routes.js';
+import webhooksRoutes from './modules/webhooks/webhooks.routes.js';
+import webhooksIngestRoutes from './modules/webhooks/webhooks-ingest.routes.js';
+import {
+    configureWebhookRuntimes,
+    initWebhookAutomation,
+} from './modules/webhooks/index.js';
 import { browserUseService } from './modules/browser-use/browser-use.service.js';
 import { startEnabledPluginServers, stopAllPlugins, getPluginPort } from './utils/plugin-process-manager.js';
 import { initializeDatabase, projectsDb, sessionsDb } from './modules/database/index.js';
+import { syncGrokShellSession } from './modules/providers/list/grok/grok-shell-sync.js';
+import { broadcastCanonicalSessionUpsert } from './modules/websocket/services/chat-run-registry.service.js';
 import { configureWebPush } from './services/vapid-keys.js';
 import { validateApiKey, authenticateToken, authenticateWebSocket } from './middleware/auth.js';
 import { IS_PLATFORM } from './constants/config.js';
@@ -161,6 +171,10 @@ initKanbanQueue({ concurrency: 3 });
 // Mission Control reuses the same provider runtimes for produce/resolve runs.
 configureMissionControlRuntimes(providerSpawnFns);
 
+// Webhooks: source-routed headless agent runs (dictation, external tools, …).
+configureWebhookRuntimes(providerSpawnFns);
+initWebhookAutomation();
+
 // Single WebSocket server that handles chat, shell, and plugin proxy paths.
 const wss = createWebSocketServer(server, {
     verifyClient: {
@@ -169,6 +183,11 @@ const wss = createWebSocketServer(server, {
     },
     chat: {
         spawnFns: providerSpawnFns,
+        // Mid-run inject for Claude chat only (queryClaudeSDK uses open stdin
+        // when appSessionId is present). Headless/git keep one-shot prompts.
+        injectFns: {
+            claude: injectClaudeMessage,
+        },
         abortFns: {
             claude: abortClaudeSDKSession,
             cursor: abortCursorSession,
@@ -190,6 +209,24 @@ const wss = createWebSocketServer(server, {
             }
 
             return null;
+        },
+        // Adopt sessions the interactive TUI created (Grok forks a fresh id
+        // when it can't resume) so Chat ↔ Shell stay on one transcript, then
+        // broadcast the canonical upsert so open chat views refetch.
+        syncShellSession: ({ provider, projectPath, appSessionId, startedAt }) => {
+            if (provider !== 'grok') {
+                return;
+            }
+            void syncGrokShellSession({ appSessionId, projectPath, startedAt })
+                .then((result) => {
+                    if (!result) {
+                        return;
+                    }
+                    return broadcastCanonicalSessionUpsert(result.appSessionId);
+                })
+                .catch((error) => {
+                    console.error('[Shell] Grok session sync failed:', error?.message || error);
+                });
         },
         stripAnsiSequences,
         normalizeDetectedUrl,
@@ -278,6 +315,12 @@ app.use('/api/project-memory', authenticateToken, projectMemoryRoutes);
 
 // Agent API Routes (uses API key authentication)
 app.use('/api/agent', agentRoutes);
+
+// Webhook ingest (API key auth — headers, body, or query; no JWT)
+app.use('/api/hooks', webhooksIngestRoutes);
+
+// Webhook config CRUD (JWT)
+app.use('/api/webhooks', authenticateToken, webhooksRoutes);
 
 app.use('/api/voice', authenticateToken, voiceRoutes);
 
@@ -1684,6 +1727,15 @@ async function startServer() {
             startKanbanScheduler();
         } catch (error) {
             console.error('[Kanban] boot reconcile failed:', error.message);
+        }
+
+        try {
+            const seeded = ensureMissionControlSeedSections();
+            if (seeded.length) {
+                console.log(`${c.info('[INFO]')} Mission Control seed sections ready (${seeded.map((s) => s.title).join(', ')})`);
+            }
+        } catch (error) {
+            console.error('[MissionControl] seed sections failed:', error.message);
         }
 
         try {

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   DndContext,
   DragOverlay,
@@ -28,6 +28,22 @@ type KanbanViewProps = {
   /** Optional project list from the sidebar so the picker is instant. */
   projects?: Project[];
 };
+
+/**
+ * Keeps a stable reference across renders as long as the serialized content
+ * is unchanged. The 2.5s board poll (below) replaces `board`/`projects` with
+ * fresh objects every tick even when nothing actually changed, which would
+ * otherwise re-trigger every effect/memo downstream that depends on these
+ * (e.g. TaskEditor's project/column props) on every single poll.
+ */
+function useStableByContent<T>(value: T): T {
+  const key = JSON.stringify(value);
+  const ref = useRef<{ key: string; value: T }>({ key, value });
+  if (ref.current.key !== key) {
+    ref.current = { key, value };
+  }
+  return ref.current.value;
+}
 
 function columnIdFromOver(overId: string, tasks: KanbanTask[]): string | null {
   if (overId.startsWith('column:')) {
@@ -72,7 +88,7 @@ export default function KanbanView({ selectedProject, isVisible, projects: proje
   }, [boardTasks]);
 
   // Prefer board-loaded projects; fall back to sidebar list for empty/loading states.
-  const projectOptions = useMemo(() => {
+  const projectOptionsRaw = useMemo(() => {
     if ((board.projects ?? []).length > 0) {
       return board.projects;
     }
@@ -81,6 +97,7 @@ export default function KanbanView({ selectedProject, isVisible, projects: proje
       displayName: p.displayName,
     }));
   }, [board.projects, projectsProp]);
+  const projectOptions = useStableByContent(projectOptionsRaw);
 
   // projectId -> display name, for badges + dependency labels.
   const projectNameById = useMemo(() => {
@@ -104,8 +121,12 @@ export default function KanbanView({ selectedProject, isVisible, projects: proje
   }, [boardTasks]);
 
   // While a run is queued/in flight, poll so implement→review→done transitions land.
+  // Paused mid-drag: a poll tick replaces every task/board object with a fresh
+  // reference, which confuses dnd-kit's in-progress drag state (cards visibly
+  // snapping/resetting under the pointer).
+  const isDragging = activeTask !== null;
   useEffect(() => {
-    if (!anyActive || !isVisible) {
+    if (!anyActive || !isVisible || isDragging) {
       return;
     }
     const refresh = board.refreshTasks;
@@ -113,7 +134,9 @@ export default function KanbanView({ selectedProject, isVisible, projects: proje
       void refresh();
     }, 2500);
     return () => clearInterval(timer);
-  }, [anyActive, isVisible, board.refreshTasks]);
+  }, [anyActive, isVisible, isDragging, board.refreshTasks]);
+
+  const columns = useStableByContent(board.board?.columns ?? []);
 
   if (!isVisible) {
     return null;
@@ -180,8 +203,6 @@ export default function KanbanView({ selectedProject, isVisible, projects: proje
 
     void board.reorderColumn(targetColumnId, orderedIds, activeId);
   };
-
-  const columns = board.board?.columns ?? [];
 
   return (
     <div className="flex h-full min-h-0 w-full flex-col">

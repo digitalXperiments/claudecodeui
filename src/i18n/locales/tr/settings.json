@@ -95,7 +95,8 @@
     "computer": "Bilgisayar Kullanımı",
     "notifications": "Bildirimler",
     "plugins": "Eklentiler",
-    "about": "Hakkında"
+    "about": "Hakkında",
+    "security": "Güvenlik"
   },
   "notifications": {
     "title": "Bildirimler",
@@ -491,5 +492,42 @@
     "installAriaLabel": "Eklenti git deposu URL'si",
     "tab": "sekme",
     "runningStatus": "çalışıyor"
+  },
+  "security": {
+    "title": "Güvenlik",
+    "description": "Hesabınızın oturum açma güvenliğini yönetin",
+    "twofa": {
+      "label": "İki faktörlü kimlik doğrulama (2FA)"
+    },
+    "status": {
+      "enabled": "Etkin — oturum açarken kimlik doğrulama uygulamanızdan bir kod gerekir",
+      "disabled": "Devre dışı — oturum açarken yalnızca parolanız gerekir",
+      "protected": "Hesabınız iki faktörlü kimlik doğrulama ile korunuyor"
+    },
+    "setup": {
+      "scanQr": "Bu QR kodunu kimlik doğrulama uygulamanızla (ör. Google Authenticator, Authy, 1Password) tarayın.",
+      "qrAlt": "Kimlik doğrulama uygulaması için QR kodu",
+      "manualEntry": "Veya bu gizli anahtarı manuel olarak girin:",
+      "codeLabel": "Uygulamanızdaki 6 haneli kodu girin"
+    },
+    "disable": {
+      "confirmHelp": "İki faktörlü kimlik doğrulamayı devre dışı bırakmak için parolanızı girin.",
+      "passwordLabel": "Parola"
+    },
+    "actions": {
+      "enable": "2FA'yı etkinleştir",
+      "starting": "Başlatılıyor…",
+      "disable": "2FA'yı devre dışı bırak",
+      "verifyAndEnable": "Doğrula ve etkinleştir",
+      "verifying": "Doğrulanıyor…",
+      "cancel": "İptal",
+      "confirmDisable": "Devre dışı bırakmayı onayla",
+      "disabling": "Devre dışı bırakılıyor…"
+    },
+    "errors": {
+      "generic": "Bir sorun oluştu. Lütfen tekrar deneyin.",
+      "invalidCode": "Geçersiz kimlik doğrulama kodu",
+      "invalidPassword": "Geçersiz parola"
+    }
   }
 }

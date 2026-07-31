@@ -110,7 +110,10 @@ export class GrokMcpProvider extends McpProvider {
     }
 
     try {
-      const cliEntries = await listMcpServersFromCli('grok');
+      // Pass workspace so grok.com team connectors (cwd-sensitive) resolve.
+      const cliEntries = await listMcpServersFromCli('grok', {
+        workspacePaths: [workspacePath, os.homedir()],
+      });
       return mergeCliMcpEntries('grok', scope, merged, cliEntries);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

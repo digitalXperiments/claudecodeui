@@ -95,7 +95,8 @@
     "computer": "计算机使用",
     "notifications": "通知",
     "plugins": "插件",
-    "about": "关于"
+    "about": "关于",
+    "security": "安全"
   },
   "notifications": {
     "title": "通知",
@@ -485,5 +486,42 @@
     "installAriaLabel": "插件 git 仓库 URL",
     "tab": "标签",
     "runningStatus": "运行中"
+  },
+  "security": {
+    "title": "安全",
+    "description": "管理您账户的登录安全",
+    "twofa": {
+      "label": "双重身份验证（2FA）"
+    },
+    "status": {
+      "enabled": "已启用 — 登录时需要身份验证器应用中的验证码",
+      "disabled": "已禁用 — 登录时仅需密码",
+      "protected": "您的账户已受双重身份验证保护"
+    },
+    "setup": {
+      "scanQr": "请使用身份验证器应用（如 Google Authenticator、Authy、1Password）扫描此二维码。",
+      "qrAlt": "身份验证器应用二维码",
+      "manualEntry": "或手动输入此密钥：",
+      "codeLabel": "请输入应用中显示的 6 位验证码"
+    },
+    "disable": {
+      "confirmHelp": "请输入密码以禁用双重身份验证。",
+      "passwordLabel": "密码"
+    },
+    "actions": {
+      "enable": "启用 2FA",
+      "starting": "正在启动…",
+      "disable": "禁用 2FA",
+      "verifyAndEnable": "验证并启用",
+      "verifying": "正在验证…",
+      "cancel": "取消",
+      "confirmDisable": "确认禁用",
+      "disabling": "正在禁用…"
+    },
+    "errors": {
+      "generic": "出现问题，请重试。",
+      "invalidCode": "验证码无效",
+      "invalidPassword": "密码无效"
+    }
   }
 }

@@ -4,6 +4,8 @@ export type ProviderModelOption = {
   value: string;
   label: string;
   description?: string;
+  /** Concrete model id the provider resolves `value` to (e.g. `claude-opus-5[1m]`). */
+  resolvedModel?: string;
   effort?: {
     default?: string;
     values: {

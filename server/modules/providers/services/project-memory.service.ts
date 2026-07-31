@@ -6,6 +6,7 @@ import { readdir, stat } from 'node:fs/promises';
 import { projectMemoryDb, projectsDb } from '@/modules/database/index.js';
 import { obsidianSettingsService } from '@/modules/providers/services/obsidian-settings.service.js';
 import { providerMcpService } from '@/modules/providers/services/mcp.service.js';
+import { mcpCatalogService } from '@/modules/providers/services/mcp-catalog.service.js';
 import { projectSkillsService } from '@/modules/providers/services/project-skills.service.js';
 import { globalSkillsService } from '@/modules/providers/services/global-skills.service.js';
 import {
@@ -40,15 +41,65 @@ import {
  *
  * Enabling memory for a project does three things, each reusing existing
  * cross-agent machinery:
- *   1. installs the `obsidian` MCP server into every agent (MCP fan-out), so any
- *      agent run in the workspace can read/write the vault at runtime;
+ *   1. ensures the `obsidian` MCP server exists as a **user-scope CloudCLI
+ *      catalog** entry (one local definition) and fans it out to agents — the
+ *      REST API connection is machine-global, shared by every project;
  *   2. installs the canonical "Memory" project skill into every agent (skills
- *      fan-out), teaching them the read/write contract;
+ *      fan-out), teaching them the read/write contract for *this* vault folder;
  *   3. scaffolds the project's folder inside the vault on disk.
  *
- * A manifest (`.cloudcli/memory/.managed.json`) records what was installed so
- * teardown is exact. Disabling never deletes vault notes — memory is durable.
+ * A manifest (`.cloudcli/memory/.managed.json`) records skill install status.
+ * Disabling one project never removes the global Obsidian MCP while other
+ * projects still use memory. Vault notes are never deleted.
  */
+
+/** Providers that can receive the shared Obsidian MCP projection. */
+const MEMORY_MCP_PROVIDERS: LLMProvider[] = [
+  'claude',
+  'cursor',
+  'codex',
+  'opencode',
+  'grok',
+  'kimi',
+  'agy',
+];
+
+/**
+ * Upserts the machine-global Obsidian MCP into the CloudCLI catalog (user scope)
+ * and syncs projections to agents. Shared by every memory-enabled project.
+ */
+const ensureObsidianCatalogMcp = async (
+  settings: ObsidianMemorySettings,
+): Promise<ProjectMemoryProviderResult[]> => {
+  const mcpServerInput = buildObsidianMcpServerInput(settings);
+  const entry = await mcpCatalogService.upsert({
+    ...mcpServerInput,
+    scope: 'user',
+    providers: MEMORY_MCP_PROVIDERS,
+    kind: 'memory',
+  });
+  return (entry.syncResults ?? []).map((result) => ({
+    provider: result.provider,
+    ok: result.ok,
+    error: result.error,
+  }));
+};
+
+/**
+ * Removes the catalog Obsidian MCP only when no project still has memory enabled.
+ */
+const maybeRemoveObsidianCatalogMcp = async (): Promise<ProjectMemoryProviderResult[]> => {
+  const stillEnabled = projectMemoryDb.list().some((row) => Boolean(row.enabled));
+  if (stillEnabled) {
+    return [];
+  }
+  const result = await mcpCatalogService.remove(OBSIDIAN_MCP_SERVER_NAME);
+  return (result.syncResults ?? []).map((r) => ({
+    provider: r.provider,
+    ok: r.ok,
+    error: r.error,
+  }));
+};
 
 const MANAGED_DIR_SEGMENTS = ['.cloudcli', 'memory'] as const;
 const MANIFEST_FILE_NAME = '.managed.json';
@@ -221,6 +272,22 @@ export const projectMemoryService = {
   },
 
   /**
+   * Re-sync the CloudCLI Obsidian MCP catalog entry from current vault settings
+   * when at least one project has memory enabled (keeps env/API key projections fresh).
+   */
+  async syncObsidianCatalogIfNeeded(): Promise<void> {
+    const settings = obsidianSettingsService.getSettings();
+    if (!obsidianSettingsService.isConfigured(settings)) {
+      return;
+    }
+    const anyEnabled = projectMemoryDb.list().some((row) => Boolean(row.enabled));
+    if (!anyEnabled) {
+      return;
+    }
+    await ensureObsidianCatalogMcp(settings);
+  },
+
+  /**
    * Enables memory for a project: persists the mapping, installs the Obsidian
    * MCP server and Memory skill into every agent, and scaffolds the vault folder.
    */
@@ -243,18 +310,9 @@ export const projectMemoryService = {
     // 1. Persist the per-project mapping.
     projectMemoryDb.upsert(workspacePath, vaultFolder, true);
 
-    // 2. Install the Obsidian MCP server into every agent.
-    const mcpServerInput = buildObsidianMcpServerInput(settings);
-    const mcpRaw = await providerMcpService.addMcpServerToAllProviders({
-      ...mcpServerInput,
-      workspacePath,
-      scope: 'project',
-    });
-    const mcpResults: ProjectMemoryProviderResult[] = mcpRaw.map((result) => ({
-      provider: result.provider,
-      ok: result.created,
-      error: result.error,
-    }));
+    // 2. Ensure the shared Obsidian MCP lives in the CloudCLI catalog (user-scope)
+    //    and is projected to agents. Not per-project — same REST API for all.
+    const mcpResults = await ensureObsidianCatalogMcp(settings);
     const installedProviders = mcpResults.filter((result) => result.ok).map((result) => result.provider);
 
     // 3. Install the Memory skill into every agent (best-effort; MCP is the
@@ -342,17 +400,6 @@ export const projectMemoryService = {
     const resolved = resolveWorkspacePath(workspacePath);
     const manifest = await readManifest(resolved);
 
-    const mcpRaw = await providerMcpService.removeMcpServerFromAllProviders({
-      name: manifest?.mcpServerName ?? OBSIDIAN_MCP_SERVER_NAME,
-      scope: 'project',
-      workspacePath: resolved,
-    });
-    const mcpResults: ProjectMemoryProviderResult[] = mcpRaw.map((result) => ({
-      provider: result.provider,
-      ok: result.removed,
-      error: result.error,
-    }));
-
     try {
       await projectSkillsService.removeProjectSkill({
         workspacePath: resolved,
@@ -362,6 +409,7 @@ export const projectMemoryService = {
       // Skill may already be gone; disabling is best-effort teardown.
     }
 
+    // Disable this project first so the catalog teardown check sees remaining enables.
     projectMemoryDb.setEnabled(resolved, false);
     await writeManifest(resolved, {
       providers: [],
@@ -369,6 +417,23 @@ export const projectMemoryService = {
       skillInstalled: false,
       updatedAt: new Date().toISOString(),
     });
+
+    // Also clean legacy per-project MCP projections from older CloudCLI versions.
+    const legacyCleanup = await providerMcpService.removeMcpServerFromAllProviders({
+      name: manifest?.mcpServerName ?? OBSIDIAN_MCP_SERVER_NAME,
+      scope: 'project',
+      workspacePath: resolved,
+    });
+
+    const catalogCleanup = await maybeRemoveObsidianCatalogMcp();
+    const mcpResults: ProjectMemoryProviderResult[] = [
+      ...legacyCleanup.map((result) => ({
+        provider: result.provider,
+        ok: result.removed,
+        error: result.error,
+      })),
+      ...catalogCleanup,
+    ];
 
     return { status: await buildStatus(resolved), mcpResults };
   },

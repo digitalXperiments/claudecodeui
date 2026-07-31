@@ -10,6 +10,7 @@ import {
   Palette,
   Plug,
   UserCog,
+  Webhook,
 } from 'lucide-react';
 
 import type {
@@ -40,6 +41,7 @@ export const SETTINGS_MAIN_TABS: SettingsMainTabMeta[] = [
   { id: 'appearance', label: 'Appearance', keywords: 'appearance theme dark light language', icon: Palette },
   { id: 'git', label: 'Git', keywords: 'git github commits', icon: GitBranch },
   { id: 'api', label: 'API Tokens', keywords: 'api tokens auth keys', icon: KeyRound },
+  { id: 'webhooks', label: 'Webhooks', keywords: 'webhooks hooks ingest dictation automation', icon: Webhook },
   { id: 'tasks', label: 'Tasks', keywords: 'tasks taskmaster', icon: ListChecks },
   { id: 'browser', label: 'Browser', keywords: 'browser playwright chromium automation', icon: MonitorPlay },
   { id: 'notifications', label: 'Notifications', keywords: 'notifications alerts push', icon: Bell },
@@ -58,7 +60,7 @@ export const AGENT_NAMES: Record<AgentProvider, string> = {
   agy: 'Antigravity',
   pi: 'Pi',
 };
-export const AGENT_CATEGORIES: AgentCategory[] = ['account', 'permissions', 'mcp'];
+export const AGENT_CATEGORIES: AgentCategory[] = ['account', 'permissions'];
 
 export const DEFAULT_PROJECT_SORT_ORDER: ProjectSortOrder = 'name';
 export const DEFAULT_SAVE_STATUS = null;

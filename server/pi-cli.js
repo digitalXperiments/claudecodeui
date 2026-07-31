@@ -110,6 +110,12 @@ function createPiRpcClient(child) {
 
   child.on('error', rejectAllPending);
   child.on('exit', () => rejectAllPending(new Error('Pi RPC process exited')));
+  // Writing to stdin after the child has already exited raises EPIPE on the
+  // stream itself, not on `child`'s 'error' event above. Unhandled, that
+  // crashes the whole Node process and drops every session, not just this one.
+  child.stdin.on('error', (error) => {
+    console.error('[pi-cli] stdin write failed (process likely exited):', error?.message || error);
+  });
 
   attachJsonlReader(child.stdout, (line) => {
     let message;

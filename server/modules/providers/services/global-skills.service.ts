@@ -386,9 +386,29 @@ export const globalSkillsService = {
     }
 
     const managedRoot = getManagedRoot();
-    const { targets, unsupported } = scope === 'projects'
+    const resolved = scope === 'projects'
       ? await resolveProjectTargets(projects)
       : await resolveTargets();
+    // Optional explicit provider filter — empty array means catalog-only (no fan-out).
+    const providerFilter = Array.isArray(input.providers)
+      ? new Set(input.providers)
+      : null;
+    const targets = providerFilter
+      ? resolved.targets
+          .map((target) => ({
+            ...target,
+            providers: target.providers.filter((p) => providerFilter.has(p)),
+          }))
+          .filter((target) => target.providers.length > 0)
+      : resolved.targets;
+    const unsupported = providerFilter
+      ? [
+          ...resolved.unsupported,
+          ...providerRegistry.listProviders()
+            .map((p) => p.id)
+            .filter((id) => !providerFilter.has(id) && !resolved.unsupported.includes(id)),
+        ]
+      : resolved.unsupported;
     const manifest = await readManifest();
 
     // Validate every entry against the canonical root before touching disk so a
@@ -550,15 +570,34 @@ export const globalSkillsService = {
       });
     }
 
-    const { targets, unsupported } = scope === 'projects'
+    const resolved = scope === 'projects'
       ? await resolveProjectTargets(projects)
       : await resolveTargets();
+    const providerFilter = Array.isArray(input.providers)
+      ? new Set(input.providers)
+      : null;
+    const targets = providerFilter
+      ? resolved.targets
+          .map((target) => ({
+            ...target,
+            providers: target.providers.filter((p) => providerFilter.has(p)),
+          }))
+          .filter((target) => target.providers.length > 0)
+      : resolved.targets;
+    const unsupported = providerFilter
+      ? [
+          ...resolved.unsupported,
+          ...providerRegistry.listProviders()
+            .map((p) => p.id)
+            .filter((id) => !providerFilter.has(id) && !resolved.unsupported.includes(id)),
+        ]
+      : resolved.unsupported;
 
     const manifest = await readManifest();
     const previousTargets = new Set(manifest.skills[directoryName]?.targets ?? []);
     const nextTargetRoots = new Set(targets.map((target) => path.resolve(target.rootDir)));
 
-    // Tear down copies in folders that fall out of scope.
+    // Tear down copies in folders that fall out of scope (or left the provider filter).
     for (const previousRoot of previousTargets) {
       if (nextTargetRoots.has(previousRoot)) {
         continue;

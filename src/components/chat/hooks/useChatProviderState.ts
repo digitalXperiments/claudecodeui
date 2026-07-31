@@ -1,8 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { authenticatedFetch } from '../../../utils/api';
+import { findProviderModelOption } from '../../../utils/providerModels';
 import { useAgentVisibility } from '../../../hooks/useAgentVisibility';
 import type { PendingPermissionRequest, PermissionMode } from '../types/types';
+import {
+  PERMISSION_MODE_CHANGED_EVENT,
+  type PermissionModeChangedDetail,
+} from '../../../constants/permissionModeEvents';
 import type {
   ProjectSession,
   LLMProvider,
@@ -36,6 +41,18 @@ const readStoredProvider = (): LLMProvider => {
     ? storedProvider as LLMProvider
     : 'claude';
 };
+
+/**
+ * Per-session composer choices. Model and effort belong to a conversation,
+ * not to the whole app: without these keys, switching between two chats shows
+ * whichever value was picked last anywhere (the global `<provider>-model` /
+ * `<provider>-effort` entries). Mirrors the per-session permissionMode keys.
+ */
+const getSessionModelStorageKey = (targetProvider: LLMProvider, sessionId: string): string =>
+  `${targetProvider}-model-${sessionId}`;
+
+const getSessionEffortStorageKey = (targetProvider: LLMProvider, sessionId: string): string =>
+  `${targetProvider}-effort-${sessionId}`;
 
 /**
  * Fallback permission-mode matrix used only until the backend capability
@@ -165,6 +182,16 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
   const [piModel, setPiModel] = useState<string>(() => {
     return localStorage.getItem('pi-model') || FALLBACK_DEFAULT_MODEL.pi;
   });
+
+  /**
+   * Overrides for the currently open conversation, loaded from the
+   * per-session storage keys above. Null means "nothing recorded for this
+   * session" — the provider-level defaults apply. Without these, two chats on
+   * the same provider always render the same (globally last-picked) model and
+   * effort.
+   */
+  const [sessionModelOverride, setSessionModelOverride] = useState<string | null>(null);
+  const [sessionEffortOverride, setSessionEffortOverride] = useState<string | null>(null);
 
   /**
    * Backend-owned capability matrix keyed by provider. Drives the permission
@@ -380,26 +407,21 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     current: string,
     def: ProviderModelsDefinition,
   ): string => {
-    const stored = localStorage.getItem(storageKey);
-    if (stored && def.OPTIONS.some((o) => o.value === stored)) {
-      return stored;
+    const stored = findProviderModelOption(def, localStorage.getItem(storageKey));
+    if (stored) {
+      return stored.value;
     }
-    if (current && def.OPTIONS.some((o) => o.value === current)) {
-      return current;
-    }
-    return def.DEFAULT;
+
+    // `current` can arrive as a concrete model id from the session log, so it is
+    // normalized back to the catalog alias the picker and storage use.
+    return findProviderModelOption(def, current)?.value ?? def.DEFAULT;
   };
 
   const getModelOption = useCallback((
     targetProvider: LLMProvider,
     model: string,
   ): ProviderModelOption | null => {
-    const definition = providerModelCatalog[targetProvider];
-    if (!definition) {
-      return null;
-    }
-
-    return definition.OPTIONS.find((option) => option.value === model) ?? null;
+    return findProviderModelOption(providerModelCatalog[targetProvider], model);
   }, [providerModelCatalog]);
 
   const getEffortOptionsForModel = useCallback((
@@ -456,6 +478,12 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     agy: agyModel,
     pi: piModel,
   }), [claudeModel, cursorModel, codexModel, opencodeModel, grokModel, kimiModel, agyModel, piModel]);
+
+  /** Effective model for the open conversation: its own recorded choice, or the provider default. */
+  const currentProviderModel = useMemo(
+    () => sessionModelOverride ?? providerModels[provider],
+    [sessionModelOverride, providerModels, provider],
+  );
 
   useEffect(() => {
     const claude = providerModelCatalog.claude;
@@ -582,6 +610,30 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     }
   }, [providerEfforts, providerModels, reconcileStoredEffort]);
 
+  // Load the per-session model/effort overrides whenever the open
+  // conversation (or its provider) changes. The stored model is normalized
+  // against the live catalog once it arrives, so a renamed/removed model
+  // falls back to the provider default instead of resurrecting a stale id.
+  useEffect(() => {
+    const sessionId = selectedSession?.id;
+    if (!sessionId) {
+      setSessionModelOverride(null);
+      setSessionEffortOverride(null);
+      return;
+    }
+
+    const storedModel = localStorage.getItem(getSessionModelStorageKey(provider, sessionId));
+    const catalog = providerModelCatalog[provider];
+    setSessionModelOverride(
+      storedModel
+        ? catalog
+          ? findProviderModelOption(catalog, storedModel)?.value ?? null
+          : storedModel
+        : null,
+    );
+    setSessionEffortOverride(localStorage.getItem(getSessionEffortStorageKey(provider, sessionId)));
+  }, [selectedSession?.id, provider, providerModelCatalog]);
+
   useEffect(() => {
     const validModes = getPermissionModesForProvider(provider);
     const sessionSavedMode = selectedSession?.id
@@ -670,6 +722,14 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     if (selectedSession?.id) {
       localStorage.setItem(`permissionMode-${selectedSession.id}`, nextMode);
     }
+
+    // Let the Shell tab relaunch its interactive CLI with the new mode's
+    // flags — TUI processes can't change mode after spawn.
+    window.dispatchEvent(
+      new CustomEvent<PermissionModeChangedDetail>(PERMISSION_MODE_CHANGED_EVENT, {
+        detail: { provider, mode: nextMode, sessionId: selectedSession?.id ?? null },
+      }),
+    );
   }, [permissionMode, provider, selectedSession?.id, getPermissionModesForProvider]);
 
   const resolvePermissionModeForProvider = useCallback((
@@ -710,23 +770,74 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
       throw new Error('Unable to change the active model for this session.');
     }
 
+    const appliedModel = body.data.model || model;
+    // Record the choice against the session so navigating away and back shows
+    // this chat's model instead of the last globally picked one.
+    localStorage.setItem(getSessionModelStorageKey(targetProvider, normalizedSessionId), appliedModel);
+    if (targetProvider === provider && selectedSession?.id === normalizedSessionId) {
+      setSessionModelOverride(appliedModel);
+    }
+
     return {
       scope: 'session' as const,
       changed: body.data.changed === true,
-      model: body.data.model || model,
+      model: appliedModel,
     };
-  }, [setStoredProviderModel]);
+  }, [provider, selectedSession?.id, setStoredProviderModel]);
+
+  const selectProviderEffort = useCallback((
+    targetProvider: LLMProvider,
+    effort: string,
+    sessionId?: string | null,
+  ) => {
+    const normalizedSessionId = typeof sessionId === 'string' ? sessionId.trim() : '';
+    if (!normalizedSessionId) {
+      // No conversation yet: keep the provider-level default behavior.
+      setStoredProviderEffort(targetProvider, effort);
+      return;
+    }
+
+    localStorage.setItem(getSessionEffortStorageKey(targetProvider, normalizedSessionId), effort);
+    if (targetProvider === provider && selectedSession?.id === normalizedSessionId) {
+      setSessionEffortOverride(effort);
+    }
+  }, [provider, selectedSession?.id, setStoredProviderEffort]);
+
+  /**
+   * Snapshot the model/effort a message was actually sent with under the
+   * session's keys. Called on every successful send so the very first message
+   * of a chat — sent before the user ever touched the pickers — still pins
+   * the session to the values it started with.
+   */
+  const persistSessionModelEffort = useCallback((
+    targetProvider: LLMProvider,
+    sessionId: string | null | undefined,
+    model: string,
+    effort: string,
+  ) => {
+    const normalizedSessionId = typeof sessionId === 'string' ? sessionId.trim() : '';
+    if (!normalizedSessionId) {
+      return;
+    }
+
+    localStorage.setItem(getSessionModelStorageKey(targetProvider, normalizedSessionId), model);
+    localStorage.setItem(getSessionEffortStorageKey(targetProvider, normalizedSessionId), effort);
+    if (targetProvider === provider && selectedSession?.id === normalizedSessionId) {
+      setSessionModelOverride(model);
+      setSessionEffortOverride(effort);
+    }
+  }, [provider, selectedSession?.id]);
 
   const currentProviderEffortOptions = useMemo(() => {
-    return getEffortOptionsForModel(provider, providerModels[provider]);
-  }, [getEffortOptionsForModel, provider, providerModels]);
+    return getEffortOptionsForModel(provider, currentProviderModel);
+  }, [getEffortOptionsForModel, provider, currentProviderModel]);
   const currentProviderEffort = useMemo(() => {
     return reconcileStoredEffort(
       provider,
-      providerModels[provider],
-      providerEfforts[provider] ?? DEFAULT_EFFORT_VALUE,
+      currentProviderModel,
+      sessionEffortOverride ?? providerEfforts[provider] ?? DEFAULT_EFFORT_VALUE,
     );
-  }, [provider, providerEfforts, providerModels, reconcileStoredEffort]);
+  }, [provider, providerEfforts, sessionEffortOverride, currentProviderModel, reconcileStoredEffort]);
 
   return {
     provider,
@@ -759,7 +870,10 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     providerModelsLoading,
     providerModelsRefreshing,
     hardRefreshProviderModels: () => loadProviderModels({ bypassCache: true }),
+    currentProviderModel,
     selectProviderModel,
+    selectProviderEffort,
+    persistSessionModelEffort,
     setStoredProviderEffort,
     resolvePermissionModeForProvider,
     // Attachment capabilities for the active provider: images need inline

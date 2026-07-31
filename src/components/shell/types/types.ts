@@ -15,6 +15,8 @@ export type ShellInitMessage = {
   initialCommand: string | null | undefined;
   isPlainShell: boolean;
   forceRestart?: boolean;
+  /** Chatbar permission mode the interactive CLI should launch with. */
+  permissionMode?: string;
 };
 
 export type ShellResizeMessage = {

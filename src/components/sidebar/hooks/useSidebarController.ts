@@ -12,14 +12,19 @@ import type {
   DeleteCategoryConfirmation,
   DeleteProjectConfirmation,
   ProjectSortOrder,
+  RecentSessionListItem,
   SidebarSearchMode,
   SessionDeleteConfirmation,
   SessionWithProvider,
 } from '../types/types';
 import {
+  buildAccordionCollapsedCategoryIds,
   clearLegacyStarredProjectIds,
+  enforceSingleExpandedCategory,
   filterProjects,
   getAllSessions,
+  getSessionDate,
+  getSidebarCategoryKeys,
   groupProjectsByCategory,
   readCollapsedCategoryIds,
   readLegacyStarredProjectIds,
@@ -585,18 +590,41 @@ export function useSidebarController({
     [resolveProjectStarState],
   );
 
-  const toggleCategoryCollapsed = useCallback((categoryKey: string) => {
+  // Accordion: only one category group may be expanded at a time.
+  const toggleCategoryCollapsed = useCallback(
+    (categoryKey: string) => {
+      setCollapsedCategoryIds((previous) => {
+        const allKeys = getSidebarCategoryKeys(categories);
+        const isCurrentlyCollapsed = previous.has(categoryKey);
+        // Expand this key (and collapse every other), or collapse it if open.
+        const next = buildAccordionCollapsedCategoryIds(
+          allKeys,
+          isCurrentlyCollapsed ? categoryKey : null,
+        );
+        writeCollapsedCategoryIds([...next]);
+        return next;
+      });
+    },
+    [categories],
+  );
+
+  // Normalize persisted / multi-open state whenever the category list changes
+  // (new categories, first load with legacy multi-expand storage).
+  useEffect(() => {
+    const allKeys = getSidebarCategoryKeys(categories);
+    if (allKeys.length === 0) {
+      return;
+    }
+
     setCollapsedCategoryIds((previous) => {
-      const next = new Set(previous);
-      if (next.has(categoryKey)) {
-        next.delete(categoryKey);
-      } else {
-        next.add(categoryKey);
+      const next = enforceSingleExpandedCategory(previous, allKeys);
+      if (next === previous) {
+        return previous;
       }
       writeCollapsedCategoryIds([...next]);
       return next;
     });
-  }, []);
+  }, [categories]);
 
   const assignProjectToCategory = useCallback(
     (projectId: string, categoryId: string | null) => {
@@ -888,6 +916,42 @@ export function useSidebarController({
       }),
     [categories, debouncedSearchQuery, filteredProjects, searchMode],
   );
+
+  // Flat, uncategorized view of every session across all projects, ordered by
+  // last activity (last message) descending. Used by the "Recent" rail mode.
+  const recentSessions = useMemo(() => {
+    const items: RecentSessionListItem[] = [];
+
+    for (const project of projects) {
+      for (const session of getAllSessions(project)) {
+        items.push({ session, project });
+      }
+    }
+
+    items.sort(
+      (itemA, itemB) => getSessionDate(itemB.session).getTime() - getSessionDate(itemA.session).getTime(),
+    );
+
+    const normalizedSearch = debouncedSearchQuery.trim().toLowerCase();
+    if (!normalizedSearch) {
+      return items;
+    }
+
+    return items.filter(({ session, project }) => {
+      const sessionName =
+        typeof session.summary === 'string' && session.summary.trim().length > 0
+          ? session.summary
+          : typeof session.name === 'string'
+            ? session.name
+            : '';
+
+      return [
+        sessionName,
+        project.displayName || '',
+        session.__provider,
+      ].some((value) => value.toLowerCase().includes(normalizedSearch));
+    });
+  }, [debouncedSearchQuery, projects]);
 
   const filteredArchivedSessions = useMemo(() => {
     const normalizedSearch = debouncedSearchQuery.trim().toLowerCase();
@@ -1223,6 +1287,7 @@ export function useSidebarController({
     categoryDeleteConfirmation,
     moveToCategoryProject,
     runningSessionsCount,
+    recentSessions,
     archivedProjects: filteredArchivedProjects,
     archivedSessions: filteredArchivedSessions,
     archivedSessionsCount: archivedProjects.length + archivedSessions.length,

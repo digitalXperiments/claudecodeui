@@ -290,9 +290,58 @@ export function handleRunCompletion(event: RunCompletionEvent): void {
 }
 
 /**
+ * Sync a task's lifecycle status after a human dragged its card to another
+ * column via the HTTP route (which otherwise only updates `column_id`).
+ * Queued/running tasks are left alone — the run lifecycle owns those states.
+ *
+ * - entering Done → mark `done` and cascade dependents, same as a finished run
+ * - leaving Done  → reopen to `todo` and re-block dependents that were only
+ *   unblocked by this task's completion
+ */
+export function handleManualColumnMove(taskId: string, previousColumnId: string): void {
+  const task = kanbanDb.getTask(taskId);
+  if (!task || task.column_id === previousColumnId) {
+    return;
+  }
+  if (task.status === 'queued' || task.status === 'running') {
+    return;
+  }
+  if (task.column_id === COLUMN_DONE) {
+    if (task.status !== 'done') {
+      kanbanDb.setTaskStatus(taskId, 'done');
+    }
+    onTaskDone?.(taskId);
+    return;
+  }
+  if (previousColumnId === COLUMN_DONE && task.status === 'done') {
+    kanbanDb.setTaskStatus(taskId, 'todo');
+    for (const dependentId of kanbanDb.listDependents(taskId)) {
+      const dependent = kanbanDb.getTask(dependentId);
+      if (
+        !dependent ||
+        dependent.status === 'running' ||
+        dependent.status === 'queued' ||
+        dependent.status === 'done'
+      ) {
+        continue;
+      }
+      const hasOpenDep = dependent.dependsOn.some(
+        (depId) => kanbanDb.getTask(depId)?.status !== 'done',
+      );
+      if (hasOpenDep && dependent.status !== 'blocked') {
+        kanbanDb.setTaskStatus(dependentId, 'blocked');
+      }
+    }
+  }
+}
+
+/**
  * Boot-time durability pass: any `running` kanban run/task with no live registry
  * entry (the process restarted mid-run) is marked `failed`. Prevents tasks from
  * being stuck "running" forever after a crash/restart.
+ *
+ * Also repairs cards sitting in the Done column whose status was never flipped
+ * — drags used to update only `column_id`, leaving them stuck at `todo`/`failed`.
  */
 export function reconcileKanbanOnBoot(): void {
   const stale = kanbanDb.listRunningRuns();
@@ -307,6 +356,20 @@ export function reconcileKanbanOnBoot(): void {
   }
   if (stale.length > 0) {
     console.log(`[Kanban] reconciled ${stale.length} stale run(s) on boot`);
+  }
+
+  // Repair cards stuck in Done with a non-done status (pre-fix drags only
+  // updated column_id). Queued/running cards belong to the run lifecycle.
+  let repaired = 0;
+  for (const task of kanbanDb.listTasksByColumn(COLUMN_DONE)) {
+    if (task.status === 'done' || task.status === 'queued' || task.status === 'running') {
+      continue;
+    }
+    kanbanDb.setTaskStatus(task.task_id, 'done');
+    repaired += 1;
+  }
+  if (repaired > 0) {
+    console.log(`[Kanban] repaired ${repaired} task(s) stuck in Done with a non-done status`);
   }
 }
 

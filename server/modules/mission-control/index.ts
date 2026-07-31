@@ -15,4 +15,12 @@ export {
   importFromMissionControlDb,
   resolveDefaultLegacyDbPath,
 } from '@/modules/mission-control/mission-control-import.service.js';
+export {
+  ensureMissionControlSeedSections,
+  ensureTrelloTasksSection,
+  TRELLO_TASKS_SECTION_TITLE,
+  buildTrelloTasksSectionInput,
+  getTrelloSeedConfigPath,
+} from '@/modules/mission-control/mission-control-seed.service.js';
+export type { TrelloSeedBoardConfig } from '@/modules/mission-control/mission-control-seed.config.js';
 export * from '@/modules/mission-control/mission-control.types.js';

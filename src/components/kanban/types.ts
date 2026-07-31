@@ -16,6 +16,10 @@ export type KanbanColumn = {
 export type KanbanTaskTools = {
   allowedCommands?: string[];
   disallowedCommands?: string[];
+  /** MCP server names to prefer / allow-list for this task. */
+  mcpServers?: string[];
+  /** Project skill directory names to apply for this task. */
+  skills?: string[];
   [key: string]: unknown;
 };
 
@@ -32,6 +36,8 @@ export type KanbanBoard = {
 export type ProjectRef = {
   projectId: string;
   displayName: string;
+  /** Workspace path when available (needed for project skills). */
+  path?: string;
 };
 
 export type KanbanTask = {

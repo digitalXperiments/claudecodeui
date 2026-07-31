@@ -114,7 +114,7 @@ function emitRunCompletion(run: ChatRun, message: NormalizedMessage): void {
   }
 }
 
-async function broadcastCanonicalSessionUpsert(appSessionId: string): Promise<void> {
+export async function broadcastCanonicalSessionUpsert(appSessionId: string): Promise<void> {
   const row = sessionsDb.getSessionById(appSessionId);
   if (!row || row.isArchived) {
     return;

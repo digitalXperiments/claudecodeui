@@ -16,9 +16,48 @@ import path from 'node:path';
  */
 
 /**
+ * Disable Grok's automatic import of ~/.claude.json (and Cursor) MCP servers.
+ *
+ * Grok defaults to `[compat.claude] mcps = true`, which merges every Claude
+ * user MCP into Grok sessions. CloudCLI fan-out writes Claude-only servers
+ * into ~/.claude.json; without this flag they show up in Grok `/mcps` and
+ * cannot be removed from Grok config (they are not in config.toml).
+ *
+ * Explicit Grok bindings still work: they write into mcp_servers in config.toml.
+ */
+function applyMcpIsolationToConfigToml(tomlText) {
+  let next = typeof tomlText === 'string' ? tomlText : '';
+
+  const ensureCompatSection = (vendor, enabled) => {
+    const sectionRe = new RegExp(`\\[compat\\.${vendor}\\][\\s\\S]*?(?=\\n\\[|$)`);
+    const mcpsLine = `mcps = ${enabled ? 'true' : 'false'}`;
+    if (sectionRe.test(next)) {
+      next = next.replace(sectionRe, (block) => {
+        if (/^\s*mcps\s*=/m.test(block)) {
+          return block.replace(/^\s*mcps\s*=\s*.*$/m, mcpsLine);
+        }
+        return block.replace(new RegExp(`\\[compat\\.${vendor}\\]\\s*`), `[compat.${vendor}]\n${mcpsLine}\n`);
+      });
+    } else {
+      next = `${next.trimEnd()}\n\n[compat.${vendor}]\n${mcpsLine}\n`;
+    }
+  };
+
+  // Isolation: only CloudCLI catalog fan-out (mcp_servers in this file) supplies Grok MCPs.
+  ensureCompatSection('claude', false);
+  ensureCompatSection('cursor', false);
+
+  if (!next.includes('CloudCLI MCP isolation')) {
+    next = `# CloudCLI MCP isolation: do not auto-import Claude/Cursor MCP files.\n${next}`;
+  }
+  return next.endsWith('\n') ? next : `${next}\n`;
+}
+
+/**
  * Force `[ui] permission_mode` / `yolo` in a TOML blob without a full parser.
  * Replaces existing keys when present; otherwise inserts them under `[ui]`.
  * Keeps MCP servers, marketplace, models, and other user settings intact.
+ * Also applies MCP isolation (no auto-import of ~/.claude.json into Grok).
  */
 function applyPermissionModeToConfigToml(tomlText, configPermissionMode) {
   let next = typeof tomlText === 'string' ? tomlText : '';
@@ -43,11 +82,38 @@ function applyPermissionModeToConfigToml(tomlText, configPermissionMode) {
     );
   }
 
+  next = applyMcpIsolationToConfigToml(next);
+
   const banner = '# CloudCLI-managed permission_mode overlay — regenerated each spawn.\n';
   if (!next.includes('CloudCLI-managed permission_mode overlay')) {
     next = banner + next;
   }
   return next.endsWith('\n') ? next : `${next}\n`;
+}
+
+/**
+ * Patch the user's real ~/.grok/config.toml so interactive `grok` (and /mcps)
+ * also stop importing Claude MCP files. Idempotent.
+ */
+function ensureUserGrokMcpIsolation() {
+  const userConfigPath = path.join(os.homedir(), '.grok', 'config.toml');
+  try {
+    let text = '';
+    try {
+      text = fs.readFileSync(userConfigPath, 'utf8');
+    } catch {
+      text = '';
+    }
+    // Already isolated?
+    if (/\[compat\.claude\][\s\S]*?^\s*mcps\s*=\s*false/m.test(text)) {
+      return;
+    }
+    const next = applyMcpIsolationToConfigToml(text);
+    fs.mkdirSync(path.dirname(userConfigPath), { recursive: true });
+    writeFileAtomic(userConfigPath, next.endsWith('\n') ? next : `${next}\n`);
+  } catch (error) {
+    console.warn('[grok-home] failed to apply MCP isolation to user config:', error?.message || error);
+  }
 }
 
 /** Write via temp + rename so concurrent spawns never read a half-written file. */
@@ -154,6 +220,87 @@ function syncSharedGrokFiles(sourceHome, managedRoot, managedHome) {
 }
 
 /**
+ * Merge `srcDir` into `destDir`, newest file wins. Whole subtrees move via
+ * rename when the destination does not have them; conflicting files keep the
+ * newer mtime. Session transcripts are append-only per session id, so
+ * newest-wins can never lose a turn.
+ */
+function mergeDirNewestWins(srcDir, destDir) {
+  for (const entry of fs.readdirSync(srcDir, { withFileTypes: true })) {
+    const src = path.join(srcDir, entry.name);
+    const dest = path.join(destDir, entry.name);
+    if (entry.isDirectory()) {
+      if (fs.existsSync(dest)) {
+        fs.mkdirSync(dest, { recursive: true });
+        mergeDirNewestWins(src, dest);
+      } else {
+        fs.renameSync(src, dest);
+      }
+      continue;
+    }
+    if (!fs.existsSync(dest)) {
+      fs.renameSync(src, dest);
+      continue;
+    }
+    try {
+      if (fs.statSync(src).mtimeMs > fs.statSync(dest).mtimeMs) {
+        fs.renameSync(src, dest);
+      }
+    } catch {
+      // Vanished mid-merge; skip.
+    }
+  }
+}
+
+/**
+ * Unify session storage across the real home and every managed home.
+ *
+ * Early managed homes were created before `~/.grok/sessions` existed, so the
+ * symlink was skipped and those homes grew their own real sessions
+ * directories — fragmenting transcripts per permission mode: the Shell TUI
+ * (mode A) could not `--resume` a chat ACP session (mode B), and the history
+ * reader / synchronizer (which only scan real `~/.grok/sessions`) saw neither.
+ * Merge any real managed sessions dir into the user's, then replace it with a
+ * symlink so every home shares one store and chat/shell stay in sync.
+ */
+function unifySessionsDir(sourceHome, managedRoot) {
+  const userSessions = path.join(sourceHome, 'sessions');
+  fs.mkdirSync(userSessions, { recursive: true });
+
+  let managedModeDirs;
+  try {
+    managedModeDirs = fs
+      .readdirSync(managedRoot, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => path.join(managedRoot, entry.name));
+  } catch {
+    managedModeDirs = [];
+  }
+
+  for (const modeDir of managedModeDirs) {
+    const linkPath = path.join(modeDir, 'sessions');
+    let stat = null;
+    try {
+      stat = fs.lstatSync(linkPath);
+    } catch {
+      stat = null;
+    }
+    if (stat?.isSymbolicLink()) {
+      continue;
+    }
+    try {
+      if (stat?.isDirectory()) {
+        mergeDirNewestWins(linkPath, userSessions);
+        fs.rmSync(linkPath, { recursive: true, force: true });
+      }
+      fs.symlinkSync(userSessions, linkPath, 'dir');
+    } catch {
+      // Non-fatal: retried on the next spawn.
+    }
+  }
+}
+
+/**
  * Build a per-mode GROK_HOME that reuses the user's real auth/credentials and
  * most of their config, but forces CloudCLI's chosen permission mode. That
  * isolation is required because a personal `~/.grok/config.toml` with
@@ -173,7 +320,13 @@ function ensureManagedGrokHome(configPermissionMode) {
 
   fs.mkdirSync(managedHome, { recursive: true });
 
+  // Keep user + managed homes from auto-importing Claude MCP servers.
+  ensureUserGrokMcpIsolation();
+
   syncSharedGrokFiles(sourceHome, managedRoot, managedHome);
+
+  // One shared sessions store across all homes (see unifySessionsDir).
+  unifySessionsDir(sourceHome, managedRoot);
 
   // Reuse heavyweight caches without full duplication.
   for (const dirName of ['marketplace-cache', 'sessions', 'skills', 'bundled', 'docs']) {
@@ -217,4 +370,11 @@ function ensureManagedGrokHome(configPermissionMode) {
   return managedHome;
 }
 
-export { applyPermissionModeToConfigToml, ensureManagedGrokHome };
+export {
+  applyPermissionModeToConfigToml,
+  applyMcpIsolationToConfigToml,
+  ensureManagedGrokHome,
+  ensureUserGrokMcpIsolation,
+  mergeDirNewestWins,
+  unifySessionsDir,
+};

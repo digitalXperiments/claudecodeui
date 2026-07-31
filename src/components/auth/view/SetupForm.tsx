@@ -73,7 +73,7 @@ export default function SetupForm() {
 
       setIsSubmitting(true);
       const result = await register(formState.username.trim(), formState.password);
-      if (!result.success) {
+      if (!result.success && 'error' in result) {
         setErrorMessage(result.error);
       }
       setIsSubmitting(false);

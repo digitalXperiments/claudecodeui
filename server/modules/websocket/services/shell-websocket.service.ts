@@ -7,8 +7,13 @@ import { WebSocket, type RawData } from 'ws';
 
 import { parseIncomingJsonObject } from '@/shared/utils.js';
 import { ensureManagedGrokHome } from '@/shared/grok-home.js';
+// Import the capabilities module directly (not the providers barrel) so shell
+// init does not create a circular load path through sessions → websocket.
+// eslint-disable-next-line boundaries/dependencies
+import { providerCapabilitiesService } from '@/modules/providers/services/provider-capabilities.service.js';
+import type { LLMProvider } from '@/shared/types.js';
 
-type ShellIncomingMessage = {
+export type ShellIncomingMessage = {
   type?: string;
   data?: string;
   cols?: number;
@@ -20,6 +25,7 @@ type ShellIncomingMessage = {
   initialCommand?: string;
   isPlainShell?: boolean;
   forceRestart?: boolean;
+  permissionMode?: string;
 };
 
 type PtySessionEntry = {
@@ -29,13 +35,15 @@ type PtySessionEntry = {
   timeoutId: NodeJS.Timeout | null;
   projectPath: string;
   sessionId: string | null;
+  provider: string;
+  startedAt: number;
 };
 
 const ptySessionsMap = new Map<string, PtySessionEntry>();
 const PTY_SESSION_TIMEOUT = 30 * 60 * 1000;
 const SHELL_URL_PARSE_BUFFER_LIMIT = 32768;
 
-type ShellWebSocketDependencies = {
+export type ShellWebSocketDependencies = {
   resolveProviderSessionId: (
     sessionId: string,
     provider: string,
@@ -44,6 +52,19 @@ type ShellWebSocketDependencies = {
   normalizeDetectedUrl: (url: string) => string | null;
   extractUrlsFromText: (content: string) => string[];
   shouldAutoOpenUrlFromOutput: (content: string) => boolean;
+  /**
+   * Adopt a provider session the interactive shell created back into the app:
+   * called when a shell PTY ends, is replaced, or its websocket detaches, so
+   * providers whose TUI forks new session ids (Grok) can map them onto the
+   * app session and keep Chat ↔ Shell on one transcript. Optional — providers
+   * without an implementation simply skip the adoption.
+   */
+  syncShellSession?: (info: {
+    provider: string;
+    projectPath: string;
+    appSessionId: string | null;
+    startedAt: number;
+  }) => void;
 };
 
 /**
@@ -103,11 +124,20 @@ function resolveResumeSessionId(
   }
 
   // Prefer provider-native id; fall back to the app session id when the DB row
-  // has not been mapped yet (null from resolve, not "lookup threw").
-  const resolvedSessionId =
-    resumeSessionId === undefined || resumeSessionId === null || resumeSessionId === ''
-      ? sessionId
-      : resumeSessionId;
+  // has not been mapped yet (null from resolve, not "lookup threw") — except
+  // for Grok, where an unmapped app id is a CloudCLI uuid that `grok --resume`
+  // can never resolve: trying it would error the TUI out with a non-zero exit.
+  // With no mapping the shell starts a fresh TUI instead, and the shell
+  // session sync (see syncShellSession) adopts whatever session it creates.
+  // (Disk-discovered Grok sessions have session_id === provider_session_id, so
+  // only blank the id when the fallback actually happened, not when the DB
+  // legitimately returned the same string.)
+  const fellBackToAppId =
+    resumeSessionId === undefined || resumeSessionId === null || resumeSessionId === '';
+  const resolvedSessionId = fellBackToAppId ? sessionId : resumeSessionId;
+  if (provider === 'grok' && fellBackToAppId) {
+    return '';
+  }
   if (!resolvedSessionId || !SAFE_SESSION_ID_PATTERN.test(resolvedSessionId)) {
     return '';
   }
@@ -121,6 +151,42 @@ function shellSingleQuote(value: string): string {
 }
 
 /**
+ * Validates the client-supplied chatbar permission mode against the provider's
+ * advertised capability list. Returns '' when absent/invalid, so callers can
+ * skip mode flags entirely (older clients keep their previous behavior).
+ */
+function resolveShellPermissionMode(provider: string, permissionMode: string): string {
+  if (!permissionMode) {
+    return '';
+  }
+
+  try {
+    const capabilities = providerCapabilitiesService.getProviderCapabilities(provider as LLMProvider);
+    return capabilities?.permissionModes?.includes(permissionMode) ? permissionMode : '';
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Codex sandbox/approval overrides for the interactive TUI, mirroring
+ * mapPermissionModeToCodexOptions in openai-codex.js. `-c` config overrides
+ * work for both `codex` and `codex resume <id>`.
+ */
+function buildCodexPermissionFlags(permissionMode: string): string {
+  switch (permissionMode) {
+    case 'acceptEdits':
+      return ' -c sandbox_mode="workspace-write" -c approval_policy="never"';
+    case 'bypassPermissions':
+      return ' -c sandbox_mode="danger-full-access" -c approval_policy="never"';
+    case 'default':
+      return ' -c sandbox_mode="workspace-write" -c approval_policy="untrusted"';
+    default:
+      return '';
+  }
+}
+
+/**
  * Launch interactive Grok TUI for the Shell tab.
  *
  * Do **not** pipe `grok export` into the same PTY before the TUI — plain
@@ -129,12 +195,23 @@ function shellSingleQuote(value: string): string {
  *
  * Use a clean process each open (see force-fresh agent shell handling below);
  * reconnecting to a live Grok TUI after wiping the client leaves a blank frame.
+ *
+ * The chatbar permission mode selects the managed GROK_HOME (each mode gets
+ * its own home with `[ui] permission_mode` overlaid — see grok-home.js), so
+ * the TUI starts in the same mode the chat runtime would use.
  */
-function buildGrokShellCommand(resumeSessionId: string, projectPath: string): string {
+function buildGrokShellCommand(resumeSessionId: string, projectPath: string, permissionMode: string): string {
+  // bypassPermissions maps to Grok's always-approve (see
+  // resolveGrokPermissionRuntime in grok-cli.js); every other valid mode uses
+  // its own identifier verbatim in config.toml.
+  const configPermissionMode =
+    permissionMode === 'bypassPermissions'
+      ? 'always-approve'
+      : permissionMode || 'default';
   // Resolve via ensureManagedGrokHome so the credential sync (newest-wins
   // across real ~/.grok and all managed homes) runs before the TUI starts —
   // otherwise the shell tab keeps using a stale, rotated-out token.
-  const managedHome = ensureManagedGrokHome('auto');
+  const managedHome = ensureManagedGrokHome(configPermissionMode);
   const resolvedCwd = projectPath ? path.resolve(projectPath) : '';
   // Fullscreen alt-screen is what Grok's TUI expects; xterm.js handles it when
   // we don't mix in plain-text dumps or half-reconnects.
@@ -148,7 +225,9 @@ function buildGrokShellCommand(resumeSessionId: string, projectPath: string): st
     const homePs = managedHome.replace(/'/g, "''");
     const idPs = resumeSessionId.replace(/'/g, "''");
     if (resumeSessionId) {
-      return `$env:GROK_HOME='${homePs}'; grok --resume '${idPs}'${cwdFlag}`;
+      // Resume failure (stale/deleted session) falls back to a fresh TUI —
+      // same contract as the claude/codex shell commands.
+      return `$env:GROK_HOME='${homePs}'; grok --resume '${idPs}'${cwdFlag}; if ($LASTEXITCODE -ne 0) { grok${cwdFlag} }`;
     }
     return `$env:GROK_HOME='${homePs}'; grok${cwdFlag}`;
   }
@@ -156,15 +235,20 @@ function buildGrokShellCommand(resumeSessionId: string, projectPath: string): st
   const homeQ = shellSingleQuote(managedHome);
   if (resumeSessionId) {
     const idQ = shellSingleQuote(resumeSessionId);
-    return `export GROK_HOME=${homeQ}; exec grok --resume ${idQ}${cwdFlag}`;
+    return `export GROK_HOME=${homeQ}; grok --resume ${idQ}${cwdFlag} || exec grok${cwdFlag}`;
   }
   return `export GROK_HOME=${homeQ}; exec grok${cwdFlag}`;
 }
 
 /**
  * Resolves provider command line for plain shell and agent-backed shell modes.
+ *
+ * `message.permissionMode` carries the chatbar's current permission mode so
+ * the interactive CLI starts in the same mode the chat runtime would use.
+ * Each provider maps the mode onto its real interactive flags (validated
+ * against provider capabilities first — invalid/unknown modes add no flags).
  */
-function buildShellCommand(
+export function buildShellCommand(
   message: ShellIncomingMessage,
   dependencies: ShellWebSocketDependencies
 ): string {
@@ -173,6 +257,7 @@ function buildShellCommand(
   const provider = readString(message.provider, 'claude');
   const projectPath = readString(message.projectPath);
   const resumeSessionId = resolveResumeSessionId(message, dependencies);
+  const permissionMode = resolveShellPermissionMode(provider, readString(message.permissionMode));
   const isPlainShell =
     readBoolean(message.isPlainShell) ||
     (!!initialCommand && !hasSession) ||
@@ -183,62 +268,105 @@ function buildShellCommand(
   }
 
   if (provider === 'cursor') {
+    // cursor-agent only exposes force-approve as `-f` (capabilities advertise
+    // default | bypassPermissions).
+    const forceFlag = permissionMode === 'bypassPermissions' ? ' -f' : '';
     if (resumeSessionId) {
-      return `cursor-agent --resume="${resumeSessionId}"`;
+      return `cursor-agent --resume="${resumeSessionId}"${forceFlag}`;
     }
-    return 'cursor-agent';
+    return `cursor-agent${forceFlag}`;
   }
 
   if (provider === 'codex') {
+    const modeFlags = buildCodexPermissionFlags(permissionMode);
     if (resumeSessionId) {
       if (os.platform() === 'win32') {
-        return `codex resume "${resumeSessionId}"; if ($LASTEXITCODE -ne 0) { codex }`;
+        return `codex resume "${resumeSessionId}"${modeFlags}; if ($LASTEXITCODE -ne 0) { codex${modeFlags} }`;
       }
-      return `codex resume "${resumeSessionId}" || codex`;
+      return `codex resume "${resumeSessionId}"${modeFlags} || codex${modeFlags}`;
     }
-    return 'codex';
+    return `codex${modeFlags}`;
   }
 
   if (provider === 'opencode') {
-    if (resumeSessionId) {
-      return `opencode --session "${resumeSessionId}"`;
+    // Mirrors resolveOpenCodePermissionOptions in opencode-cli.js.
+    let modeArgs = '';
+    let modeEnvPrefix = '';
+    if (permissionMode === 'plan') {
+      modeArgs = ' --agent plan';
+    } else if (permissionMode === 'bypassPermissions') {
+      modeArgs = ' --auto';
+    } else if (permissionMode === 'acceptEdits') {
+      const permissionJson = JSON.stringify({ edit: 'allow' });
+      modeEnvPrefix =
+        os.platform() === 'win32'
+          ? `$env:OPENCODE_PERMISSION='${permissionJson}'; `
+          : `OPENCODE_PERMISSION='${permissionJson}' `;
     }
-    return initialCommand || 'opencode';
+    if (resumeSessionId) {
+      return `${modeEnvPrefix}opencode --session "${resumeSessionId}"${modeArgs}`;
+    }
+    return `${modeEnvPrefix}${initialCommand || 'opencode'}${modeArgs}`;
   }
 
   if (provider === 'grok') {
-    return buildGrokShellCommand(resumeSessionId, projectPath);
+    return buildGrokShellCommand(resumeSessionId, projectPath, permissionMode);
   }
 
   if (provider === 'kimi') {
-    if (resumeSessionId) {
-      return `kimi --session="${resumeSessionId}"`;
+    // Kimi's interactive start-in-mode flags (see `kimi --help`).
+    let modeFlag = '';
+    if (permissionMode === 'plan') {
+      modeFlag = ' --plan';
+    } else if (permissionMode === 'auto') {
+      modeFlag = ' --auto';
+    } else if (permissionMode === 'bypassPermissions') {
+      modeFlag = ' --yolo';
     }
-    return 'kimi';
+    if (resumeSessionId) {
+      return `kimi --session="${resumeSessionId}"${modeFlag}`;
+    }
+    return `kimi${modeFlag}`;
   }
 
   if (provider === 'agy') {
-    if (resumeSessionId) {
-      return `agy --conversation "${resumeSessionId}"`;
+    // Same flag mapping as agy-cli.js: plan -> --mode plan, acceptEdits ->
+    // --mode accept-edits, bypassPermissions -> --dangerously-skip-permissions.
+    let modeArgs = '';
+    if (permissionMode === 'plan') {
+      modeArgs = ' --mode plan';
+    } else if (permissionMode === 'acceptEdits') {
+      modeArgs = ' --mode accept-edits';
+    } else if (permissionMode === 'bypassPermissions') {
+      modeArgs = ' --dangerously-skip-permissions';
     }
-    return 'agy';
+    if (resumeSessionId) {
+      return `agy --conversation "${resumeSessionId}"${modeArgs}`;
+    }
+    return `agy${modeArgs}`;
   }
 
   if (provider === 'pi') {
+    // Plan mode maps to Pi's read-only tool allowlist (see buildPiSpawnArgs in
+    // pi-cli.js); everything else keeps the full default tool set.
+    const modeArgs = permissionMode === 'plan' ? ' --tools read,grep,find,ls' : '';
     if (resumeSessionId) {
-      return `pi --session "${resumeSessionId}"`;
+      return `pi --session "${resumeSessionId}"${modeArgs}`;
     }
-    return 'pi';
+    return `pi${modeArgs}`;
   }
 
+  const modeArgs = permissionMode && permissionMode !== 'default'
+    ? ` --permission-mode ${permissionMode}`
+    : '';
   const command = initialCommand || 'claude';
   if (resumeSessionId) {
     if (os.platform() === 'win32') {
-      return `claude --resume "${resumeSessionId}"; if ($LASTEXITCODE -ne 0) { claude }`;
+      return `claude --resume "${resumeSessionId}"${modeArgs}; if ($LASTEXITCODE -ne 0) { claude${modeArgs} }`;
     }
-    return `claude --resume "${resumeSessionId}" || claude`;
+    return `claude --resume "${resumeSessionId}"${modeArgs} || claude${modeArgs}`;
   }
-  return command;
+  return `${command}${modeArgs}`;
 }
 
 function readEnvValue(env: NodeJS.ProcessEnv, key: string): string | undefined {
@@ -295,6 +423,30 @@ function prioritizeUserNpmGlobalBin(env: NodeJS.ProcessEnv): { key: string; valu
   ].join(delimiter);
 
   return { key: pathKey, value };
+}
+
+/**
+ * Reports a finished/detached shell PTY to the optional session-sync hook so
+ * a provider can adopt whatever session the interactive TUI created. Never
+ * throws — sync is best-effort and must not break shell teardown.
+ */
+function captureShellSessionSync(
+  dependencies: ShellWebSocketDependencies,
+  session: Pick<PtySessionEntry, 'provider' | 'projectPath' | 'sessionId' | 'startedAt'> | null | undefined,
+): void {
+  if (!session || !dependencies.syncShellSession) {
+    return;
+  }
+  try {
+    dependencies.syncShellSession({
+      provider: session.provider,
+      projectPath: session.projectPath,
+      appSessionId: session.sessionId,
+      startedAt: session.startedAt,
+    });
+  } catch (error) {
+    console.error('[ERROR] Shell session sync failed:', error);
+  }
 }
 
 /**
@@ -355,6 +507,9 @@ export function handleShellConnection(
         if (shouldStartFresh) {
           const oldSession = ptySessionsMap.get(ptySessionKey);
           if (oldSession) {
+            // Adopt the session the outgoing TUI created before killing it —
+            // otherwise a fresh Grok TUI's work would be orphaned.
+            captureShellSessionSync(dependencies, oldSession);
             if (oldSession.timeoutId) {
               clearTimeout(oldSession.timeoutId);
             }
@@ -443,6 +598,8 @@ export function handleShellConnection(
           timeoutId: null,
           projectPath,
           sessionId,
+          provider,
+          startedAt: Date.now(),
         });
 
         shellProcess.onData((chunk) => {
@@ -548,6 +705,7 @@ export function handleShellConnection(
 
           ptySessionsMap.delete(ptySessionKey);
           shellProcess = null;
+          captureShellSessionSync(dependencies, session);
         });
 
         let welcomeMsg = `\x1b[36mStarting terminal in: ${projectPath}\x1b[0m\r\n`;
@@ -620,6 +778,11 @@ export function handleShellConnection(
     if (!session) {
       return;
     }
+
+    // The client closed (tab switch / unmount) but the PTY stays alive for
+    // the reconnect window. Sync whatever the TUI already wrote so the Chat
+    // tab reflects shell work immediately on return.
+    captureShellSessionSync(dependencies, session);
 
     session.ws = null;
     session.timeoutId = setTimeout(() => {

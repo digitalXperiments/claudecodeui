@@ -116,6 +116,7 @@
     },
     "clickToChangeMode": "Нажмите для смены режима разрешений (или нажмите Tab в поле ввода)",
     "showAllCommands": "Показать все команды",
+    "saveAsSkill": "Save as skill",
     "clearInput": "Очистить ввод",
     "scrollToBottom": "Прокрутить вниз"
   },

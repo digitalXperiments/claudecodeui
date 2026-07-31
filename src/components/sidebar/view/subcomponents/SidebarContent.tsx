@@ -1,18 +1,24 @@
-import { useEffect, useState, type ReactNode } from 'react';
-import { Activity, Archive, Folder, MessageSquare, RotateCcw, Search, Trash2 } from 'lucide-react';
+import { useState, type ReactNode } from 'react';
+import { Activity, Archive, Folder, History, MessageSquare, RotateCcw, Search, Trash2 } from 'lucide-react';
 import type { TFunction } from 'i18next';
 
+import { cn } from '../../../../lib/utils';
 import type { Project } from '../../../../types/app';
 import type { ReleaseInfo } from '../../../../types/sharedTypes';
 import type { ConversationSearchResults, SearchProgress } from '../../hooks/useSidebarController';
-import type { ArchivedProjectListItem, ArchivedSessionListItem, SidebarSearchMode } from '../../types/types';
+import type { ArchivedProjectListItem, ArchivedSessionListItem, RecentSessionListItem, SidebarSearchMode } from '../../types/types';
 import SessionProviderLogo from '../../../llm-logo-provider/SessionProviderLogo';
-import { getAllSessions } from '../../utils/utils';
+import {
+  getAllSessions,
+  getSessionName,
+  getSessionTime,
+  readProjectsPanelCollapsed,
+  writeProjectsPanelCollapsed,
+} from '../../utils/utils';
 
 import SidebarProjectList, { type SidebarProjectListProps } from './SidebarProjectList';
 import SidebarRail from './SidebarRail';
 import SidebarProjectsPanel from './SidebarProjectsPanel';
-import SidebarSessionsPanel from './SidebarSessionsPanel';
 import SidebarLayout from './SidebarLayout';
 
 function HighlightedSnippet({ snippet, highlights }: { snippet: string; highlights: { start: number; end: number }[] }) {
@@ -124,6 +130,8 @@ type SidebarContentProps = {
   onClearSearchFilter: () => void;
   searchMode: SidebarSearchMode;
   onSearchModeChange: (mode: SidebarSearchMode) => void;
+  recentSessions: RecentSessionListItem[];
+  onRecentSessionClick: (item: RecentSessionListItem) => void;
   conversationResults: ConversationSearchResults | null;
   isSearching: boolean;
   searchProgress: SearchProgress | null;
@@ -176,6 +184,8 @@ export default function SidebarContent({
   onClearSearchFilter,
   searchMode,
   onSearchModeChange,
+  recentSessions,
+  onRecentSessionClick,
   conversationResults,
   isSearching,
   searchProgress,
@@ -205,21 +215,25 @@ export default function SidebarContent({
   projectListProps,
   t,
 }: SidebarContentProps) {
-  const [showSessionsPanel, setShowSessionsPanel] = useState(true);
+  const [isProjectsPanelCollapsed, setIsProjectsPanelCollapsed] = useState(
+    () => readProjectsPanelCollapsed(),
+  );
   const showConversationSearch = searchMode === 'conversations' && searchFilter.trim().length >= 2;
   const hasPartialResults = conversationResults && conversationResults.results.length > 0;
   const groupedArchivedSessions = groupArchivedSessionsByProject(archivedSessions);
 
-  const selectedProject = projectListProps.selectedProject;
-  const selectedSession = projectListProps.selectedSession;
+  const setProjectsPanelCollapsed = (collapsed: boolean) => {
+    setIsProjectsPanelCollapsed(collapsed);
+    writeProjectsPanelCollapsed(collapsed);
+  };
 
-  useEffect(() => {
-    if (selectedProject) {
-      setShowSessionsPanel(true);
+  const handleSearchModeChange = (mode: SidebarSearchMode) => {
+    // Rail navigation always reveals the projects column so mode switches stay useful.
+    if (isProjectsPanelCollapsed) {
+      setProjectsPanelCollapsed(false);
     }
-  }, [selectedProject, selectedProject?.projectId]);
-
-  const sessionsForSelectedProject = selectedProject ? projectListProps.getProjectSessions(selectedProject) : [];
+    onSearchModeChange(mode);
+  };
 
   const renderProjectsBody = () => {
     if (showConversationSearch) {
@@ -364,6 +378,65 @@ export default function SidebarContent({
             </span>
           </div>
           <SidebarProjectList {...projectListProps} showInlineSessions={false} />
+        </div>
+      );
+    }
+
+    if (searchMode === 'recent') {
+      if (recentSessions.length === 0) {
+        return (
+          <div className="px-4 py-12 text-center md:py-8">
+            <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-lg border border-border/70 bg-muted/50 md:mb-3">
+              <History className="h-6 w-6 text-muted-foreground" />
+            </div>
+            <h3 className="mb-2 text-base font-medium text-foreground md:mb-1">
+              {searchFilter.trim()
+                ? t('recent.noMatchingSessions', { defaultValue: 'No matching conversations' })
+                : t('recent.emptyTitle', { defaultValue: 'No conversations yet' })}
+            </h3>
+            <p className="text-sm text-muted-foreground">
+              {searchFilter.trim()
+                ? t('recent.tryDifferentSearch', { defaultValue: 'Try a different search term.' })
+                : t('recent.emptyDescription', { defaultValue: 'Conversations from all projects appear here, most recent first.' })}
+            </p>
+          </div>
+        );
+      }
+
+      return (
+        <div className="space-y-1 px-2">
+          {recentSessions.map((item) => {
+            const { session, project } = item;
+            const isSelected = projectListProps.selectedSession?.id === session.id;
+
+            return (
+              <button
+                key={`${project.projectId}-${String(session.id)}`}
+                className={cn(
+                  'flex w-full items-center gap-2 rounded-md border px-2 py-2 text-left transition-colors',
+                  isSelected
+                    ? 'border-primary/20 bg-primary/5'
+                    : 'border-transparent hover:bg-accent/50',
+                )}
+                onClick={() => onRecentSessionClick(item)}
+              >
+                <SessionProviderLogo provider={session.__provider} className="h-3.5 w-3.5 flex-shrink-0" />
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className="truncate text-xs font-normal text-foreground">
+                      {getSessionName(session, t)}
+                    </span>
+                    <span className="ml-auto flex-shrink-0 text-[11px] text-muted-foreground">
+                      {formatCompactArchivedAge(getSessionTime(session) || null)}
+                    </span>
+                  </div>
+                  <p className="mt-0.5 truncate text-[11px] text-muted-foreground/70" title={project.fullPath}>
+                    {project.displayName}
+                  </p>
+                </div>
+              </button>
+            );
+          })}
         </div>
       );
     }
@@ -587,7 +660,7 @@ export default function SidebarContent({
   const rail = (
     <SidebarRail
       searchMode={searchMode}
-      onSearchModeChange={onSearchModeChange}
+      onSearchModeChange={handleSearchModeChange}
       isCollapsed={isCollapsed}
       onToggleCollapse={() => {
         if (isCollapsed) {
@@ -610,6 +683,10 @@ export default function SidebarContent({
     />
   );
 
+  // On mobile the projects/sessions swap already; collapse is desktop-only.
+  const projectsPanelCollapsed = !isMobile && isProjectsPanelCollapsed;
+  const selectedProjectName = projectListProps.selectedProject?.displayName ?? null;
+
   const projectsPanel = (
     <SidebarProjectsPanel
       searchMode={searchMode}
@@ -625,47 +702,26 @@ export default function SidebarContent({
       runningSessionsCount={runningSessionsCount}
       archivedSessionsCount={archivedSessionsCount}
       isArchivedSessionsLoading={isArchivedSessionsLoading}
+      isCollapsed={projectsPanelCollapsed}
+      onToggleCollapse={
+        isMobile ? undefined : () => setProjectsPanelCollapsed(!isProjectsPanelCollapsed)
+      }
+      selectedProjectName={selectedProjectName}
       t={t}
     >
       {renderProjectsBody()}
     </SidebarProjectsPanel>
   );
 
-  const sessionsPanel = selectedProject ? (
-    <SidebarSessionsPanel
-      project={selectedProject}
-      selectedSession={selectedSession}
-      sessions={sessionsForSelectedProject}
-      initialSessionsLoaded={projectListProps.initialSessionsLoaded.has(selectedProject.projectId)}
-      hasMoreSessions={Boolean(selectedProject.sessionMeta?.hasMore)}
-      isLoadingMoreSessions={projectListProps.loadingMoreProjects.has(selectedProject.projectId)}
-      activeSessions={projectListProps.activeSessions}
-      attentionSessionIds={projectListProps.attentionSessionIds}
-      currentTime={projectListProps.currentTime}
-      editingSession={projectListProps.editingSession}
-      editingSessionName={projectListProps.editingSessionName}
-      onEditingSessionNameChange={projectListProps.onEditingSessionNameChange}
-      onStartEditingSession={projectListProps.onStartEditingSession}
-      onCancelEditingSession={projectListProps.onCancelEditingSession}
-      onSaveEditingSession={projectListProps.onSaveEditingSession}
-      onProjectSelect={projectListProps.onProjectSelect}
-      onSessionSelect={projectListProps.onSessionSelect}
-      onDeleteSession={projectListProps.onDeleteSession}
-      onLoadMoreSessions={projectListProps.onLoadMoreSessions}
-      onNewSession={projectListProps.onNewSession}
-      onClose={() => setShowSessionsPanel(false)}
-      t={t}
-    />
-  ) : null;
-
+  // Option C: sessions live in the main chat header, not a second sidebar column.
   return (
     <SidebarLayout
       isCollapsed={isCollapsed}
       isMobile={isMobile}
-      mobileShowSessions={isMobile && showSessionsPanel}
+      mobileShowSessions={false}
       rail={rail}
       projectsPanel={projectsPanel}
-      sessionsPanel={sessionsPanel}
+      sessionsPanel={null}
     />
   );
 }

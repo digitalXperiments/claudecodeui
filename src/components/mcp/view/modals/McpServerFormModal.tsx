@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { FolderOpen, Globe, X } from 'lucide-react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
@@ -31,6 +32,8 @@ type McpServerFormModalProps = {
   submitLabel?: string;
   supportedScopes?: McpScope[];
   supportedTransports?: McpTransport[];
+  /** Optional slot below description (e.g. provider fan-out matrix). */
+  extraFields?: ReactNode;
   onClose: () => void;
   onSubmit: (formData: McpFormState, editingServer: ProviderMcpServer | null) => Promise<void>;
 };
@@ -74,6 +77,7 @@ export default function McpServerFormModal({
   submitLabel,
   supportedScopes,
   supportedTransports,
+  extraFields,
   onClose,
   onSubmit,
 }: McpServerFormModalProps) {
@@ -136,6 +140,8 @@ export default function McpServerFormModal({
               {description}
             </div>
           )}
+
+          {extraFields}
 
           {!isEditing && (
             <div className="mb-4 flex gap-2">

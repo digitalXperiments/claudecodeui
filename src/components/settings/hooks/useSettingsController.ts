@@ -74,6 +74,7 @@ type ActiveLoginProvider = AgentProvider | '';
 const KNOWN_MAIN_TABS: SettingsMainTab[] = [
   'agents',
   'agent-profiles',
+  'mcp',
   'skills',
   'memory',
   'appearance',
@@ -83,6 +84,7 @@ const KNOWN_MAIN_TABS: SettingsMainTab[] = [
   'browser',
   'notifications',
   'plugins',
+  'webhooks',
   'about',
 ];
 
@@ -90,6 +92,10 @@ const normalizeMainTab = (tab: string): SettingsMainTab => {
   // Keep backwards compatibility with older callers that still pass "tools".
   if (tab === 'tools') {
     return 'agents';
+  }
+  // Former Global skills tab is merged into Skills.
+  if (tab === 'global-skills') {
+    return 'skills';
   }
 
   return KNOWN_MAIN_TABS.includes(tab as SettingsMainTab) ? (tab as SettingsMainTab) : 'agents';
@@ -308,12 +314,22 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
     setShowLoginModal(true);
   }, []);
 
+  const closeLoginModal = useCallback(() => {
+    setShowLoginModal(false);
+    // Always re-probe after the shell login UI closes — interactive logins
+    // (e.g. browser OAuth) may finish without a clean process exit code, and
+    // Claude/Grok write tokens outside CloudCLI's process.
+    void refreshProviderAuthStatuses();
+  }, [refreshProviderAuthStatuses]);
+
   const handleLoginComplete = useCallback((exitCode: number) => {
     if (!loginProvider) {
       return;
     }
 
     void (async () => {
+      // Brief delay so CLI credential writers (keychain / auth.json) settle.
+      await new Promise((resolve) => window.setTimeout(resolve, 400));
       const authStatus = await checkProviderAuthStatus(loginProvider);
 
       if (exitCode !== 0) {
@@ -507,7 +523,10 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
     openLoginForProvider,
     showLoginModal,
     setShowLoginModal,
+    closeLoginModal,
     loginProvider,
     handleLoginComplete,
+    checkProviderAuthStatus,
+    refreshProviderAuthStatuses,
   };
 }

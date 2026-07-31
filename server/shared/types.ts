@@ -74,6 +74,12 @@ export type ProviderModelOption = {
   value: string;
   label: string;
   description?: string;
+  /**
+   * Concrete model id the provider resolves `value` to (e.g. `opus[1m]` →
+   * `claude-opus-5[1m]`). Sessions report the resolved id, so this is what lets
+   * a running session be matched back to its catalog entry.
+   */
+  resolvedModel?: string;
   effort?: {
     default?: string;
     values: {
@@ -406,6 +412,12 @@ export type GlobalSkillCreateInput = {
   scope?: GlobalSkillScope;
   /** Required and non-empty when scope is `projects`. */
   projects?: string[];
+  /**
+   * Explicit fan-out targets. When omitted, fans out to every agent that
+   * supports skills (backward compatible). When provided (including empty),
+   * only those providers receive a projection.
+   */
+  providers?: LLMProvider[];
 };
 
 export type GlobalSkillRemoveInput = {
@@ -472,6 +484,8 @@ export type GlobalSkillScopeUpdateInput = {
   scope: GlobalSkillScope;
   /** Workspace paths; required and non-empty when scope is `projects`. */
   projects?: string[];
+  /** When set, re-fan-out only to these providers (same semantics as create). */
+  providers?: LLMProvider[];
 };
 
 /**
@@ -610,6 +624,108 @@ export type UpsertProviderMcpServerInput = {
   envVars?: string[];
   bearerTokenEnvVar?: string;
   envHttpHeaders?: Record<string, string>;
+};
+
+/**
+ * CloudCLI-owned local MCP catalog entry. Canonical definition lives under
+ * `~/.cloudcli/mcp/`; provider configs are projections created by fan-out.
+ */
+export type McpCatalogBinding = {
+  enabled: boolean;
+};
+
+export type McpCatalogDefinition = {
+  name: string;
+  transport: McpTransport;
+  scope: Exclude<McpScope, 'local'>;
+  workspacePath?: string;
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  cwd?: string;
+  url?: string;
+  headers?: Record<string, string>;
+  envVars?: string[];
+  bearerTokenEnvVar?: string;
+  envHttpHeaders?: Record<string, string>;
+  /** Explicit provider fan-out. Missing/false = not installed on that provider. */
+  bindings: Partial<Record<LLMProvider, McpCatalogBinding>>;
+  updatedAt: string;
+  /**
+   * Optional managed kind. `memory` = Obsidian MCP owned by project-memory
+   * (user-scope, CloudCLI catalog, shared across all memory-enabled projects).
+   */
+  kind?: 'memory';
+};
+
+export type McpCatalogUpsertInput = {
+  name: string;
+  transport: McpTransport;
+  scope?: Exclude<McpScope, 'local'>;
+  workspacePath?: string;
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  cwd?: string;
+  url?: string;
+  headers?: Record<string, string>;
+  envVars?: string[];
+  bearerTokenEnvVar?: string;
+  envHttpHeaders?: Record<string, string>;
+  /** Providers to enable. Empty array = catalog-only (no fan-out). */
+  providers?: LLMProvider[];
+  kind?: 'memory';
+};
+
+export type McpCatalogBindingsUpdateInput = {
+  name: string;
+  providers: LLMProvider[];
+};
+
+export type McpCatalogSyncResult = {
+  provider: LLMProvider;
+  ok: boolean;
+  error?: string;
+};
+
+export type McpCatalogEntry = McpCatalogDefinition & {
+  source: 'cloudcli';
+  syncResults?: McpCatalogSyncResult[];
+};
+
+/**
+ * Unified inventory row for the MCP settings panel (catalog + live provider cloud + orphans).
+ */
+export type McpInventoryItem = {
+  name: string;
+  source: 'cloudcli' | 'provider_cloud' | 'provider_native' | 'managed';
+  transport?: McpTransport;
+  scope?: McpScope;
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  cwd?: string;
+  url?: string;
+  headers?: Record<string, string>;
+  workspacePath?: string;
+  /** Providers where this server is present / enabled. */
+  providers: LLMProvider[];
+  /** Only for cloudcli source: full binding map. */
+  bindings?: Partial<Record<LLMProvider, McpCatalogBinding>>;
+  connected?: boolean | null;
+  needsAuth?: boolean;
+  /** Provider that owns a cloud/native-only row. */
+  originProvider?: LLMProvider;
+  kind?: 'memory';
+  /** Human-friendly cloud origin label when source is provider_cloud. */
+  cloudLabel?: string;
+  /**
+   * Real config locations this row was read from (no invented paths).
+   * e.g. `~/.claude.json`, `~/.grok/config.toml`, `<project>/.mcp.json`.
+   */
+  configPaths?: string[];
+  /** Machine-readable kinds for each path, same order as configPaths when possible. */
+  configKinds?: string[];
 };
 
 // ---------------------------

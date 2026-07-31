@@ -1,0 +1,31 @@
+{
+  "actions": {
+    "newSkill": "New Skill",
+    "authorManually": "Author manually",
+    "generateWithAgent": "Generate with agent…"
+  },
+  "wizard": {
+    "title": "Generate skill with agent",
+    "subtitle": "Chat with an agent to draft a SKILL.md, then save it global or to this project.",
+    "agent": "Agent",
+    "previewTitle": "SKILL.md preview",
+    "previewEmpty": "The draft will appear here as the conversation progresses",
+    "composerPlaceholder": "Describe the skill…",
+    "send": "Send",
+    "typing": "Agent is typing",
+    "saveTarget": {
+      "global": "Global — all agents",
+      "project": "This project"
+    },
+    "fanOutHint": "Only checked agents receive a copy. The skill is stored once in CloudCLI.",
+    "cancel": "Cancel",
+    "openInEditor": "Open in editor",
+    "createSkill": "Create skill",
+    "creating": "Creating…",
+    "createSuccess": {
+      "global": "Skill created — fanned out to the selected agents.",
+      "project": "Skill created in this project."
+    },
+    "createError": "Failed to create skill"
+  }
+}

@@ -46,10 +46,10 @@ export const api = {
   // Auth endpoints (no token required)
   auth: {
     status: () => fetch('/api/auth/status'),
-    login: (username, password) => fetch('/api/auth/login', {
+    login: (username, password, totpCode) => fetch('/api/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, password }),
+      body: JSON.stringify(totpCode ? { username, password, totpCode } : { username, password }),
     }),
     register: (username, password) => fetch('/api/auth/register', {
       method: 'POST',
@@ -58,6 +58,19 @@ export const api = {
     }),
     user: () => authenticatedFetch('/api/auth/user'),
     logout: () => authenticatedFetch('/api/auth/logout', { method: 'POST' }),
+    // Two-factor authentication (TOTP) management
+    twoFactor: {
+      status: () => authenticatedFetch('/api/auth/2fa/status'),
+      setup: () => authenticatedFetch('/api/auth/2fa/setup', { method: 'POST' }),
+      enable: (code) => authenticatedFetch('/api/auth/2fa/enable', {
+        method: 'POST',
+        body: JSON.stringify({ code }),
+      }),
+      disable: (password) => authenticatedFetch('/api/auth/2fa/disable', {
+        method: 'POST',
+        body: JSON.stringify({ password }),
+      }),
+    },
   },
 
   // Protected endpoints

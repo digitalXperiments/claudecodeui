@@ -3,6 +3,7 @@ import express, { type Request, type Response } from 'express';
 import { providerAuthService } from '@/modules/providers/services/provider-auth.service.js';
 import { providerCapabilitiesService } from '@/modules/providers/services/provider-capabilities.service.js';
 import { providerMcpService } from '@/modules/providers/services/mcp.service.js';
+import { mcpCatalogService } from '@/modules/providers/services/mcp-catalog.service.js';
 import { providerModelsService } from '@/modules/providers/services/provider-models.service.js';
 import { providerSkillsService } from '@/modules/providers/services/skills.service.js';
 import { sessionConversationsSearchService } from '@/modules/providers/services/session-conversations-search.service.js';
@@ -444,7 +445,116 @@ router.delete(
   }),
 );
 
-// ----------------- MCP routes -----------------
+// ----------------- MCP catalog (CloudCLI source of truth + fan-out) -----------------
+const parseProviderList = (value: unknown): LLMProvider[] | undefined => {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  if (!Array.isArray(value)) {
+    throw new AppError('providers must be an array of provider ids.', {
+      code: 'INVALID_MCP_PROVIDERS',
+      statusCode: 400,
+    });
+  }
+  return value.map((entry, index) => {
+    if (typeof entry !== 'string' || !entry.trim()) {
+      throw new AppError(`providers[${index}] must be a non-empty string.`, {
+        code: 'INVALID_MCP_PROVIDERS',
+        statusCode: 400,
+      });
+    }
+    return parseProvider(entry);
+  });
+};
+
+router.get(
+  '/mcp/catalog',
+  asyncHandler(async (_req: Request, res: Response) => {
+    const servers = await mcpCatalogService.listCatalog();
+    res.json(createApiSuccessResponse({ servers }));
+  }),
+);
+
+router.get(
+  '/mcp/inventory',
+  asyncHandler(async (req: Request, res: Response) => {
+    const workspacePath = readOptionalQueryString(req.query.workspacePath);
+    const items = await mcpCatalogService.listInventory({ workspacePath });
+    res.json(createApiSuccessResponse({ items }));
+  }),
+);
+
+router.post(
+  '/mcp/catalog',
+  asyncHandler(async (req: Request, res: Response) => {
+    const payload = parseMcpUpsertPayload(req.body);
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const providers = parseProviderList(body.providers);
+    if (payload.scope === 'local') {
+      throw new AppError('Catalog MCP servers support only "user" or "project" scopes.', {
+        code: 'INVALID_CATALOG_MCP_SCOPE',
+        statusCode: 400,
+      });
+    }
+    const entry = await mcpCatalogService.upsert({
+      ...payload,
+      scope: payload.scope === 'user' ? 'user' : 'project',
+      providers,
+    });
+    res.status(201).json(createApiSuccessResponse({ server: entry }));
+  }),
+);
+
+router.put(
+  '/mcp/catalog/:name/bindings',
+  asyncHandler(async (req: Request, res: Response) => {
+    const name = readPathParam(req.params.name, 'name');
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const providers = parseProviderList(body.providers);
+    if (providers === undefined) {
+      throw new AppError('providers is required.', {
+        code: 'INVALID_MCP_PROVIDERS',
+        statusCode: 400,
+      });
+    }
+    const entry = await mcpCatalogService.setBindings({ name, providers });
+    res.json(createApiSuccessResponse({ server: entry }));
+  }),
+);
+
+router.delete(
+  '/mcp/catalog/:name',
+  asyncHandler(async (req: Request, res: Response) => {
+    const name = readPathParam(req.params.name, 'name');
+    const result = await mcpCatalogService.remove(name);
+    res.json(createApiSuccessResponse(result));
+  }),
+);
+
+router.post(
+  '/mcp/catalog/adopt',
+  asyncHandler(async (req: Request, res: Response) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const name = readOptionalQueryString(body.name);
+    const fromProviderRaw = readOptionalQueryString(body.fromProvider);
+    if (!name || !fromProviderRaw) {
+      throw new AppError('name and fromProvider are required.', {
+        code: 'MCP_ADOPT_PARAMS_REQUIRED',
+        statusCode: 400,
+      });
+    }
+    const entry = await mcpCatalogService.adopt({
+      name,
+      fromProvider: parseProvider(fromProviderRaw),
+      scope: parseMcpScope(body.scope),
+      workspacePath: readOptionalQueryString(body.workspacePath),
+      providers: parseProviderList(body.providers),
+    });
+    res.status(201).json(createApiSuccessResponse({ server: entry }));
+  }),
+);
+
+// ----------------- MCP routes (per-provider projections / legacy) -----------------
 router.get(
   '/:provider/mcp/servers',
   asyncHandler(async (req: Request, res: Response) => {

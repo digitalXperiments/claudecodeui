@@ -52,7 +52,7 @@ test('globalSkillsService fans one skill out to every agent user folder', { conc
     const skill = created[0];
     assert.ok(skill);
     assert.equal(skill.directoryName, 'shared-global');
-    assert.deepEqual([...skill.providers].sort(), ['agy', 'claude', 'codex', 'cursor', 'grok', 'kimi']);
+    assert.deepEqual([...skill.providers].sort(), ['agy', 'claude', 'codex', 'cursor', 'grok', 'kimi', 'pi']);
     assert.deepEqual(skill.conflicts, []);
     assert.deepEqual([...skill.unsupported].sort(), ['opencode']);
     assert.equal(skill.scope, 'all');
@@ -75,7 +75,7 @@ test('globalSkillsService fans one skill out to every agent user folder', { conc
     const listed = await globalSkillsService.listGlobalSkills();
     const listedSkill = listed.find((entry) => entry.directoryName === 'shared-global');
     assert.ok(listedSkill);
-    assert.deepEqual([...listedSkill.providers].sort(), ['agy', 'claude', 'codex', 'cursor', 'grok', 'kimi']);
+    assert.deepEqual([...listedSkill.providers].sort(), ['agy', 'claude', 'codex', 'cursor', 'grok', 'kimi', 'pi']);
 
     const removed = await globalSkillsService.removeGlobalSkill({ directoryName: 'shared-global' });
     assert.equal(removed.removed, true);
@@ -119,7 +119,7 @@ test('globalSkillsService.addGlobalSkills supports project-scoped creation', { c
     assert.ok(skill);
     assert.equal(skill.scope, 'projects');
     assert.deepEqual(skill.projects, [workspaceA, workspaceB].map((workspace) => path.resolve(workspace)));
-    assert.deepEqual([...skill.providers].sort(), ['agy', 'claude', 'codex', 'cursor', 'grok', 'kimi']);
+    assert.deepEqual([...skill.providers].sort(), ['agy', 'claude', 'codex', 'cursor', 'grok', 'kimi', 'pi']);
 
     // No user-scope copies.
     for (const root of FAN_OUT_ROOTS) {
@@ -355,7 +355,7 @@ test('globalSkillsService.setGlobalSkillScope moves a skill between all projects
     });
     assert.equal(scoped.scope, 'projects');
     assert.deepEqual(scoped.projects, [workspaceA, workspaceB].map((workspace) => path.resolve(workspace)));
-    assert.deepEqual([...scoped.providers].sort(), ['agy', 'claude', 'codex', 'cursor', 'grok', 'kimi']);
+    assert.deepEqual([...scoped.providers].sort(), ['agy', 'claude', 'codex', 'cursor', 'grok', 'kimi', 'pi']);
     assert.deepEqual(scoped.conflicts, []);
 
     // User-scope copies are removed; project-scope copies exist per workspace.

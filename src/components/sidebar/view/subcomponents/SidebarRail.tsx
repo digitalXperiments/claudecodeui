@@ -5,6 +5,7 @@ import {
   Bell,
   Bug,
   Folder,
+  History,
   PanelLeftClose,
   PanelLeftOpen,
   Radar,
@@ -132,6 +133,14 @@ export default function SidebarRail({
         onClick={() => onSearchModeChange('projects')}
       >
         <Folder className="h-[18px] w-[18px]" />
+      </RailButton>
+
+      <RailButton
+        active={searchMode === 'recent'}
+        title={t('search.recentTooltip', { defaultValue: 'Recent conversations' })}
+        onClick={() => onSearchModeChange('recent')}
+      >
+        <History className="h-[18px] w-[18px]" />
       </RailButton>
 
       <RailButton

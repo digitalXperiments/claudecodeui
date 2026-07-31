@@ -11,7 +11,6 @@
 
 import i18n from 'i18next';
 import { initReactI18next } from 'react-i18next';
-// eslint-disable-next-line import-x/order
 import LanguageDetector from 'i18next-browser-languagedetector';
 
 // Import translation resources
@@ -21,78 +20,70 @@ import enAuth from './locales/en/auth.json';
 import enSidebar from './locales/en/sidebar.json';
 import enChat from './locales/en/chat.json';
 import enCodeEditor from './locales/en/codeEditor.json';
-// eslint-disable-next-line import-x/order
 import enTasks from './locales/en/tasks.json';
-
+import enSkills from './locales/en/skills.json';
 import koCommon from './locales/ko/common.json';
 import koSettings from './locales/ko/settings.json';
 import koAuth from './locales/ko/auth.json';
 import koSidebar from './locales/ko/sidebar.json';
 import koChat from './locales/ko/chat.json';
-// eslint-disable-next-line import-x/order
 import koCodeEditor from './locales/ko/codeEditor.json';
-
+import koSkills from './locales/ko/skills.json';
 import zhCommon from './locales/zh-CN/common.json';
 import zhSettings from './locales/zh-CN/settings.json';
 import zhAuth from './locales/zh-CN/auth.json';
 import zhSidebar from './locales/zh-CN/sidebar.json';
 import zhChat from './locales/zh-CN/chat.json';
-// eslint-disable-next-line import-x/order
 import zhCodeEditor from './locales/zh-CN/codeEditor.json';
-
+import zhSkills from './locales/zh-CN/skills.json';
 import jaCommon from './locales/ja/common.json';
 import jaSettings from './locales/ja/settings.json';
 import jaAuth from './locales/ja/auth.json';
 import jaSidebar from './locales/ja/sidebar.json';
 import jaChat from './locales/ja/chat.json';
 import jaCodeEditor from './locales/ja/codeEditor.json';
-// eslint-disable-next-line import-x/order
 import jaTasks from './locales/ja/tasks.json';
-
+import jaSkills from './locales/ja/skills.json';
 import ruCommon from './locales/ru/common.json';
 import ruSettings from './locales/ru/settings.json';
 import ruAuth from './locales/ru/auth.json';
 import ruSidebar from './locales/ru/sidebar.json';
 import ruChat from './locales/ru/chat.json';
 import ruCodeEditor from './locales/ru/codeEditor.json';
-// eslint-disable-next-line import-x/order
 import ruTasks from './locales/ru/tasks.json';
-
+import ruSkills from './locales/ru/skills.json';
 import deCommon from './locales/de/common.json';
 import deSettings from './locales/de/settings.json';
 import deAuth from './locales/de/auth.json';
 import deSidebar from './locales/de/sidebar.json';
 import deChat from './locales/de/chat.json';
 import deCodeEditor from './locales/de/codeEditor.json';
-// eslint-disable-next-line import-x/order
 import deTasks from './locales/de/tasks.json';
-
+import deSkills from './locales/de/skills.json';
 import trCommon from './locales/tr/common.json';
 import trSettings from './locales/tr/settings.json';
 import trAuth from './locales/tr/auth.json';
 import trSidebar from './locales/tr/sidebar.json';
 import trChat from './locales/tr/chat.json';
 import trCodeEditor from './locales/tr/codeEditor.json';
-// eslint-disable-next-line import-x/order
 import trTasks from './locales/tr/tasks.json';
+import trSkills from './locales/tr/skills.json';
 import itCommon from './locales/it/common.json';
 import itSettings from './locales/it/settings.json';
 import itAuth from './locales/it/auth.json';
 import itSidebar from './locales/it/sidebar.json';
 import itChat from './locales/it/chat.json';
 import itCodeEditor from './locales/it/codeEditor.json';
-// eslint-disable-next-line import-x/order
 import itTasks from './locales/it/tasks.json';
-
+import itSkills from './locales/it/skills.json';
 import zhTWCommon from './locales/zh-TW/common.json';
 import zhTWSettings from './locales/zh-TW/settings.json';
 import zhTWAuth from './locales/zh-TW/auth.json';
 import zhTWSidebar from './locales/zh-TW/sidebar.json';
 import zhTWChat from './locales/zh-TW/chat.json';
 import zhTWCodeEditor from './locales/zh-TW/codeEditor.json';
-// eslint-disable-next-line import-x/order
 import zhTWTasks from './locales/zh-TW/tasks.json';
-
+import zhTWSkills from './locales/zh-TW/skills.json';
 // Import supported languages configuration
 import { languages } from './languages.js';
 
@@ -125,6 +116,7 @@ i18n
         chat: enChat,
         codeEditor: enCodeEditor,
         tasks: enTasks,
+        skills: enSkills,
       },
       ko: {
         common: koCommon,
@@ -133,6 +125,7 @@ i18n
         sidebar: koSidebar,
         chat: koChat,
         codeEditor: koCodeEditor,
+        skills: koSkills,
       },
       'zh-CN': {
         common: zhCommon,
@@ -141,6 +134,7 @@ i18n
         sidebar: zhSidebar,
         chat: zhChat,
         codeEditor: zhCodeEditor,
+        skills: zhSkills,
       },
       ja: {
         common: jaCommon,
@@ -150,6 +144,7 @@ i18n
         chat: jaChat,
         codeEditor: jaCodeEditor,
         tasks: jaTasks,
+        skills: jaSkills,
       },
       ru: {
         common: ruCommon,
@@ -159,6 +154,7 @@ i18n
         chat: ruChat,
         codeEditor: ruCodeEditor,
         tasks: ruTasks,
+        skills: ruSkills,
       },
       de: {
         common: deCommon,
@@ -168,6 +164,7 @@ i18n
         chat: deChat,
         codeEditor: deCodeEditor,
         tasks: deTasks,
+        skills: deSkills,
       },
       tr: {
         common: trCommon,
@@ -177,6 +174,7 @@ i18n
         chat: trChat,
         codeEditor: trCodeEditor,
         tasks: trTasks,
+        skills: trSkills,
       },
       it: {
         common: itCommon,
@@ -186,6 +184,7 @@ i18n
         chat: itChat,
         codeEditor: itCodeEditor,
         tasks: itTasks,
+        skills: itSkills,
       },
       'zh-TW': {
         common: zhTWCommon,
@@ -195,6 +194,7 @@ i18n
         chat: zhTWChat,
         codeEditor: zhTWCodeEditor,
         tasks: zhTWTasks,
+        skills: zhTWSkills,
       },
     },
 
@@ -208,7 +208,7 @@ i18n
     debug: false,
 
     // Namespaces - load only what's needed
-    ns: ['common', 'settings', 'auth', 'sidebar', 'chat', 'codeEditor', 'tasks'],
+    ns: ['common', 'settings', 'auth', 'sidebar', 'chat', 'codeEditor', 'tasks', 'skills'],
     defaultNS: 'common',
 
     // Key separator for nested keys (default: '.')

@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useDropzone } from 'react-dropzone';
 import {
@@ -10,6 +11,7 @@ import {
   Plus,
   RefreshCw,
   Search,
+  Sparkles,
   Trash2,
   Upload,
   Users,
@@ -17,7 +19,9 @@ import {
 } from 'lucide-react';
 
 import { cn } from '../../../lib/utils';
+import { useAgentVisibility } from '../../../hooks/useAgentVisibility';
 import {
+  ActionMenu,
   Badge,
   Button,
   Dialog,
@@ -34,9 +38,11 @@ import {
   MAX_SKILL_FOLDER_FILES,
   type QueuedSkillFile,
 } from '../lib/skillUpload';
+import { splitSkillMarkdown, type SkillWizardDraft } from '../lib/skillWizardPrompt';
 import type { ProjectSkill, SkillsProject, SkillsProvider } from '../types';
 
 import SkillEditorDialog from './SkillEditorDialog';
+import SkillWizardDialog from './SkillWizardDialog';
 
 type ProjectSkillsProps = {
   currentProjects: SkillsProject[];
@@ -81,6 +87,7 @@ const createProjectTargets = (projects: SkillsProject[]): ProjectTarget[] => {
 const providerLabel = (provider: SkillsProvider): string => PROVIDER_NAMES[provider] ?? provider;
 
 export default function ProjectSkills({ currentProjects }: ProjectSkillsProps) {
+  const { t } = useTranslation('skills');
   const projectTargets = useMemo(() => createProjectTargets(currentProjects), [currentProjects]);
   const [selectedPath, setSelectedPath] = useState<string | null>(projectTargets[0]?.path ?? null);
 
@@ -104,6 +111,7 @@ export default function ProjectSkills({ currentProjects }: ProjectSkillsProps) {
     saveSkillContent,
     refreshSkills,
   } = useProjectSkills({ workspacePath: selectedPath });
+  const { enabledProviders } = useAgentVisibility();
 
   const [queuedFiles, setQueuedFiles] = useState<QueuedSkillFile[]>([]);
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -112,6 +120,9 @@ export default function ProjectSkills({ currentProjects }: ProjectSkillsProps) {
   const [searchQuery, setSearchQuery] = useState('');
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   const [editorState, setEditorState] = useState<{ mode: 'create' | 'edit'; skill: ProjectSkill | null } | null>(null);
+  const [editorDraft, setEditorDraft] = useState<{ name: string; description: string; body: string } | null>(null);
+  const [isWizardOpen, setIsWizardOpen] = useState(false);
+  const [wizardMounted, setWizardMounted] = useState(false);
   const [removingDirectory, setRemovingDirectory] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement | null>(null);
@@ -254,6 +265,17 @@ export default function ProjectSkills({ currentProjects }: ProjectSkillsProps) {
       setRemovingDirectory(null);
     }
   }, [removeSkill]);
+
+  const openWizard = useCallback(() => {
+    setWizardMounted(true);
+    setIsWizardOpen(true);
+  }, []);
+
+  const handleWizardOpenInEditor = useCallback((draft: SkillWizardDraft) => {
+    setIsWizardOpen(false);
+    setEditorDraft(splitSkillMarkdown(draft.content));
+    setEditorState({ mode: 'create', skill: null });
+  }, []);
 
   const uploadPanel = (
     <div className="space-y-4">
@@ -404,10 +426,31 @@ export default function ProjectSkills({ currentProjects }: ProjectSkillsProps) {
                 </button>
               )}
             </div>
-            <Button type="button" size="sm" className="w-full sm:w-auto" onClick={() => setEditorState({ mode: 'create', skill: null })}>
-              <Plus className="h-4 w-4" />
-              New Skill
-            </Button>
+            <ActionMenu
+              label={t('actions.newSkill')}
+              icon={Plus}
+              variant="default"
+              size="sm"
+              className="w-full sm:w-auto"
+              triggerClassName="w-full sm:w-auto"
+              items={[
+                {
+                  key: 'manual',
+                  label: t('actions.authorManually'),
+                  icon: Pencil,
+                  onSelect: () => {
+                    setEditorDraft(null);
+                    setEditorState({ mode: 'create', skill: null });
+                  },
+                },
+                {
+                  key: 'wizard',
+                  label: t('actions.generateWithAgent'),
+                  icon: Sparkles,
+                  onSelect: openWizard,
+                },
+              ]}
+            />
             <Button type="button" variant="outline" size="sm" className="w-full sm:w-auto" onClick={() => handleAddDialogOpenChange(true)}>
               <Upload className="h-4 w-4" />
               Upload Skill
@@ -593,11 +636,24 @@ export default function ProjectSkills({ currentProjects }: ProjectSkillsProps) {
         skill={editorState?.skill ?? null}
         loadContent={getSkillContent}
         saveContent={saveSkillContent}
+        initialDraft={editorState?.mode === 'create' ? editorDraft ?? undefined : undefined}
         createSkill={async (entries) => {
           await addSkills(entries);
           setJustInstalled(true);
         }}
       />
+
+      {wizardMounted && selectedPath && (
+        <SkillWizardDialog
+          open={isWizardOpen}
+          onOpenChange={setIsWizardOpen}
+          defaultProvider={enabledProviders[0] ?? 'claude'}
+          projectPath={selectedPath}
+          defaultSaveTarget="project"
+          onOpenInEditor={handleWizardOpenInEditor}
+          onSaved={() => void refreshSkills()}
+        />
+      )}
     </div>
   );
 }

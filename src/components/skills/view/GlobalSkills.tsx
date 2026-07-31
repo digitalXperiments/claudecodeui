@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next';
 import { useCallback, useMemo, useState } from 'react';
 import {
   BrainCircuit,
@@ -9,24 +10,29 @@ import {
   Plus,
   RefreshCw,
   Search,
+  Sparkles,
   Trash2,
   Users,
   X,
 } from 'lucide-react';
 
 import { cn } from '../../../lib/utils';
+import { useAgentVisibility } from '../../../hooks/useAgentVisibility';
 import {
+  ActionMenu,
   Badge,
   Button,
   Input,
 } from '../../../shared/view/ui';
 import { useGlobalSkills } from '../hooks/useGlobalSkills';
 import { useProjectsOptions } from '../hooks/useProjectsOptions';
+import { splitSkillMarkdown, type SkillWizardDraft } from '../lib/skillWizardPrompt';
 import type { GlobalSkill, SkillsProvider } from '../types';
 
 import SkillEditorDialog from './SkillEditorDialog';
 import SkillScopeControl from './SkillScopeControl';
 import SkillUploadDialog from './SkillUploadDialog';
+import SkillWizardDialog from './SkillWizardDialog';
 
 const PROVIDER_NAMES: Record<SkillsProvider, string> = {
   claude: 'Claude',
@@ -47,6 +53,7 @@ type EditorState = {
 };
 
 export default function GlobalSkills() {
+  const { t } = useTranslation('skills');
   const {
     skills,
     isLoading,
@@ -60,10 +67,14 @@ export default function GlobalSkills() {
     refreshSkills,
   } = useGlobalSkills();
   const { projects: projectOptions, isLoading: projectsLoading } = useProjectsOptions();
+  const { enabledProviders } = useAgentVisibility();
 
   const [searchQuery, setSearchQuery] = useState('');
   const [isUploadOpen, setIsUploadOpen] = useState(false);
   const [editorState, setEditorState] = useState<EditorState | null>(null);
+  const [editorDraft, setEditorDraft] = useState<{ name: string; description: string; body: string } | null>(null);
+  const [isWizardOpen, setIsWizardOpen] = useState(false);
+  const [wizardMounted, setWizardMounted] = useState(false);
   const [removingDirectory, setRemovingDirectory] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [justInstalled, setJustInstalled] = useState(false);
@@ -102,6 +113,19 @@ export default function GlobalSkills() {
     }
   }, []);
 
+  const openWizard = useCallback(() => {
+    // The wizard mounts its skills hooks on first render — mount lazily so
+    // they only fetch once the user has asked for it.
+    setWizardMounted(true);
+    setIsWizardOpen(true);
+  }, []);
+
+  const handleWizardOpenInEditor = useCallback((draft: SkillWizardDraft) => {
+    setIsWizardOpen(false);
+    setEditorDraft(splitSkillMarkdown(draft.content));
+    setEditorState({ mode: 'create', skill: null });
+  }, []);
+
   return (
     <div className="min-w-0 space-y-4 overflow-x-hidden">
       <div className="flex min-w-0 items-start gap-3">
@@ -109,9 +133,9 @@ export default function GlobalSkills() {
           <Globe className="h-4 w-4" strokeWidth={1.7} />
         </div>
         <div className="min-w-0 space-y-1">
-          <h3 className="text-lg font-medium text-foreground">Global Skills</h3>
+          <h3 className="text-lg font-medium text-foreground">User / multi-project skills</h3>
           <p className="text-sm text-muted-foreground">
-            Author a skill once, then apply it to every project or only to the projects you select.
+            Author once in CloudCLI, choose projects and agents explicitly. Unchecked agents never get a copy.
           </p>
         </div>
       </div>
@@ -138,10 +162,36 @@ export default function GlobalSkills() {
             </button>
           )}
         </div>
-        <Button type="button" size="sm" className="w-full sm:w-auto" onClick={() => setEditorState({ mode: 'create', skill: null })}>
-          <Plus className="h-4 w-4" />
-          New Skill
-        </Button>
+        <ActionMenu
+          label={t('actions.newSkill')}
+          icon={Plus}
+          variant="default"
+          size="sm"
+          className="w-full sm:w-auto"
+          triggerClassName="w-full sm:w-auto"
+          items={[
+            {
+              key: 'manual',
+              label: t('actions.authorManually'),
+              icon: Pencil,
+              onSelect: () => {
+                setEditorDraft(null);
+                setEditorState({ mode: 'create', skill: null });
+              },
+            },
+            {
+              key: 'wizard',
+              label: t('actions.generateWithAgent'),
+              icon: Sparkles,
+              // The wizard's agent session needs a projectPath (we fall back
+              // to the first known project), so block it while projects load
+              // or when there are none.
+              disabled: projectsLoading || projectOptions.length === 0,
+              loading: projectsLoading,
+              onSelect: openWizard,
+            },
+          ]}
+        />
         <Button type="button" variant="outline" size="sm" className="w-full sm:w-auto" onClick={() => setIsUploadOpen(true)}>
           <FileText className="h-4 w-4" />
           Upload Skill
@@ -179,7 +229,7 @@ export default function GlobalSkills() {
       {justInstalled && saveStatus === 'success' && (
         <div className="inline-flex items-center gap-2 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-3 py-1 text-xs font-medium text-emerald-700 dark:text-emerald-300">
           <CheckCircle2 className="h-4 w-4" />
-          Global skill installed for all agents.
+          Skill saved to CloudCLI catalog and projected to selected agents.
         </div>
       )}
 
@@ -197,7 +247,7 @@ export default function GlobalSkills() {
             </div>
             <div className="mt-4 text-sm font-medium text-foreground">No global skills yet</div>
             <div className="mt-1 text-sm text-muted-foreground">
-              Create or upload a skill to install it into every agent&apos;s user skill folder.
+              Create or upload a skill, then enable it on the agents you need.
             </div>
           </div>
         )}
@@ -324,11 +374,27 @@ export default function GlobalSkills() {
         loadContent={getSkillContent}
         saveContent={saveSkillContent}
         allowScopeSelection
+        allowProviderSelection
+        initialDraft={editorState?.mode === 'create' ? editorDraft ?? undefined : undefined}
         createSkill={async (entries, options) => {
           await addSkills(entries, options);
           setJustInstalled(true);
         }}
       />
+
+      {wizardMounted && (
+        <SkillWizardDialog
+          open={isWizardOpen}
+          onOpenChange={setIsWizardOpen}
+          defaultProvider={enabledProviders[0] ?? 'claude'}
+          // The session gateway requires a projectPath (agent's cwd); from
+          // global settings there is no active workspace, so use the first
+          // known project. Without it session creation fails with a 400.
+          projectPath={projectOptions[0]?.fullPath}
+          onOpenInEditor={handleWizardOpenInEditor}
+          onSaved={() => void refreshSkills()}
+        />
+      )}
     </div>
   );
 }

@@ -12,6 +12,7 @@ import {
   type KanbanTaskTools,
 } from '@/modules/kanban/kanban.types.js';
 import type { AnyRecord, LLMProvider } from '@/shared/types.js';
+import { expandMcpSelectionsToTools, mergeToolAllowLists } from '@/shared/mcp-tool-expand.js';
 import { AppError } from '@/shared/utils.js';
 
 /**
@@ -22,6 +23,11 @@ let runtimeSpawnFns: Partial<Record<LLMProvider, ProviderSpawnFn>> = {};
 
 export function configureKanbanRuntimes(spawnFns: Partial<Record<LLMProvider, ProviderSpawnFn>>): void {
   runtimeSpawnFns = spawnFns;
+}
+
+/** Look up a configured spawn fn (used by headless helpers like task-field generation). */
+export function getKanbanSpawnFn(provider: LLMProvider): ProviderSpawnFn | undefined {
+  return runtimeSpawnFns[provider];
 }
 
 /**
@@ -54,22 +60,53 @@ export function resolveProfileForRole(
 
 /**
  * Effective tools/permissions for a run: profile wins when present (live-link),
- * otherwise the task's own permission_mode + tools.
+ * otherwise the task's own permission_mode + tools. Task-level MCP server
+ * selections are always merged in so card steering is not lost under a profile.
  */
 function resolvePermissionSource(
   task: KanbanTask,
   profile: AgentRunProfile | null,
+  provider: LLMProvider,
 ): { permissionMode: string; tools: KanbanTaskTools } {
-  if (profile) {
-    return {
-      permissionMode: profile.permission_mode || 'default',
-      tools: profile.tools ?? {},
-    };
-  }
+  const taskTools = task.tools ?? {};
+  const base: KanbanTaskTools = profile
+    ? { ...(profile.tools ?? {}) }
+    : { ...taskTools };
+
+  const mcpServers = Array.isArray(taskTools.mcpServers)
+    ? taskTools.mcpServers
+    : Array.isArray(base.mcpServers)
+      ? base.mcpServers
+      : [];
+  const skills = Array.isArray(taskTools.skills)
+    ? taskTools.skills
+    : Array.isArray(base.skills)
+      ? base.skills
+      : [];
+
+  const expandedMcp = expandMcpSelectionsToTools(mcpServers, provider);
+  const allowedCommands = mergeToolAllowLists(base.allowedCommands, expandedMcp);
+
   return {
-    permissionMode: task.permission_mode || 'default',
-    tools: task.tools ?? {},
+    permissionMode: profile
+      ? profile.permission_mode || 'default'
+      : task.permission_mode || 'default',
+    tools: {
+      ...base,
+      mcpServers,
+      skills,
+      ...(allowedCommands.length > 0 ? { allowedCommands } : {}),
+    },
   };
+}
+
+/** @internal Exported for unit tests. */
+export function resolveEffectiveToolsForRun(
+  task: KanbanTask,
+  provider: LLMProvider,
+  profile: AgentRunProfile | null = null,
+): KanbanTaskTools {
+  return resolvePermissionSource(task, profile, provider).tools;
 }
 
 function buildRuntimeOptions(
@@ -77,11 +114,18 @@ function buildRuntimeOptions(
   provider: LLMProvider,
   profile: AgentRunProfile | null,
 ): AnyRecord {
-  const { permissionMode, tools } = resolvePermissionSource(task, profile);
+  const { permissionMode, tools } = resolvePermissionSource(task, profile, provider);
   const allowed = Array.isArray(tools?.allowedCommands) ? tools.allowedCommands! : [];
   const disallowed = Array.isArray(tools?.disallowedCommands) ? tools.disallowedCommands! : [];
-  const options: AnyRecord = { permissionMode };
+  const mcpServerNames = Array.isArray(tools?.mcpServers) ? tools.mcpServers! : [];
+  // Kanban tasks always run detached (no websocket/human on the other end) —
+  // see startProviderRun's DETACHED_CONNECTION below. Providers use this to
+  // fail fast on an interactive permission prompt instead of hanging forever.
+  const options: AnyRecord = { permissionMode, unattended: true };
 
+  if (mcpServerNames.length > 0) {
+    options.mcpServers = mcpServerNames;
+  }
   if (profile?.model) {
     options.model = profile.model;
   }
@@ -154,11 +198,51 @@ export function resolveProviderForRole(task: KanbanTask, role: KanbanRunRole): L
  * review agent can inspect both the work product (git diff, files) and the
  * implementation summary.
  */
+/**
+ * Build a prompt preamble that steers the agent toward selected project skills
+ * and MCP servers (when present on the task).
+ */
+export function buildTaskSteeringPreamble(task: KanbanTask): string {
+  const skills = Array.isArray(task.tools?.skills)
+    ? task.tools.skills.filter((s): s is string => typeof s === 'string' && s.trim().length > 0)
+    : [];
+  const mcpServers = Array.isArray(task.tools?.mcpServers)
+    ? task.tools.mcpServers.filter((s): s is string => typeof s === 'string' && s.trim().length > 0)
+    : [];
+
+  if (skills.length === 0 && mcpServers.length === 0) {
+    return '';
+  }
+
+  const parts: string[] = ['## Task steering (required)', ''];
+  if (skills.length > 0) {
+    parts.push(
+      '### Project skills',
+      'Apply these project skills before and while working. They define project context, conventions, and what to do / not do:',
+      ...skills.map((name) => `- \`${name.trim()}\``),
+      'Load each skill (Skill tool / skill file) and follow its guidance.',
+      '',
+    );
+  }
+  if (mcpServers.length > 0) {
+    parts.push(
+      '### Preferred MCP servers',
+      'Prefer these MCP integrations for external systems (already allow-listed when the runtime supports it):',
+      ...mcpServers.map((name) => `- \`${name.trim()}\``),
+      'Do not invent alternate integrations when these cover the need.',
+      '',
+    );
+  }
+  return parts.join('\n').trim();
+}
+
 export function buildRunPrompt(
   task: KanbanTask,
   role: KanbanRunRole,
   implementOutput?: string | null,
 ): string {
+  const steering = buildTaskSteeringPreamble(task);
+
   if (role === 'review') {
     const parts = [
       'You are the review agent for a Kanban task whose implementation phase has finished.',
@@ -168,6 +252,9 @@ export function buildRunPrompt(
     ];
     if (task.description?.trim()) {
       parts.push(`Description: ${task.description.trim()}`);
+    }
+    if (steering) {
+      parts.push('', steering);
     }
     parts.push(
       '',
@@ -192,7 +279,12 @@ export function buildRunPrompt(
     );
     return parts.join('\n');
   }
-  return (task.prompt || task.title).trim();
+
+  const body = (task.prompt || task.title).trim();
+  if (!steering) {
+    return body;
+  }
+  return `${steering}\n\n---\n\n${body}`;
 }
 
 export type RunTaskResult = {
@@ -278,7 +370,7 @@ export const kanbanRunner = {
     });
     kanbanDb.setTaskStatus(task.task_id, 'running');
 
-    const result = startProviderRun({
+    const result = await startProviderRun({
       appSessionId: resolvedSessionId,
       provider,
       providerSessionId: session?.provider_session_id ?? null,

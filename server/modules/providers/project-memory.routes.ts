@@ -50,6 +50,12 @@ router.put(
             : undefined,
       restApiKey: typeof body.restApiKey === 'string' ? body.restApiKey : undefined,
     });
+    // Keep the shared CloudCLI Obsidian MCP catalog entry in sync (user-scope).
+    try {
+      await projectMemoryService.syncObsidianCatalogIfNeeded();
+    } catch (error) {
+      console.warn('[project-memory] Obsidian catalog sync after settings save failed:', error);
+    }
     res.json(createApiSuccessResponse({ settings }));
   }),
 );

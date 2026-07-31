@@ -1,14 +1,43 @@
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 const DEFAULT_CLAUDE_COMMAND = 'claude';
 const CLAUDE_SCRIPT_EXTENSIONS = new Set(['.cjs', '.js', '.jsx', '.mjs', '.ts', '.tsx']);
 const CLAUDE_WRAPPER_SEGMENTS = ['node_modules', '@anthropic-ai', 'claude-code', 'bin', 'claude.exe'] as const;
 
+/**
+ * Where Claude Code installs itself on macOS/Linux, in priority order and
+ * relative to `$HOME`.
+ *
+ * GUI-launched processes (the Electron app) inherit launchd's minimal PATH,
+ * which contains none of these — so resolving `claude` through PATH alone
+ * silently reports "Claude Code is not installed" and makes CloudCLI prompt for
+ * auth even though the user's shell is logged in. Probing the real install
+ * locations keeps CloudCLI on the *same binary* as the terminal, which is what
+ * keeps it in sync with the system Claude profile (same keychain, same OAuth).
+ */
+const POSIX_CLAUDE_HOME_CANDIDATES = [
+  ['.local', 'bin', 'claude'], // native installer (current default)
+  ['.claude', 'local', 'claude'], // legacy local installer
+  ['.bun', 'bin', 'claude'],
+  ['.npm-global', 'bin', 'claude'],
+  ['.deno', 'bin', 'claude'],
+] as const;
+
+/** Machine-wide locations, checked after the per-user ones. */
+const POSIX_CLAUDE_SYSTEM_CANDIDATES = [
+  '/opt/homebrew/bin/claude',
+  '/usr/local/bin/claude',
+  '/usr/bin/claude',
+] as const;
+
 export type ResolveClaudeCodeExecutablePathDependencies = {
   execFileSync?: typeof execFileSync;
   existsSync?: typeof fs.existsSync;
+  homedir?: typeof os.homedir;
+  pathEnv?: string;
   platform?: NodeJS.Platform;
   readFileSync?: typeof fs.readFileSync;
 };
@@ -119,6 +148,53 @@ function resolveWindowsClaudeExecutablePath(
   return configuredPath;
 }
 
+/**
+ * Turns a bare `claude` command into an absolute path on macOS/Linux.
+ *
+ * Walks `PATH` first so a shell-launched server keeps using exactly what the
+ * user's shell would, then falls back to the known install locations for the
+ * GUI case where `PATH` is launchd's minimal default. Returns null when nothing
+ * on disk matches, so callers can keep the bare command and surface the normal
+ * "not installed" path.
+ */
+function resolvePosixClaudeExecutablePath(
+  command: string,
+  deps: Required<ResolveClaudeCodeExecutablePathDependencies>,
+): string | null {
+  for (const entry of deps.pathEnv.split(path.delimiter)) {
+    const dir = entry.trim();
+    if (!dir) continue;
+    const candidate = path.join(dir, command);
+    if (deps.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  let home = '';
+  try {
+    home = deps.homedir();
+  } catch {
+    home = '';
+  }
+
+  if (home) {
+    for (const segments of POSIX_CLAUDE_HOME_CANDIDATES) {
+      const candidate = path.join(home, ...segments);
+      if (deps.existsSync(candidate)) {
+        return candidate;
+      }
+    }
+  }
+
+  for (const candidate of POSIX_CLAUDE_SYSTEM_CANDIDATES) {
+    if (deps.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
 export function resolveClaudeCodeExecutablePath(
   configuredPath: string | undefined = process.env.CLAUDE_CLI_PATH,
   dependencies: ResolveClaudeCodeExecutablePathDependencies = {},
@@ -126,13 +202,19 @@ export function resolveClaudeCodeExecutablePath(
   const deps: Required<ResolveClaudeCodeExecutablePathDependencies> = {
     execFileSync: dependencies.execFileSync ?? execFileSync,
     existsSync: dependencies.existsSync ?? fs.existsSync,
+    homedir: dependencies.homedir ?? os.homedir,
+    pathEnv: dependencies.pathEnv ?? process.env.PATH ?? '',
     platform: dependencies.platform ?? process.platform,
     readFileSync: dependencies.readFileSync ?? fs.readFileSync,
   };
 
   const normalizedPath = stripWrappingQuotes(configuredPath || DEFAULT_CLAUDE_COMMAND);
   if (deps.platform !== 'win32') {
-    return normalizedPath;
+    // An explicit path from CLAUDE_CLI_PATH is always honoured as-is.
+    if (isPathLike(normalizedPath) || path.isAbsolute(normalizedPath)) {
+      return normalizedPath;
+    }
+    return resolvePosixClaudeExecutablePath(normalizedPath, deps) ?? normalizedPath;
   }
 
   return resolveWindowsClaudeExecutablePath(normalizedPath, deps);

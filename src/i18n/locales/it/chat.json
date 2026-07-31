@@ -116,6 +116,7 @@
     },
     "clickToChangeMode": "Clicca per cambiare modalità permessi (o premi Tab nell'input)",
     "showAllCommands": "Mostra tutti i comandi",
+    "saveAsSkill": "Save as skill",
     "clearInput": "Cancella input",
     "scrollToBottom": "Scorri in basso"
   },

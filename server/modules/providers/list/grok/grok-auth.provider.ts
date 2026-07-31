@@ -15,14 +15,35 @@ type GrokCredentialsStatus = {
   error?: string;
 };
 
+/**
+ * Grok historically used numeric epoch seconds; current auth.json uses ISO
+ * strings like `2026-07-29T23:49:31.590517Z`. Accept both.
+ */
+const parseExpiryMs = (value: unknown): number | null => {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value < 1e12 ? value * 1000 : value;
+  }
+  if (typeof value === 'string' && value.trim()) {
+    const asNumber = Number(value);
+    if (Number.isFinite(asNumber)) {
+      return asNumber < 1e12 ? asNumber * 1000 : asNumber;
+    }
+    const asDate = Date.parse(value);
+    if (Number.isFinite(asDate)) {
+      return asDate;
+    }
+  }
+  return null;
+};
+
 export class GrokProviderAuth implements IProviderAuth {
   /**
    * Checks whether the grok CLI is available on this host.
    */
   private checkInstalled(): boolean {
     try {
-      spawn.sync('grok', ['--version'], { stdio: 'ignore', timeout: 5000 });
-      return true;
+      const result = spawn.sync('grok', ['--version'], { stdio: 'ignore', timeout: 5000 });
+      return !result.error;
     } catch {
       return false;
     }
@@ -46,10 +67,12 @@ export class GrokProviderAuth implements IProviderAuth {
   }
 
   /**
-   * Reads ~/.grok/auth.json and checks for a non-expired credential entry.
+   * Reads ~/.grok/auth.json and checks for a usable credential entry.
    *
    * auth.json is keyed by `<issuer>::<uuid>` rather than a fixed field name, so
-   * every entry is scanned for the newest non-expired token.
+   * every entry is scanned. A non-empty refresh_token keeps the session valid
+   * even when the short-lived access token (`expires_at`) has lapsed — the CLI
+   * refreshes on use, same as Kimi/Claude.
    */
   private async checkCredentials(): Promise<GrokCredentialsStatus> {
     try {
@@ -58,6 +81,7 @@ export class GrokProviderAuth implements IProviderAuth {
       const auth = readObjectRecord(JSON.parse(content)) ?? {};
 
       let best: { email: string | null; expiresAt: number } | null = null;
+      const now = Date.now();
 
       for (const rawEntry of Object.values(auth)) {
         const entry = readObjectRecord(rawEntry);
@@ -65,14 +89,23 @@ export class GrokProviderAuth implements IProviderAuth {
           continue;
         }
 
-        const expiresAt = typeof entry.expires_at === 'number' ? entry.expires_at : Number(entry.expires_at);
-        if (Number.isFinite(expiresAt) && expiresAt * 1000 < Date.now()) {
+        const accessToken = readOptionalString(entry.access_token) ?? readOptionalString(entry.key);
+        const refreshToken = readOptionalString(entry.refresh_token);
+        if (!accessToken && !refreshToken) {
+          continue;
+        }
+
+        const expiresAt = parseExpiryMs(entry.expires_at);
+        const accessExpired = expiresAt !== null && expiresAt < now;
+        // Keep logged-in when refresh_token can still mint a new access token.
+        if (accessExpired && !refreshToken) {
           continue;
         }
 
         const email = readOptionalString(entry.email) ?? null;
-        if (!best || (Number.isFinite(expiresAt) && expiresAt > best.expiresAt)) {
-          best = { email, expiresAt: Number.isFinite(expiresAt) ? expiresAt : 0 };
+        const sortKey = expiresAt ?? 0;
+        if (!best || sortKey >= best.expiresAt) {
+          best = { email, expiresAt: sortKey };
         }
       }
 

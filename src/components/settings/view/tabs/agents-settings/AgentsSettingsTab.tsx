@@ -14,6 +14,7 @@ import AgentSelectorSection from './sections/AgentSelectorSection';
 export default function AgentsSettingsTab({
   providerAuthStatus,
   onProviderLogin,
+  onProviderAuthRefresh,
   claudePermissions,
   onClaudePermissionsChange,
   cursorPermissions,
@@ -33,65 +34,74 @@ export default function AgentsSettingsTab({
   const [selectedAgent, setSelectedAgent] = useState<AgentProvider>('claude');
   const [selectedCategory, setSelectedCategory] = useState<AgentCategory>('account');
   const visibleCategories = useMemo<AgentCategory[]>(() => {
-    // Kimi has no fine-grained allow/deny rule mechanism (its ACP approval
-    // flow is per-session mode, not per-rule settings), so there's nothing
-    // real to show here - hide the tab rather than render it blank.
+    // MCP and Skills are managed in dedicated top-level Settings tabs
+    // (catalog + explicit fan-out). Agent settings keep account + permissions.
+    // Kimi has no fine-grained allow/deny rule mechanism.
     if (selectedAgent === 'kimi') {
-      return ['account', 'mcp', 'skills'];
+      return ['account', 'models'];
     }
-    // Antigravity exposes a run-mode permission model (plan / accept-edits /
-    // skip) but no MCP or skills integration, so show account + permissions.
-    if (selectedAgent === 'agy') {
-      return ['account', 'permissions'];
-    }
-    // Pi has no built-in MCP; skills live under ~/.pi/agent/skills.
-    if (selectedAgent === 'pi') {
-      return ['account', 'permissions', 'skills'];
-    }
-    return selectedAgent === 'opencode'
-      ? ['account', 'permissions', 'mcp']
-      : ['account', 'permissions', 'mcp', 'skills'];
+    return ['account', 'models', 'permissions'];
   }, [selectedAgent]);
+
+  useEffect(() => {
+    if (!visibleCategories.includes(selectedCategory)) {
+      setSelectedCategory(visibleCategories[0] ?? 'account');
+    }
+  }, [visibleCategories, selectedCategory]);
 
   const visibleAgents = useMemo<AgentProvider[]>(() => {
     return ['claude', 'cursor', 'codex', 'opencode', 'grok', 'kimi', 'agy', 'pi'];
   }, []);
 
-  const agentContextById = useMemo<Record<AgentProvider, AgentContext>>(() => ({
+  const agentContextById = useMemo<Record<AgentProvider, AgentContext>>(() => {
+    const refresh = (provider: AgentProvider) => {
+      onProviderAuthRefresh?.(provider);
+    };
+    return {
     claude: {
       authStatus: providerAuthStatus.claude,
       onLogin: () => onProviderLogin('claude'),
+      onRefresh: () => refresh('claude'),
     },
     cursor: {
       authStatus: providerAuthStatus.cursor,
       onLogin: () => onProviderLogin('cursor'),
+      onRefresh: () => refresh('cursor'),
     },
     codex: {
       authStatus: providerAuthStatus.codex,
       onLogin: () => onProviderLogin('codex'),
+      onRefresh: () => refresh('codex'),
     },
     opencode: {
       authStatus: providerAuthStatus.opencode,
       onLogin: () => onProviderLogin('opencode'),
+      onRefresh: () => refresh('opencode'),
     },
     grok: {
       authStatus: providerAuthStatus.grok,
       onLogin: () => onProviderLogin('grok'),
+      onRefresh: () => refresh('grok'),
     },
     kimi: {
       authStatus: providerAuthStatus.kimi,
       onLogin: () => onProviderLogin('kimi'),
+      onRefresh: () => refresh('kimi'),
     },
     agy: {
       authStatus: providerAuthStatus.agy,
       onLogin: () => onProviderLogin('agy'),
+      onRefresh: () => refresh('agy'),
     },
     pi: {
       authStatus: providerAuthStatus.pi,
       onLogin: () => onProviderLogin('pi'),
+      onRefresh: () => refresh('pi'),
     },
-  }), [
+  };
+  }, [
     onProviderLogin,
+    onProviderAuthRefresh,
     providerAuthStatus.claude,
     providerAuthStatus.codex,
     providerAuthStatus.cursor,

@@ -44,7 +44,7 @@ export type MainContentProps = {
   activeTab: AppTab;
   setActiveTab: Dispatch<SetStateAction<AppTab>>;
   ws: WebSocket | null;
-  sendMessage: (message: unknown) => void;
+  sendMessage: (message: unknown) => boolean;
   isMobile: boolean;
   onMenuClick: () => void;
   isLoading: boolean;
@@ -57,6 +57,10 @@ export type MainContentProps = {
   onShowSettings: (tab?: SettingsMainTab) => void;
   externalMessageUpdate: number;
   newSessionTrigger: number;
+  onSessionSelect: (session: ProjectSession) => void;
+  onNewSession: (project: Project) => void;
+  onLoadMoreSessions?: (projectId: string) => void | Promise<void>;
+  isLoadingMoreSessions?: boolean;
 };
 
 export type MainContentHeaderProps = {
@@ -68,6 +72,10 @@ export type MainContentHeaderProps = {
   shouldShowBrowserTab: boolean;
   isMobile: boolean;
   onMenuClick: () => void;
+  onSessionSelect: (session: ProjectSession) => void;
+  onNewSession: (project: Project) => void;
+  onLoadMoreSessions?: (projectId: string) => void | Promise<void>;
+  isLoadingMoreSessions?: boolean;
 };
 
 export type MainContentStateViewProps = {

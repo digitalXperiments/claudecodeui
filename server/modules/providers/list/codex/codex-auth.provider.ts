@@ -30,9 +30,35 @@ export class CodexProviderAuth implements IProviderAuth {
 
   /**
    * Returns Codex SDK availability and credential status.
+   *
+   * Prefer `codex login status` (what the CLI itself reports) over parsing
+   * auth.json so CloudCLI stays in sync with shell/chat runs.
    */
   async getStatus(): Promise<ProviderAuthStatus> {
     const installed = this.checkInstalled();
+    if (!installed) {
+      return {
+        installed: false,
+        provider: 'codex',
+        authenticated: false,
+        email: null,
+        method: null,
+        error: 'Codex CLI is not installed',
+      };
+    }
+
+    const fromCli = await this.checkCliLoginStatus();
+    if (fromCli) {
+      return {
+        installed,
+        provider: 'codex',
+        authenticated: fromCli.authenticated,
+        email: fromCli.email,
+        method: fromCli.method,
+        error: fromCli.authenticated ? undefined : fromCli.error || 'Not authenticated',
+      };
+    }
+
     const credentials = await this.checkCredentials();
 
     return {
@@ -43,6 +69,64 @@ export class CodexProviderAuth implements IProviderAuth {
       method: credentials.method,
       error: credentials.authenticated ? undefined : credentials.error || 'Not authenticated',
     };
+  }
+
+  /**
+   * Parses `codex login status` output (e.g. "Logged in using ChatGPT").
+   */
+  private checkCliLoginStatus(): Promise<CodexCredentialsStatus | null> {
+    return new Promise((resolve) => {
+      let done = false;
+      let child: ReturnType<typeof spawn> | undefined;
+      const finish = (value: CodexCredentialsStatus | null) => {
+        if (done) return;
+        done = true;
+        clearTimeout(timeout);
+        resolve(value);
+      };
+
+      const timeout = setTimeout(() => {
+        child?.kill();
+        finish(null);
+      }, 5000);
+
+      try {
+        child = spawn('codex', ['login', 'status'], {
+          env: { ...process.env, NO_COLOR: '1', FORCE_COLOR: '0' },
+        });
+      } catch {
+        finish(null);
+        return;
+      }
+
+      let stdout = '';
+      let stderr = '';
+      child.stdout?.on('data', (chunk: Buffer) => {
+        stdout += chunk.toString();
+      });
+      child.stderr?.on('data', (chunk: Buffer) => {
+        stderr += chunk.toString();
+      });
+      child.on('error', () => finish(null));
+      child.on('close', (code) => {
+        const text = `${stdout}\n${stderr}`;
+        if (/logged in/i.test(text)) {
+          const methodMatch = text.match(/Logged in using\s+(.+)/i);
+          finish({
+            authenticated: true,
+            email: methodMatch?.[1]?.trim() || 'Authenticated',
+            method: 'cli',
+          });
+          return;
+        }
+        if (code === 0) {
+          finish({ authenticated: false, email: null, method: null, error: 'Not logged in' });
+          return;
+        }
+        // Non-zero without a clear message → fall back to auth.json.
+        finish(null);
+      });
+    });
   }
 
   /**

@@ -11,6 +11,8 @@ import type {
   ProjectSession,
 } from '../types/app';
 
+import { getAllSessions } from '../components/sidebar/utils/utils';
+
 import type { SessionActivityMap } from './useSessionProtection';
 
 type UseProjectsStateArgs = {
@@ -836,14 +838,32 @@ export function useProjectsState({
   const handleProjectSelect = useCallback(
     (project: Project) => {
       setSelectedProject(project);
-      setSelectedSession(null);
-      navigate('/');
+
+      // Option C: opening a project always lands on its most recent session
+      // (getAllSessions sorts newest-first). Empty projects open the new-session composer.
+      const mostRecent = getAllSessions(project)[0] ?? null;
+      if (mostRecent) {
+        const sessionWithProject: ProjectSession = {
+          ...mostRecent,
+          __projectId: project.projectId,
+        };
+        clearSessionAttention(sessionWithProject.id);
+        setSelectedSession(sessionWithProject);
+        if (activeTab === 'tasks' || activeTab === 'browser') {
+          setActiveTab('chat');
+        }
+        navigate(`/session/${sessionWithProject.id}`);
+      } else {
+        setSelectedSession(null);
+        setActiveTab('chat');
+        navigate('/');
+      }
 
       if (isMobile) {
         setSidebarOpen(false);
       }
     },
-    [isMobile, navigate],
+    [activeTab, clearSessionAttention, isMobile, navigate],
   );
 
   const handleSessionSelect = useCallback(

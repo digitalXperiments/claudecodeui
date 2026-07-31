@@ -47,6 +47,13 @@ const pendingToolApprovals = new Map();
 // terminal `complete` (aborted: true) to the client, so the run loop must not
 // emit a second one when its generator winds down.
 const abortedSessionIds = new Set();
+// app session id -> provider session id (chat mid-run inject addressing).
+const appSessionAliases = new Map();
+// app session id -> SDKUserMessage[] buffered before provider id is known.
+const pendingInjections = new Map();
+// After a successful `result`, wait this long for a late inject before closing
+// stdin so the CLI process can exit. Only used on chat runs (appSessionId set).
+const RUN_DRAIN_GRACE_MS = 750;
 
 // Default for non-interactive / automated callers. Chat UI paths should pass
 // timeoutMs: 0 (wait indefinitely) so users are not cancelled mid-approval.
@@ -268,13 +275,20 @@ function mapCliOptionsToSDK(options = {}) {
  * @param {string} sessionId - Session identifier
  * @param {Object} queryInstance - SDK query instance
  * @param {Object} writer - WebSocket writer for reconnect support
+ * @param {Object} [extras]
+ * @param {Object|null} [extras.channel] - Open input channel (chat inject mode)
+ * @param {string|null} [extras.appSessionId]
+ * @param {Promise|null} [extras.donePromise]
  */
-function addSession(sessionId, queryInstance, writer = null) {
+function addSession(sessionId, queryInstance, writer = null, extras = {}) {
   activeSessions.set(sessionId, {
     instance: queryInstance,
     startTime: Date.now(),
     status: 'active',
-    writer
+    writer,
+    channel: extras.channel || null,
+    appSessionId: extras.appSessionId || null,
+    donePromise: extras.donePromise || null,
   });
 }
 
@@ -284,6 +298,86 @@ function addSession(sessionId, queryInstance, writer = null) {
  */
 function removeSession(sessionId) {
   activeSessions.delete(sessionId);
+}
+
+/**
+ * Records app → provider session alias and flushes any buffered injects.
+ * @param {string} appSessionId
+ * @param {string} providerSessionId
+ * @param {Object} channel
+ */
+function registerAppSessionAlias(appSessionId, providerSessionId, channel) {
+  if (!appSessionId || !providerSessionId || !channel) {
+    return;
+  }
+  appSessionAliases.set(appSessionId, providerSessionId);
+  const buffered = pendingInjections.get(appSessionId);
+  if (buffered && buffered.length > 0) {
+    pendingInjections.delete(appSessionId);
+    for (const message of buffered) {
+      channel.push(message);
+    }
+  }
+}
+
+/**
+ * Push-based input channel for streaming-input mode (chat mid-run inject).
+ * Generator stays open until `end()` so follow-up user messages can be pushed.
+ */
+function createInputChannel() {
+  const queue = [];
+  let parked = null;
+  let ended = false;
+
+  const channel = {
+    get ended() {
+      return ended;
+    },
+    push(message) {
+      if (ended) {
+        return false;
+      }
+      if (parked) {
+        const resolve = parked;
+        parked = null;
+        resolve({ value: message, done: false });
+      } else {
+        queue.push(message);
+      }
+      return true;
+    },
+    end() {
+      if (ended) {
+        return;
+      }
+      ended = true;
+      if (parked) {
+        const resolve = parked;
+        parked = null;
+        resolve({ value: undefined, done: true });
+      }
+    },
+    iterator: (async function* () {
+      while (true) {
+        if (queue.length > 0) {
+          yield queue.shift();
+          continue;
+        }
+        if (ended) {
+          return;
+        }
+        const result = await new Promise((resolve) => {
+          parked = resolve;
+        });
+        if (result.done) {
+          return;
+        }
+        yield result.value;
+      }
+    })(),
+  };
+
+  return channel;
 }
 
 /**
@@ -373,12 +467,31 @@ function extractTokenBudget(sdkMessage) {
 }
 
 /**
- * Builds the SDK `prompt` payload for one turn.
+ * Builds one SDKUserMessage (text + optional image blocks).
+ * @param {string} command
+ * @param {Array} images
+ * @param {string} cwd
+ * @returns {Promise<Object>}
+ */
+async function buildSDKUserMessage(command, images, cwd) {
+  const content = await buildClaudeUserContent(command, images, cwd);
+  return {
+    type: 'user',
+    message: {
+      role: 'user',
+      content
+    },
+    parent_tool_use_id: null,
+    timestamp: new Date().toISOString()
+  };
+}
+
+/**
+ * Builds the SDK `prompt` payload for one turn (non-inject / headless path).
  *
  * Plain text turns pass the string through unchanged. Turns with image
- * attachments use the SDK's streaming-input mode: a single SDKUserMessage
- * whose content carries the prompt text plus one base64 `image` block per
- * attachment (read from the global `~/.cloudcli/assets` folder).
+ * attachments use a one-shot streaming generator that closes after the first
+ * message — same as the proven pre-inject behaviour.
  *
  * @param {string} command - User prompt
  * @param {Array} images - Image descriptors ({ path, name?, mimeType? })
@@ -390,18 +503,39 @@ async function buildPromptPayload(command, images, cwd) {
     return command;
   }
 
-  const content = await buildClaudeUserContent(command, images, cwd);
+  const message = await buildSDKUserMessage(command, images, cwd);
   return (async function* () {
-    yield {
-      type: 'user',
-      message: {
-        role: 'user',
-        content
-      },
-      parent_tool_use_id: null,
-      timestamp: new Date().toISOString()
-    };
+    yield message;
   })();
+}
+
+/**
+ * True when this query should keep an open stdin channel for mid-run inject.
+ * Chat passes `appSessionId`; headless/git/agent paths do not and keep the
+ * classic one-shot prompt path (avoids streaming-mode edge cases there).
+ * @param {Object} options
+ * @returns {boolean}
+ */
+function shouldEnableMidRunInject(options = {}) {
+  return Boolean(options.appSessionId) || options.enableMidRunInject === true;
+}
+
+/**
+ * Pending interactive permission prompts for a provider session (or any if id null).
+ * @param {string|null} sessionId
+ * @returns {number}
+ */
+function countPendingApprovalsForSession(sessionId) {
+  if (!sessionId) {
+    return pendingToolApprovals.size;
+  }
+  let count = 0;
+  for (const resolver of pendingToolApprovals.values()) {
+    if (resolver._sessionId === sessionId) {
+      count += 1;
+    }
+  }
+  return count;
 }
 
 /**
@@ -540,6 +674,11 @@ async function queryClaudeSDK(command, options = {}, ws) {
   const { sessionId, sessionSummary } = options;
   let capturedSessionId = sessionId;
   let sessionCreatedSent = false;
+  // Mid-run inject only for chat (appSessionId). Headless/git keep one-shot path.
+  const injectMode = shouldEnableMidRunInject(options);
+  let channel = null;
+  let settleDone = null;
+  let drainTimer = null;
 
   const emitNotification = (event) => {
     notifyUserIfEnabled({
@@ -573,233 +712,325 @@ async function queryClaudeSDK(command, options = {}, ws) {
       sdkOptions.mcpServers = mcpServers;
     }
 
-    // Turns with image attachments switch to streaming input so the images
-    // ride along as real content blocks. Built per query attempt because an
-    // async generator cannot be replayed once consumed.
-    const createPrompt = () => buildPromptPayload(command, options.images, options.cwd);
+    // One-shot path (headless/git): string or single-yield image generator.
+    // Inject path (chat): open channel so follow-ups can push without respawn.
+    const createOneShotPrompt = () => buildPromptPayload(command, options.images, options.cwd);
 
-    sdkOptions.hooks = {
-      Notification: [{
-        matcher: '',
-        hooks: [async (input) => {
-          const message = typeof input?.message === 'string' ? input.message : 'Claude requires your attention.';
-          emitNotification(createNotificationEvent({
-            provider: 'claude',
-            sessionId: capturedSessionId || sessionId || null,
-            kind: 'action_required',
-            code: 'agent.notification',
-            meta: { message, sessionName: sessionSummary },
-            severity: 'warning',
-            requiresUserAction: true,
-            dedupeKey: `claude:hook:notification:${capturedSessionId || sessionId || 'none'}:${message}`
-          }));
-          return {};
+    if (injectMode) {
+      // Wait for a prior run on the same provider session to fully unwind so
+      // two CLI processes never resume the same transcript at once.
+      const previousSession = sessionId ? getSession(sessionId) : null;
+      if (previousSession?.donePromise) {
+        try {
+          await previousSession.donePromise;
+        } catch {
+          // ignore prior outcome
+        }
+        removeSession(sessionId);
+      }
+
+      const donePromise = new Promise((resolve) => {
+        settleDone = resolve;
+      });
+
+      channel = createInputChannel();
+      const firstMessage = await buildSDKUserMessage(command, options.images, options.cwd);
+      channel.push(firstMessage);
+
+      // A push during post-result grace cancels drain so the run continues.
+      const rawPush = channel.push.bind(channel);
+      channel.push = (message) => {
+        if (drainTimer) {
+          clearTimeout(drainTimer);
+          drainTimer = null;
+        }
+        return rawPush(message);
+      };
+
+      // Re-bind sessionExtras with real donePromise
+      const injectExtras = {
+        channel,
+        appSessionId: options.appSessionId || null,
+        donePromise,
+      };
+
+      sdkOptions.hooks = {
+        Notification: [{
+          matcher: '',
+          hooks: [async (input) => {
+            const message = typeof input?.message === 'string' ? input.message : 'Claude requires your attention.';
+            emitNotification(createNotificationEvent({
+              provider: 'claude',
+              sessionId: capturedSessionId || sessionId || null,
+              kind: 'action_required',
+              code: 'agent.notification',
+              meta: { message, sessionName: sessionSummary },
+              severity: 'warning',
+              requiresUserAction: true,
+              dedupeKey: `claude:hook:notification:${capturedSessionId || sessionId || 'none'}:${message}`
+            }));
+            return {};
+          }]
         }]
-      }]
-    };
+      };
 
-    // Caveat: in 'auto' and 'bypassPermissions' modes the SDK resolves approval
-    // at the permission-mode step and skips this callback, so interactive tools
-    // (AskUserQuestion, ExitPlanMode) won't reach the UI — the classifier/bypass
-    // auto-approves them and the model acts on a generated answer. Move these
-    // tools to a PreToolUse hook (runs before the mode check) if we need them
-    // to work in those modes.
-    sdkOptions.canUseTool = async (toolName, input, context) => {
-      const requiresInteraction = TOOLS_REQUIRING_INTERACTION.has(toolName);
+      sdkOptions.canUseTool = async (toolName, input, context) => {
+        // While a tool is waiting on the user, never close stdin (drain).
+        if (drainTimer) {
+          clearTimeout(drainTimer);
+          drainTimer = null;
+        }
+        return handleCanUseTool(toolName, input, context, {
+          sdkOptions,
+          ws,
+          capturedSessionIdRef: () => capturedSessionId,
+          sessionId,
+          sessionSummary,
+          emitNotification,
+        });
+      };
 
-      if (!requiresInteraction) {
-        if (sdkOptions.permissionMode === 'bypassPermissions') {
-          return { behavior: 'allow', updatedInput: input };
+      const prevStreamTimeout = process.env.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT;
+      process.env.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT = '300000';
+
+      let queryInstance;
+      try {
+        queryInstance = query({
+          prompt: channel.iterator,
+          options: sdkOptions
+        });
+      } catch (hookError) {
+        console.warn('Failed to initialize Claude query with hooks, retrying without hooks:', hookError?.message || hookError);
+        delete sdkOptions.hooks;
+        channel = createInputChannel();
+        channel.push(firstMessage);
+        const rawPushRetry = channel.push.bind(channel);
+        channel.push = (message) => {
+          if (drainTimer) {
+            clearTimeout(drainTimer);
+            drainTimer = null;
+          }
+          return rawPushRetry(message);
+        };
+        injectExtras.channel = channel;
+        queryInstance = query({
+          prompt: channel.iterator,
+          options: sdkOptions
+        });
+      }
+
+      if (prevStreamTimeout !== undefined) {
+        process.env.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT = prevStreamTimeout;
+      } else {
+        delete process.env.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT;
+      }
+
+      if (capturedSessionId) {
+        addSession(capturedSessionId, queryInstance, ws, injectExtras);
+        registerAppSessionAlias(options.appSessionId, capturedSessionId, channel);
+      }
+
+      console.log('Starting async generator loop for session:', capturedSessionId || 'NEW', '(inject mode)');
+      for await (const message of queryInstance) {
+        if (message.session_id && !capturedSessionId) {
+          capturedSessionId = message.session_id;
+          addSession(capturedSessionId, queryInstance, ws, injectExtras);
+          registerAppSessionAlias(options.appSessionId, capturedSessionId, channel);
+
+          if (ws.setSessionId && typeof ws.setSessionId === 'function') {
+            ws.setSessionId(capturedSessionId);
+          }
+
+          if (!sessionId && !sessionCreatedSent) {
+            sessionCreatedSent = true;
+            ws.send(createNormalizedMessage({ kind: 'session_created', newSessionId: capturedSessionId, sessionId: capturedSessionId, provider: 'claude' }));
+          }
         }
 
-        const isDisallowed = (sdkOptions.disallowedTools || []).some(entry =>
-          matchesToolPermission(entry, toolName, input)
-        );
-        if (isDisallowed) {
-          return { behavior: 'deny', message: 'Tool disallowed by settings' };
+        const transformedMessage = transformMessage(message);
+        const sid = capturedSessionId || sessionId || null;
+        const normalized = sessionsService.normalizeMessage('claude', transformedMessage, sid);
+        for (const msg of normalized) {
+          if (transformedMessage.parentToolUseId && !msg.parentToolUseId) {
+            msg.parentToolUseId = transformedMessage.parentToolUseId;
+          }
+          ws.send(msg);
         }
 
-        const isAllowed = (sdkOptions.allowedTools || []).some(entry =>
-          matchesToolPermission(entry, toolName, input)
-        );
-        if (isAllowed) {
-          return { behavior: 'allow', updatedInput: input };
+        const tokenBudgetData = extractTokenBudget(message);
+        if (tokenBudgetData) {
+          ws.send(createNormalizedMessage({ kind: 'status', text: 'token_budget', tokenBudget: tokenBudgetData, sessionId: capturedSessionId || sessionId || null, provider: 'claude' }));
+        }
+
+        // Close stdin only after a turn result *and* no pending UI tool approvals.
+        // Do not emit `complete` here — that still happens when the loop ends
+        // (same contract as the one-shot path). Premature complete+channel.end
+        // during tool_use is what previously triggered ede_diagnostic failures.
+        if (message.type === 'result' && channel && !channel.ended) {
+          if (drainTimer) {
+            clearTimeout(drainTimer);
+          }
+          const scheduleDrain = () => {
+            drainTimer = setTimeout(() => {
+              drainTimer = null;
+              if (channel.ended) {
+                return;
+              }
+              if (countPendingApprovalsForSession(capturedSessionId || sessionId || null) > 0) {
+                scheduleDrain();
+                return;
+              }
+              if (capturedSessionId && abortedSessionIds.has(capturedSessionId)) {
+                return;
+              }
+              channel.end();
+            }, RUN_DRAIN_GRACE_MS);
+            drainTimer.unref?.();
+          };
+          scheduleDrain();
         }
       }
 
-      const requestId = createRequestId();
-      ws.send(createNormalizedMessage({ kind: 'permission_request', requestId, toolName, input, sessionId: capturedSessionId || sessionId || null, provider: 'claude' }));
-      emitNotification(createNotificationEvent({
+      if (capturedSessionId) {
+        removeSession(capturedSessionId);
+      }
+
+      const wasAborted = capturedSessionId ? abortedSessionIds.delete(capturedSessionId) : false;
+      if (!wasAborted) {
+        ws.send(createCompleteMessage({ provider: 'claude', sessionId: capturedSessionId || sessionId || null, exitCode: 0 }));
+      }
+      notifyRunStopped({
+        userId: ws?.userId || null,
         provider: 'claude',
         sessionId: capturedSessionId || sessionId || null,
-        kind: 'action_required',
-        code: 'permission.required',
-        meta: { toolName, sessionName: sessionSummary },
-        severity: 'warning',
-        requiresUserAction: true,
-        dedupeKey: `claude:permission:${capturedSessionId || sessionId || 'none'}:${requestId}`
-      }));
-
-      const decision = await waitForToolApproval(requestId, {
-        // Chatbar approvals wait until the user answers (or the run is aborted
-        // via signal). A short default timeout used to cancel Grok/Claude
-        // prompts mid-review; only CLAUDE_TOOL_APPROVAL_TIMEOUT_MS overrides.
-        timeoutMs: TOOL_APPROVAL_TIMEOUT_MS > 0 && !requiresInteraction
-          ? TOOL_APPROVAL_TIMEOUT_MS
-          : 0,
-        signal: context?.signal,
-        metadata: {
-          _sessionId: capturedSessionId || sessionId || null,
-          _toolName: toolName,
-          _input: input,
-          _receivedAt: new Date(),
-        },
-        onCancel: (reason) => {
-          ws.send(createNormalizedMessage({ kind: 'permission_cancelled', requestId, reason, sessionId: capturedSessionId || sessionId || null, provider: 'claude' }));
-        }
+        sessionName: sessionSummary,
+        stopReason: wasAborted ? 'aborted' : 'completed'
       });
-      if (!decision) {
-        return { behavior: 'deny', message: 'Permission request timed out' };
-      }
-
-      if (decision.cancelled) {
-        return { behavior: 'deny', message: 'Permission request cancelled' };
-      }
-
-      if (decision.allow) {
-        if (decision.rememberEntry && typeof decision.rememberEntry === 'string') {
-          if (!sdkOptions.allowedTools.includes(decision.rememberEntry)) {
-            sdkOptions.allowedTools.push(decision.rememberEntry);
-          }
-          if (Array.isArray(sdkOptions.disallowedTools)) {
-            sdkOptions.disallowedTools = sdkOptions.disallowedTools.filter(entry => entry !== decision.rememberEntry);
-          }
-        }
-        return { behavior: 'allow', updatedInput: decision.updatedInput ?? input };
-      }
-
-      return { behavior: 'deny', message: decision.message ?? 'User denied tool use' };
-    };
-
-    // Query constructor reads this synchronously.
-    const prevStreamTimeout = process.env.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT;
-    process.env.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT = '300000';
-
-    let queryInstance;
-    try {
-      queryInstance = query({
-        prompt: await createPrompt(),
-        options: sdkOptions
-      });
-    } catch (hookError) {
-      // Older/newer SDK versions may not accept hook shapes yet.
-      // Keep notification behavior operational via runtime events even if hook registration fails.
-      console.warn('Failed to initialize Claude query with hooks, retrying without hooks:', hookError?.message || hookError);
-      delete sdkOptions.hooks;
-      queryInstance = query({
-        prompt: await createPrompt(),
-        options: sdkOptions
-      });
-    }
-
-    // Restore immediately — Query constructor already captured the value
-    if (prevStreamTimeout !== undefined) {
-      process.env.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT = prevStreamTimeout;
     } else {
-      delete process.env.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT;
-    }
+      // --- Classic one-shot path (unchanged contract) ---
+      sdkOptions.hooks = {
+        Notification: [{
+          matcher: '',
+          hooks: [async (input) => {
+            const message = typeof input?.message === 'string' ? input.message : 'Claude requires your attention.';
+            emitNotification(createNotificationEvent({
+              provider: 'claude',
+              sessionId: capturedSessionId || sessionId || null,
+              kind: 'action_required',
+              code: 'agent.notification',
+              meta: { message, sessionName: sessionSummary },
+              severity: 'warning',
+              requiresUserAction: true,
+              dedupeKey: `claude:hook:notification:${capturedSessionId || sessionId || 'none'}:${message}`
+            }));
+            return {};
+          }]
+        }]
+      };
 
-    // Track the query instance for abort capability
-    if (capturedSessionId) {
-      addSession(capturedSessionId, queryInstance, ws);
-    }
+      sdkOptions.canUseTool = async (toolName, input, context) => handleCanUseTool(toolName, input, context, {
+        sdkOptions,
+        ws,
+        capturedSessionIdRef: () => capturedSessionId,
+        sessionId,
+        sessionSummary,
+        emitNotification,
+      });
 
-    // Process streaming messages
-    console.log('Starting async generator loop for session:', capturedSessionId || 'NEW');
-    for await (const message of queryInstance) {
-      // Capture session ID from first message
-      if (message.session_id && !capturedSessionId) {
+      const prevStreamTimeout = process.env.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT;
+      process.env.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT = '300000';
 
-        capturedSessionId = message.session_id;
-        addSession(capturedSessionId, queryInstance, ws);
+      let queryInstance;
+      try {
+        queryInstance = query({
+          prompt: await createOneShotPrompt(),
+          options: sdkOptions
+        });
+      } catch (hookError) {
+        console.warn('Failed to initialize Claude query with hooks, retrying without hooks:', hookError?.message || hookError);
+        delete sdkOptions.hooks;
+        queryInstance = query({
+          prompt: await createOneShotPrompt(),
+          options: sdkOptions
+        });
+      }
 
-        // Set session ID on writer
-        if (ws.setSessionId && typeof ws.setSessionId === 'function') {
-          ws.setSessionId(capturedSessionId);
-        }
-
-        // Send session-created event only once for new sessions
-        if (!sessionId && !sessionCreatedSent) {
-          sessionCreatedSent = true;
-          ws.send(createNormalizedMessage({ kind: 'session_created', newSessionId: capturedSessionId, sessionId: capturedSessionId, provider: 'claude' }));
-        }
+      if (prevStreamTimeout !== undefined) {
+        process.env.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT = prevStreamTimeout;
       } else {
-        // session_id already captured
+        delete process.env.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT;
       }
 
-      // Transform and normalize message via adapter
-      const transformedMessage = transformMessage(message);
-      const sid = capturedSessionId || sessionId || null;
+      if (capturedSessionId) {
+        addSession(capturedSessionId, queryInstance, ws);
+      }
 
-      // Use adapter to normalize SDK events into NormalizedMessage[]
-      const normalized = sessionsService.normalizeMessage('claude', transformedMessage, sid);
-      for (const msg of normalized) {
-        // Preserve parentToolUseId from SDK wrapper for subagent tool grouping
-        if (transformedMessage.parentToolUseId && !msg.parentToolUseId) {
-          msg.parentToolUseId = transformedMessage.parentToolUseId;
+      console.log('Starting async generator loop for session:', capturedSessionId || 'NEW');
+      for await (const message of queryInstance) {
+        if (message.session_id && !capturedSessionId) {
+          capturedSessionId = message.session_id;
+          addSession(capturedSessionId, queryInstance, ws);
+
+          if (ws.setSessionId && typeof ws.setSessionId === 'function') {
+            ws.setSessionId(capturedSessionId);
+          }
+
+          if (!sessionId && !sessionCreatedSent) {
+            sessionCreatedSent = true;
+            ws.send(createNormalizedMessage({ kind: 'session_created', newSessionId: capturedSessionId, sessionId: capturedSessionId, provider: 'claude' }));
+          }
         }
-        ws.send(msg);
+
+        const transformedMessage = transformMessage(message);
+        const sid = capturedSessionId || sessionId || null;
+        const normalized = sessionsService.normalizeMessage('claude', transformedMessage, sid);
+        for (const msg of normalized) {
+          if (transformedMessage.parentToolUseId && !msg.parentToolUseId) {
+            msg.parentToolUseId = transformedMessage.parentToolUseId;
+          }
+          ws.send(msg);
+        }
+
+        const tokenBudgetData = extractTokenBudget(message);
+        if (tokenBudgetData) {
+          ws.send(createNormalizedMessage({ kind: 'status', text: 'token_budget', tokenBudget: tokenBudgetData, sessionId: capturedSessionId || sessionId || null, provider: 'claude' }));
+        }
       }
 
-      // Extract and send token budget updates from assistant/result usage payloads
-      const tokenBudgetData = extractTokenBudget(message);
-      if (tokenBudgetData) {
-        ws.send(createNormalizedMessage({ kind: 'status', text: 'token_budget', tokenBudget: tokenBudgetData, sessionId: capturedSessionId || sessionId || null, provider: 'claude' }));
+      if (capturedSessionId) {
+        removeSession(capturedSessionId);
       }
-    }
 
-    // Clean up session on completion
-    if (capturedSessionId) {
-      removeSession(capturedSessionId);
+      const wasAborted = capturedSessionId ? abortedSessionIds.delete(capturedSessionId) : false;
+      if (!wasAborted) {
+        ws.send(createCompleteMessage({ provider: 'claude', sessionId: capturedSessionId || sessionId || null, exitCode: 0 }));
+      }
+      notifyRunStopped({
+        userId: ws?.userId || null,
+        provider: 'claude',
+        sessionId: capturedSessionId || sessionId || null,
+        sessionName: sessionSummary,
+        stopReason: wasAborted ? 'aborted' : 'completed'
+      });
     }
-
-    // Send the terminal completion event — skipped for aborted runs, whose
-    // terminal `complete` (aborted: true) was already sent by abort-session.
-    const wasAborted = capturedSessionId ? abortedSessionIds.delete(capturedSessionId) : false;
-    if (!wasAborted) {
-      ws.send(createCompleteMessage({ provider: 'claude', sessionId: capturedSessionId || sessionId || null, exitCode: 0 }));
-    }
-    notifyRunStopped({
-      userId: ws?.userId || null,
-      provider: 'claude',
-      sessionId: capturedSessionId || sessionId || null,
-      sessionName: sessionSummary,
-      stopReason: wasAborted ? 'aborted' : 'completed'
-    });
-    // Complete
 
   } catch (error) {
     console.error('SDK query error:', error);
 
-    // Clean up session on error
     if (capturedSessionId) {
       removeSession(capturedSessionId);
     }
 
     const wasAborted = capturedSessionId ? abortedSessionIds.delete(capturedSessionId) : false;
     if (wasAborted) {
-      // The abort already produced the terminal complete; a generator throw
-      // caused by interrupt() is expected noise, not a user-facing error.
       return;
     }
 
-    // Check if Claude CLI is installed for a clearer error message
     const installed = await providerAuthService.isProviderInstalled('claude');
     const errorContent = !installed
       ? 'Claude Code is not installed. Please install it first: https://docs.anthropic.com/en/docs/claude-code'
       : error.message;
 
-    // Send error to WebSocket, then the terminal complete
     ws.send(createNormalizedMessage({ kind: 'error', content: errorContent, sessionId: capturedSessionId || sessionId || null, provider: 'claude' }));
     ws.send(createCompleteMessage({ provider: 'claude', sessionId: capturedSessionId || sessionId || null, exitCode: 1 }));
     notifyRunFailed({
@@ -809,7 +1040,108 @@ async function queryClaudeSDK(command, options = {}, ws) {
       sessionName: sessionSummary,
       error
     });
+  } finally {
+    if (drainTimer) {
+      clearTimeout(drainTimer);
+      drainTimer = null;
+    }
+    if (channel) {
+      channel.end();
+    }
+    if (options.appSessionId) {
+      appSessionAliases.delete(options.appSessionId);
+      pendingInjections.delete(options.appSessionId);
+    }
+    if (settleDone) {
+      settleDone();
+    }
   }
+}
+
+/**
+ * Shared canUseTool handler for inject and one-shot paths.
+ */
+async function handleCanUseTool(toolName, input, context, ctx) {
+  const {
+    sdkOptions,
+    ws,
+    capturedSessionIdRef,
+    sessionId,
+    sessionSummary,
+    emitNotification,
+  } = ctx;
+  const capturedSessionId = capturedSessionIdRef();
+  const requiresInteraction = TOOLS_REQUIRING_INTERACTION.has(toolName);
+
+  if (!requiresInteraction) {
+    if (sdkOptions.permissionMode === 'bypassPermissions') {
+      return { behavior: 'allow', updatedInput: input };
+    }
+
+    const isDisallowed = (sdkOptions.disallowedTools || []).some(entry =>
+      matchesToolPermission(entry, toolName, input)
+    );
+    if (isDisallowed) {
+      return { behavior: 'deny', message: 'Tool disallowed by settings' };
+    }
+
+    const isAllowed = (sdkOptions.allowedTools || []).some(entry =>
+      matchesToolPermission(entry, toolName, input)
+    );
+    if (isAllowed) {
+      return { behavior: 'allow', updatedInput: input };
+    }
+  }
+
+  const requestId = createRequestId();
+  ws.send(createNormalizedMessage({ kind: 'permission_request', requestId, toolName, input, sessionId: capturedSessionId || sessionId || null, provider: 'claude' }));
+  emitNotification(createNotificationEvent({
+    provider: 'claude',
+    sessionId: capturedSessionId || sessionId || null,
+    kind: 'action_required',
+    code: 'permission.required',
+    meta: { toolName, sessionName: sessionSummary },
+    severity: 'warning',
+    requiresUserAction: true,
+    dedupeKey: `claude:permission:${capturedSessionId || sessionId || 'none'}:${requestId}`
+  }));
+
+  const decision = await waitForToolApproval(requestId, {
+    timeoutMs: TOOL_APPROVAL_TIMEOUT_MS > 0 && !requiresInteraction
+      ? TOOL_APPROVAL_TIMEOUT_MS
+      : 0,
+    signal: context?.signal,
+    metadata: {
+      _sessionId: capturedSessionId || sessionId || null,
+      _toolName: toolName,
+      _input: input,
+      _receivedAt: new Date(),
+    },
+    onCancel: (reason) => {
+      ws.send(createNormalizedMessage({ kind: 'permission_cancelled', requestId, reason, sessionId: capturedSessionId || sessionId || null, provider: 'claude' }));
+    }
+  });
+  if (!decision) {
+    return { behavior: 'deny', message: 'Permission request timed out' };
+  }
+
+  if (decision.cancelled) {
+    return { behavior: 'deny', message: 'Permission request cancelled' };
+  }
+
+  if (decision.allow) {
+    if (decision.rememberEntry && typeof decision.rememberEntry === 'string') {
+      if (!sdkOptions.allowedTools.includes(decision.rememberEntry)) {
+        sdkOptions.allowedTools.push(decision.rememberEntry);
+      }
+      if (Array.isArray(sdkOptions.disallowedTools)) {
+        sdkOptions.disallowedTools = sdkOptions.disallowedTools.filter(entry => entry !== decision.rememberEntry);
+      }
+    }
+    return { behavior: 'allow', updatedInput: decision.updatedInput ?? input };
+  }
+
+  return { behavior: 'deny', message: decision.message ?? 'User denied tool use' };
 }
 
 /**
@@ -832,6 +1164,13 @@ async function abortClaudeSDKSession(sessionId) {
     // terminal complete (the abort handler sends the aborted one).
     abortedSessionIds.add(sessionId);
 
+    if (session.channel) {
+      session.channel.end();
+    }
+    if (session.appSessionId) {
+      pendingInjections.delete(session.appSessionId);
+    }
+
     // Call interrupt() on the query instance
     await session.instance.interrupt();
 
@@ -848,6 +1187,73 @@ async function abortClaudeSDKSession(sessionId) {
     abortedSessionIds.delete(sessionId);
     return false;
   }
+}
+
+/**
+ * Injects a follow-up user message into a live chat run (same process).
+ * Returns false when no open inject-mode channel exists so the caller can
+ * fall back to RUN_IN_PROGRESS.
+ *
+ * @param {string} command
+ * @param {Object} options - sessionId / appSessionId / images / cwd
+ * @returns {Promise<boolean>}
+ */
+async function injectClaudeMessage(command, options = {}) {
+  const providerSessionId = options.sessionId
+    || (options.appSessionId ? appSessionAliases.get(options.appSessionId) : null);
+  let session = providerSessionId ? getSession(providerSessionId) : null;
+
+  // Resolve via appSessionId when provider id is not mapped yet.
+  if ((!session || !session.channel) && options.appSessionId) {
+    for (const entry of activeSessions.values()) {
+      if (
+        entry.appSessionId === options.appSessionId
+        && entry.status === 'active'
+        && entry.channel
+        && !entry.channel.ended
+      ) {
+        session = entry;
+        break;
+      }
+    }
+  }
+
+  if (session && session.status === 'active' && session.channel && !session.channel.ended) {
+    const message = await buildSDKUserMessage(command, options.images, options.cwd);
+    return session.channel.push(message);
+  }
+
+  // Live inject-mode run exists for this app session but provider id not
+  // captured yet (first turn) — buffer until registerAppSessionAlias flushes.
+  if (options.appSessionId) {
+    let liveWithoutId = false;
+    for (const entry of activeSessions.values()) {
+      if (
+        entry.appSessionId === options.appSessionId
+        && entry.status === 'active'
+        && entry.channel
+        && !entry.channel.ended
+      ) {
+        liveWithoutId = true;
+        break;
+      }
+    }
+    // Also allow buffer during the brief window before addSession (channel
+    // not registered yet) only when alias is already expected: no — without a
+    // live session we must return false so RUN_IN_PROGRESS is correct.
+    if (liveWithoutId) {
+      const message = await buildSDKUserMessage(command, options.images, options.cwd);
+      const buffered = pendingInjections.get(options.appSessionId) || [];
+      buffered.push(message);
+      pendingInjections.set(
+        options.appSessionId,
+        buffered.length > 5 ? buffered.slice(-5) : buffered,
+      );
+      return true;
+    }
+  }
+
+  return false;
 }
 
 /**
@@ -908,6 +1314,7 @@ function reconnectSessionWriter(sessionId, newRawWs) {
 // Export public API
 export {
   queryClaudeSDK,
+  injectClaudeMessage,
   abortClaudeSDKSession,
   isClaudeSDKSessionActive,
   getActiveClaudeSDKSessions,

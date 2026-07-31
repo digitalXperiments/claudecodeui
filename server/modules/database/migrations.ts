@@ -7,6 +7,7 @@ import {
   KANBAN_SCHEMA_SQL,
   LAST_SCANNED_AT_SQL,
   MISSION_CONTROL_SCHEMA_SQL,
+  WEBHOOKS_SCHEMA_SQL,
   NOTIFICATION_CHANNEL_ENDPOINTS_TABLE_SCHEMA_SQL,
   PROJECT_MEMORY_TABLE_SCHEMA_SQL,
   PROJECTS_TABLE_SCHEMA_SQL,
@@ -583,6 +584,8 @@ const ensureMissionControlKanbanBridgeSchema = (db: Database): void => {
   addColumnToTableIfNotExists(db, 'mc_sections', columns, 'kanban_assignee_provider', 'TEXT');
   columns = getTableInfo(db, 'mc_sections').map((column) => column.name);
   addColumnToTableIfNotExists(db, 'mc_sections', columns, 'kanban_review_provider', 'TEXT');
+  columns = getTableInfo(db, 'mc_sections').map((column) => column.name);
+  addColumnToTableIfNotExists(db, 'mc_sections', columns, 'kanban_mcp_tools_json', "TEXT DEFAULT '[]'");
 };
 
 export const runMigrations = (db: Database) => {
@@ -597,6 +600,14 @@ export const runMigrations = (db: Database) => {
       'users',
       userColumnNames,
       'has_completed_onboarding',
+      'BOOLEAN DEFAULT 0'
+    );
+    addColumnToTableIfNotExists(db, 'users', userColumnNames, 'totp_secret', 'TEXT');
+    addColumnToTableIfNotExists(
+      db,
+      'users',
+      userColumnNames,
+      'totp_enabled',
       'BOOLEAN DEFAULT 0'
     );
 
@@ -653,6 +664,9 @@ export const runMigrations = (db: Database) => {
     // Mission Control (sections + reviewable items).
     db.exec(MISSION_CONTROL_SCHEMA_SQL);
     ensureMissionControlKanbanBridgeSchema(db);
+
+    // Inbound webhooks (source-routed headless agent runs).
+    db.exec(WEBHOOKS_SCHEMA_SQL);
 
     console.log('Database migrations completed successfully');
   } catch (error: any) {

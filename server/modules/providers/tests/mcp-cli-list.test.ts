@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  friendlyGrokManagedName,
   mergeCliMcpEntries,
   parseCliMcpListOutput,
 } from '@/modules/providers/services/mcp-cli-list.service.js';
@@ -71,3 +72,13 @@ claude.ai Slack: https://mcp.slack.com/mcp - ✔ Connected
   assert.equal(obs?.env?.OBSIDIAN_API_KEY, 'secret');
   assert.ok(merged.find((s) => s.name === 'claude.ai Slack'));
 });
+
+test('friendlyGrokManagedName humanizes grok.com connector ids', () => {
+  assert.equal(
+    friendlyGrokManagedName('grok_com_leong_associates_mcp'),
+    'Leong Associates MCP',
+  );
+  assert.equal(friendlyGrokManagedName('leong-associates-mcp'), 'Leong Associates MCP');
+});
+
+// Identity rules live in mcp-catalog; smoke-check friendly names stay stable.

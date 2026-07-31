@@ -3,6 +3,8 @@ import express from 'express';
 import { AppError, asyncHandler } from '@/shared/utils.js';
 import { kanbanDb, KanbanCycleError } from '@/modules/kanban/kanban.repository.js';
 import { kanbanRunner } from '@/modules/kanban/kanban-runner.service.js';
+import { handleManualColumnMove } from '@/modules/kanban/kanban-automation.service.js';
+import { generateTaskFields } from '@/modules/kanban/kanban-generate.service.js';
 import { enqueueTask } from '@/modules/kanban/kanban-queue.service.js';
 import { syncSchedules } from '@/modules/kanban/kanban-scheduler.service.js';
 import {
@@ -195,6 +197,47 @@ router.put(
 );
 
 // --- Tasks ----------------------------------------------------------------
+
+/**
+ * Expand a title (+ optional notes) into an exhaustive description and an
+ * implementer prompt using the selected provider. Used by the TaskEditor
+ * "Generate" control before the card is saved.
+ */
+router.post(
+  '/generate-task-fields',
+  asyncHandler(async (req, res) => {
+    const body = req.body as Record<string, unknown>;
+    const title = readString(body.title).trim();
+    if (!title) {
+      throw new AppError('title is required', {
+        code: 'KANBAN_TITLE_REQUIRED',
+        statusCode: 400,
+      });
+    }
+    const provider = validateProviderField(body.provider, 'provider');
+    if (!provider) {
+      throw new AppError('provider is required', {
+        code: 'KANBAN_INVALID_PROVIDER',
+        statusCode: 400,
+      });
+    }
+    const result = await generateTaskFields({
+      title,
+      notes: readOptionalString(body.notes),
+      description: readOptionalString(body.description),
+      prompt: readOptionalString(body.prompt),
+      provider,
+      projectId: readOptionalString(body.projectId) || null,
+    });
+    res.json({
+      success: true,
+      description: result.description,
+      prompt: result.prompt,
+      provider: result.provider,
+    });
+  }),
+);
+
 router.get(
   '/boards/:boardId/tasks',
   asyncHandler(async (req, res) => {
@@ -308,6 +351,12 @@ router.put(
     // on custom columns (uses the implementation agent). Guard on an actual
     // column change so re-saves in the same column don't re-fire.
     if (task && task.column_id !== previous.column_id) {
+      // Keep the lifecycle status in sync with the column a human dragged the
+      // card into (Done ↔ todo), so cards don't sit in Done still reading
+      // "todo". Explicit `status` in the body wins over the derived value.
+      if (body.status === undefined) {
+        handleManualColumnMove(task.task_id, previous.column_id);
+      }
       const board = kanbanDb.getBoard(task.board_id);
       const enteredColumn = board?.columns.find((col) => col.id === task.column_id);
       const enteredId = task.column_id;
@@ -327,7 +376,7 @@ router.put(
       }
     }
 
-    res.json({ success: true, task });
+    res.json({ success: true, task: task ? kanbanDb.getTask(task.task_id) : task });
   }),
 );
 

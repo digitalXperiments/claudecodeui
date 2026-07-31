@@ -2,12 +2,15 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import {
   access,
+  chmod,
   lstat,
   mkdir,
   readFile,
   readdir,
   readlink,
   realpath,
+  rename,
+  rm,
   stat,
   writeFile,
 } from 'node:fs/promises';
@@ -802,15 +805,105 @@ export const readJsonConfig = async (filePath: string): Promise<Record<string, u
 };
 
 /**
+ * Serializes writes per config path so two concurrent CloudCLI updates to the
+ * same file cannot interleave read-modify-write and lose one of the updates.
+ */
+const configWriteLocks = new Map<string, Promise<unknown>>();
+
+const withConfigWriteLock = async <T>(filePath: string, task: () => Promise<T>): Promise<T> => {
+  const key = path.resolve(filePath);
+  const previous = configWriteLocks.get(key) ?? Promise.resolve();
+  // Chain off the previous holder, ignoring its outcome so one failure does not
+  // poison every later write to the same file.
+  const run = previous.then(task, task);
+  configWriteLocks.set(key, run.catch(() => undefined));
+  try {
+    return await run;
+  } finally {
+    // Only clear when we are the newest waiter, otherwise a queued write owns it.
+    if (configWriteLocks.get(key) === run || configWriteLocks.get(key) === undefined) {
+      configWriteLocks.delete(key);
+    }
+  }
+};
+
+/**
  * Writes a JSON config file with stable, human-readable formatting.
  *
  * The parent directory is created automatically so callers can persist config into
  * provider-specific folders without pre-creating the directory tree. Output always
  * ends with a trailing newline to keep the file diff-friendly.
+ *
+ * The write is **atomic**: content goes to a temp file in the same directory and
+ * is then `rename`d over the target, so a crash or a concurrent reader can never
+ * observe a half-written file. This matters most for `~/.claude.json`, which
+ * holds `oauthAccount` and per-project trust flags — a truncated write there
+ * logs the user out of Claude Code.
  */
 export const writeJsonConfig = async (filePath: string, data: Record<string, unknown>): Promise<void> => {
-  await mkdir(path.dirname(filePath), { recursive: true });
-  await writeFile(filePath, `${JSON.stringify(data, null, 2)}\n`, 'utf8');
+  await withConfigWriteLock(filePath, async () => {
+    await writeJsonConfigUnlocked(filePath, data);
+  });
+};
+
+const writeJsonConfigUnlocked = async (
+  filePath: string,
+  data: Record<string, unknown>,
+): Promise<void> => {
+  const directory = path.dirname(filePath);
+  await mkdir(directory, { recursive: true });
+
+  // Same directory as the target so the rename stays on one filesystem (a
+  // cross-device rename would fall back to a non-atomic copy).
+  const tempPath = path.join(directory, `.${path.basename(filePath)}.${randomUUID()}.tmp`);
+  try {
+    await writeFile(tempPath, `${JSON.stringify(data, null, 2)}\n`, 'utf8');
+
+    // Keep the original permissions; a fresh temp file is 0600 by default and
+    // some provider CLIs expect their config to stay group/world readable.
+    try {
+      const existing = await stat(filePath);
+      await chmod(tempPath, existing.mode & 0o777);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+
+    await rename(tempPath, filePath);
+  } catch (error) {
+    await rm(tempPath, { force: true }).catch(() => undefined);
+    throw error;
+  }
+};
+
+/**
+ * Read-modify-write a JSON config file under the per-path write lock.
+ *
+ * Prefer this over `readJsonConfig` + `writeJsonConfig` for **shared** config
+ * files (anything a provider CLI also writes, e.g. `~/.claude.json`). Reading
+ * inside the lock, immediately before the write, shrinks the lost-update window
+ * from "however long the caller's whole operation takes" to the duration of the
+ * merge itself.
+ *
+ * Caveat: this is an in-process lock. It fully orders CloudCLI's own writers,
+ * but cannot coordinate with an external `claude` process writing the same file
+ * concurrently — for that, the atomic rename is what guarantees the file is
+ * never left corrupt.
+ *
+ * `mutate` receives the freshly-read config and returns the object to persist
+ * (mutating and returning the same object is fine). Returning `null` skips the
+ * write entirely.
+ */
+export const updateJsonConfig = async (
+  filePath: string,
+  mutate: (config: Record<string, unknown>) => Record<string, unknown> | null
+    | Promise<Record<string, unknown> | null>,
+): Promise<void> => {
+  await withConfigWriteLock(filePath, async () => {
+    const current = await readJsonConfig(filePath);
+    const next = await mutate(current);
+    if (next === null) return;
+    await writeJsonConfigUnlocked(filePath, next);
+  });
 };
 
 // ---------------------------

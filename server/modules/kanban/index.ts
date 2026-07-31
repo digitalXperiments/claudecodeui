@@ -1,10 +1,19 @@
 export { default as kanbanRoutes } from '@/modules/kanban/kanban.routes.js';
 export { kanbanDb, KanbanCycleError } from '@/modules/kanban/kanban.repository.js';
-export { kanbanRunner, configureKanbanRuntimes } from '@/modules/kanban/kanban-runner.service.js';
+export {
+  kanbanRunner,
+  configureKanbanRuntimes,
+  getKanbanSpawnFn,
+} from '@/modules/kanban/kanban-runner.service.js';
+export {
+  generateTaskFields,
+  buildGenerateTaskFieldsPrompt,
+} from '@/modules/kanban/kanban-generate.service.js';
 export {
   initKanbanAutomation,
   stopKanbanAutomation,
   handleRunCompletion,
+  handleManualColumnMove,
   reconcileKanbanOnBoot,
   setOnTaskDone,
   setOnRunSettled,

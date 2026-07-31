@@ -95,7 +95,8 @@
     "computer": "電腦使用",
     "notifications": "通知",
     "plugins": "外掛",
-    "about": "關於"
+    "about": "關於",
+    "security": "安全性"
   },
   "notifications": {
     "title": "通知",
@@ -485,5 +486,42 @@
     "installAriaLabel": "外掛 git 儲存庫 URL",
     "tab": "分頁",
     "runningStatus": "執行中"
+  },
+  "security": {
+    "title": "安全性",
+    "description": "管理您帳戶的登入安全性",
+    "twofa": {
+      "label": "兩步驟驗證（2FA）"
+    },
+    "status": {
+      "enabled": "已啟用 — 登入時需要驗證器應用程式中的驗證碼",
+      "disabled": "已停用 — 登入時僅需密碼",
+      "protected": "您的帳戶已受兩步驟驗證保護"
+    },
+    "setup": {
+      "scanQr": "請使用驗證器應用程式（如 Google Authenticator、Authy、1Password）掃描此 QR 碼。",
+      "qrAlt": "驗證器應用程式 QR 碼",
+      "manualEntry": "或手動輸入此金鑰：",
+      "codeLabel": "請輸入應用程式中顯示的 6 位驗證碼"
+    },
+    "disable": {
+      "confirmHelp": "請輸入密碼以停用兩步驟驗證。",
+      "passwordLabel": "密碼"
+    },
+    "actions": {
+      "enable": "啟用 2FA",
+      "starting": "正在啟動…",
+      "disable": "停用 2FA",
+      "verifyAndEnable": "驗證並啟用",
+      "verifying": "正在驗證…",
+      "cancel": "取消",
+      "confirmDisable": "確認停用",
+      "disabling": "正在停用…"
+    },
+    "errors": {
+      "generic": "發生問題，請重試。",
+      "invalidCode": "驗證碼無效",
+      "invalidPassword": "密碼無效"
+    }
   }
 }

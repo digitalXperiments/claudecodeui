@@ -145,16 +145,30 @@ export function useShellConnection({
               clearTerminalScreen();
             }
 
+            const shellProvider = isPlainShellRef.current
+              ? 'plain-shell'
+              : (selectedSessionRef.current?.__provider || localStorage.getItem('selected-provider') || 'claude');
+            const shellSessionId = isPlainShellRef.current ? null : selectedSessionRef.current?.id || null;
+            // Mirror the chatbar's mode resolution (per-session first, then the
+            // provider's last-picked mode) so the interactive CLI launches with
+            // the same permission mode the chat runtime would use.
+            const shellPermissionMode = isPlainShellRef.current
+              ? undefined
+              : (shellSessionId ? localStorage.getItem(`permissionMode-${shellSessionId}`) : null)
+                || localStorage.getItem(`permissionMode-last-${shellProvider}`)
+                || undefined;
+
             sendSocketMessage(socket, {
               type: 'init',
               projectPath: currentProject.fullPath || currentProject.path || '',
-              sessionId: isPlainShellRef.current ? null : selectedSessionRef.current?.id || null,
+              sessionId: shellSessionId,
               hasSession: isPlainShellRef.current ? false : Boolean(selectedSessionRef.current),
-              provider: isPlainShellRef.current ? 'plain-shell' : (selectedSessionRef.current?.__provider || localStorage.getItem('selected-provider') || 'claude'),
+              provider: shellProvider,
               cols: currentTerminal.cols,
               rows: currentTerminal.rows,
               initialCommand: initialCommandRef.current,
               isPlainShell: isPlainShellRef.current,
+              permissionMode: shellPermissionMode,
               // Agent TUIs always get a fresh process (server also enforces this).
               forceRestart: forceRestart || !isPlainShellRef.current,
             });

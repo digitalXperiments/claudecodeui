@@ -88,6 +88,11 @@ export type McSection = {
   kanban_assignee_provider: McProvider | null;
   /** Default review agent pre-assigned to bridged kanban cards. */
   kanban_review_provider: McProvider | null;
+  /**
+   * MCP server names to attach to bridged kanban cards (task tools.mcpServers).
+   * Steers the implementer toward the correct integrations.
+   */
+  kanban_mcp_tools: string[];
   last_run_at: string | null;
   last_run_error: string | null;
   created_at: string;
@@ -136,6 +141,7 @@ export type CreateMcSectionInput = {
   create_kanban_task?: boolean;
   kanban_assignee_provider?: McProvider | null;
   kanban_review_provider?: McProvider | null;
+  kanban_mcp_tools?: string[];
 };
 
 export type UpdateMcSectionInput = Partial<CreateMcSectionInput>;

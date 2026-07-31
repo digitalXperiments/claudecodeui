@@ -17,7 +17,7 @@ interface UseChatSessionStateArgs {
   selectedProject: Project | null;
   selectedSession: ProjectSession | null;
   ws: WebSocket | null;
-  sendMessage: (message: unknown) => void;
+  sendMessage: (message: unknown) => boolean;
   externalMessageUpdate?: number;
   newSessionTrigger?: number;
   processingSessions?: SessionActivityMap;

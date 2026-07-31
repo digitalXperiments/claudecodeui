@@ -1,8 +1,10 @@
 import express from 'express';
 import bcrypt from 'bcrypt';
+import QRCode from 'qrcode';
 import { userDb } from '../modules/database/index.js';
 import { getConnection } from '../modules/database/connection.js';
 import { generateToken, authenticateToken } from '../middleware/auth.js';
+import { generateTotpSecret, generateTotpUri, verifyTotpCode } from '../utils/totp.js';
 
 const router = express.Router();
 const db = getConnection();
@@ -83,7 +85,7 @@ router.post('/register', async (req, res) => {
 // User login
 router.post('/login', async (req, res) => {
   try {
-    const { username, password } = req.body;
+    const { username, password, totpCode } = req.body;
     
     // Validate input
     if (!username || !password) {
@@ -100,6 +102,17 @@ router.post('/login', async (req, res) => {
     const isValidPassword = await bcrypt.compare(password, user.password_hash);
     if (!isValidPassword) {
       return res.status(401).json({ error: 'Invalid username or password' });
+    }
+    
+    // Second factor: when TOTP is enabled, require a valid authenticator code
+    if (user.totp_enabled === 1) {
+      if (!totpCode) {
+        return res.json({ requiresTotp: true });
+      }
+      const isValidTotp = await verifyTotpCode(user.totp_secret, totpCode);
+      if (!isValidTotp) {
+        return res.status(401).json({ error: 'Invalid authentication code' });
+      }
     }
     
     // Generate token
@@ -125,6 +138,89 @@ router.get('/user', authenticateToken, (req, res) => {
   res.json({
     user: req.user
   });
+});
+
+// Two-factor authentication status (protected route)
+router.get('/2fa/status', authenticateToken, (req, res) => {
+  try {
+    res.json(userDb.getTotpStatus(req.user.id));
+  } catch (error) {
+    console.error('2FA status error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Start 2FA setup: generate a pending secret and return it with a QR code
+router.post('/2fa/setup', authenticateToken, async (req, res) => {
+  try {
+    const status = userDb.getTotpStatus(req.user.id);
+    if (status.enabled) {
+      return res.status(409).json({ error: 'Two-factor authentication is already enabled' });
+    }
+
+    const secret = generateTotpSecret();
+    userDb.setTotpSecret(req.user.id, secret);
+
+    const otpauthUrl = generateTotpUri(secret, req.user.username);
+    const qrCodeDataUrl = await QRCode.toDataURL(otpauthUrl);
+
+    res.json({ secret, otpauthUrl, qrCodeDataUrl });
+  } catch (error) {
+    console.error('2FA setup error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Finish 2FA setup: verify a code against the pending secret, then enable
+router.post('/2fa/enable', authenticateToken, async (req, res) => {
+  try {
+    const { code } = req.body;
+    if (!code) {
+      return res.status(400).json({ error: 'Authentication code is required' });
+    }
+
+    const user = userDb.getUserByUsername(req.user.username);
+    if (!user || !user.totp_secret || user.totp_enabled === 1) {
+      return res.status(400).json({ error: 'No pending two-factor setup. Start setup first.' });
+    }
+
+    const isValidCode = await verifyTotpCode(user.totp_secret, code);
+    if (!isValidCode) {
+      return res.status(400).json({ error: 'Invalid authentication code' });
+    }
+
+    userDb.enableTotp(req.user.id);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('2FA enable error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Disable 2FA (requires the current password)
+router.post('/2fa/disable', authenticateToken, async (req, res) => {
+  try {
+    const { password } = req.body;
+    if (!password) {
+      return res.status(400).json({ error: 'Password is required' });
+    }
+
+    const user = userDb.getUserByUsername(req.user.username);
+    if (!user) {
+      return res.status(401).json({ error: 'Invalid password' });
+    }
+
+    const isValidPassword = await bcrypt.compare(password, user.password_hash);
+    if (!isValidPassword) {
+      return res.status(401).json({ error: 'Invalid password' });
+    }
+
+    userDb.disableTotp(req.user.id);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('2FA disable error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
 });
 
 // Logout (client-side token removal, but this endpoint can be used for logging)

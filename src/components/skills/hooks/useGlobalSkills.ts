@@ -76,7 +76,7 @@ export function useGlobalSkills() {
 
   const addSkills = useCallback(async (
     entries: ProviderSkillCreateEntryPayload[],
-    options?: { scope?: GlobalSkillScope; projects?: string[] },
+    options?: { scope?: GlobalSkillScope; projects?: string[]; providers?: string[] },
   ) => {
     try {
       const response = await authenticatedFetch('/api/global-skills', {
@@ -147,12 +147,17 @@ export function useGlobalSkills() {
     directoryName: string,
     scope: GlobalSkillScope,
     projects: string[],
+    providers?: string[],
   ): Promise<GlobalSkillScopeUpdateResponse> => {
     const response = await authenticatedFetch(
       `/api/global-skills/${encodeURIComponent(directoryName)}/scope`,
       {
         method: 'PUT',
-        body: JSON.stringify({ scope, projects }),
+        body: JSON.stringify({
+          scope,
+          projects,
+          ...(providers ? { providers } : {}),
+        }),
       },
     );
     const data = await toResponseJson<ApiResponse<GlobalSkillScopeUpdateResponse>>(response);

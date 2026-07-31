@@ -39,6 +39,7 @@ type SectionRow = {
   create_kanban_task: number | null;
   kanban_assignee_provider: string | null;
   kanban_review_provider: string | null;
+  kanban_mcp_tools_json: string | null;
   last_run_at: string | null;
   last_run_error: string | null;
   created_at: string;
@@ -134,6 +135,7 @@ function mapSection(row: SectionRow): McSection {
     create_kanban_task: Boolean(row.create_kanban_task),
     kanban_assignee_provider: (row.kanban_assignee_provider || null) as McProvider | null,
     kanban_review_provider: (row.kanban_review_provider || null) as McProvider | null,
+    kanban_mcp_tools: parseTools(row.kanban_mcp_tools_json),
     last_run_at: row.last_run_at,
     last_run_error: row.last_run_error,
     created_at: row.created_at,
@@ -210,13 +212,13 @@ export const missionControlDb = {
         schedule_cron, provider, model, permission_mode, dry_run, auto_approve,
         produce_prompt, produce_tools_json, resolve_prompt, resolve_tools_json,
         actions_json, create_kanban_task, kanban_assignee_provider, kanban_review_provider,
-        created_at, updated_at
+        kanban_mcp_tools_json, created_at, updated_at
       ) VALUES (
         ?, ?, ?, ?, ?, ?, ?, ?,
         ?, ?, ?, ?, ?, ?,
         ?, ?, ?, ?,
         ?, ?, ?, ?,
-        ?, ?
+        ?, ?, ?
       )`,
     ).run(
       sectionId,
@@ -241,6 +243,7 @@ export const missionControlDb = {
       input.create_kanban_task ? 1 : 0,
       input.kanban_assignee_provider ?? null,
       input.kanban_review_provider ?? null,
+      JSON.stringify(input.kanban_mcp_tools ?? []),
       ts,
       ts,
     );
@@ -299,6 +302,10 @@ export const missionControlDb = {
         input.kanban_review_provider !== undefined
           ? input.kanban_review_provider
           : existing.kanban_review_provider,
+      kanban_mcp_tools:
+        input.kanban_mcp_tools !== undefined
+          ? input.kanban_mcp_tools
+          : existing.kanban_mcp_tools,
     };
 
     const db = getConnection();
@@ -309,6 +316,7 @@ export const missionControlDb = {
         dry_run = ?, auto_approve = ?, produce_prompt = ?, produce_tools_json = ?,
         resolve_prompt = ?, resolve_tools_json = ?, actions_json = ?,
         create_kanban_task = ?, kanban_assignee_provider = ?, kanban_review_provider = ?,
+        kanban_mcp_tools_json = ?,
         updated_at = ?
        WHERE section_id = ?`,
     ).run(
@@ -333,6 +341,7 @@ export const missionControlDb = {
       next.create_kanban_task ? 1 : 0,
       next.kanban_assignee_provider ?? null,
       next.kanban_review_provider ?? null,
+      JSON.stringify(next.kanban_mcp_tools ?? []),
       nowIso(),
       sectionId,
     );
@@ -410,6 +419,64 @@ export const missionControlDb = {
       )
       .get() as { c: number };
     return row?.c ?? 0;
+  },
+
+  /**
+   * Find an existing item whose dedupe_key is any of the aliases (e.g. full
+   * Trello id and shortLink variants of the same card).
+   */
+  findItemByDedupeAliases(sectionId: string, aliases: string[]): McItem | null {
+    if (!aliases.length) return null;
+    const db = getConnection();
+    const unique = [...new Set(aliases.map((a) => a.trim()).filter(Boolean))];
+    if (!unique.length) return null;
+    const placeholders = unique.map(() => '?').join(', ');
+    const row = db
+      .prepare(
+        `SELECT * FROM mc_items
+         WHERE section_id = ? AND dedupe_key IN (${placeholders})
+         ORDER BY created_at ASC
+         LIMIT 1`,
+      )
+      .get(sectionId, ...unique) as ItemRow | undefined;
+    return row ? mapItem(row) : null;
+  },
+
+  /**
+   * Broader Trello match: any existing item in the section whose body/source/
+   * dedupe_key shares a card id or shortLink with `refs` (case-insensitive).
+   */
+  findItemByTrelloRefs(sectionId: string, refs: string[]): McItem | null {
+    const wanted = new Set(
+      refs.map((r) => r.trim().toLowerCase()).filter((r) => r.length >= 4),
+    );
+    if (!wanted.size) return null;
+
+    const items = this.listItems({ sectionId, limit: 500 });
+    for (const item of items) {
+      const existingRefs = [
+        item.dedupe_key.replace(/^trello:card:/i, ''),
+        item.dedupe_key,
+        typeof item.body?.trelloCardId === 'string' ? item.body.trelloCardId : '',
+        typeof item.body?.trelloShortLink === 'string' ? item.body.trelloShortLink : '',
+        typeof item.body?.trelloUrl === 'string' ? item.body.trelloUrl : '',
+        typeof item.body?.url === 'string' ? item.body.url : '',
+        typeof item.source?.trelloCardId === 'string' ? String(item.source.trelloCardId) : '',
+        typeof item.source?.trelloShortLink === 'string' ? String(item.source.trelloShortLink) : '',
+      ];
+      for (const raw of existingRefs) {
+        if (!raw) continue;
+        const lower = raw.toLowerCase();
+        if (wanted.has(lower)) return item;
+        // URL contains shortLink
+        for (const w of wanted) {
+          if (lower.includes(w)) return item;
+        }
+        const stripped = lower.replace(/^trello:card:/, '');
+        if (wanted.has(stripped)) return item;
+      }
+    }
+    return null;
   },
 
   /**

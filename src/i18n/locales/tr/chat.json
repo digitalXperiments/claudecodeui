@@ -116,6 +116,7 @@
     },
     "clickToChangeMode": "İzin modunu değiştirmek için tıkla (veya girdide Tab tuşuna bas)",
     "showAllCommands": "Tüm komutları göster",
+    "saveAsSkill": "Save as skill",
     "clearInput": "Girdiyi temizle",
     "scrollToBottom": "En alta git"
   },

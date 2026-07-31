@@ -56,6 +56,13 @@ export type StartProviderRunParams = {
   projectPath: string | null;
   /** The resolved provider runtime for this provider. */
   spawnFn: ProviderSpawnFn;
+  /**
+   * Optional mid-run injection hook (e.g. Claude's stream-json stdin). When
+   * the session already has a running run, this is offered the message
+   * instead of rejecting with RUN_IN_PROGRESS; returning true means the
+   * message was attached to the live run.
+   */
+  injectFn?: (command: string, options: AnyRecord) => Promise<boolean>;
   /** Instruction/prompt handed to the runtime. */
   content: string;
   /** Raw caller options (client chat options, or task-derived options). */
@@ -72,6 +79,8 @@ export type StartProviderRunParams = {
 export type StartProviderRunResult =
   | {
       ok: true;
+      /** True when the message was injected into an already-running run. */
+      injected?: boolean;
       /** Resolves when the runtime settles (after its terminal `complete`). */
       completion: Promise<void>;
     }
@@ -94,10 +103,31 @@ export const DETACHED_CONNECTION: RealtimeClientConnection = {
  * always has, dispatches to the provider runtime, and guarantees the
  * exactly-one-`complete` contract via the registry safety net.
  *
- * Returns synchronously so callers can either await `completion` (interactive
- * chat.send) or fire-and-forget (automation).
+ * When the session already has a running run and the provider offers an
+ * `injectFn`, the message is attached to that live run instead of being
+ * rejected — events and the single terminal `complete` keep flowing through
+ * the existing run's writer.
+ *
+ * Returns after registration (or injection) so callers can either await
+ * `completion` (interactive chat.send) or fire-and-forget (automation).
  */
-export function startProviderRun(params: StartProviderRunParams): StartProviderRunResult {
+export async function startProviderRun(params: StartProviderRunParams): Promise<StartProviderRunResult> {
+  // The provider runtimes receive the provider-native session id (that is the
+  // id their CLI/SDK understands for resume). Brand-new sessions have no
+  // provider id yet, so the runtime starts fresh and announces one, which the
+  // gateway writer captures and maps back to the app session id.
+  const buildRuntimeOptions = (providerSessionId: string | null): AnyRecord => ({
+    ...params.options,
+    // Image attachments are re-validated server-side: only files inside the
+    // global upload store may reach the provider runtimes' file reads.
+    images: filterImagesToUploadStore(params.options.images),
+    appSessionId: params.appSessionId,
+    sessionId: providerSessionId ?? undefined,
+    resume: Boolean(providerSessionId),
+    cwd: params.options.cwd ?? params.projectPath ?? undefined,
+    projectPath: params.projectPath ?? params.options.projectPath,
+  });
+
   const run = chatRunRegistry.startRun({
     appSessionId: params.appSessionId,
     provider: params.provider,
@@ -107,23 +137,29 @@ export function startProviderRun(params: StartProviderRunParams): StartProviderR
   });
 
   if (!run) {
+    // A run is already active for this session. Providers with a mid-run
+    // injection hook attach the message to the live run instead of rejecting.
+    if (params.injectFn) {
+      const activeRun = chatRunRegistry.getRun(params.appSessionId);
+      const runtimeOptions = buildRuntimeOptions(activeRun?.providerSessionId ?? params.providerSessionId);
+      let injected = false;
+      try {
+        injected = await params.injectFn(params.content, runtimeOptions);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(`[Chat] Provider runtime "${params.provider}" failed to inject into the active run`, {
+          sessionId: params.appSessionId,
+          error: message,
+        });
+      }
+      if (injected) {
+        return { ok: true, injected: true, completion: Promise.resolve() };
+      }
+    }
     return { ok: false, code: 'RUN_IN_PROGRESS' };
   }
 
-  // The provider runtimes receive the provider-native session id (that is the
-  // id their CLI/SDK understands for resume). Brand-new sessions have no
-  // provider id yet, so the runtime starts fresh and announces one, which the
-  // gateway writer captures and maps back to the app session id.
-  const runtimeOptions: AnyRecord = {
-    ...params.options,
-    // Image attachments are re-validated server-side: only files inside the
-    // global upload store may reach the provider runtimes' file reads.
-    images: filterImagesToUploadStore(params.options.images),
-    sessionId: params.providerSessionId ?? undefined,
-    resume: Boolean(params.providerSessionId),
-    cwd: params.options.cwd ?? params.projectPath ?? undefined,
-    projectPath: params.projectPath ?? params.options.projectPath,
-  };
+  const runtimeOptions = buildRuntimeOptions(params.providerSessionId);
 
   const completion = (async () => {
     try {
@@ -134,6 +170,21 @@ export function startProviderRun(params: StartProviderRunParams): StartProviderR
         sessionId: params.appSessionId,
         error: message,
       });
+      // If the runtime threw before emitting an error event (e.g. setup
+      // failure that skipped its own catch), surface the message so headless
+      // callers (Mission Control / Kanban) do not only see a bare exit code.
+      if (run.status === 'running') {
+        try {
+          run.writer.send({
+            kind: 'error',
+            provider: params.provider,
+            content: message,
+            sessionId: params.providerSessionId,
+          });
+        } catch {
+          // Writer may already be closed; complete still runs below.
+        }
+      }
     } finally {
       // Safety net: a runtime that crashed (or resolved) without emitting its
       // terminal `complete` would otherwise leave the session stuck in
