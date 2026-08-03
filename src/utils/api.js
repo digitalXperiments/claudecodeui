@@ -11,6 +11,11 @@ export const isValidRefreshedToken = (token) =>
   typeof token === 'string' &&
   /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(token);
 
+// Throttle for `auth:session-expired` dispatches: many parallel requests can
+// 401 at once, and one event is enough to send the user to login.
+let lastSessionExpiredDispatch = 0;
+const SESSION_EXPIRED_DISPATCH_GAP_MS = 2000;
+
 // Utility function for authenticated API calls
 export const authenticatedFetch = (url, options = {}) => {
   const token = localStorage.getItem('auth-token');
@@ -36,6 +41,16 @@ export const authenticatedFetch = (url, options = {}) => {
     const refreshedToken = response.headers.get('X-Refreshed-Token');
     if (isValidRefreshedToken(refreshedToken)) {
       localStorage.setItem('auth-token', refreshedToken);
+    }
+    // A 401 with a stored token means the session expired (no token means we
+    // are already logged out — nothing to signal). AuthProvider listens for
+    // this event and clears the session, which renders the login form.
+    if (response.status === 401 && !IS_PLATFORM && localStorage.getItem('auth-token')) {
+      const now = Date.now();
+      if (now - lastSessionExpiredDispatch >= SESSION_EXPIRED_DISPATCH_GAP_MS) {
+        lastSessionExpiredDispatch = now;
+        window.dispatchEvent(new CustomEvent('auth:session-expired'));
+      }
     }
     return response;
   });
@@ -296,6 +311,14 @@ export const api = {
         method: 'POST',
       }),
   },
+
+  // Agent visibility: sync the disabled-agents list server-side so the
+  // auth-health watchdog skips providers the user turned off.
+  updateDisabledAgents: (disabled) =>
+    authenticatedFetch('/api/auth-health/disabled-providers', {
+      method: 'PUT',
+      body: JSON.stringify({ disabled }),
+    }),
 
   // Generic GET method for any endpoint
   get: (endpoint) => authenticatedFetch(`/api${endpoint}`),

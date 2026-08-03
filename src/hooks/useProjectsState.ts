@@ -602,6 +602,22 @@ export function useProjectsState({
     setShowSettings(true);
   }, []);
 
+  // Deep-link target for actionable notifications (e.g. the auth-health
+  // watchdog's `settings:agents` hrefs): any component can ask to open the
+  // Settings modal at a given tab without a direct handle on the modal state
+  // owned here. Unknown tab ids are normalized to 'agents' downstream by
+  // `normalizeMainTab` in useSettingsController.
+  useEffect(() => {
+    const handleOpenSettings = (event: Event) => {
+      const tab = (event as CustomEvent<{ tab?: unknown }>).detail?.tab;
+      openSettings(typeof tab === 'string' && tab ? tab : 'agents');
+    };
+    window.addEventListener('cloudcli:open-settings', handleOpenSettings);
+    return () => {
+      window.removeEventListener('cloudcli:open-settings', handleOpenSettings);
+    };
+  }, [openSettings]);
+
   useEffect(() => {
     void fetchProjects();
   }, [fetchProjects]);

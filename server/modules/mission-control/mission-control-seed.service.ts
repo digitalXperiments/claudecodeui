@@ -6,6 +6,15 @@ import {
   loadTrelloSeedConfig,
   type TrelloSeedBoardConfig,
 } from '@/modules/mission-control/mission-control-seed.config.js';
+import {
+  buildSwipeDigestSectionInput,
+  buildXArticlesSectionInput,
+  SWIPE_DIGEST_PROMPT_VERSION,
+  SWIPE_DIGEST_SECTION_TITLE,
+  X_ARTICLES_PROMPT_VERSION,
+  X_ARTICLES_SECTION_TITLE,
+} from '@/modules/mission-control/x-articles-seed.js';
+import { ensureArticleStudioWorkspace } from '@/modules/mission-control/article-studio.service.js';
 
 /** Stable title used for idempotent seeding (do not rename casually). */
 export const TRELLO_TASKS_SECTION_TITLE = 'Trello Tasks';
@@ -195,7 +204,110 @@ export function ensureTrelloTasksSection(): {
   return { created: false, updated: true, section };
 }
 
-/** Seed all built-in Mission Control sections. Safe to call on every boot. */
+/**
+ * Seed one article-studio section, keeping the versioned prompt current while
+ * leaving everything the user tunes from the UI alone.
+ *
+ * The section is bound to the studio project so the agent runs *inside* the
+ * working directory and picks up CLAUDE.md, the voice spec, the pattern library
+ * and `.claude/skills/`. `project_id` is re-pointed on refresh: if the studio
+ * moves, the section has to follow it or the writing system silently vanishes.
+ */
+function ensureArticleSection(
+  title: string,
+  versionMarker: string,
+  input: CreateMcSectionInput,
+): { created: boolean; updated: boolean; section: McSection } {
+  const existing = missionControlDb
+    .listSections()
+    .find((s) => s.title.trim().toLowerCase() === title.toLowerCase());
+
+  if (!existing) {
+    const section = missionControlDb.createSection(input);
+    try {
+      syncMissionControlSchedules();
+    } catch {
+      // Scheduler may not be running in tests.
+    }
+    return { created: true, updated: false, section };
+  }
+
+  const stale =
+    !existing.produce_prompt.includes(versionMarker) ||
+    existing.scope !== input.scope ||
+    existing.project_id !== input.project_id ||
+    JSON.stringify(existing.produce_tools) !== JSON.stringify(input.produce_tools) ||
+    JSON.stringify(existing.actions ?? []) !== JSON.stringify(input.actions ?? existing.actions ?? []);
+
+  if (!stale) {
+    return { created: false, updated: false, section: existing };
+  }
+
+  // Refresh prompt-shaped fields and the studio binding only. Provider, model,
+  // cron and enabled stay as the user set them.
+  const section = missionControlDb.updateSection(existing.section_id, {
+    scope: input.scope,
+    project_id: input.project_id,
+    produce_prompt: input.produce_prompt,
+    produce_tools: input.produce_tools,
+    resolve_prompt: input.resolve_prompt,
+    resolve_tools: input.resolve_tools,
+    ...(input.actions ? { actions: input.actions } : {}),
+    auto_approve: false,
+    create_kanban_task: false,
+  });
+
+  // updateSection returns null only when the row vanished between the read and
+  // the write; fall back to the row we already have rather than throwing on boot.
+  return { created: false, updated: section !== null, section: section ?? existing };
+}
+
+/** Ensure the X Articles drafting section exists and points at the studio. */
+export function ensureXArticlesSection(projectId: string) {
+  return ensureArticleSection(
+    X_ARTICLES_SECTION_TITLE,
+    `Prompt version: ${X_ARTICLES_PROMPT_VERSION}`,
+    buildXArticlesSectionInput(projectId),
+  );
+}
+
+/** Ensure the Swipe Digest section exists and points at the studio. */
+export function ensureSwipeDigestSection(projectId: string) {
+  return ensureArticleSection(
+    SWIPE_DIGEST_SECTION_TITLE,
+    `Prompt version: ${SWIPE_DIGEST_PROMPT_VERSION}`,
+    buildSwipeDigestSectionInput(projectId),
+  );
+}
+
+/**
+ * Scaffold the article studio directory, register it as a project, and seed
+ * both article sections against it.
+ *
+ * Filesystem work makes this async, so it is kept out of the synchronous
+ * `ensureMissionControlSeedSections` path and awaited separately at boot.
+ */
+export async function ensureArticleStudioSections(
+  workspacePath?: string,
+): Promise<{ workspacePath: string; projectId: string; sections: McSection[] }> {
+  const workspace = await ensureArticleStudioWorkspace(workspacePath);
+  const sections = [
+    ensureXArticlesSection(workspace.projectId).section,
+    ensureSwipeDigestSection(workspace.projectId).section,
+  ];
+  return {
+    workspacePath: workspace.workspacePath,
+    projectId: workspace.projectId,
+    sections,
+  };
+}
+
+/**
+ * Seed all built-in Mission Control sections. Safe to call on every boot.
+ *
+ * Article studio sections are seeded by `ensureArticleStudioSections` instead —
+ * they need filesystem scaffolding first.
+ */
 export function ensureMissionControlSeedSections(): McSection[] {
   const out: McSection[] = [];
   const trello = ensureTrelloTasksSection();

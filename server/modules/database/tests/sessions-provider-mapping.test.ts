@@ -106,3 +106,40 @@ test('legacy provider-keyed rows stay resolvable through both lookups', async ()
     assert.equal(sessionsDb.getSessionByProviderSessionId('legacy-1')?.session_id, 'legacy-1');
   });
 });
+
+test('assignProviderSessionId never merges or deletes another provider\'s row', async () => {
+  await withIsolatedDatabase(() => {
+    // Another provider's CLI-discovered row happens to use the same id that
+    // this runtime is about to announce (id formats overlap across CLIs).
+    sessionsDb.createSession(
+      'shared-id',
+      'grok',
+      '/workspace/demo',
+      'Grok Chat',
+      undefined,
+      undefined,
+      '/fake/grok-shared-id.jsonl',
+    );
+    sessionsDb.createAppSession('app-id-3', 'kimi', '/workspace/demo');
+
+    sessionsDb.assignProviderSessionId('app-id-3', 'shared-id');
+
+    const rows = sessionsDb.getAllSessions();
+    assert.equal(rows.length, 2);
+
+    // The foreign row is untouched: not deleted, not stripped of its mapping.
+    const grokRow = sessionsDb.getSessionById('shared-id');
+    assert.equal(grokRow?.provider, 'grok');
+    assert.equal(grokRow?.provider_session_id, 'shared-id');
+    assert.equal(grokRow?.jsonl_path, '/fake/grok-shared-id.jsonl');
+    assert.equal(grokRow?.custom_name, 'Grok Chat');
+
+    // The app row still gets its provider mapping, without adopting the
+    // foreign row's transcript path or name.
+    const appRow = sessionsDb.getSessionById('app-id-3');
+    assert.equal(appRow?.provider, 'kimi');
+    assert.equal(appRow?.provider_session_id, 'shared-id');
+    assert.equal(appRow?.jsonl_path, null);
+    assert.equal(appRow?.custom_name, null);
+  });
+});

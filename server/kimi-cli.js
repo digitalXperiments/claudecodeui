@@ -460,6 +460,18 @@ async function spawnKimi(command, options = {}, ws) {
       return;
     }
 
+    // A process can host more than one ACP session, and every run's handler
+    // sees every notification. Only forward updates for the session this run
+    // is bound to: accept until the native id is known, then filter strictly
+    // (mirrors the MCP-ready waiter's rule in grok-cli.js). The id is captured
+    // in createAcpSession before this handler is subscribed, so in practice
+    // this always filters.
+    const boundSessionId = handle.kimiSessionId || finalSessionId;
+    const updateSessionId = message.params?.sessionId;
+    if (boundSessionId && updateSessionId && updateSessionId !== boundSessionId) {
+      return;
+    }
+
     const update = message.params?.update;
     if (!update) {
       return;

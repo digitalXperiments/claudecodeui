@@ -64,6 +64,7 @@ test('cursor only exposes -f for bypassPermissions', () => {
 
 test('opencode mirrors resolveOpenCodePermissionOptions', () => {
   assert.equal(build({ provider: 'opencode', permissionMode: 'plan' }), 'opencode --agent plan');
+  assert.equal(build({ provider: 'opencode', permissionMode: 'auto' }), 'opencode --auto');
   assert.equal(
     build({ provider: 'opencode', permissionMode: 'bypassPermissions' }),
     'opencode --auto',

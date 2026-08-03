@@ -331,6 +331,41 @@ export const writeProjectsPanelCollapsed = (collapsed: boolean) => {
   }
 };
 
+const SIDEBAR_PANEL_WIDTH_STORAGE_KEY = 'sidebarPanelWidth';
+
+/** Minimum draggable width for the Projects/Sessions column. */
+export const SIDEBAR_PANEL_MIN_WIDTH = 200;
+/** Maximum draggable width for the Projects/Sessions column. */
+export const SIDEBAR_PANEL_MAX_WIDTH = 600;
+
+/**
+ * Reads the user-resized Projects column width from localStorage. Falls back
+ * to the legacy fixed widths (256px < md, 288px >= md).
+ */
+export const readSidebarPanelWidth = (): number => {
+  try {
+    const stored = localStorage.getItem(SIDEBAR_PANEL_WIDTH_STORAGE_KEY);
+    if (stored) {
+      const parsed = Number.parseInt(stored, 10);
+      if (Number.isFinite(parsed) && parsed > 0) {
+        return Math.min(SIDEBAR_PANEL_MAX_WIDTH, Math.max(SIDEBAR_PANEL_MIN_WIDTH, parsed));
+      }
+    }
+  } catch {
+    // Fall through to the default width.
+  }
+
+  return typeof window !== 'undefined' && window.innerWidth < 768 ? 256 : 288;
+};
+
+export const writeSidebarPanelWidth = (width: number) => {
+  try {
+    localStorage.setItem(SIDEBAR_PANEL_WIDTH_STORAGE_KEY, String(Math.round(width)));
+  } catch {
+    // Keep UI responsive even if storage is unavailable.
+  }
+};
+
 export const getTaskIndicatorStatus = (
   project: Project,
   mcpServerStatus: { hasMCPServer?: boolean; isConfigured?: boolean } | null,

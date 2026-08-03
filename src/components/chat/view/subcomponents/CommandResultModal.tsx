@@ -255,13 +255,20 @@ function ModelsContent({
   // Model the user picked mid-session that is awaiting explicit confirmation
   // (because it re-reads the whole transcript with cost impact).
   const [confirmModel, setConfirmModel] = useState<string | null>(null);
+  // Model applied for a brand-new chat (no session yet). `data.current` is a
+  // snapshot taken when the modal opened, so reflect a default-scope change
+  // here so the header and highlight track the latest pick immediately.
+  const [appliedDefaultModel, setAppliedDefaultModel] = useState<string | null>(null);
   const currentProvider = (data?.current?.provider || 'claude') as LLMProvider;
   const currentModel = data?.current?.model || 'Unknown';
   const providerLabel = data?.current?.providerLabel || getProviderLabel(currentProvider);
   const liveDefinition = providerModelCatalog[currentProvider];
   // The session reports the concrete model id; show the catalog label so the
-  // generation the user actually gets is spelled out.
-  const currentModelLabel = resolveProviderModelLabel(liveDefinition, currentModel) || currentModel;
+  // generation the user actually gets is spelled out. `activeModel` reflects a
+  // just-applied default-scope change that `data.current` (a snapshot taken
+  // when the modal opened) would otherwise hide until the modal reopens.
+  const activeModel = appliedDefaultModel ?? currentModel;
+  const activeModelLabel = resolveProviderModelLabel(liveDefinition, activeModel) || activeModel;
   const availableOptions = useMemo<ModelOption[]>(() => {
     if (liveDefinition?.OPTIONS && liveDefinition.OPTIONS.length > 0) {
       return liveDefinition.OPTIONS;
@@ -301,6 +308,7 @@ function ModelsContent({
       }
 
       setPendingSessionModel(null);
+      setAppliedDefaultModel(result.model);
       setSelectionNotice(`Default ${providerLabel} model set to ${result.model}.`);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unable to change the model right now.';
@@ -331,9 +339,9 @@ function ModelsContent({
             Active model · {providerLabel}
           </p>
           <p className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5">
-            <span className="text-sm font-semibold text-foreground">{currentModelLabel}</span>
-            {currentModelLabel !== currentModel && (
-              <span className="break-all font-mono text-[11px] text-muted-foreground">{currentModel}</span>
+            <span className="text-sm font-semibold text-foreground">{activeModelLabel}</span>
+            {activeModelLabel !== activeModel && (
+              <span className="break-all font-mono text-[11px] text-muted-foreground">{activeModel}</span>
             )}
             {pendingSessionModel && pendingSessionModel !== currentModel && (
               <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-emerald-500 dark:text-emerald-400">
@@ -402,7 +410,7 @@ function ModelsContent({
         <div className="scrollbar-thin -mr-1 min-h-0 flex-1 overflow-y-auto pr-1">
           <div className="grid gap-2 md:grid-cols-2">
             {filteredOptions.map((option, index) => {
-              const isCurrent = isProviderModelMatch(option, currentModel);
+              const isCurrent = isProviderModelMatch(option, activeModel);
               const isPendingSelection = option.value === pendingSessionModel;
               const isChanging = option.value === changingModel;
               const isAwaitingConfirm = option.value === confirmModel;

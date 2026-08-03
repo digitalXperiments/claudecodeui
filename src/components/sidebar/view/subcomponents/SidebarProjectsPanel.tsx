@@ -24,6 +24,8 @@ type SidebarProjectsPanelProps = {
   onToggleCollapse?: () => void;
   /** Active project name shown on the collapsed strip under the panel title. */
   selectedProjectName?: string | null;
+  /** User-resizable desktop width; when omitted, the legacy fixed width applies. */
+  panelWidth?: number;
   children: React.ReactNode;
   t: TFunction;
 };
@@ -80,6 +82,7 @@ export default function SidebarProjectsPanel({
   isCollapsed = false,
   onToggleCollapse,
   selectedProjectName = null,
+  panelWidth,
   children,
   t,
 }: SidebarProjectsPanelProps) {
@@ -132,7 +135,10 @@ export default function SidebarProjectsPanel({
   }
 
   return (
-    <div className="flex h-full w-64 flex-col border-r border-border/50 bg-card/40 md:w-72">
+    <div
+      className={cn('flex h-full flex-col border-r border-border/50 bg-card/40', !panelWidth && 'w-64 md:w-72')}
+      style={panelWidth ? { width: `${panelWidth}px`, flexShrink: 0 } : undefined}
+    >
       <div className="flex flex-shrink-0 items-center justify-between gap-1 px-2 pb-2 pt-2.5 md:px-2.5">
         {onToggleCollapse ? (
           <button

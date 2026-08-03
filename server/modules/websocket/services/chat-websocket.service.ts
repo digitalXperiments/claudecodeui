@@ -205,8 +205,9 @@ async function handleChatAbort(
 
 /**
  * Handles `chat.subscribe`: for each requested session, reports whether a run
- * is processing, re-attaches the live stream to this socket, replays missed
- * events (seq > lastSeq), and includes pending permission requests.
+ * is processing, adds this socket to the live stream's fan-out set, replays
+ * missed events (seq > lastSeq) to this socket only, and includes pending
+ * permission requests.
  *
  * This single message replaces the old `check-session-status`,
  * `get-pending-permissions`, and Claude-only writer reconnect flows.
@@ -238,8 +239,10 @@ function handleChatSubscribe(
     const run = chatRunRegistry.getRun(sessionId);
     const isProcessing = chatRunRegistry.isProcessing(sessionId);
 
-    // Future live events for this run should land on the socket that asked —
-    // this is what makes mid-stream page refreshes work for all providers.
+    // Future live events for this run should also land on the socket that
+    // asked — additive fan-out, so other tabs following the run keep their
+    // stream. This is what makes mid-stream page refreshes work for all
+    // providers.
     if (isProcessing) {
       chatRunRegistry.attachConnection(sessionId, ws);
     }
@@ -362,5 +365,8 @@ export function handleChatConnection(
   ws.on('close', () => {
     console.log('[INFO] Chat client disconnected');
     connectedClients.delete(ws);
+    // Also remove the socket from every run writer's fan-out set; `ws` emits
+    // `close` after `error` too, so this single hook covers both.
+    chatRunRegistry.detachConnection(ws);
   });
 }

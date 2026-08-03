@@ -160,6 +160,13 @@ function resolveShellPermissionMode(provider: string, permissionMode: string): s
     return '';
   }
 
+  // Legacy alias: opencode previously exposed `bypassPermissions` for what is
+  // really `--auto`. Old persisted session values and kanban tasks still carry
+  // it, so keep resolving it to the real mode (see opencode-cli.js).
+  if (provider === 'opencode' && permissionMode === 'bypassPermissions') {
+    return 'auto';
+  }
+
   try {
     const capabilities = providerCapabilitiesService.getProviderCapabilities(provider as LLMProvider);
     return capabilities?.permissionModes?.includes(permissionMode) ? permissionMode : '';
@@ -294,7 +301,7 @@ export function buildShellCommand(
     let modeEnvPrefix = '';
     if (permissionMode === 'plan') {
       modeArgs = ' --agent plan';
-    } else if (permissionMode === 'bypassPermissions') {
+    } else if (permissionMode === 'auto' || permissionMode === 'bypassPermissions') {
       modeArgs = ' --auto';
     } else if (permissionMode === 'acceptEdits') {
       const permissionJson = JSON.stringify({ edit: 'allow' });

@@ -23,6 +23,9 @@ import {
   type McSection,
   type McSectionInput,
 } from '../api/missionControlApi';
+import { isXArticleBody } from '../utils/xArticle';
+
+import ArticleDraftCard from './subcomponents/ArticleDraftCard';
 
 type MissionControlPanelProps = {
   isOpen: boolean;
@@ -525,6 +528,21 @@ export default function MissionControlPanel({
     }
   };
 
+  /**
+   * Render an article draft's images and swap the returned item in place, so
+   * the card picks up the new asset URLs without a full refresh.
+   */
+  const generateAssets = useCallback(async (itemId: string, force: boolean) => {
+    const result = await missionControlApi.generateAssets(itemId, force);
+    setItems((prev) => prev.map((i) => (i.item_id === itemId ? result.item : i)));
+    return {
+      generated: result.generated,
+      skipped: result.skipped,
+      failed: result.failed,
+      messages: result.messages ?? [],
+    };
+  }, []);
+
   const openImport = async () => {
     setShowImport(true);
     try {
@@ -976,6 +994,14 @@ export default function MissionControlPanel({
                           </p>
                         )}
                       </div>
+                    ) : isXArticleBody(item.body) ? (
+                      // Prose items get an article-shaped view; the raw JSON is
+                      // still reachable through "Edit before approve".
+                      <ArticleDraftCard
+                        article={item.body}
+                        itemId={item.item_id}
+                        onGenerateAssets={(force) => generateAssets(item.item_id, force)}
+                      />
                     ) : (
                       <pre className="mb-3 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-muted/50 p-2.5 text-[11px] leading-relaxed text-foreground/90 sm:max-h-48 sm:whitespace-pre sm:break-normal">
                         {JSON.stringify(item.body, null, 2)}

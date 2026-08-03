@@ -11,7 +11,7 @@ import type {
   RefObject,
   TouchEvent,
 } from 'react';
-import { Paperclip, MessageSquareIcon, XIcon, Loader2, ChevronDown, Check, ArrowUpIcon, Cpu, Sparkles } from 'lucide-react';
+import { Paperclip, MessageSquareIcon, XIcon, Loader2, ChevronDown, Check, ArrowUpIcon, Cpu, Sparkles, Gauge } from 'lucide-react';
 
 import { useVoiceInput } from '../../hooks/useVoiceInput';
 import { useVoiceAvailable } from '../../hooks/useVoiceAvailable';
@@ -553,7 +553,7 @@ export default function ChatComposer({
               title={t('input.changeModel', { defaultValue: 'Change model' })}
             >
               <Cpu className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-              <span className="truncate">{modelLabel}</span>
+              <span className="hidden truncate sm:inline">{modelLabel}</span>
             </button>
 
             {availableEffortOptions.length > 0 && (
@@ -571,8 +571,9 @@ export default function ChatComposer({
                   aria-label="Select reasoning effort"
                   title="Select reasoning effort"
                 >
+                  <Gauge className="h-3.5 w-3.5 text-muted-foreground sm:hidden" />
                   <span className="hidden text-[11px] text-muted-foreground sm:inline">Effort</span>
-                  <span className="max-w-16 truncate capitalize sm:max-w-20">{selectedEffortLabel}</span>
+                  <span className="hidden max-w-16 truncate capitalize sm:inline sm:max-w-20">{selectedEffortLabel}</span>
                   <ChevronDown className={`h-3 w-3 text-muted-foreground transition-transform ${isEffortDropdownOpen ? 'rotate-180' : ''}`} />
                 </button>
 

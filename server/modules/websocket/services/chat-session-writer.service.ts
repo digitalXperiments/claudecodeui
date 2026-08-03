@@ -44,7 +44,6 @@ type ChatSessionWriterOptions = {
  *   intercepted and recorded as the provider-id mapping as well.
  */
 export class ChatSessionWriter {
-  ws: RealtimeClientConnection;
   userId: string | number | null;
   /**
    * Some runtimes feature-detect their writer with this flag; keep it so the
@@ -52,6 +51,15 @@ export class ChatSessionWriter {
    */
   isWebSocketWriter = true;
 
+  /**
+   * Every socket currently receiving this run's live stream. A set — not one
+   * socket — because several clients (e.g. two browser tabs) can subscribe to
+   * the same run: `chat.subscribe` ADDS the requesting socket instead of
+   * stealing the stream from the previously attached one. Sockets are removed
+   * when they close (the chat websocket handler calls `detachConnection`) and
+   * stale ones are pruned lazily in `forward`.
+   */
+  private readonly connections = new Set<RealtimeClientConnection>();
   private readonly options: ChatSessionWriterOptions;
   /**
    * The provider-native session id as the runtime knows it. Kept locally
@@ -63,7 +71,7 @@ export class ChatSessionWriter {
 
   constructor(options: ChatSessionWriterOptions) {
     this.options = options;
-    this.ws = options.connection;
+    this.connections.add(options.connection);
     this.userId = options.userId;
     this.providerSessionId = options.providerSessionId;
   }
@@ -116,8 +124,21 @@ export class ChatSessionWriter {
     }
   }
 
+  /**
+   * Attaches an additional socket to the live stream (fan-out, not replace).
+   * Keeps the `updateWebSocket` name because provider runtimes feature-detect
+   * it as part of the `WebSocketWriter`-compatible surface.
+   */
   updateWebSocket(newConnection: RealtimeClientConnection): void {
-    this.ws = newConnection;
+    this.connections.add(newConnection);
+  }
+
+  /**
+   * Removes a socket from the fan-out set. Called when a client socket closes
+   * so a run stops pushing events to a dead connection.
+   */
+  detachConnection(connection: RealtimeClientConnection): void {
+    this.connections.delete(connection);
   }
 
   setSessionId(sessionId: string): void {
@@ -138,8 +159,17 @@ export class ChatSessionWriter {
   }
 
   private forward(message: NormalizedMessage): void {
-    if (this.ws.readyState === WS_OPEN_STATE) {
-      this.ws.send(JSON.stringify(message));
+    const payload = JSON.stringify(message);
+    for (const connection of this.connections) {
+      if (connection.readyState === WS_OPEN_STATE) {
+        connection.send(payload);
+      } else if (connection.readyState > WS_OPEN_STATE) {
+        // CLOSING/CLOSED sockets are pruned eagerly so a run whose subscriber
+        // went away without an explicit detach cannot accumulate dead entries.
+        // Never-open stub connections (headless runs) are kept — a later
+        // `chat.subscribe` attaches a real socket alongside them.
+        this.connections.delete(connection);
+      }
     }
   }
 }

@@ -165,6 +165,8 @@ type SidebarContentProps = {
   missionControlPendingCount?: number;
   onShowKanban?: () => void;
   projectListProps: SidebarProjectListProps;
+  /** User-resizable desktop width for the Projects column. */
+  projectsPanelWidth?: number;
   t: TFunction;
 };
 
@@ -213,6 +215,7 @@ export default function SidebarContent({
   missionControlPendingCount = 0,
   onShowKanban,
   projectListProps,
+  projectsPanelWidth,
   t,
 }: SidebarContentProps) {
   const [isProjectsPanelCollapsed, setIsProjectsPanelCollapsed] = useState(
@@ -707,6 +710,7 @@ export default function SidebarContent({
         isMobile ? undefined : () => setProjectsPanelCollapsed(!isProjectsPanelCollapsed)
       }
       selectedProjectName={selectedProjectName}
+      panelWidth={isMobile ? undefined : projectsPanelWidth}
       t={t}
     >
       {renderProjectsBody()}

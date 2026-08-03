@@ -81,9 +81,10 @@ const PROVIDER_CAPABILITIES: Record<LLMProvider, ProviderCapabilities> = {
   opencode: {
     provider: 'opencode',
     // Mapped by the runtime onto OpenCode's controls: `--agent plan` (plan),
-    // `--auto` (bypassPermissions) and the OPENCODE_PERMISSION env var
-    // (acceptEdits). See resolveOpenCodePermissionOptions in opencode-cli.js.
-    permissionModes: ['default', 'acceptEdits', 'bypassPermissions', 'plan'],
+    // `--auto` (auto) and the OPENCODE_PERMISSION env var (acceptEdits). See
+    // resolveOpenCodePermissionOptions in opencode-cli.js. OpenCode has no
+    // true bypass mode — `--auto` still enforces explicit deny rules.
+    permissionModes: ['default', 'acceptEdits', 'auto', 'plan'],
     defaultPermissionMode: 'default',
     supportsImages: true,
     supportsFiles: true,

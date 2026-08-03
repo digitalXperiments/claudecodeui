@@ -5,6 +5,9 @@ export { providerMcpService } from './services/mcp.service.js';
 export { mcpCatalogService } from './services/mcp-catalog.service.js';
 export { projectMemoryService, getMemoryPreamble } from './services/project-memory.service.js';
 export { providerCapabilitiesService } from './services/provider-capabilities.service.js';
+export { providerAuthService } from './services/provider-auth.service.js';
+export { providerRegistry } from './provider.registry.js';
 
 export { initializeSessionsWatcher } from './services/sessions-watcher.service.js';
 export { closeSessionsWatcher } from './services/sessions-watcher.service.js';
+export { refreshSessionsWatcher } from './services/sessions-watcher.service.js';

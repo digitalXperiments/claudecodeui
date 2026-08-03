@@ -81,6 +81,8 @@ export type SidebarProps = {
   settingsInitialTab: string;
   onCloseSettings: () => void;
   isMobile: boolean;
+  /** User-resizable desktop width for the Projects column. */
+  projectsPanelWidth?: number;
 };
 
 export type SessionViewModel = {

@@ -179,6 +179,27 @@ export const missionControlApi = {
     return parseJson(res);
   },
 
+  /** Render the code cards / screenshots an X article draft still needs. */
+  async generateAssets(
+    itemId: string,
+    force = false,
+  ): Promise<{
+    item: McItem;
+    generated: number;
+    skipped: number;
+    failed: number;
+    messages: string[];
+  }> {
+    const res = await authenticatedFetch(
+      `/api/mission-control/items/${encodeURIComponent(itemId)}/assets`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ force }),
+      },
+    );
+    return parseJson(res);
+  },
+
   async importFromLegacy(path?: string): Promise<{
     path: string;
     imported: number;

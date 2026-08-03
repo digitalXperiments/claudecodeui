@@ -126,6 +126,11 @@ test('resolveOpenCodePermissionOptions maps UI permission modes onto OpenCode co
     args: ['--agent', 'plan'],
     env: {},
   });
+  assert.deepEqual(resolveOpenCodePermissionOptions('auto'), {
+    args: ['--auto'],
+    env: {},
+  });
+  // Legacy alias kept so old persisted session values still work.
   assert.deepEqual(resolveOpenCodePermissionOptions('bypassPermissions'), {
     args: ['--auto'],
     env: {},
@@ -171,7 +176,7 @@ test('spawnOpenCode passes permission mode flags and env to the CLI', async () =
         expectPermissionEnv: null,
       },
       {
-        permissionMode: 'bypassPermissions',
+        permissionMode: 'auto',
         expectArgs: ['--auto'],
         expectPermissionEnv: null,
       },

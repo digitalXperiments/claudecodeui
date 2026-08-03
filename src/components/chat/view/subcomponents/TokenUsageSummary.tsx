@@ -91,7 +91,7 @@ export default function TokenUsageSummary({ usage, onClick }: TokenUsageSummaryP
       <span className="grid h-5 w-5 place-items-center rounded-md bg-primary/10 text-primary">
         <ActivityIcon className="h-3.5 w-3.5" />
       </span>
-      <span className="whitespace-nowrap font-medium tabular-nums text-foreground">{label}</span>
+      <span className="hidden whitespace-nowrap font-medium tabular-nums text-foreground sm:inline">{label}</span>
     </button>
   );
 }

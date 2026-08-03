@@ -65,7 +65,7 @@ const FALLBACK_PERMISSION_MODES: Record<LLMProvider, PermissionMode[]> = {
   // Cursor headless only supports default vs -f (bypass).
   cursor: ['default', 'bypassPermissions'],
   codex: ['default', 'acceptEdits', 'bypassPermissions'],
-  opencode: ['default', 'acceptEdits', 'bypassPermissions', 'plan'],
+  opencode: ['default', 'acceptEdits', 'auto', 'plan'],
   grok: ['default', 'acceptEdits', 'auto', 'bypassPermissions', 'plan'],
   kimi: ['default', 'plan', 'auto', 'bypassPermissions'],
   agy: ['plan', 'acceptEdits', 'bypassPermissions'],

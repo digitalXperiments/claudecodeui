@@ -3,6 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 
 import Sidebar from '../sidebar/view/Sidebar';
+import { useSidebarResize } from '../sidebar/hooks/useSidebarResize';
 import MainContent from '../main-content/view/MainContent';
 import CommandPalette from '../command-palette/CommandPalette';
 import { useWebSocket } from '../../contexts/WebSocketContext';
@@ -53,6 +54,7 @@ function AppContentInner() {
   const { t } = useTranslation('common');
   const { isMobile } = useDeviceSettings({ trackPWA: false });
   const { ws, sendMessage, subscribe } = useWebSocket();
+  const { panelWidth, sidebarRef, handleResizeStart } = useSidebarResize(isMobile);
 
   const {
     processingSessions,
@@ -207,8 +209,17 @@ function AppContentInner() {
   return (
     <div className="fixed inset-0 flex bg-background" style={{ bottom: 'var(--keyboard-height, 0px)' }}>
       {!isMobile ? (
-        <div className="h-full flex-shrink-0 border-r border-border/50">
-          <Sidebar {...sidebarSharedProps} />
+        <div ref={sidebarRef} className="relative h-full flex-shrink-0 border-r border-border/50">
+          <Sidebar {...sidebarSharedProps} projectsPanelWidth={panelWidth} />
+          <div
+            role="separator"
+            aria-orientation="vertical"
+            onMouseDown={handleResizeStart}
+            className="group absolute inset-y-0 right-0 z-10 w-1.5 cursor-col-resize"
+            title={t('resizeSidebar', { defaultValue: 'Drag to resize sidebar' })}
+          >
+            <div className="absolute inset-y-0 left-1/2 w-1 -translate-x-1/2 transition-colors group-hover:bg-primary/60 group-active:bg-primary/60" />
+          </div>
         </div>
       ) : (
         <div

@@ -77,8 +77,13 @@ test('Trello Tasks seed is a no-op without a user config file', async () => {
       assert.equal(result.updated, false);
       assert.equal(result.section, null);
 
+      // The aggregate seeder still runs config-free sections (X Articles);
+      // what must be absent is a Trello section.
       const seeded = ensureMissionControlSeedSections();
-      assert.equal(seeded.length, 0);
+      assert.equal(
+        seeded.filter((s) => s.title === TRELLO_TASKS_SECTION_TITLE).length,
+        0,
+      );
     });
   });
 });

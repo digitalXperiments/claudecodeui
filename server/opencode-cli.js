@@ -22,8 +22,10 @@ const activeOpenCodeProcesses = new Map();
  * OpenCode has no single "permission mode" flag; each mode uses a different
  * lever of the `opencode run` CLI (verified against v1.17.13):
  * - plan              → the built-in read-only `plan` agent (`--agent plan`).
- * - bypassPermissions → `--auto`, which auto-approves every permission that
- *                       is not explicitly denied in the user's config.
+ * - auto              → `--auto`, which auto-approves every permission that
+ *                       is not explicitly denied in the user's config. This
+ *                       is OpenCode's most permissive mode; there is no true
+ *                       "bypass" that skips explicit deny rules.
  * - acceptEdits       → the OPENCODE_PERMISSION env var, whose JSON body the
  *                       CLI merges into its permission config. Forcing
  *                       `edit: allow` guarantees file edits go through while
@@ -31,12 +33,16 @@ const activeOpenCodeProcesses = new Map();
  * - default           → nothing; the user's opencode.json governs. In
  *                       non-interactive `run` mode any `ask` rule is denied.
  *
+ * `bypassPermissions` is still accepted as a legacy alias for `auto` so old
+ * persisted session values keep working.
+ *
  * Exported for tests only.
  */
 export function resolveOpenCodePermissionOptions(permissionMode) {
   switch (permissionMode) {
     case 'plan':
       return { args: ['--agent', 'plan'], env: {} };
+    case 'auto':
     case 'bypassPermissions':
       return { args: ['--auto'], env: {} };
     case 'acceptEdits':

@@ -95,11 +95,17 @@ import {
 import missionControlRoutes from './modules/mission-control/mission-control.routes.js';
 import {
     configureMissionControlRuntimes,
+    ensureArticleStudioSections,
     ensureMissionControlSeedSections,
     startMissionControlScheduler,
     stopMissionControlScheduler,
 } from './modules/mission-control/index.js';
 import agentProfilesRoutes from './modules/agent-profiles/agent-profiles.routes.js';
+import {
+    authHealthRoutes,
+    startAuthHealthWatchdog,
+    stopAuthHealthWatchdog,
+} from './modules/auth-health/index.js';
 import webhooksRoutes from './modules/webhooks/webhooks.routes.js';
 import webhooksIngestRoutes from './modules/webhooks/webhooks-ingest.routes.js';
 import {
@@ -332,6 +338,9 @@ app.use('/api/mission-control', authenticateToken, missionControlRoutes);
 
 // Named agent run profiles (Settings + Kanban)
 app.use('/api/agent-profiles', authenticateToken, agentProfilesRoutes);
+
+// Provider auth health (watchdog report + on-demand checks)
+app.use('/api/auth-health', authenticateToken, authHealthRoutes);
 
 // Serve public files (like api-docs.html)
 app.use(express.static(path.join(APP_ROOT, 'public')));
@@ -1738,10 +1747,25 @@ async function startServer() {
             console.error('[MissionControl] seed sections failed:', error.message);
         }
 
+        // Article studio scaffolds a working directory on disk, so it is async
+        // and seeded separately from the synchronous sections above.
+        try {
+            const studio = await ensureArticleStudioSections();
+            console.log(`${c.info('[INFO]')} Article studio ready at ${studio.workspacePath} (${studio.sections.map((s) => s.title).join(', ')})`);
+        } catch (error) {
+            console.error('[MissionControl] article studio setup failed:', error.message);
+        }
+
         try {
             startMissionControlScheduler();
         } catch (error) {
             console.error('[MissionControl] scheduler start failed:', error.message);
+        }
+
+        try {
+            startAuthHealthWatchdog();
+        } catch (error) {
+            console.error('[auth-health] watchdog start failed:', error.message);
         }
 
         // Configure Web Push (VAPID keys)
@@ -1798,6 +1822,11 @@ async function startServer() {
                 stopMissionControlScheduler();
             } catch (err) {
                 console.error('[MissionControl] Error stopping scheduler during shutdown:', err?.message || err);
+            }
+            try {
+                stopAuthHealthWatchdog();
+            } catch (err) {
+                console.error('[auth-health] Error stopping watchdog during shutdown:', err?.message || err);
             }
             try {
                 await browserUseService.stopAllSessions();

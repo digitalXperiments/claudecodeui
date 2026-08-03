@@ -4,6 +4,10 @@ import type { FitAddon } from '@xterm/addon-fit';
 import type { Terminal } from '@xterm/xterm';
 
 import type { Project, ProjectSession } from '../../../types/app';
+import {
+  PERMISSION_MODE_CHANGED_EVENT,
+  type PermissionModeChangedDetail,
+} from '../../../constants/permissionModeEvents';
 import { TERMINAL_INIT_DELAY_MS } from '../constants/constants';
 import { getShellWebSocketUrl, parseShellMessage, sendSocketMessage } from '../utils/socket';
 
@@ -55,6 +59,7 @@ export function useShellConnection({
   const connectingRef = useRef(false);
   const forceRestartOnInitRef = useRef(false);
   const suppressAutoConnectRef = useRef(false);
+  const relaunchOnModeChangeRef = useRef(false);
 
   const handleProcessCompletion = useCallback(
     (output: string) => {
@@ -252,6 +257,80 @@ export function useShellConnection({
 
     connectToShell();
   }, [autoConnect, connectToShell, isConnected, isConnecting, isInitialized]);
+
+  // When the chatbar permission mode changes, relaunch the interactive CLI so
+  // it starts with the new mode's flags (TUI processes can't change mode after
+  // spawn). The init message mirrors the chatbar's mode resolution from
+  // localStorage, which is already updated before this event is dispatched.
+  useEffect(() => {
+    const handlePermissionModeChange = (event: Event) => {
+      if (isPlainShellRef.current) {
+        return;
+      }
+
+      const detail = (event as CustomEvent<PermissionModeChangedDetail>).detail;
+      if (!detail) {
+        return;
+      }
+
+      // Only react when the change targets the provider (and session, when
+      // scoped) this shell is running.
+      const shellProvider =
+        selectedSessionRef.current?.__provider ||
+        localStorage.getItem('selected-provider') ||
+        'claude';
+      if (detail.provider && detail.provider !== shellProvider) {
+        return;
+      }
+
+      const shellSessionId = selectedSessionRef.current?.id ?? null;
+      if (detail.sessionId && shellSessionId && detail.sessionId !== shellSessionId) {
+        return;
+      }
+
+      // If the shell isn't connected, it picks up the new mode on the next
+      // connect — nothing to relaunch.
+      if (!isConnected) {
+        return;
+      }
+
+      // Two-step relaunch: drop the current socket, then reconnect with a
+      // forced fresh process. connectToShell closes over the stale
+      // `isConnected=true` immediately after disconnectFromShell, so the
+      // reconnect is deferred to an effect that observes the state flip.
+      relaunchOnModeChangeRef.current = true;
+      disconnectFromShell();
+    };
+
+    window.addEventListener(PERMISSION_MODE_CHANGED_EVENT, handlePermissionModeChange);
+    return () => window.removeEventListener(PERMISSION_MODE_CHANGED_EVENT, handlePermissionModeChange);
+  }, [
+    connectToShell,
+    disconnectFromShell,
+    isConnected,
+    isPlainShellRef,
+    selectedSessionRef,
+  ]);
+
+  // Relaunch the interactive CLI after a permission-mode change disconnect.
+  useEffect(() => {
+    if (!relaunchOnModeChangeRef.current) {
+      return;
+    }
+
+    // Whoever connected/reconnected already consumed the relaunch intent.
+    if (isConnecting || isConnected) {
+      relaunchOnModeChangeRef.current = false;
+      return;
+    }
+
+    if (!isInitialized) {
+      return;
+    }
+
+    relaunchOnModeChangeRef.current = false;
+    connectToShell({ forceRestart: true });
+  }, [connectToShell, isConnected, isConnecting, isInitialized]);
 
   return {
     isConnected,

@@ -128,6 +128,19 @@ export function AuthProvider({ children }: AuthProviderProps) {
     void checkAuthStatus();
   }, [checkAuthStatus, checkOnboardingStatus]);
 
+  // Global 401 handling: `authenticatedFetch` dispatches this window event on
+  // the first 401 with a stored token; clearing the session makes
+  // ProtectedRoute render the login form.
+  useEffect(() => {
+    const handleSessionExpired = () => {
+      clearSession();
+    };
+    window.addEventListener('auth:session-expired', handleSessionExpired);
+    return () => {
+      window.removeEventListener('auth:session-expired', handleSessionExpired);
+    };
+  }, [clearSession]);
+
   const login = useCallback<AuthContextValue['login']>(
     async (username, password, totpCode) => {
       try {

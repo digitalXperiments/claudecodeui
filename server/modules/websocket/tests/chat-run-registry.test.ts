@@ -222,7 +222,7 @@ test('replayEvents returns only events after the requested seq', async () => {
   });
 });
 
-test('attachConnection reroutes the live stream to a new socket', async () => {
+test('attachConnection fans the live stream out to every attached socket', async () => {
   await withIsolatedDatabase(() => {
     sessionsDb.createAppSession('app-run-5', 'opencode', '/workspace/demo');
     const firstConnection = new FakeConnection();
@@ -241,8 +241,60 @@ test('attachConnection reroutes the live stream to a new socket', async () => {
     assert.equal(chatRunRegistry.attachConnection('app-run-5', secondConnection), true);
     run.writer.send({ kind: 'stream_delta', provider: 'opencode', sessionId: 'o', content: 'after' });
 
-    assert.deepEqual(firstConnection.frames.map((frame) => frame.content), ['before']);
+    // Both tabs keep receiving the stream — subscribing no longer steals it.
+    assert.deepEqual(firstConnection.frames.map((frame) => frame.content), ['before', 'after']);
     assert.deepEqual(secondConnection.frames.map((frame) => frame.content), ['after']);
+  });
+});
+
+test('detachConnection removes a closed socket from every run', async () => {
+  await withIsolatedDatabase(() => {
+    sessionsDb.createAppSession('app-run-10', 'opencode', '/workspace/demo');
+    const firstConnection = new FakeConnection();
+    const run = chatRunRegistry.startRun({
+      appSessionId: 'app-run-10',
+      provider: 'opencode',
+      providerSessionId: null,
+      connection: firstConnection,
+      userId: null,
+    });
+    assert.ok(run);
+
+    const secondConnection = new FakeConnection();
+    assert.equal(chatRunRegistry.attachConnection('app-run-10', secondConnection), true);
+
+    // The second tab closes: its socket is detached from all runs.
+    chatRunRegistry.detachConnection(secondConnection);
+    run.writer.send({ kind: 'stream_delta', provider: 'opencode', sessionId: 'o', content: 'live' });
+
+    assert.deepEqual(firstConnection.frames.map((frame) => frame.content), ['live']);
+    assert.deepEqual(secondConnection.frames.map((frame) => frame.content), []);
+  });
+});
+
+test('closed sockets are pruned lazily from the fan-out set on send', async () => {
+  await withIsolatedDatabase(() => {
+    sessionsDb.createAppSession('app-run-11', 'opencode', '/workspace/demo');
+    const firstConnection = new FakeConnection();
+    const run = chatRunRegistry.startRun({
+      appSessionId: 'app-run-11',
+      provider: 'opencode',
+      providerSessionId: null,
+      connection: firstConnection,
+      userId: null,
+    });
+    assert.ok(run);
+
+    // A subscriber whose socket is already CLOSED (readyState 3) — e.g. it
+    // went away without an explicit detach.
+    const deadConnection = new FakeConnection();
+    deadConnection.readyState = 3;
+    chatRunRegistry.attachConnection('app-run-11', deadConnection);
+
+    run.writer.send({ kind: 'stream_delta', provider: 'opencode', sessionId: 'o', content: 'live' });
+
+    assert.deepEqual(firstConnection.frames.map((frame) => frame.content), ['live']);
+    assert.equal(deadConnection.frames.length, 0);
   });
 });
 

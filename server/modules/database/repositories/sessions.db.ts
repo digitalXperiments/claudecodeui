@@ -173,19 +173,38 @@ export const sessionsDb = {
    * the duplicate is merged into the app row: its transcript path and name
    * are adopted and the duplicate row is removed. Runs in a transaction so
    * the sidebar can never observe both rows at once.
+   *
+   * The duplicate lookup is scoped to the target row's provider: provider
+   * ids are only unique within one provider, so rows belonging to other
+   * providers must never be merged or deleted here.
    */
   assignProviderSessionId(sessionId: string, providerSessionId: string): void {
     const db = getConnection();
 
     const merge = db.transaction(() => {
-      const duplicate = db
-        .prepare(
-          `SELECT ${SESSION_ROW_COLUMNS} FROM sessions
-           WHERE (session_id = ? OR provider_session_id = ?)
-             AND session_id <> ?
-           LIMIT 1`
-        )
-        .get(providerSessionId, providerSessionId, sessionId) as SessionRow | undefined;
+      // The duplicate lookup must stay provider-scoped: provider-native ids
+      // are only unique within one provider, so an id from this runtime may
+      // collide with another provider's row id (or its provider_session_id).
+      // Merging or deleting such a row would steal an unrelated chat's
+      // transcript. The sessions table declares provider NOT NULL, so the
+      // target row always carries the provider to scope by.
+      const target = db
+        .prepare('SELECT provider FROM sessions WHERE session_id = ?')
+        .get(sessionId) as { provider: string } | undefined;
+
+      const duplicate = target
+        ? (db
+            .prepare(
+              `SELECT ${SESSION_ROW_COLUMNS} FROM sessions
+               WHERE (session_id = ? OR provider_session_id = ?)
+                 AND session_id <> ?
+                 AND provider = ?
+               LIMIT 1`
+            )
+            .get(providerSessionId, providerSessionId, sessionId, target.provider) as
+            | SessionRow
+            | undefined)
+        : undefined;
 
       if (duplicate) {
         db.prepare('DELETE FROM sessions WHERE session_id = ?').run(duplicate.session_id);

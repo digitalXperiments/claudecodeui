@@ -25,10 +25,12 @@ interface UseChatRealtimeHandlersArgs {
   setTokenBudget: (budget: Record<string, unknown> | null) => void;
   pendingPermissionRequests: PendingPermissionRequest[];
   setPendingPermissionRequests: Dispatch<SetStateAction<PendingPermissionRequest[]>>;
-  streamTimerRef: MutableRefObject<number | null>;
-  accumulatedStreamRef: MutableRefObject<string>;
-  thinkingTimerRef: MutableRefObject<number | null>;
-  accumulatedThinkingRef: MutableRefObject<string>;
+  // Per-session accumulation buffers. The chat view subscribes to every
+  // in-progress session at once, so streaming text MUST be keyed by the
+  // frame's own session id — a single shared buffer would stamp background
+  // session A's text into viewed session B.
+  streamBuffersRef: MutableRefObject<Map<string, { text: string; timer: number | null }>>;
+  thinkingBuffersRef: MutableRefObject<Map<string, { text: string; timer: number | null }>>;
   /**
    * Highest live `seq` observed per session. Essential for reconnect catch-up:
    * `chat.subscribe` sends this value as `lastSeq` so the server replays only
@@ -65,10 +67,8 @@ export function useChatRealtimeHandlers({
   setTokenBudget,
   pendingPermissionRequests,
   setPendingPermissionRequests,
-  streamTimerRef,
-  accumulatedStreamRef,
-  thinkingTimerRef,
-  accumulatedThinkingRef,
+  streamBuffersRef,
+  thinkingBuffersRef,
   lastSeqRef,
   statusCheckSentAtRef,
   onSessionProcessing,
@@ -99,7 +99,10 @@ export function useChatRealtimeHandlers({
       }
 
       const activeViewSessionId = activeViewSessionIdRef.current;
-      const sid = (typeof msg.sessionId === 'string' && msg.sessionId) || activeViewSessionId;
+      // The server tags every run frame with its app session id. Never fall
+      // back to the viewed session here — an untagged frame must not be
+      // routed into whatever session happens to be on screen.
+      const sid = (typeof msg.sessionId === 'string' && msg.sessionId) || null;
 
       // Record replay progress for every sequenced live event.
       if (sid && typeof msg.seq === 'number') {
@@ -177,35 +180,41 @@ export function useChatRealtimeHandlers({
       /* -------------------------------------------------------------- */
 
       // A live `thinking` burst (see below) ends the moment any other kind
-      // of message arrives - a tool call starting, the reply text starting,
-      // or the turn completing. Close it out first so the next event starts
-      // its own fresh block rather than silently extending this one.
-      if (msg.kind !== 'thinking' && accumulatedThinkingRef.current) {
-        if (thinkingTimerRef.current) {
-          clearTimeout(thinkingTimerRef.current);
-          thinkingTimerRef.current = null;
-        }
-        if (sid) {
-          sessionStore.updateThinkingStream(sid, accumulatedThinkingRef.current, provider);
+      // of message arrives for THAT SAME session - a tool call starting, the
+      // reply text starting, or the turn completing. Close out only the
+      // incoming frame's own session buffer; another session's burst keeps
+      // accumulating untouched.
+      if (msg.kind !== 'thinking' && sid) {
+        const thinkingEntry = thinkingBuffersRef.current.get(sid);
+        if (thinkingEntry && thinkingEntry.text) {
+          if (thinkingEntry.timer) {
+            clearTimeout(thinkingEntry.timer);
+            thinkingEntry.timer = null;
+          }
+          sessionStore.updateThinkingStream(sid, thinkingEntry.text, provider);
           sessionStore.finalizeThinkingStream(sid);
+          thinkingBuffersRef.current.delete(sid);
         }
-        accumulatedThinkingRef.current = '';
       }
 
       // --- Thinking: buffer token-by-token reasoning into one growing block ---
       if (msg.kind === 'thinking') {
         const text = (msg.content as string) || '';
-        if (!text) return;
-        accumulatedThinkingRef.current += text;
-        if (!thinkingTimerRef.current) {
-          thinkingTimerRef.current = window.setTimeout(() => {
-            thinkingTimerRef.current = null;
-            if (sid) {
-              sessionStore.updateThinkingStream(sid, accumulatedThinkingRef.current, provider);
-            }
+        if (!text || !sid) return;
+        let thinkingEntry = thinkingBuffersRef.current.get(sid);
+        if (!thinkingEntry) {
+          thinkingEntry = { text: '', timer: null };
+          thinkingBuffersRef.current.set(sid, thinkingEntry);
+        }
+        thinkingEntry.text += text;
+        if (!thinkingEntry.timer) {
+          const entry = thinkingEntry;
+          entry.timer = window.setTimeout(() => {
+            entry.timer = null;
+            sessionStore.updateThinkingStream(sid, entry.text, provider);
           }, 100);
         }
-        if (sid && sid !== activeViewSessionId) {
+        if (sid !== activeViewSessionId) {
           sessionStore.appendRealtime(sid, msg as unknown as NormalizedMessage);
         }
         return;
@@ -214,35 +223,42 @@ export function useChatRealtimeHandlers({
       // --- Streaming: buffer for performance ---
       if (msg.kind === 'stream_delta') {
         const text = (msg.content as string) || '';
-        if (!text) return;
-        accumulatedStreamRef.current += text;
-        if (!streamTimerRef.current) {
-          streamTimerRef.current = window.setTimeout(() => {
-            streamTimerRef.current = null;
-            if (sid) {
-              sessionStore.updateStreaming(sid, accumulatedStreamRef.current, provider);
-            }
+        if (!text || !sid) return;
+        let streamEntry = streamBuffersRef.current.get(sid);
+        if (!streamEntry) {
+          streamEntry = { text: '', timer: null };
+          streamBuffersRef.current.set(sid, streamEntry);
+        }
+        streamEntry.text += text;
+        if (!streamEntry.timer) {
+          const entry = streamEntry;
+          entry.timer = window.setTimeout(() => {
+            entry.timer = null;
+            sessionStore.updateStreaming(sid, entry.text, provider);
           }, 100);
         }
         // Also route to store for non-active sessions
-        if (sid && sid !== activeViewSessionId) {
+        if (sid !== activeViewSessionId) {
           sessionStore.appendRealtime(sid, msg as unknown as NormalizedMessage);
         }
         return;
       }
 
       if (msg.kind === 'stream_end') {
-        if (streamTimerRef.current) {
-          clearTimeout(streamTimerRef.current);
-          streamTimerRef.current = null;
-        }
         if (sid) {
-          if (accumulatedStreamRef.current) {
-            sessionStore.updateStreaming(sid, accumulatedStreamRef.current, provider);
+          const streamEntry = streamBuffersRef.current.get(sid);
+          if (streamEntry) {
+            if (streamEntry.timer) {
+              clearTimeout(streamEntry.timer);
+              streamEntry.timer = null;
+            }
+            if (streamEntry.text) {
+              sessionStore.updateStreaming(sid, streamEntry.text, provider);
+            }
+            streamBuffersRef.current.delete(sid);
           }
           sessionStore.finalizeStreaming(sid);
         }
-        accumulatedStreamRef.current = '';
         return;
       }
 
@@ -260,16 +276,21 @@ export function useChatRealtimeHandlers({
       // --- UI side effects for specific kinds ---
       switch (msg.kind) {
         case 'complete': {
-          // Flush any remaining streaming state
-          if (streamTimerRef.current) {
-            clearTimeout(streamTimerRef.current);
-            streamTimerRef.current = null;
+          // Flush any remaining streaming state for this session only.
+          if (sid) {
+            const streamEntry = streamBuffersRef.current.get(sid);
+            if (streamEntry) {
+              if (streamEntry.timer) {
+                clearTimeout(streamEntry.timer);
+                streamEntry.timer = null;
+              }
+              streamBuffersRef.current.delete(sid);
+              if (streamEntry.text) {
+                sessionStore.updateStreaming(sid, streamEntry.text, provider);
+                sessionStore.finalizeStreaming(sid);
+              }
+            }
           }
-          if (sid && accumulatedStreamRef.current) {
-            sessionStore.updateStreaming(sid, accumulatedStreamRef.current, provider);
-            sessionStore.finalizeStreaming(sid);
-          }
-          accumulatedStreamRef.current = '';
 
           // `complete` is the unified terminal event — every provider run ends
           // with exactly one, regardless of success, failure, or abort. The
@@ -376,8 +397,8 @@ export function useChatRealtimeHandlers({
     setTokenBudget,
     pendingPermissionRequests,
     setPendingPermissionRequests,
-    streamTimerRef,
-    accumulatedStreamRef,
+    streamBuffersRef,
+    thinkingBuffersRef,
     lastSeqRef,
     statusCheckSentAtRef,
     onSessionProcessing,

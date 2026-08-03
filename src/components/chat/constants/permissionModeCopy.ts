@@ -102,9 +102,9 @@ export const PERMISSION_MODE_COPY: Record<
       summary: 'Auto-allow file edits; other permissions follow OpenCode defaults.',
       technical: 'OPENCODE_PERMISSION={"edit":"allow"}',
     },
-    bypassPermissions: {
-      label: 'Bypass Permissions',
-      summary: 'Auto-approve permissions that are not explicitly denied.',
+    auto: {
+      label: 'Auto',
+      summary: 'Auto-approve permissions that are not explicitly denied. OpenCode’s most permissive mode — explicit deny rules still block.',
       technical: 'opencode --auto',
     },
     plan: {

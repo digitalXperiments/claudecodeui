@@ -8,6 +8,7 @@ import type {
   ProviderModelsDefinition,
 } from "../../../../types/app";
 import { useAgentVisibility } from "../../../../hooks/useAgentVisibility";
+import { filterVisibleModels, useHiddenModels } from "../../../../utils/modelVisibility";
 import SessionProviderLogo from "../../../llm-logo-provider/SessionProviderLogo";
 import { NextTaskBanner } from "../../../task-master";
 import {
@@ -158,14 +159,15 @@ export default function ProviderSelectionEmptyState({
   const { t } = useTranslation("chat");
   const [dialogOpen, setDialogOpen] = useState(false);
   const { isAgentEnabled } = useAgentVisibility();
+  const { hiddenModels } = useHiddenModels();
 
   const visibleProviderGroups = useMemo<ProviderGroup[]>(() => {
     return PROVIDER_META.filter((p) => isAgentEnabled(p.id)).map((p) => ({
       id: p.id,
       name: p.name,
-      models: providerModelCatalog[p.id]?.OPTIONS ?? [],
+      models: filterVisibleModels(providerModelCatalog[p.id], hiddenModels[p.id] ?? []),
     }));
-  }, [providerModelCatalog, isAgentEnabled]);
+  }, [providerModelCatalog, isAgentEnabled, hiddenModels]);
 
   const nextTaskPrompt = t("tasks.nextTaskPrompt", {
     defaultValue: "Start the next task",

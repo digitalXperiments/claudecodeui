@@ -44,6 +44,7 @@ function Sidebar({
   settingsInitialTab,
   onCloseSettings,
   isMobile,
+  projectsPanelWidth,
 }: SidebarProps) {
   const { t } = useTranslation(['sidebar', 'common']);
   const { isPWA } = useDeviceSettings({ trackMobile: false });
@@ -380,6 +381,7 @@ function Sidebar({
         missionControlPendingCount={missionControlPendingCount}
         onShowKanban={() => setShowKanban(true)}
         projectListProps={projectListProps}
+        projectsPanelWidth={projectsPanelWidth}
         t={t}
       />
 

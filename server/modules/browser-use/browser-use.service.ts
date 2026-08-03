@@ -637,6 +637,28 @@ export const browserUseService = {
     };
   },
 
+  /**
+   * Full-quality PNG of the current page. `agentSnapshot` returns a 72%-quality
+   * JPEG sized for the live preview pane; publishing needs the lossless frame.
+   */
+  async agentCapturePng(
+    sessionId: string,
+    input: { fullPage?: boolean; waitMs?: number } = {},
+  ): Promise<Buffer> {
+    await this.getAgentSession(sessionId);
+    const handle = handles.get(sessionId);
+    if (!handle?.page) {
+      throw new Error('Browser runtime handle is not available.');
+    }
+    // Let fonts settle and entry animations finish before the shutter.
+    await handle.page.waitForTimeout(Math.min(Math.max(input.waitMs ?? 600, 0), 10_000));
+    const buffer = await handle.page.screenshot({
+      type: 'png',
+      fullPage: input.fullPage === true,
+    });
+    return Buffer.from(buffer);
+  },
+
   async agentClick(sessionId: string, input: { selector?: string; text?: string; x?: number; y?: number }) {
     const session = await this.getAgentSession(sessionId);
     const handle = handles.get(sessionId);

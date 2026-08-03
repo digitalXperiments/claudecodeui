@@ -3,6 +3,7 @@ import { Bell, CheckCheck, Loader2, X } from 'lucide-react';
 
 import { Button } from '../../../../shared/view/ui';
 import { cn } from '../../../../lib/utils';
+import { useWebSocket } from '../../../../contexts/WebSocketContext';
 import {
   inboxNotificationsApi,
   type InboxNotification,
@@ -79,6 +80,18 @@ export default function NotificationsPanel({
     };
   }, [open, onUnreadChange]);
 
+  // Instant refresh: the server broadcasts `notification_created` on the chat
+  // websocket when a new inbox notification lands (e.g. auth-health watchdog),
+  // so the panel and badge update without waiting for the 30s poll.
+  const { subscribe } = useWebSocket();
+  useEffect(() => {
+    return subscribe((event) => {
+      if (event.kind === 'notification_created') {
+        void refresh();
+      }
+    });
+  }, [subscribe, refresh]);
+
   if (!open) {
     return null;
   }
@@ -129,6 +142,7 @@ export default function NotificationsPanel({
             <ul className="divide-y divide-border">
               {items.map((item) => {
                 const unread = !item.read_at;
+                const href = item.href;
                 return (
                   <li
                     key={item.notification_id}
@@ -161,16 +175,54 @@ export default function NotificationsPanel({
                         Dismiss
                       </Button>
                     </div>
-                    {unread ? (
-                      <button
-                        type="button"
-                        className="mt-1 text-[11px] text-primary hover:underline"
-                        onClick={() =>
-                          void inboxNotificationsApi.markRead(item.notification_id).then(refresh)
-                        }
-                      >
-                        Mark read
-                      </button>
+                    {unread || href ? (
+                      <div className="mt-1 flex items-center gap-3">
+                        {href ? (
+                          href.startsWith('settings:') ? (
+                            // Deep-link into the Settings modal; the listener
+                            // lives in useProjectsState where the modal's open
+                            // state is owned.
+                            <button
+                              type="button"
+                              className="text-[11px] text-primary hover:underline"
+                              onClick={() => {
+                                window.dispatchEvent(
+                                  new CustomEvent('cloudcli:open-settings', {
+                                    detail: { tab: href.slice('settings:'.length) },
+                                  }),
+                                );
+                                if (unread) {
+                                  void inboxNotificationsApi
+                                    .markRead(item.notification_id)
+                                    .then(refresh);
+                                }
+                              }}
+                            >
+                              Open settings
+                            </button>
+                          ) : (
+                            <a
+                              className="text-[11px] text-primary hover:underline"
+                              href={href}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              View
+                            </a>
+                          )
+                        ) : null}
+                        {unread ? (
+                          <button
+                            type="button"
+                            className="text-[11px] text-primary hover:underline"
+                            onClick={() =>
+                              void inboxNotificationsApi.markRead(item.notification_id).then(refresh)
+                            }
+                          >
+                            Mark read
+                          </button>
+                        ) : null}
+                      </div>
                     ) : null}
                   </li>
                 );

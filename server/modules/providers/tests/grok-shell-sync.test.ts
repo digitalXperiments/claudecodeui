@@ -137,6 +137,76 @@ test('stale session dirs from before the PTY started are ignored', async () => {
   });
 });
 
+test('two unowned sessions touched in the window are left unbound (ambiguity skipped)', async () => {
+  await withHarness(async ({ sessionsRoot, projectPath, projectDir }) => {
+    sessionsDb.createAppSession('app-5', 'grok', projectPath);
+
+    const startedAt = Date.now() - 60_000;
+    // A chat run and a shell both touched the project's session dir; the
+    // other conversation's DB row may not exist yet, so neither dir can be
+    // proven to be the shell's.
+    await touchSessionDir(projectDir, 'grok-other', new Date(Date.now() - 1000));
+    await touchSessionDir(projectDir, 'grok-shell', new Date());
+
+    const result = await syncGrokShellSession({
+      appSessionId: 'app-5',
+      projectPath,
+      startedAt,
+      sessionsRoot,
+    });
+
+    assert.equal(result, null);
+    assert.equal(sessionsDb.getSessionById('app-5')?.provider_session_id, null);
+  });
+});
+
+test('an existing mapping is never overwritten when its session was not touched', async () => {
+  await withHarness(async ({ sessionsRoot, projectPath, projectDir }) => {
+    sessionsDb.createAppSession('app-6', 'grok', projectPath);
+    sessionsDb.assignProviderSessionId('app-6', 'grok-mapped');
+
+    const startedAt = Date.now() - 60_000;
+    // Only an unknown session was touched (e.g. a concurrent chat's).
+    await touchSessionDir(projectDir, 'grok-unknown', new Date());
+
+    const result = await syncGrokShellSession({
+      appSessionId: 'app-6',
+      projectPath,
+      startedAt,
+      sessionsRoot,
+    });
+
+    assert.equal(result, null);
+    assert.equal(sessionsDb.getSessionById('app-6')?.provider_session_id, 'grok-mapped');
+  });
+});
+
+test('the single unowned session is adopted when the rest are foreign-owned', async () => {
+  await withHarness(async ({ sessionsRoot, projectPath, projectDir }) => {
+    sessionsDb.createAppSession('app-owner', 'grok', projectPath);
+    sessionsDb.assignProviderSessionId('app-owner', 'grok-busy');
+    sessionsDb.createAppSession('app-7', 'grok', projectPath);
+
+    const startedAt = Date.now() - 60_000;
+    await touchSessionDir(projectDir, 'grok-busy', new Date(Date.now() - 1000));
+    await touchSessionDir(projectDir, 'grok-new', new Date());
+
+    const result = await syncGrokShellSession({
+      appSessionId: 'app-7',
+      projectPath,
+      startedAt,
+      sessionsRoot,
+    });
+
+    assert.deepEqual(result, {
+      appSessionId: 'app-7',
+      providerSessionId: 'grok-new',
+      adopted: true,
+    });
+    assert.equal(sessionsDb.getSessionById('app-7')?.provider_session_id, 'grok-new');
+  });
+});
+
 test('shell session without an app session is indexed as its own sidebar row', async () => {
   await withHarness(async ({ sessionsRoot, projectPath, projectDir }) => {
     const startedAt = Date.now() - 60_000;

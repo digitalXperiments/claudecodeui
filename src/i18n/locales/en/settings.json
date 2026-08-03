@@ -400,7 +400,16 @@
       "defaultLabel": "Default model",
       "defaultDescription": "Used the next time chat loads for this agent.",
       "loading": "Loading…",
-      "loadError": "Could not load models for this agent."
+      "loadError": "Could not load models for this agent.",
+      "visibleLabel": "Models shown on new session",
+      "visibleDescription": "Pick which {{agent}} models appear in the picker when you start a new chat. The default model is always shown; hidden models stay reachable from the mid-session switcher.",
+      "showAll": "Show all",
+      "hideAll": "Hide all",
+      "searchPlaceholder": "Search models…",
+      "noMatches": "No models match that search.",
+      "noModels": "No models available for this agent.",
+      "defaultBadge": "Default",
+      "hiddenBadge": "Hidden"
     }
   },
   "permissions": {

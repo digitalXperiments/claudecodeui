@@ -31,9 +31,13 @@ export type GrokShellSyncResult = {
  * "chat and shell drift apart" bug. This scans the project's session dir for
  * directories touched while the PTY was alive and:
  *
- * - app session exists: bind the touched provider id to it (preferring the
- *   already-mapped id when it is among the touched set, and never stealing a
- *   session another app row owns);
+ * - app session exists: report the already-mapped id when the TUI resumed it;
+ *   otherwise bind a shell-created provider id only when exactly ONE touched
+ *   session is unowned — with two Grok sessions live in the same project the
+ *   newest-touched dir can belong to the other conversation before its DB row
+ *   exists, so an ambiguous scan is left unbound instead of guessed. An
+ *   existing mapping came from the provider runtime itself and is never
+ *   overwritten here;
  * - no app session (shell opened on an unsent "new chat"): index the TUI
  *   session as its own sidebar row via the regular synchronizer path.
  *
@@ -95,22 +99,33 @@ export async function syncGrokShellSession(info: {
       };
     }
 
-    // Otherwise adopt the newest touched session not owned by another app row
-    // (a concurrent chat run on a sibling session in the same project must
-    // not have its session stolen).
-    for (const candidate of touched) {
-      const owner = sessionsDb.getSessionByProviderSessionId(candidate.id);
-      if (owner && owner.session_id !== appRow.session_id) {
-        continue;
-      }
-      sessionsDb.assignProviderSessionId(appRow.session_id, candidate.id);
-      console.info(
-        `[grok-shell-sync] Adopted shell-created Grok session ${candidate.id} ` +
-        `onto app session ${appRow.session_id}`,
-      );
-      return { appSessionId: appRow.session_id, providerSessionId: candidate.id, adopted: true };
+    // An existing mapping was announced by the provider runtime itself; never
+    // overwrite it from an mtime heuristic. A stale `--resume` that forked a
+    // fresh id is left unbound rather than re-pointed at a guessed directory.
+    if (appRow.provider_session_id) {
+      return null;
     }
-    return null;
+
+    // Adopt only when exactly ONE touched session is not owned by another app
+    // row. Two live Grok sessions in the same project (a chat run + a shell,
+    // or two chats) touch two directories, and a concurrent chat's row may
+    // not exist yet for the ownership check to see — binding the newest then
+    // permanently points this session at the other transcript. Ambiguity is
+    // skipped: the row stays unbound instead of being bound wrong.
+    const candidates = touched.filter((candidate) => {
+      const owner = sessionsDb.getSessionByProviderSessionId(candidate.id);
+      return !owner || owner.session_id === appRow.session_id;
+    });
+    if (candidates.length !== 1) {
+      return null;
+    }
+    const candidate = candidates[0]!;
+    sessionsDb.assignProviderSessionId(appRow.session_id, candidate.id);
+    console.info(
+      `[grok-shell-sync] Adopted shell-created Grok session ${candidate.id} ` +
+      `onto app session ${appRow.session_id}`,
+    );
+    return { appSessionId: appRow.session_id, providerSessionId: candidate.id, adopted: true };
   }
 
   // No app session: index the TUI session as its own sidebar row (idempotent;

@@ -738,12 +738,16 @@ async function spawnGrok(command, options = {}, ws) {
     // pointing at a stale transcript.
     if (handle.grokSessionId && handle.grokSessionId !== capturedSessionId) {
       capturedSessionId = handle.grokSessionId;
-      // Keep the old key as an alias so a queued/concurrent run addressed to
-      // the previous id reuses this live child (its prompts already target the
-      // new Grok session); only throwaway `new:` keys are dropped.
-      if (processKey.startsWith('new:')) {
-        acpSessions.delete(processKey);
-      }
+      // Do NOT keep the previous id as an alias in the process map. The fork
+      // is announced below via session_created/setSessionId, which persists
+      // the app→provider mapping synchronously, so the owning app session's
+      // later runs (and aborts) address the new id. Anything still addressed
+      // to the old id holds a stale or foreign mapping (watcher-created rows,
+      // shell-resume rows); letting it resolve to this live child would put
+      // two app sessions' runs on one process, interleaving prompts into a
+      // single ACP conversation. Such a run must instead miss the map and
+      // spawn its own child.
+      acpSessions.delete(processKey);
       acpSessions.set(capturedSessionId, handle);
       if (ws.setSessionId && typeof ws.setSessionId === 'function') {
         ws.setSessionId(capturedSessionId);
@@ -978,6 +982,19 @@ async function spawnGrok(command, options = {}, ws) {
     }
 
     if (message.method !== 'session/update') {
+      return;
+    }
+
+    // A process can host more than one ACP session (probes, or a second run
+    // that grabbed this child through a stale process-map alias), and every
+    // run's handler sees every notification. Only forward updates for the
+    // session this run is bound to — same rule as the MCP-ready waiter: accept
+    // until the native id is known, then filter strictly. The id is captured
+    // in createAcpSession (session/new|load response) before this handler is
+    // subscribed, so in practice this always filters.
+    const boundSessionId = handle.grokSessionId || finalSessionId;
+    const updateSessionId = message.params?.sessionId;
+    if (boundSessionId && updateSessionId && updateSessionId !== boundSessionId) {
       return;
     }
 

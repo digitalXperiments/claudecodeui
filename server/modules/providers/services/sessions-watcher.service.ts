@@ -5,7 +5,10 @@ import { promises as fsPromises } from 'node:fs';
 import chokidar, { type FSWatcher } from 'chokidar';
 
 import { projectsDb, sessionsDb } from '@/modules/database/index.js';
-import { sessionSynchronizerService } from '@/modules/providers/services/session-synchronizer.service.js';
+import {
+  getDisabledProviderIds,
+  sessionSynchronizerService,
+} from '@/modules/providers/services/session-synchronizer.service.js';
 import { WS_OPEN_STATE, connectedClients } from '@/modules/websocket/index.js';
 import type { LLMProvider } from '@/shared/types.js';
 import { generateDisplayName } from '@/modules/projects/index.js';
@@ -76,6 +79,15 @@ function isWatcherTargetFile(provider: LLMProvider, filePath: string): boolean {
   }
 
   return filePath.endsWith('.jsonl');
+}
+
+/**
+ * Watch paths minus the providers the user turned off in Settings → Agents.
+ */
+export function getEnabledProviderWatchPaths(
+  disabledProviders: ReadonlySet<string>
+): Array<{ provider: LLMProvider; rootPath: string }> {
+  return PROVIDER_WATCH_PATHS.filter(({ provider }) => !disabledProviders.has(provider));
 }
 
 function clearPendingWatcherFlushTimer(): void {
@@ -235,6 +247,12 @@ async function onUpdate(
     return;
   }
 
+  // Defense in depth: ignore events for providers disabled after their watcher
+  // was armed (or for a stray watcher that outlived a refresh).
+  if ((await getDisabledProviderIds()).has(provider)) {
+    return;
+  }
+
   try {
     const result = await sessionSynchronizerService.synchronizeProviderFile(provider, filePath);
     if (!result.indexed) {
@@ -258,6 +276,7 @@ async function onUpdate(
 
 /**
  * Starts provider filesystem watchers and performs initial DB synchronization.
+ * Providers the user turned off in Settings → Agents get no watcher.
  */
 export async function initializeSessionsWatcher(): Promise<void> {
   console.log('Setting up session watchers');
@@ -268,7 +287,8 @@ export async function initializeSessionsWatcher(): Promise<void> {
     failures: initialSync.failures,
   });
 
-  for (const { provider, rootPath } of PROVIDER_WATCH_PATHS) {
+  const disabledProviders = await getDisabledProviderIds();
+  for (const { provider, rootPath } of getEnabledProviderWatchPaths(disabledProviders)) {
     try {
       await fsPromises.mkdir(rootPath, { recursive: true });
 
@@ -327,4 +347,14 @@ export async function closeSessionsWatcher(): Promise<void> {
   pendingWatcherUpdateStartedAt = null;
   watcherRefreshInFlight = false;
   watcherRescheduleAfterRefresh = false;
+}
+
+/**
+ * Re-arms the watchers against the current disabled-provider list. Called
+ * when the user changes Settings → Agents toggles at runtime; the re-init
+ * runs an incremental sync so re-enabled providers catch up immediately.
+ */
+export async function refreshSessionsWatcher(): Promise<void> {
+  await closeSessionsWatcher();
+  await initializeSessionsWatcher();
 }

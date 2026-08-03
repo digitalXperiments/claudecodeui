@@ -22,6 +22,7 @@ import {
   importFromMissionControlDb,
   resolveDefaultLegacyDbPath,
 } from '@/modules/mission-control/mission-control-import.service.js';
+import { generateArticleAssets } from '@/modules/mission-control/article-assets.service.js';
 
 const router = express.Router();
 
@@ -337,6 +338,41 @@ router.post(
       return;
     }
     res.json({ deleted: false, item, pendingCount });
+  }),
+);
+
+// POST /items/:id/assets — render the images an X article draft needs
+router.post(
+  '/items/:id/assets',
+  asyncHandler(async (req, res) => {
+    const itemId = paramId(req.params.id);
+    const item = missionControlDb.getItem(itemId);
+    if (!item) {
+      throw new AppError('Item not found', {
+        code: 'MC_ITEM_NOT_FOUND',
+        statusCode: 404,
+      });
+    }
+
+    let result;
+    try {
+      result = await generateArticleAssets(item.body, { force: req.body?.force === true });
+    } catch (error) {
+      throw new AppError(error instanceof Error ? error.message : String(error), {
+        code: 'MC_ASSETS_UNSUPPORTED_BODY',
+        statusCode: 400,
+      });
+    }
+
+    // Persist the patched body without disturbing the item's review status.
+    const updated = missionControlDb.setItemStatus(itemId, item.status, { body: result.body });
+    res.json({
+      item: updated,
+      generated: result.generated,
+      skipped: result.skipped,
+      failed: result.failed,
+      messages: result.messages,
+    });
   }),
 );
 

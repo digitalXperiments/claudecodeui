@@ -327,11 +327,13 @@ export const chatRunRegistry = {
   },
 
   /**
-   * Re-attaches a run's outbound stream to a (new) websocket connection.
+   * Adds a (new) websocket connection to a run's outbound fan-out set.
    *
    * This is the generic replacement for the Claude-only writer reconnect:
    * after a page refresh the new socket subscribes and immediately starts
-   * receiving the still-running stream, for every provider.
+   * receiving the still-running stream, for every provider. Attaching is
+   * additive — other sockets already following the run (a second browser tab,
+   * the tab that sent the message) keep receiving events.
    */
   attachConnection(appSessionId: string, connection: RealtimeClientConnection): boolean {
     const run = runs.get(appSessionId);
@@ -341,6 +343,17 @@ export const chatRunRegistry = {
 
     run.writer.updateWebSocket(connection);
     return true;
+  },
+
+  /**
+   * Removes a socket from every run's fan-out set. Called by the chat
+   * websocket handler when a client socket closes, so closed tabs stop
+   * receiving (and accumulating in) run writers.
+   */
+  detachConnection(connection: RealtimeClientConnection): void {
+    for (const run of runs.values()) {
+      run.writer.detachConnection(connection);
+    }
   },
 
   /**

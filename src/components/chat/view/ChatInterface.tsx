@@ -45,10 +45,12 @@ function ChatInterface({
   const { t } = useTranslation('chat');
 
   const sessionStore = useSessionStore();
-  const streamTimerRef = useRef<number | null>(null);
-  const accumulatedStreamRef = useRef('');
-  const thinkingTimerRef = useRef<number | null>(null);
-  const accumulatedThinkingRef = useRef('');
+  // Per-session streaming accumulators. This view subscribes to every
+  // in-progress session at once, so each session's buffered stream/thinking
+  // text and its debounce timer live under that session's own id — sharing a
+  // single buffer would stamp background sessions' text into the viewed one.
+  const streamBuffersRef = useRef(new Map<string, { text: string; timer: number | null }>());
+  const thinkingBuffersRef = useRef(new Map<string, { text: string; timer: number | null }>());
   // When each session's `chat.subscribe` was last sent; idle acks older than
   // a later local request are discarded as stale.
   const statusCheckSentAtRef = useRef(new Map<string, number>());
@@ -56,19 +58,6 @@ function ChatInterface({
   // on every sequenced frame, read whenever a `chat.subscribe` is sent so the
   // server replays only the events this client actually missed.
   const lastSeqRef = useRef(new Map<string, number>());
-
-  const resetStreamingState = useCallback(() => {
-    if (streamTimerRef.current) {
-      clearTimeout(streamTimerRef.current);
-      streamTimerRef.current = null;
-    }
-    accumulatedStreamRef.current = '';
-    if (thinkingTimerRef.current) {
-      clearTimeout(thinkingTimerRef.current);
-      thinkingTimerRef.current = null;
-    }
-    accumulatedThinkingRef.current = '';
-  }, []);
 
   const {
     provider,
@@ -111,6 +100,34 @@ function ChatInterface({
     selectedSession,
     selectedProject,
   });
+
+  // Called on session switch / new session / unmount. Flush each pending
+  // buffer into its OWN session's store slot (updateStreaming replaces the
+  // well-known `__streaming_` row, so this matches the timer/stream_end
+  // flushes) and clear its timer. The entries keep their text, so a session
+  // that is still streaming keeps appending afterwards and its
+  // stream_end/complete frame does the final flush — nothing is discarded
+  // and nothing crosses sessions.
+  const resetStreamingState = useCallback(() => {
+    streamBuffersRef.current.forEach((entry, sessionId) => {
+      if (entry.timer) {
+        clearTimeout(entry.timer);
+        entry.timer = null;
+      }
+      if (entry.text) {
+        sessionStore.updateStreaming(sessionId, entry.text, provider);
+      }
+    });
+    thinkingBuffersRef.current.forEach((entry, sessionId) => {
+      if (entry.timer) {
+        clearTimeout(entry.timer);
+        entry.timer = null;
+      }
+      if (entry.text) {
+        sessionStore.updateThinkingStream(sessionId, entry.text, provider);
+      }
+    });
+  }, [provider, sessionStore]);
 
   const {
     chatMessages,
@@ -300,10 +317,8 @@ function ChatInterface({
     setTokenBudget,
     pendingPermissionRequests,
     setPendingPermissionRequests,
-    streamTimerRef,
-    accumulatedStreamRef,
-    thinkingTimerRef,
-    accumulatedThinkingRef,
+    streamBuffersRef,
+    thinkingBuffersRef,
     lastSeqRef,
     statusCheckSentAtRef,
     onSessionProcessing,
