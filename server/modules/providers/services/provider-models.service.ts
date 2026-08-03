@@ -2,6 +2,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
+import { sessionsDb } from '@/modules/database/index.js';
 import { providerRegistry } from '@/modules/providers/provider.registry.js';
 import type { IProvider } from '@/shared/interfaces.js';
 import type {
@@ -13,7 +14,10 @@ import type {
   ProviderModelsResult,
   ProviderSessionActiveModelChange,
 } from '@/shared/types.js';
-import { readProviderSessionActiveModelChange } from '@/shared/utils.js';
+import {
+  readProviderSessionActiveModelChange,
+  writeProviderSessionActiveModelChange,
+} from '@/shared/utils.js';
 
 export const PROVIDER_MODELS_CACHE_TTL_MS = 3 * 24 * 60 * 60 * 1000;
 const PROVIDER_MODELS_CACHE_VERSION = 2;
@@ -24,6 +28,7 @@ type ProviderModelsServiceDependencies = {
   cachePath?: string;
   activeModelChangesPath?: string;
   now?: () => number;
+  getProviderSessionId?: (sessionId: string) => string | null;
 };
 
 type ProviderModelsOptions = {
@@ -128,6 +133,25 @@ const writeProviderModelsCacheFile = async (
 };
 
 /**
+ * Resolves the provider-native session id for one app-facing session id.
+ *
+ * The active-model override file is keyed by `${provider}:${sessionId}`. The
+ * frontend writes it with the stable app-facing id, but resume paths read it
+ * with the provider-native id (`options.sessionId` is the provider id at
+ * resume time), so overrides on gateway-created sessions (app uuid !=
+ * provider uuid) would silently never apply without this bridge.
+ */
+const lookupProviderSessionId = (sessionId: string): string | null => {
+  try {
+    return sessionsDb.getSessionById(sessionId)?.provider_session_id ?? null;
+  } catch {
+    // The session index may be unavailable (e.g. before database init); the
+    // override keyed by the app session id stays the single source of truth.
+    return null;
+  }
+};
+
+/**
  * Provider model lookup service.
  *
  * Routes and other service callers use this layer instead of resolving provider
@@ -139,6 +163,7 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
   const cachePath = dependencies.cachePath ?? getProviderModelsCachePath();
   const activeModelChangesPath = dependencies.activeModelChangesPath;
   const now = dependencies.now ?? (() => Date.now());
+  const getProviderSessionId = dependencies.getProviderSessionId ?? lookupProviderSessionId;
   const memoryCache = new Map<LLMProvider, ProviderModelsCacheEntry>();
   const pendingRequests = new Map<LLMProvider, Promise<ProviderModelsResult>>();
   let persistedCacheLoaded = false;
@@ -311,7 +336,31 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
   const changeActiveModel = async (
     provider: LLMProvider,
     input: ProviderChangeActiveModelInput,
-  ): Promise<ProviderSessionActiveModelChange> => resolveProvider(provider).models.changeActiveModel(input);
+  ): Promise<ProviderSessionActiveModelChange> => {
+    const result = await resolveProvider(provider).models.changeActiveModel(input);
+
+    // Mirror every persisted override under the provider-native session id so
+    // gateway-created sessions (app uuid != provider uuid) actually pick up
+    // the model change when the resume path reads the override by the
+    // provider id. Best-effort: a failed mirror must not break the primary
+    // write, which already succeeded above.
+    if (result.supported && result.changed && result.model?.trim()) {
+      const providerSessionId = getProviderSessionId(input.sessionId)?.trim();
+      if (providerSessionId && providerSessionId !== input.sessionId.trim()) {
+        try {
+          await writeProviderSessionActiveModelChange(
+            provider,
+            { ...input, sessionId: providerSessionId },
+            { filePath: activeModelChangesPath },
+          );
+        } catch {
+          // The override keyed by the app session id is already persisted.
+        }
+      }
+    }
+
+    return result;
+  };
 
   const getChangedActiveModel = async (
     provider: LLMProvider,

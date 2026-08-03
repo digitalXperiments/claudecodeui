@@ -89,6 +89,51 @@ export function clearQueuedMessage(sessionId: string): void {
   safeLocalStorage.removeItem(queuedMessageKey(sessionId));
 }
 
+/** Storage key holding each provider's tools/permission settings object. */
+export const providerToolsSettingsKey = (provider: string): string =>
+  provider === 'cursor'
+    ? 'cursor-tools-settings'
+    : provider === 'codex'
+      ? 'codex-settings'
+      : provider === 'opencode'
+        ? 'opencode-settings'
+        : provider === 'grok'
+          ? 'grok-tools-settings'
+          : provider === 'agy'
+            ? 'agy-tools-settings'
+            : provider === 'pi'
+              ? 'pi-tools-settings'
+              : 'claude-settings';
+
+export type ProviderToolsSettings = {
+  allowedTools?: unknown;
+  disallowedTools?: unknown;
+  skipPermissions?: boolean;
+  [key: string]: unknown;
+};
+
+/**
+ * Reads a provider's tools/permission settings blob from localStorage. Shared
+ * by the composer (chat.send options) and the session-handoff auto-send so
+ * both dispatch with the same per-provider settings.
+ */
+export function readProviderToolsSettings(provider: string): ProviderToolsSettings {
+  try {
+    const savedSettings = safeLocalStorage.getItem(providerToolsSettingsKey(provider));
+    if (savedSettings) {
+      return JSON.parse(savedSettings) as ProviderToolsSettings;
+    }
+  } catch (error) {
+    console.error('Error loading tools settings:', error);
+  }
+
+  return {
+    allowedTools: [],
+    disallowedTools: [],
+    skipPermissions: false,
+  };
+}
+
 export function getClaudeSettings(): ClaudeSettings {
   const raw = safeLocalStorage.getItem(CLAUDE_SETTINGS_KEY);
   if (!raw) {

@@ -132,6 +132,9 @@ CREATE TABLE IF NOT EXISTS sessions (
     -- \`provider_session_id\` is filled in once the provider announces its own
     -- id mid-run, or equals \`session_id\` for sessions discovered on disk.
     provider_session_id TEXT,
+    -- Set when this session was created by a cross-provider/model handoff:
+    -- points at the app-facing session id the conversation continues from.
+    continued_from_session_id TEXT,
     custom_name TEXT,
     project_path TEXT,
     jsonl_path TEXT,

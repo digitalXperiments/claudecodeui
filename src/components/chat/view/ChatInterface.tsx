@@ -12,13 +12,40 @@ import { useChatSessionState } from '../hooks/useChatSessionState';
 import { useChatRealtimeHandlers } from '../hooks/useChatRealtimeHandlers';
 import { useChatComposerState } from '../hooks/useChatComposerState';
 import { useSessionStore } from '../../../stores/useSessionStore';
+import { createSessionHandoff } from '../../../utils/api';
 import { resolveProviderModelLabel } from '../../../utils/providerModels';
+import { readProviderToolsSettings, writeQueuedMessage } from '../utils/chatStorage';
+import { DEFAULT_EFFORT_VALUE } from '../constants/providerEffort';
 import { flattenTranscript } from '../../skills/lib/skillWizardPrompt';
 import SkillWizardDialog from '../../skills/view/SkillWizardDialog';
 
 import ChatMessagesPane from './subcomponents/ChatMessagesPane';
 import ChatComposer from './subcomponents/ChatComposer';
-import CommandResultModal from './subcomponents/CommandResultModal';
+import CommandResultModal, { type SessionSwitchRequest } from './subcomponents/CommandResultModal';
+
+/** Labels for the post-switch notice (mirrors CommandResultModal's map). */
+const SWITCH_PROVIDER_LABELS: Record<string, string> = {
+  claude: 'Claude',
+  cursor: 'Cursor',
+  codex: 'Codex',
+  opencode: 'OpenCode',
+  grok: 'Grok',
+  kimi: 'Kimi',
+  agy: 'Antigravity',
+  pi: 'Pi',
+};
+
+const getSwitchProviderLabel = (targetProvider: string) =>
+  SWITCH_PROVIDER_LABELS[targetProvider] || targetProvider;
+
+/** Handoff send parked while the view navigates to the new session. */
+type PendingHandoffSend = {
+  sessionId: string;
+  provider: Provider;
+  model: string | null;
+  prompt: string | null;
+  filePath?: string;
+};
 
 function ChatInterface({
   selectedProject,
@@ -197,6 +224,177 @@ function ChatInterface({
     setSkillWizardTranscript(transcript);
     setSkillWizardOpen(true);
   }, [currentSessionId, selectedSession?.id, sessionStore]);
+
+  // Post-switch notice. The app has no global toast util, so this is a
+  // transient inline banner (same pattern as SkillWizardDialog's toast).
+  const [handoffNotice, setHandoffNotice] = useState<string | null>(null);
+  const handoffNoticeTimerRef = useRef<number | null>(null);
+  const showHandoffNotice = useCallback((message: string) => {
+    if (handoffNoticeTimerRef.current !== null) {
+      window.clearTimeout(handoffNoticeTimerRef.current);
+    }
+    setHandoffNotice(message);
+    handoffNoticeTimerRef.current = window.setTimeout(() => setHandoffNotice(null), 7000);
+  }, []);
+  useEffect(() => () => {
+    if (handoffNoticeTimerRef.current !== null) {
+      window.clearTimeout(handoffNoticeTimerRef.current);
+    }
+  }, []);
+
+  // Handoff prompt parked while the view navigates to the new session —
+  // sending before that would stamp the message onto the old session.
+  const [pendingHandoffSend, setPendingHandoffSend] = useState<PendingHandoffSend | null>(null);
+
+  // Confirm handler for the model picker's switch-options step. Runs the
+  // handoff API, then re-points provider state, session state, and the URL at
+  // the freshly created session. Rejections propagate so the modal shows the
+  // server error and stays open.
+  const handleSwitchSessionTarget = useCallback(async (request: SessionSwitchRequest) => {
+    if (!selectedProject) {
+      throw new Error('Select a project before switching providers.');
+    }
+
+    const data = (await createSessionHandoff(request.sourceSessionId, {
+      targetProvider: request.targetProvider,
+      targetModel: request.targetModel,
+      mode: request.mode,
+      saveToFile: request.saveToFile,
+      saveToMemory: request.saveToMemory,
+    })) as {
+      sessionId?: string;
+      provider?: string;
+      projectPath?: string;
+      handoffPrompt?: string | null;
+      handoffFilePath?: string;
+    };
+
+    const newSessionId = typeof data?.sessionId === 'string' ? data.sessionId : '';
+    if (!newSessionId) {
+      throw new Error('Handoff did not return a new session id.');
+    }
+
+    const targetProvider = (typeof data?.provider === 'string' ? data.provider : request.targetProvider) as Provider;
+    const targetModel =
+      typeof request.targetModel === 'string' && request.targetModel.trim().length > 0
+        ? request.targetModel
+        : null;
+
+    // Provider state FIRST: the selectedSession placeholder/adoption effects
+    // read these exact keys when the new session id lands, so they must
+    // already point at the target provider (and its model).
+    setProvider(targetProvider);
+    localStorage.setItem('selected-provider', targetProvider);
+    if (targetModel) {
+      localStorage.setItem(`${targetProvider}-model`, targetModel);
+      localStorage.setItem(`${targetProvider}-model-${newSessionId}`, targetModel);
+    }
+
+    // Same establishment path as the first-message flow: records the id
+    // locally, navigates to /session/:id, and upserts the sidebar entry.
+    handleSessionEstablished(newSessionId, {
+      provider: targetProvider,
+      project: selectedProject,
+      summary: `Handoff to ${getSwitchProviderLabel(targetProvider)}`,
+    });
+
+    setPendingHandoffSend({
+      sessionId: newSessionId,
+      provider: targetProvider,
+      model: targetModel,
+      prompt:
+        typeof data?.handoffPrompt === 'string' && data.handoffPrompt.trim().length > 0
+          ? data.handoffPrompt
+          : null,
+      filePath: typeof data?.handoffFilePath === 'string' ? data.handoffFilePath : undefined,
+    });
+  }, [selectedProject, setProvider, handleSessionEstablished]);
+
+  // Auto-send the handoff prompt as the new session's first message through
+  // the normal WS chat.send path — but only once the view (and with it
+  // `addMessage`'s active session) actually points at the new session id.
+  useEffect(() => {
+    if (!pendingHandoffSend) {
+      return;
+    }
+
+    const viewSessionId = selectedSession?.id || currentSessionId;
+    if (viewSessionId !== pendingHandoffSend.sessionId) {
+      return;
+    }
+
+    const { sessionId, provider: targetProvider, model, prompt, filePath } = pendingHandoffSend;
+    setPendingHandoffSend(null);
+
+    const targetLabel = getSwitchProviderLabel(targetProvider);
+    showHandoffNotice(
+      `Switched to ${targetLabel}${model ? ` · ${model}` : ''}${filePath ? ` — handoff saved to ${filePath}` : ''}`,
+    );
+
+    if (!prompt) {
+      // Fresh start: land on the empty new session.
+      return;
+    }
+
+    const effort = localStorage.getItem(`${targetProvider}-effort`) || DEFAULT_EFFORT_VALUE;
+    const toolsSettings = readProviderToolsSettings(targetProvider);
+    const sendOptions: Record<string, unknown> = {
+      effort,
+      permissionMode: resolvePermissionModeForProvider(targetProvider, permissionMode),
+      toolsSettings,
+      skipPermissions: Boolean(toolsSettings?.skipPermissions),
+      sessionSummary: `Handoff to ${targetLabel}`,
+    };
+    if (model) {
+      sendOptions.model = model;
+    }
+
+    const sent = sendMessage({
+      type: 'chat.send',
+      sessionId,
+      content: prompt,
+      options: { ...sendOptions, images: [] },
+    });
+
+    if (!sent) {
+      // Socket down: park the prompt as the session's queued draft so the
+      // composer's normal flush sends it once reconnected.
+      writeQueuedMessage(sessionId, { content: prompt, options: sendOptions });
+      showHandoffNotice('Not connected — the handoff prompt will send once reconnected.');
+      return;
+    }
+
+    // Pin the session to the model/effort it starts with, mirror the
+    // optimistic user message, and light up the activity indicator — the same
+    // bookkeeping handleSubmit does for a regular first message.
+    if (model) {
+      persistSessionModelEffort(targetProvider, sessionId, model, effort);
+    }
+    addMessage({
+      type: 'user',
+      content: prompt,
+      timestamp: new Date(),
+    });
+    onSessionProcessing?.(sessionId, {
+      statusText: null,
+      canInterrupt: true,
+    });
+    setIsUserScrolledUp(false);
+    setTimeout(() => scrollToBottom(), 100);
+  }, [
+    pendingHandoffSend,
+    selectedSession?.id,
+    currentSessionId,
+    sendMessage,
+    resolvePermissionModeForProvider,
+    permissionMode,
+    persistSessionModelEffort,
+    addMessage,
+    onSessionProcessing,
+    setIsUserScrolledUp,
+    scrollToBottom,
+    showHandoffNotice,
+  ]);
 
   const {
     input,
@@ -574,7 +772,17 @@ function ChatInterface({
         onHardRefreshProviderModels={hardRefreshProviderModels}
         currentSessionId={currentSessionId || selectedSession?.id || null}
         onSelectProviderModel={selectProviderModel}
+        onSwitchSessionTarget={handleSwitchSessionTarget}
       />
+
+      {handoffNotice && (
+        <div
+          role="status"
+          className="fixed bottom-6 left-1/2 z-[11000] max-w-[min(92vw,36rem)] -translate-x-1/2 rounded-full border border-border/60 bg-popover px-4 py-2 text-center text-sm font-medium text-foreground shadow-lg"
+        >
+          {handoffNotice}
+        </div>
+      )}
 
       {skillWizardOpen && (
         <SkillWizardDialog

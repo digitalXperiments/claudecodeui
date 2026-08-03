@@ -1,5 +1,12 @@
 export { sessionSynchronizerService } from './services/session-synchronizer.service.js';
 export { sessionsService } from './services/sessions.service.js';
+export { sessionHandoffService } from './services/session-handoff.service.js';
+export type {
+  BuildHandoffDocumentInput,
+  CreateHandoffSessionInput,
+  CreateHandoffSessionResult,
+  SessionHandoffMode,
+} from './services/session-handoff.service.js';
 export { providerSkillsService } from './services/skills.service.js';
 export { providerMcpService } from './services/mcp.service.js';
 export { mcpCatalogService } from './services/mcp-catalog.service.js';

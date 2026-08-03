@@ -6,6 +6,7 @@ type SessionRow = {
   session_id: string;
   provider: string;
   provider_session_id: string | null;
+  continued_from_session_id: string | null;
   project_path: string | null;
   jsonl_path: string | null;
   custom_name: string | null;
@@ -15,7 +16,7 @@ type SessionRow = {
 };
 
 const SESSION_ROW_COLUMNS =
-  'session_id, provider, provider_session_id, project_path, jsonl_path, custom_name, isArchived, created_at, updated_at';
+  'session_id, provider, provider_session_id, continued_from_session_id, project_path, jsonl_path, custom_name, isArchived, created_at, updated_at';
 
 const SQLITE_UTC_TIMESTAMP_REGEX = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
 
@@ -237,6 +238,22 @@ export const sessionsDb = {
        SET custom_name = ?
        WHERE session_id = ?`
     ).run(customName, sessionId);
+  },
+
+  /**
+   * Records the handoff lineage for one app-created session.
+   *
+   * Session handoff allocates a fresh app session that continues an existing
+   * conversation under a different provider/model; this links the new row back
+   * to the app-facing source session id so the chain stays inspectable.
+   */
+  setContinuedFrom(sessionId: string, sourceSessionId: string): void {
+    const db = getConnection();
+    db.prepare(
+      `UPDATE sessions
+       SET continued_from_session_id = ?
+       WHERE session_id = ?`
+    ).run(sourceSessionId, sessionId);
   },
 
   getSessionById(sessionId: string): SessionRow | null {

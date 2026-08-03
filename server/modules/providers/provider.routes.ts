@@ -7,6 +7,11 @@ import { mcpCatalogService } from '@/modules/providers/services/mcp-catalog.serv
 import { providerModelsService } from '@/modules/providers/services/provider-models.service.js';
 import { providerSkillsService } from '@/modules/providers/services/skills.service.js';
 import { sessionConversationsSearchService } from '@/modules/providers/services/session-conversations-search.service.js';
+import {
+  sessionHandoffService,
+  type SessionHandoffMode,
+} from '@/modules/providers/services/session-handoff.service.js';
+import { getDisabledProviderIds } from '@/modules/providers/services/session-synchronizer.service.js';
 import { sessionsService } from '@/modules/providers/services/sessions.service.js';
 import type {
   LLMProvider,
@@ -700,6 +705,82 @@ router.put(
     const summary = parseSessionRenameSummary(req.body);
     const result = sessionsService.renameSessionById(sessionId, summary);
     res.json(createApiSuccessResponse(result));
+  }),
+);
+
+const HANDOFF_MODES = new Set<SessionHandoffMode>(['summary', 'full', 'fresh']);
+
+type HandoffPayload = {
+  targetProvider: LLMProvider;
+  targetModel?: string;
+  mode: SessionHandoffMode;
+  saveToFile: boolean;
+  saveToMemory: boolean;
+};
+
+const parseHandoffPayload = async (payload: unknown): Promise<HandoffPayload> => {
+  if (!payload || typeof payload !== 'object') {
+    throw new AppError('Request body must be an object.', {
+      code: 'INVALID_REQUEST_BODY',
+      statusCode: 400,
+    });
+  }
+
+  const body = payload as Record<string, unknown>;
+  const rawTargetProvider = body.targetProvider;
+  if (
+    rawTargetProvider === undefined
+    || rawTargetProvider === null
+    || (typeof rawTargetProvider === 'string' && !rawTargetProvider.trim())
+  ) {
+    throw new AppError('targetProvider is required.', {
+      code: 'TARGET_PROVIDER_REQUIRED',
+      statusCode: 400,
+    });
+  }
+
+  const targetProvider = parseProvider(rawTargetProvider);
+
+  const disabledProviders = await getDisabledProviderIds();
+  if (disabledProviders.has(targetProvider)) {
+    throw new AppError(`Provider "${targetProvider}" is disabled.`, {
+      code: 'PROVIDER_DISABLED',
+      statusCode: 400,
+    });
+  }
+
+  const rawMode = readOptionalQueryString(body.mode) ?? 'summary';
+  if (!HANDOFF_MODES.has(rawMode as SessionHandoffMode)) {
+    throw new AppError('mode must be one of "summary", "full", or "fresh".', {
+      code: 'INVALID_HANDOFF_MODE',
+      statusCode: 400,
+    });
+  }
+
+  return {
+    targetProvider,
+    targetModel: readOptionalQueryString(body.targetModel),
+    mode: rawMode as SessionHandoffMode,
+    saveToFile: body.saveToFile === true,
+    saveToMemory: body.saveToMemory === true,
+  };
+};
+
+/**
+ * Session handoff: allocates a new app session under the target provider/model
+ * that continues the source session's work. The response carries the prompt
+ * the frontend should send as the new session's first message.
+ */
+router.post(
+  '/sessions/:sessionId/handoff',
+  asyncHandler(async (req: Request, res: Response) => {
+    const sessionId = parseSessionId(req.params.sessionId);
+    const payload = await parseHandoffPayload(req.body);
+    const result = await sessionHandoffService.createHandoffSession({
+      sourceSessionId: sessionId,
+      ...payload,
+    });
+    res.status(201).json(createApiSuccessResponse(result));
   }),
 );
 

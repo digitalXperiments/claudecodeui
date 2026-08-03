@@ -300,6 +300,9 @@ test('provider models service delegates active model change requests to the prov
         },
       },
     }),
+    // Stubbed: no session index exists in this test, and the default lookup
+    // must stay hermetic (no real database file) here.
+    getProviderSessionId: () => null,
   });
 
   const changedModel = await service.changeActiveModel('claude', {
@@ -316,6 +319,39 @@ test('provider models service delegates active model change requests to the prov
   }]);
   assert.equal(changedModel.changed, true);
   assert.equal(changedModel.model, 'opus');
+});
+
+test('changeActiveModel mirrors the override under the provider-native session id', async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'provider-model-mirror-'));
+  const activeModelChangesPath = path.join(tempRoot, 'session-model-changes.json');
+
+  try {
+    const service = createProviderModelsService({
+      activeModelChangesPath,
+      resolveProvider: (provider) => ({
+        models: {
+          getSupportedModels: async () => createModels(`${provider}-models`),
+          getCurrentActiveModel: async () => createCurrentActiveModel(`${provider}-active`),
+          changeActiveModel: async (input) => createSessionActiveModelChange(provider, input),
+        },
+      }),
+      // Simulates a gateway-created session: app id != provider-native id.
+      getProviderSessionId: (sessionId) =>
+        sessionId === 'app-session-1' ? 'provider-session-1' : null,
+    });
+
+    await service.changeActiveModel('cursor', {
+      sessionId: 'app-session-1',
+      model: 'composer-2',
+    });
+
+    // The resume path reads the override with the provider-native id, so the
+    // mirrored entry must resolve the changed model for that id.
+    const resumedModel = await service.resolveResumeModel('cursor', 'provider-session-1', null);
+    assert.equal(resumedModel, 'composer-2');
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
 });
 
 test('resolveResumeModel prefers a stored changed model over the requested one', async () => {

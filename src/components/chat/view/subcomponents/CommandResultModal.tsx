@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 
 import { Badge, Button, Dialog, DialogContent, DialogTitle, Input } from '../../../../shared/view/ui';
+import SessionProviderLogo from '../../../llm-logo-provider/SessionProviderLogo';
 import type { LLMProvider, ProviderModelsCacheInfo, ProviderModelsDefinition } from '../../../../types/app';
 import { isProviderModelMatch, resolveProviderModelLabel } from '../../../../utils/providerModels';
 import type {
@@ -27,6 +28,19 @@ import type {
   ModelCommandData,
   StatusCommandData,
 } from '../../hooks/useChatComposerState';
+
+/** Context-carrying modes that go through the session handoff API. */
+export type SessionHandoffMode = 'summary' | 'full' | 'fresh';
+
+export type SessionSwitchRequest = {
+  /** Current app session id (the handoff source). */
+  sourceSessionId: string;
+  targetProvider: LLMProvider;
+  targetModel?: string;
+  mode: SessionHandoffMode;
+  saveToFile?: boolean;
+  saveToMemory?: boolean;
+};
 
 type CommandResultModalProps = {
   payload: CommandModalPayload | null;
@@ -45,6 +59,13 @@ type CommandResultModalProps = {
     changed: boolean;
     model: string;
   }>;
+  /**
+   * Performs a mid-session switch that cannot stay in the current session:
+   * another provider, or the same provider with a summary/full/fresh handoff.
+   * The parent runs the handoff API, establishes the new session, and
+   * navigates to it; rejections surface in the modal (it stays open).
+   */
+  onSwitchSessionTarget?: (request: SessionSwitchRequest) => Promise<void>;
 };
 
 type CommandEntry = {
@@ -240,6 +261,8 @@ function ModelsContent({
   onHardRefreshProviderModels,
   currentSessionId,
   onSelectProviderModel,
+  onSwitchSessionTarget,
+  onClose,
 }: {
   data: ModelCommandData;
   providerModelCatalog: Partial<Record<LLMProvider, ProviderModelsDefinition>>;
@@ -247,22 +270,34 @@ function ModelsContent({
   onHardRefreshProviderModels: () => void;
   currentSessionId: string | null;
   onSelectProviderModel: CommandResultModalProps['onSelectProviderModel'];
+  onSwitchSessionTarget: CommandResultModalProps['onSwitchSessionTarget'];
+  onClose: () => void;
 }) {
   const [query, setQuery] = useState('');
   const [changingModel, setChangingModel] = useState<string | null>(null);
   const [pendingSessionModel, setPendingSessionModel] = useState<string | null>(null);
   const [selectionNotice, setSelectionNotice] = useState<string | null>(null);
-  // Model the user picked mid-session that is awaiting explicit confirmation
-  // (because it re-reads the whole transcript with cost impact).
-  const [confirmModel, setConfirmModel] = useState<string | null>(null);
   // Model applied for a brand-new chat (no session yet). `data.current` is a
   // snapshot taken when the modal opened, so reflect a default-scope change
   // here so the header and highlight track the latest pick immediately.
   const [appliedDefaultModel, setAppliedDefaultModel] = useState<string | null>(null);
+  // Provider whose catalog the grid is browsing. Mid-session this can differ
+  // from the session's own provider so the user can jump providers entirely.
+  const [scopeProvider, setScopeProvider] = useState<LLMProvider | null>(null);
+  // Picked target (provider + model) awaiting switch-option confirmation.
+  const [pendingSwitch, setPendingSwitch] = useState<{ provider: LLMProvider; model: string } | null>(null);
+  const [switchMode, setSwitchMode] = useState<'keep' | SessionHandoffMode>('summary');
+  const [saveToFile, setSaveToFile] = useState(false);
+  const [saveToMemory, setSaveToMemory] = useState(false);
+  const [handoffInFlight, setHandoffInFlight] = useState(false);
+  const [handoffError, setHandoffError] = useState<string | null>(null);
   const currentProvider = (data?.current?.provider || 'claude') as LLMProvider;
   const currentModel = data?.current?.model || 'Unknown';
   const providerLabel = data?.current?.providerLabel || getProviderLabel(currentProvider);
+  const browseProvider = scopeProvider ?? currentProvider;
+  const browsingCurrentProvider = browseProvider === currentProvider;
   const liveDefinition = providerModelCatalog[currentProvider];
+  const scopeDefinition = providerModelCatalog[browseProvider];
   // The session reports the concrete model id; show the catalog label so the
   // generation the user actually gets is spelled out. `activeModel` reflects a
   // just-applied default-scope change that `data.current` (a snapshot taken
@@ -270,17 +305,21 @@ function ModelsContent({
   const activeModel = appliedDefaultModel ?? currentModel;
   const activeModelLabel = resolveProviderModelLabel(liveDefinition, activeModel) || activeModel;
   const availableOptions = useMemo<ModelOption[]>(() => {
-    if (liveDefinition?.OPTIONS && liveDefinition.OPTIONS.length > 0) {
-      return liveDefinition.OPTIONS;
+    if (scopeDefinition?.OPTIONS && scopeDefinition.OPTIONS.length > 0) {
+      return scopeDefinition.OPTIONS;
     }
 
-    if (Array.isArray(data?.availableOptions) && data.availableOptions.length > 0) {
-      return data.availableOptions;
+    if (browsingCurrentProvider) {
+      if (Array.isArray(data?.availableOptions) && data.availableOptions.length > 0) {
+        return data.availableOptions;
+      }
+
+      const availableModels = Array.isArray(data?.availableModels) ? data.availableModels : [];
+      return availableModels.map((model) => ({ value: model, label: model }));
     }
 
-    const availableModels = Array.isArray(data?.availableModels) ? data.availableModels : [];
-    return availableModels.map((model) => ({ value: model, label: model }));
-  }, [data, liveDefinition]);
+    return [];
+  }, [data, scopeDefinition, browsingCurrentProvider]);
   const filteredOptions = useMemo(() => {
     const normalized = query.trim().toLowerCase();
     if (!normalized) {
@@ -294,10 +333,22 @@ function ModelsContent({
   }, [availableOptions, query]);
 
   const hasConcreteSessionId = typeof currentSessionId === 'string' && currentSessionId.trim().length > 0;
+  // Browsing another provider's catalog mid-session only makes sense when the
+  // parent can actually perform the session handoff afterwards.
+  const canBrowseProviders = hasConcreteSessionId && Boolean(onSwitchSessionTarget);
+  // Enabled providers with a loaded catalog, current provider first.
+  const switchProviders = useMemo<LLMProvider[]>(() => {
+    if (!canBrowseProviders) {
+      return [];
+    }
+
+    const catalogProviders = Object.keys(providerModelCatalog) as LLMProvider[];
+    return [currentProvider, ...catalogProviders.filter((p) => p !== currentProvider)];
+  }, [canBrowseProviders, providerModelCatalog, currentProvider]);
   const showSearch = availableOptions.length > 6;
+  const scopeCatalogMissing = canBrowseProviders && !scopeDefinition && availableOptions.length === 0;
 
   const applyModelChange = async (model: string) => {
-    setConfirmModel(null);
     setChangingModel(model);
     try {
       const result = await onSelectProviderModel(currentProvider, model, currentSessionId);
@@ -319,16 +370,103 @@ function ModelsContent({
   };
 
   const handleSelectModel = (model: string) => {
-    // A mid-session switch to a *different* model re-reads the entire prior
-    // transcript with the new model (extra input-token cost), so require an
-    // explicit confirmation. New chats and re-picking the current model apply
-    // straight away.
-    if (hasConcreteSessionId && model !== currentModel) {
-      setConfirmModel(model);
+    // New chats and re-picking the current model apply straight away. Any
+    // other pick mid-session routes through the switch-options step: it either
+    // re-reads the transcript in this session (same provider) or continues in
+    // a new session via handoff (another provider / explicit handoff mode).
+    if (!hasConcreteSessionId || (browsingCurrentProvider && model === currentModel)) {
+      void applyModelChange(model);
       return;
     }
-    void applyModelChange(model);
+
+    setHandoffError(null);
+    setSaveToFile(false);
+    setSaveToMemory(false);
+    setSwitchMode(browsingCurrentProvider ? 'keep' : 'summary');
+    setPendingSwitch({ provider: browseProvider, model });
   };
+
+  const handleConfirmSwitch = async () => {
+    if (!pendingSwitch) {
+      return;
+    }
+
+    // Same-provider "keep full conversation" is the classic mid-session model
+    // change: the current session continues and the new model re-reads the
+    // transcript on the next response.
+    if (switchMode === 'keep') {
+      const model = pendingSwitch.model;
+      setPendingSwitch(null);
+      void applyModelChange(model);
+      return;
+    }
+
+    if (!onSwitchSessionTarget || !currentSessionId) {
+      return;
+    }
+
+    setHandoffInFlight(true);
+    setHandoffError(null);
+    try {
+      await onSwitchSessionTarget({
+        sourceSessionId: currentSessionId,
+        targetProvider: pendingSwitch.provider,
+        targetModel: pendingSwitch.model,
+        mode: switchMode,
+        // A full-transcript handoff always implies saving the file.
+        saveToFile: switchMode === 'full' ? true : saveToFile,
+        saveToMemory,
+      });
+      // The parent switched sessions and navigated to it; close behind it.
+      setPendingSwitch(null);
+      onClose();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to switch right now.';
+      setHandoffError(message);
+    } finally {
+      setHandoffInFlight(false);
+    }
+  };
+
+  const isSameProviderSwitch = pendingSwitch?.provider === currentProvider;
+  const switchOptions = useMemo(() => {
+    if (!pendingSwitch) {
+      return [];
+    }
+
+    const targetLabel = getProviderLabel(pendingSwitch.provider);
+    const sameProvider = pendingSwitch.provider === currentProvider;
+    const options = [
+      ...(sameProvider
+        ? [
+            {
+              value: 'keep' as const,
+              title: 'Keep full conversation (recommended)',
+              description:
+                'Stay in this session with the new model — it re-reads the whole transcript on your next response.',
+            },
+          ]
+        : []),
+      {
+        value: 'summary' as const,
+        title: sameProvider ? 'Compact handoff' : 'Summary handoff',
+        description: `Start a fresh ${targetLabel} session with an auto-generated summary of this conversation.`,
+      },
+      {
+        value: 'full' as const,
+        title: 'Full transcript handoff',
+        description: 'Save the entire conversation to a file and continue with a pointer to it.',
+      },
+      {
+        value: 'fresh' as const,
+        title: 'Fresh start',
+        description: 'Switch with no context.',
+      },
+    ];
+
+    // Without the handoff callback only the in-session change is possible.
+    return options.filter((option) => option.value === 'keep' || Boolean(onSwitchSessionTarget));
+  }, [pendingSwitch, currentProvider, onSwitchSessionTarget]);
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-3">
@@ -364,116 +502,256 @@ function ModelsContent({
         </Button>
       </div>
 
-      {hasConcreteSessionId && (
-        <div className="flex items-start gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2.5 text-amber-700 dark:text-amber-300">
-          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-          <div className="min-w-0 flex-1">
-            <p className="text-xs leading-5">
-              Switching models mid-conversation re-reads the entire prior transcript with the new model on your next
-              response. That history is sent again as input tokens, so expect a cost (and latency) impact.
-            </p>
-            {confirmModel && (
-              <div className="mt-2 flex flex-wrap items-center gap-2">
-                <span className="break-all text-xs font-semibold">
-                  Switch to <span className="font-mono">{confirmModel}</span>?
-                </span>
-                <Button
-                  type="button"
-                  size="sm"
-                  onClick={() => void applyModelChange(confirmModel)}
-                  disabled={Boolean(changingModel)}
-                  className="h-7 rounded-lg bg-amber-600 px-3 text-xs text-white hover:bg-amber-600/90"
-                >
-                  Switch anyway
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  onClick={() => setConfirmModel(null)}
-                  disabled={Boolean(changingModel)}
-                  className="h-7 rounded-lg px-3 text-xs"
-                >
-                  Cancel
-                </Button>
+      {pendingSwitch ? (
+        /* Switch-options step: shown when the picked target differs from the
+           current provider/model. */
+        <div className="scrollbar-thin min-h-0 flex-1 overflow-y-auto pr-1">
+          <div className="flex flex-col gap-3">
+            <div className="flex items-center gap-2.5 rounded-2xl border border-primary/30 bg-primary/5 px-3.5 py-2.5">
+              <SessionProviderLogo provider={pendingSwitch.provider} className="h-5 w-5 shrink-0" />
+              <div className="min-w-0">
+                <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                  Switch target · {getProviderLabel(pendingSwitch.provider)}
+                </p>
+                <p className="mt-0.5 break-all font-mono text-sm font-semibold text-foreground">
+                  {pendingSwitch.model}
+                </p>
+              </div>
+            </div>
+
+            {isSameProviderSwitch && (
+              <div className="flex items-start gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2.5 text-amber-700 dark:text-amber-300">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                <p className="text-xs leading-5">
+                  Keeping the full conversation means the new model re-reads the entire prior transcript on your next
+                  response. That history is sent again as input tokens, so expect a cost (and latency) impact.
+                </p>
               </div>
             )}
-          </div>
-        </div>
-      )}
 
-      {showSearch && (
-        <SearchField value={query} onChange={setQuery} placeholder={`Search ${providerLabel} models...`} />
-      )}
+            <div className="flex flex-col gap-2" role="radiogroup" aria-label="Switch options">
+              {switchOptions.map((option) => {
+                const isSelected = switchMode === option.value;
+                return (
+                  <button
+                    key={option.value}
+                    type="button"
+                    role="radio"
+                    aria-checked={isSelected}
+                    onClick={() => setSwitchMode(option.value)}
+                    disabled={handoffInFlight}
+                    className={`flex items-start gap-3 rounded-2xl border p-3 text-left shadow-sm transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default disabled:opacity-60 ${
+                      isSelected
+                        ? 'border-primary/45 bg-primary/10'
+                        : 'border-border/70 bg-background/80 hover:border-primary/30 hover:bg-background'
+                    }`}
+                  >
+                    <span
+                      className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full border ${
+                        isSelected ? 'border-primary' : 'border-muted-foreground/40'
+                      }`}
+                    >
+                      {isSelected && <span className="h-2 w-2 rounded-full bg-primary" />}
+                    </span>
+                    <span className="min-w-0">
+                      <span className="block text-sm font-semibold text-foreground">{option.title}</span>
+                      <span className="mt-0.5 block text-xs leading-5 text-muted-foreground">
+                        {option.description}
+                      </span>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
 
-      {filteredOptions.length > 0 ? (
-        <div className="scrollbar-thin -mr-1 min-h-0 flex-1 overflow-y-auto pr-1">
-          <div className="grid gap-2 md:grid-cols-2">
-            {filteredOptions.map((option, index) => {
-              const isCurrent = isProviderModelMatch(option, activeModel);
-              const isPendingSelection = option.value === pendingSessionModel;
-              const isChanging = option.value === changingModel;
-              const isAwaitingConfirm = option.value === confirmModel;
-              return (
-                <button
-                  key={option.value}
-                  type="button"
-                  onClick={() => handleSelectModel(option.value)}
-                  disabled={Boolean(changingModel)}
-                  aria-label={`Select model ${option.value}`}
-                  className={`settings-content-enter group flex min-h-[4rem] flex-col rounded-2xl border p-3 text-left shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default disabled:opacity-60 ${
-                    isCurrent
-                      ? 'border-primary/45 bg-primary/10'
-                      : isAwaitingConfirm
-                        ? 'border-amber-500/50 bg-amber-500/10 ring-1 ring-amber-500/40'
-                        : isPendingSelection
-                          ? 'border-emerald-500/35 bg-emerald-500/10'
-                          : 'border-border/70 bg-background/80 hover:border-primary/30 hover:bg-background'
-                  }`}
-                  style={{ animationDelay: `${Math.min(index * 14, 180)}ms` }}
-                >
-                  <span className="flex items-center justify-between gap-2">
-                    <span className="break-all font-mono text-sm font-semibold text-foreground">{option.value}</span>
-                    {isCurrent ? (
-                      <BadgeCheck className="h-4 w-4 shrink-0 text-primary" />
-                    ) : isChanging ? (
-                      <RefreshCw className="h-4 w-4 shrink-0 animate-spin text-primary" />
-                    ) : null}
+            {(switchMode === 'summary' || switchMode === 'full') && (
+              <div className="flex flex-col gap-2.5 rounded-2xl border border-border/60 bg-muted/20 px-3.5 py-3">
+                <label className="flex items-start gap-2.5 text-xs leading-5 text-foreground">
+                  <input
+                    type="checkbox"
+                    className="mt-0.5 h-3.5 w-3.5 shrink-0 accent-primary"
+                    checked={switchMode === 'full' ? true : saveToFile}
+                    disabled={handoffInFlight || switchMode === 'full'}
+                    onChange={(event) => setSaveToFile(event.target.checked)}
+                  />
+                  <span>
+                    Also save handoff to a file in <code className="font-mono">.cloudcli/handoffs/</code>
+                    {switchMode === 'full' && (
+                      <span className="text-muted-foreground"> (always saved for full transcripts)</span>
+                    )}
                   </span>
-                  {option.label && option.label !== option.value && (
-                    <span className="mt-1 text-xs font-medium text-foreground/85">{option.label}</span>
-                  )}
-                  {option.description && (
-                    <span className="mt-1 text-xs leading-5 text-muted-foreground">{option.description}</span>
-                  )}
-                  {isCurrent && (
-                    <span className="mt-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-primary">Current selection</span>
-                  )}
-                  {isPendingSelection && !isCurrent && !isAwaitingConfirm && (
-                    <span className="mt-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-emerald-500 dark:text-emerald-400">
-                      Applies next response
-                    </span>
-                  )}
-                  {isAwaitingConfirm && !isCurrent && (
-                    <span className="mt-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-amber-600 dark:text-amber-400">
-                      Confirm above
-                    </span>
-                  )}
-                </button>
-              );
-            })}
+                </label>
+                <label className="flex items-start gap-2.5 text-xs leading-5 text-foreground">
+                  <input
+                    type="checkbox"
+                    className="mt-0.5 h-3.5 w-3.5 shrink-0 accent-primary"
+                    checked={saveToMemory}
+                    disabled={handoffInFlight}
+                    onChange={(event) => setSaveToMemory(event.target.checked)}
+                  />
+                  <span>Ask the new session to save the summary to project memory</span>
+                </label>
+              </div>
+            )}
+
+            {handoffError && (
+              <div className="rounded-xl border border-red-500/35 bg-red-500/10 px-3 py-2.5 text-xs leading-5 text-red-600 dark:text-red-300">
+                {handoffError}
+              </div>
+            )}
+
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setPendingSwitch(null)}
+                disabled={handoffInFlight}
+                className="rounded-xl"
+              >
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                onClick={() => void handleConfirmSwitch()}
+                disabled={handoffInFlight}
+                className="rounded-xl"
+              >
+                {handoffInFlight && <RefreshCw className="h-3.5 w-3.5 animate-spin" />}
+                {handoffInFlight
+                  ? 'Switching...'
+                  : isSameProviderSwitch
+                    ? 'Switch model'
+                    : `Switch to ${getProviderLabel(pendingSwitch.provider)}`}
+              </Button>
+            </div>
           </div>
         </div>
       ) : (
-        <div className="rounded-2xl border border-dashed border-border bg-background/60 px-4 py-10 text-center text-sm text-muted-foreground">
-          No models match that search.
-        </div>
+        <>
+          {switchProviders.length > 1 && (
+            <div className="scrollbar-thin flex shrink-0 items-center gap-1.5 overflow-x-auto pb-0.5">
+              {switchProviders.map((switchProvider) => {
+                const isActiveScope = switchProvider === browseProvider;
+                const isCurrentProvider = switchProvider === currentProvider;
+                return (
+                  <button
+                    key={switchProvider}
+                    type="button"
+                    aria-pressed={isActiveScope}
+                    onClick={() => {
+                      setScopeProvider(switchProvider);
+                      setQuery('');
+                      setPendingSwitch(null);
+                      setHandoffError(null);
+                    }}
+                    className={`flex shrink-0 items-center gap-1.5 rounded-full border px-2.5 py-1.5 text-xs font-medium transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                      isActiveScope
+                        ? 'border-primary/45 bg-primary/10 text-foreground'
+                        : 'border-border/70 bg-background/75 text-muted-foreground hover:border-primary/30 hover:text-foreground'
+                    }`}
+                  >
+                    <SessionProviderLogo provider={switchProvider} className="h-3.5 w-3.5 shrink-0" />
+                    <span>{getProviderLabel(switchProvider)}</span>
+                    {isCurrentProvider && (
+                      <span className="text-[9px] font-semibold uppercase tracking-[0.12em] text-primary">current</span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
+          {showSearch && !scopeCatalogMissing && (
+            <SearchField
+              value={query}
+              onChange={setQuery}
+              placeholder={`Search ${getProviderLabel(browseProvider)} models...`}
+            />
+          )}
+
+          {scopeCatalogMissing ? (
+            <div className="flex flex-col items-center gap-3 rounded-2xl border border-dashed border-border bg-background/60 px-4 py-10 text-center">
+              <p className="text-sm text-muted-foreground">
+                Models for {getProviderLabel(browseProvider)} are not loaded yet.
+              </p>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={onHardRefreshProviderModels}
+                disabled={providerModelsRefreshing}
+                className="rounded-xl"
+              >
+                <RefreshCw className={`h-3.5 w-3.5 ${providerModelsRefreshing ? 'animate-spin' : ''}`} />
+                {providerModelsRefreshing ? 'Loading...' : 'Load models'}
+              </Button>
+            </div>
+          ) : filteredOptions.length > 0 ? (
+            <div className="scrollbar-thin -mr-1 min-h-0 flex-1 overflow-y-auto pr-1">
+              <div className="grid gap-2 md:grid-cols-2">
+                {filteredOptions.map((option, index) => {
+                  const isCurrent = browsingCurrentProvider && isProviderModelMatch(option, activeModel);
+                  const isPendingSelection = browsingCurrentProvider && option.value === pendingSessionModel;
+                  const isChanging = option.value === changingModel;
+                  return (
+                    <button
+                      key={option.value}
+                      type="button"
+                      onClick={() => handleSelectModel(option.value)}
+                      disabled={Boolean(changingModel)}
+                      aria-label={`Select model ${option.value}`}
+                      className={`settings-content-enter group flex min-h-[4rem] flex-col rounded-2xl border p-3 text-left shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default disabled:opacity-60 ${
+                        isCurrent
+                          ? 'border-primary/45 bg-primary/10'
+                          : isPendingSelection
+                            ? 'border-emerald-500/35 bg-emerald-500/10'
+                            : 'border-border/70 bg-background/80 hover:border-primary/30 hover:bg-background'
+                      }`}
+                      style={{ animationDelay: `${Math.min(index * 14, 180)}ms` }}
+                    >
+                      <span className="flex items-center justify-between gap-2">
+                        <span className="break-all font-mono text-sm font-semibold text-foreground">{option.value}</span>
+                        {isCurrent ? (
+                          <BadgeCheck className="h-4 w-4 shrink-0 text-primary" />
+                        ) : isChanging ? (
+                          <RefreshCw className="h-4 w-4 shrink-0 animate-spin text-primary" />
+                        ) : null}
+                      </span>
+                      {option.label && option.label !== option.value && (
+                        <span className="mt-1 text-xs font-medium text-foreground/85">{option.label}</span>
+                      )}
+                      {option.description && (
+                        <span className="mt-1 text-xs leading-5 text-muted-foreground">{option.description}</span>
+                      )}
+                      {isCurrent && (
+                        <span className="mt-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-primary">Current selection</span>
+                      )}
+                      {isPendingSelection && !isCurrent && (
+                        <span className="mt-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-emerald-500 dark:text-emerald-400">
+                          Applies next response
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ) : (
+            <div className="rounded-2xl border border-dashed border-border bg-background/60 px-4 py-10 text-center text-sm text-muted-foreground">
+              No models match that search.
+            </div>
+          )}
+        </>
       )}
 
       {/* Single quiet line of guidance / feedback */}
       <p className="shrink-0 text-[11px] leading-4 text-muted-foreground">
         {selectionNotice ? (
           <span className="text-foreground">{selectionNotice}</span>
+        ) : pendingSwitch ? (
+          'Choose how the switch should carry this conversation over.'
         ) : hasConcreteSessionId ? (
           'Your choice applies to this session on the next response.'
         ) : (
@@ -704,6 +982,7 @@ export default function CommandResultModal({
   onHardRefreshProviderModels,
   currentSessionId,
   onSelectProviderModel,
+  onSwitchSessionTarget,
 }: CommandResultModalProps) {
   const isOpen = Boolean(payload);
   const kind = payload?.kind;
@@ -792,6 +1071,8 @@ export default function CommandResultModal({
               onHardRefreshProviderModels={onHardRefreshProviderModels}
               currentSessionId={currentSessionId}
               onSelectProviderModel={onSelectProviderModel}
+              onSwitchSessionTarget={onSwitchSessionTarget}
+              onClose={onClose}
             />
           )}
           {payload?.kind === 'cost' && <CostContent data={payload.data as CostCommandData} />}

@@ -17,6 +17,7 @@ import type { SessionStore } from '../../../stores/useSessionStore';
 import { grantClaudeToolPermission } from '../utils/chatPermissions';
 import {
   clearQueuedMessage,
+  readProviderToolsSettings,
   readQueuedMessage,
   safeLocalStorage,
   writeQueuedMessage,
@@ -702,38 +703,7 @@ export function useChatComposerState({
   // queued message keeps the provider settings it was composed under even if
   // it is later dispatched outside this composer (app-level auto-send).
   const buildSendOptions = useCallback((currentInput: string): QueuedSendOptions => {
-    const getToolsSettings = () => {
-      try {
-        const settingsKey =
-          provider === 'cursor'
-            ? 'cursor-tools-settings'
-            : provider === 'codex'
-              ? 'codex-settings'
-              : provider === 'opencode'
-                  ? 'opencode-settings'
-                : provider === 'grok'
-                  ? 'grok-tools-settings'
-                : provider === 'agy'
-                  ? 'agy-tools-settings'
-                : provider === 'pi'
-                  ? 'pi-tools-settings'
-                : 'claude-settings';
-        const savedSettings = safeLocalStorage.getItem(settingsKey);
-        if (savedSettings) {
-          return JSON.parse(savedSettings);
-        }
-      } catch (error) {
-        console.error('Error loading tools settings:', error);
-      }
-
-      return {
-        allowedTools: [],
-        disallowedTools: [],
-        skipPermissions: false,
-      };
-    };
-
-    const toolsSettings = getToolsSettings();
+    const toolsSettings = readProviderToolsSettings(provider);
 
     return {
       model: currentProviderModel,

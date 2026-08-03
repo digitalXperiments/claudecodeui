@@ -410,6 +410,21 @@ const addProviderSessionIdMapping = (db: Database): void => {
 };
 
 /**
+ * Adds the `continued_from_session_id` lineage column used by session handoff.
+ *
+ * Handoff creates a brand-new app session that continues an existing
+ * conversation under a different provider/model; the column records the
+ * app-facing source session id so the lineage stays queryable. Purely
+ * additive — legacy rows simply have NULL.
+ */
+const addContinuedFromSessionId = (db: Database): void => {
+  const sessionsTableInfo = getTableInfo(db, 'sessions');
+  const columnNames = sessionsTableInfo.map((column) => column.name);
+
+  addColumnToTableIfNotExists(db, 'sessions', columnNames, 'continued_from_session_id', 'TEXT');
+};
+
+/**
  * Creates the categories table and links projects to it.
  *
  * Must run after the projects table has been rebuilt into its final
@@ -628,6 +643,7 @@ export const runMigrations = (db: Database) => {
     rebuildSessionsTableWithProjectSchema(db);
     migrateLegacySessionNames(db);
     addProviderSessionIdMapping(db);
+    addContinuedFromSessionId(db);
     ensureProjectsForSessionPaths(db);
 
     db.exec('CREATE INDEX IF NOT EXISTS idx_session_ids_lookup ON sessions(session_id)');

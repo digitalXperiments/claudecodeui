@@ -56,6 +56,50 @@ export const authenticatedFetch = (url, options = {}) => {
   });
 };
 
+/**
+ * Create a handoff session from an existing session: the backend snapshots the
+ * source conversation (summary / full transcript file / nothing, per `mode`),
+ * creates a brand-new session for `targetProvider` in the same project, and
+ * returns its id plus the prompt the new session should start with.
+ *
+ * POST /api/providers/sessions/:sessionId/handoff
+ * body: { targetProvider, targetModel?, mode: 'summary'|'full'|'fresh', saveToFile?, saveToMemory? }
+ * 200 data: { sessionId, provider, projectPath, handoffPrompt, handoffFilePath? }
+ * Errors: 404 unknown source session, 400 invalid target/mode.
+ *
+ * @param {string} sessionId current app session id (the handoff source)
+ * @param {{ targetProvider: string, targetModel?: string, mode: 'summary'|'full'|'fresh', saveToFile?: boolean, saveToMemory?: boolean }} body
+ * @returns {Promise<{ sessionId: string, provider: string, projectPath: string, handoffPrompt: string|null, handoffFilePath?: string }>}
+ */
+export const createSessionHandoff = async (sessionId, body) => {
+  const response = await authenticatedFetch(
+    `/api/providers/sessions/${encodeURIComponent(sessionId)}/handoff`,
+    {
+      method: 'POST',
+      body: JSON.stringify(body),
+    },
+  );
+
+  let payload = null;
+  try {
+    payload = await response.json();
+  } catch {
+    // Non-JSON error body — fall through to the status-only message below.
+  }
+
+  if (!response.ok) {
+    // The server's error middleware sends `{ success: false, error: { code, message } }`.
+    const message =
+      payload?.error?.message ||
+      payload?.message ||
+      (typeof payload?.error === 'string' ? payload.error : null) ||
+      `Handoff failed (HTTP ${response.status})`;
+    throw new Error(message);
+  }
+
+  return payload?.data ?? payload;
+};
+
 // API endpoints
 export const api = {
   // Auth endpoints (no token required)
