@@ -159,6 +159,10 @@ export default function ProjectMemory({ currentProjects }: ProjectMemoryProps) {
   };
 
   const handleDisable = async () => {
+    const projectName = selectedProject?.displayName ?? selectedProject?.projectId ?? 'this project';
+    if (!window.confirm(`Disable memory for "${projectName}"?\n\nThis removes the Obsidian MCP server and the Memory skill from the project's agents. Your vault notes are kept.`)) {
+      return;
+    }
     setActionError(null);
     try {
       await disable();
@@ -168,6 +172,10 @@ export default function ProjectMemory({ currentProjects }: ProjectMemoryProps) {
   };
 
   const handleRescaffold = async () => {
+    const projectName = selectedProject?.displayName ?? selectedProject?.projectId ?? 'this project';
+    if (!window.confirm(`Re-scaffold the vault for "${projectName}"?\n\nThis rebuilds the vault folder structure on disk. Existing notes are kept.`)) {
+      return;
+    }
     setActionError(null);
     try {
       await rescaffold();
