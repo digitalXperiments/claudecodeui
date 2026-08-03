@@ -64,12 +64,15 @@ export const authenticatedFetch = (url, options = {}) => {
  *
  * POST /api/providers/sessions/:sessionId/handoff
  * body: { targetProvider, targetModel?, mode: 'summary'|'full'|'fresh', saveToFile?, saveToMemory? }
- * 200 data: { sessionId, provider, projectPath, handoffPrompt, handoffFilePath? }
+ * 200 data: { sessionId, provider, projectPath, handoffPrompt, handoffFilePath?, backupFilePath? }
+ * In `summary` mode, `handoffPrompt` carries an LLM-generated summary of the
+ * full transcript (not a naive truncation); `backupFilePath` points at the
+ * full transcript saved on disk as a safety net for that summarization step.
  * Errors: 404 unknown source session, 400 invalid target/mode.
  *
  * @param {string} sessionId current app session id (the handoff source)
  * @param {{ targetProvider: string, targetModel?: string, mode: 'summary'|'full'|'fresh', saveToFile?: boolean, saveToMemory?: boolean }} body
- * @returns {Promise<{ sessionId: string, provider: string, projectPath: string, handoffPrompt: string|null, handoffFilePath?: string }>}
+ * @returns {Promise<{ sessionId: string, provider: string, projectPath: string, handoffPrompt: string|null, handoffFilePath?: string, backupFilePath?: string }>}
  */
 export const createSessionHandoff = async (sessionId, body) => {
   const response = await authenticatedFetch(

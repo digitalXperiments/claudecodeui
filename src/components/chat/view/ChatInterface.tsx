@@ -267,6 +267,7 @@ function ChatInterface({
       projectPath?: string;
       handoffPrompt?: string | null;
       handoffFilePath?: string;
+      backupFilePath?: string;
     };
 
     const newSessionId = typeof data?.sessionId === 'string' ? data.sessionId : '';
@@ -306,7 +307,11 @@ function ChatInterface({
         typeof data?.handoffPrompt === 'string' && data.handoffPrompt.trim().length > 0
           ? data.handoffPrompt
           : null,
-      filePath: typeof data?.handoffFilePath === 'string' ? data.handoffFilePath : undefined,
+      // backupFilePath is the always-written full-transcript safety net behind
+      // an LLM-generated summary; surface it when there's no explicit saved file.
+      filePath: typeof data?.handoffFilePath === 'string'
+        ? data.handoffFilePath
+        : (typeof data?.backupFilePath === 'string' ? data.backupFilePath : undefined),
     });
   }, [selectedProject, setProvider, handleSessionEstablished]);
 

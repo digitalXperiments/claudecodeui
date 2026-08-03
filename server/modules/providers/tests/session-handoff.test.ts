@@ -6,8 +6,13 @@ import test, { mock } from 'node:test';
 
 import { closeConnection, initializeDatabase, sessionsDb } from '@/modules/database/index.js';
 import { sessionHandoffService } from '@/modules/providers/services/session-handoff.service.js';
+import { sessionSummarizerService } from '@/modules/providers/services/session-summarizer.service.js';
 import { sessionsService } from '@/modules/providers/services/sessions.service.js';
 import type { FetchHistoryResult, NormalizedMessage } from '@/shared/types.js';
+
+// The real summarizer shells out to the Claude Agent SDK; every summary-mode
+// test below mocks it explicitly so tests stay hermetic (no network calls)
+// regardless of whether Claude Code happens to be installed on the runner.
 
 async function withIsolatedDatabase(
   runTest: (context: { projectPath: string }) => void | Promise<void>,
@@ -165,7 +170,7 @@ test('buildHandoffDocument full mode includes every text message', () => {
   assert.equal(document.includes('x'.repeat(4000)), false);
 });
 
-test('createHandoffSession summary mode persists file, prompt and lineage', async () => {
+test('createHandoffSession summary mode falls back to the mechanical summary when the LLM summarizer is unavailable', async () => {
   await withIsolatedDatabase(async ({ projectPath }) => {
     sessionsDb.createAppSession('source-session-id', 'claude', projectPath);
 
@@ -181,6 +186,7 @@ test('createHandoffSession summary mode persists file, prompt and lineage', asyn
       limit: null,
     };
     const fetchMock = mock.method(sessionsService, 'fetchHistory', async () => historyResult);
+    const summarizerMock = mock.method(sessionSummarizerService, 'summarizeConversation', async () => null);
 
     try {
       const result = await sessionHandoffService.createHandoffSession({
@@ -196,6 +202,7 @@ test('createHandoffSession summary mode persists file, prompt and lineage', asyn
         'source-session-id',
         { limit: null, offset: 0 },
       ]);
+      assert.equal(summarizerMock.mock.calls.length, 1);
 
       assert.notEqual(result.sessionId, 'source-session-id');
       assert.equal(result.provider, 'codex');
@@ -206,7 +213,7 @@ test('createHandoffSession summary mode persists file, prompt and lineage', asyn
       assert.equal(newRow?.provider, 'codex');
       assert.equal(newRow?.continued_from_session_id, 'source-session-id');
 
-      // The summary is inlined into the prompt.
+      // No LLM summary available: the mechanical goal + recent-turns summary is used.
       assert.ok(result.handoffPrompt);
       assert.match(result.handoffPrompt as string, /continues from a previous claude session/);
       assert.match(result.handoffPrompt as string, /## Goal\n\nRefactor the settings page/);
@@ -214,6 +221,7 @@ test('createHandoffSession summary mode persists file, prompt and lineage', asyn
         result.handoffPrompt as string,
         /Continue the work from where it left off\. If anything is unclear, say so before acting\.$/,
       );
+      assert.equal(result.backupFilePath, undefined);
 
       // saveToFile persisted the same markdown under .cloudcli/handoffs.
       assert.ok(result.handoffFilePath);
@@ -225,6 +233,71 @@ test('createHandoffSession summary mode persists file, prompt and lineage', asyn
       assert.ok((result.handoffPrompt as string).includes(fileContent.trim()));
     } finally {
       fetchMock.mock.restore();
+      summarizerMock.mock.restore();
+    }
+  });
+});
+
+test('createHandoffSession summary mode uses the LLM summary when available and keeps the full transcript as a backup', async () => {
+  await withIsolatedDatabase(async ({ projectPath }) => {
+    sessionsDb.createAppSession('source-session-id', 'claude', projectPath);
+
+    const history: NormalizedMessage[] = [
+      textMessage('user', 'Refactor the settings page'),
+      textMessage('assistant', 'Splitting it into smaller components.'),
+    ];
+    const historyResult: FetchHistoryResult = {
+      messages: history,
+      total: history.length,
+      hasMore: false,
+      offset: 0,
+      limit: null,
+    };
+    const fetchMock = mock.method(sessionsService, 'fetchHistory', async () => historyResult);
+    const summarizerMock = mock.method(
+      sessionSummarizerService,
+      'summarizeConversation',
+      async () => 'The user asked to refactor the settings page; work is split into smaller components.',
+    );
+
+    try {
+      const result = await sessionHandoffService.createHandoffSession({
+        sourceSessionId: 'source-session-id',
+        targetProvider: 'codex',
+        targetModel: 'gpt-5-codex',
+        mode: 'summary',
+        saveToFile: false,
+      });
+
+      assert.equal(summarizerMock.mock.calls.length, 1);
+      const summarizerInput = summarizerMock.mock.calls[0].arguments[0] as { transcriptMarkdown: string };
+      assert.match(summarizerInput.transcriptMarkdown, /## Full transcript/);
+      assert.match(summarizerInput.transcriptMarkdown, /Splitting it into smaller components\./);
+
+      // The LLM summary replaces the mechanical one in the prompt.
+      assert.ok(result.handoffPrompt);
+      assert.match(
+        result.handoffPrompt as string,
+        /## Summary\n\nThe user asked to refactor the settings page/,
+      );
+      assert.equal((result.handoffPrompt as string).includes('## Goal'), false);
+
+      // The full transcript is always kept on disk as a safety net, even
+      // though saveToFile was false — the LLM summary is lossy.
+      assert.ok(result.backupFilePath);
+      const backupFilePath = result.backupFilePath as string;
+      assert.ok(backupFilePath.startsWith(path.join(projectPath, '.cloudcli', 'handoffs')));
+      const backupContent = await readFile(backupFilePath, 'utf8');
+      assert.match(backupContent, /## Full transcript/);
+      assert.match(backupContent, /Splitting it into smaller components\./);
+      assert.match(result.handoffPrompt as string, new RegExp(backupFilePath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+
+      // saveToFile was false and no LLM-less fallback ran, so no separate
+      // handoffFilePath is written on top of the backup.
+      assert.equal(result.handoffFilePath, undefined);
+    } finally {
+      fetchMock.mock.restore();
+      summarizerMock.mock.restore();
     }
   });
 });
@@ -308,6 +381,7 @@ test('createHandoffSession prepends the memory instruction when saveToMemory is 
       limit: null,
     };
     const fetchMock = mock.method(sessionsService, 'fetchHistory', async () => historyResult);
+    const summarizerMock = mock.method(sessionSummarizerService, 'summarizeConversation', async () => null);
 
     try {
       const result = await sessionHandoffService.createHandoffSession({
@@ -325,6 +399,7 @@ test('createHandoffSession prepends the memory instruction when saveToMemory is 
       assert.match(result.handoffPrompt as string, /Obsidian MCP under a Handoffs note/);
     } finally {
       fetchMock.mock.restore();
+      summarizerMock.mock.restore();
     }
   });
 });

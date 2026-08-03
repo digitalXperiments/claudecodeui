@@ -3,6 +3,7 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 
 import { sessionsDb } from '@/modules/database/index.js';
+import { sessionSummarizerService } from '@/modules/providers/services/session-summarizer.service.js';
 import { sessionsService } from '@/modules/providers/services/sessions.service.js';
 import type { LLMProvider, NormalizedMessage } from '@/shared/types.js';
 import { AppError } from '@/shared/utils.js';
@@ -36,6 +37,7 @@ export type CreateHandoffSessionResult = {
   projectPath: string;
   handoffPrompt: string | null;
   handoffFilePath?: string;
+  backupFilePath?: string;
 };
 
 const GOAL_MAX_CHARS = 1500;
@@ -129,6 +131,12 @@ const buildSummaryDocument = (input: BuildHandoffDocumentInput): string => {
   return lines.join('\n');
 };
 
+const buildLlmSummaryDocument = (input: BuildHandoffDocumentInput, summaryText: string): string => {
+  const lines = buildHeader(input);
+  lines.push('## Summary', '', summaryText, '');
+  return lines.join('\n');
+};
+
 const buildFullDocument = (input: BuildHandoffDocumentInput): string => {
   const lines = buildHeader(input);
   lines.push('## Full transcript', '');
@@ -158,6 +166,7 @@ const buildHandoffPrompt = (options: {
   mode: 'summary' | 'full';
   markdown: string;
   handoffFilePath?: string;
+  backupFilePath?: string;
   sourceProvider: string;
   saveToMemory: boolean;
 }): string => {
@@ -174,6 +183,13 @@ const buildHandoffPrompt = (options: {
 
   if (options.mode === 'summary') {
     sections.push(`Here is the handoff summary of the work so far:\n\n${options.markdown}`);
+    if (options.backupFilePath) {
+      sections.push(
+        'This summary was generated automatically and may have missed something. The full '
+        + `transcript of the previous session is saved at:\n${options.backupFilePath}\n\n`
+        + 'If anything below seems incomplete or unclear, read that file to check before asking.',
+      );
+    }
   } else {
     sections.push(
       `The full transcript of the previous session is saved at:\n${options.handoffFilePath}\n\n`
@@ -197,7 +213,9 @@ const buildHandoffPrompt = (options: {
  */
 export const sessionHandoffService = {
   /**
-   * Renders the markdown handoff document for one source session.
+   * Renders the mechanical (non-LLM) markdown handoff document for one source
+   * session. Used directly for full mode, and as the fallback for summary
+   * mode when LLM summarization is unavailable or fails.
    *
    * Summary mode keeps the first user message as the goal plus the last few
    * conversation turns; full mode renders every user/assistant text message.
@@ -227,8 +245,12 @@ export const sessionHandoffService = {
    * Creates the continuation session for one handoff request.
    *
    * Modes:
-   * - `summary`: history is condensed into a markdown summary that is inlined
-   *   into the handoff prompt.
+   * - `summary`: the full transcript is sent to an LLM (`sessionSummarizerService`)
+   *   which writes a nuance-preserving summary; that summary is inlined into
+   *   the handoff prompt, and the full transcript it was built from is always
+   *   written to disk as a backup (`backupFilePath`) since the summary is a
+   *   lossy compression. If the summarizer is unavailable or fails, falls
+   *   back to the mechanical goal + last-N-turns summary.
    * - `full`: the entire transcript is rendered; because it is far too large
    *   for a prompt it is always written to disk and the prompt only points at
    *   the file.
@@ -258,6 +280,7 @@ export const sessionHandoffService = {
 
     let markdown: string | null = null;
     let handoffFilePath: string | undefined;
+    let backupFilePath: string | undefined;
 
     if (mode !== 'fresh') {
       const { messages } = await sessionsService.fetchHistory(input.sourceSessionId, {
@@ -265,7 +288,7 @@ export const sessionHandoffService = {
         offset: 0,
       });
 
-      markdown = sessionHandoffService.buildHandoffDocument({
+      const documentInput: BuildHandoffDocumentInput = {
         sourceSession: {
           sessionId: sourceSession.session_id,
           provider: sourceSession.provider,
@@ -275,7 +298,30 @@ export const sessionHandoffService = {
         targetProvider: input.targetProvider,
         targetModel: input.targetModel ?? null,
         mode,
-      });
+      };
+
+      if (mode === 'summary') {
+        const fullDocument = sessionHandoffService.buildHandoffDocument({ ...documentInput, mode: 'full' });
+        const summaryText = await sessionSummarizerService.summarizeConversation({
+          projectPath,
+          transcriptMarkdown: fullDocument,
+          sourceProvider: sourceSession.provider,
+          targetProvider: input.targetProvider,
+          targetModel: input.targetModel ?? null,
+        });
+
+        if (summaryText) {
+          markdown = buildLlmSummaryDocument(documentInput, summaryText);
+          // The LLM summary is a lossy compression of the transcript above, so
+          // the full transcript is always kept on disk as a safety net the
+          // continuation can fall back to, independent of `saveToFile`.
+          backupFilePath = await sessionHandoffService.writeHandoffFile(projectPath, fullDocument);
+        } else {
+          markdown = sessionHandoffService.buildHandoffDocument(documentInput);
+        }
+      } else {
+        markdown = sessionHandoffService.buildHandoffDocument(documentInput);
+      }
 
       if (saveToFile || mode === 'full') {
         handoffFilePath = await sessionHandoffService.writeHandoffFile(projectPath, markdown);
@@ -291,6 +337,7 @@ export const sessionHandoffService = {
         mode: mode === 'full' ? 'full' : 'summary',
         markdown,
         handoffFilePath,
+        backupFilePath,
         sourceProvider: sourceSession.provider,
         saveToMemory,
       });
@@ -301,6 +348,7 @@ export const sessionHandoffService = {
       projectPath: appSession.projectPath,
       handoffPrompt,
       ...(handoffFilePath ? { handoffFilePath } : {}),
+      ...(backupFilePath ? { backupFilePath } : {}),
     };
   },
 };

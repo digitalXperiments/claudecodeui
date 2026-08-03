@@ -450,7 +450,7 @@ function ModelsContent({
       {
         value: 'summary' as const,
         title: sameProvider ? 'Compact handoff' : 'Summary handoff',
-        description: `Start a fresh ${targetLabel} session with an auto-generated summary of this conversation.`,
+        description: `Start a fresh ${targetLabel} session with an AI-written summary of this conversation. The full transcript is always kept as a backup file in case the summary misses something.`,
       },
       {
         value: 'full' as const,
@@ -575,9 +575,12 @@ function ModelsContent({
                     onChange={(event) => setSaveToFile(event.target.checked)}
                   />
                   <span>
-                    Also save handoff to a file in <code className="font-mono">.cloudcli/handoffs/</code>
+                    Also save the summary itself to a file in <code className="font-mono">.cloudcli/handoffs/</code>
                     {switchMode === 'full' && (
                       <span className="text-muted-foreground"> (always saved for full transcripts)</span>
+                    )}
+                    {switchMode === 'summary' && (
+                      <span className="text-muted-foreground"> (the full transcript is always kept as a backup, regardless)</span>
                     )}
                   </span>
                 </label>
