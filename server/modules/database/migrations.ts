@@ -7,6 +7,7 @@ import {
   KANBAN_SCHEMA_SQL,
   LAST_SCANNED_AT_SQL,
   MISSION_CONTROL_SCHEMA_SQL,
+  RUN_SPINE_SCHEMA_SQL,
   WEBHOOKS_SCHEMA_SQL,
   NOTIFICATION_CHANNEL_ENDPOINTS_TABLE_SCHEMA_SQL,
   PROJECT_MEMORY_TABLE_SCHEMA_SQL,
@@ -640,6 +641,34 @@ const ensureWebhookRetrySchema = (db: Database): void => {
   }
 };
 
+/**
+ * Additive run-spine bridge columns (PRD Appendix A):
+ * kanban_tasks.workspace_id, kanban_runs/MC items/webhook deliveries agent_run_id,
+ * user_credentials.secret_id. Idempotent.
+ */
+const ensureRunSpineBridgeSchema = (db: Database): void => {
+  if (tableExists(db, 'kanban_tasks')) {
+    let columns = getTableInfo(db, 'kanban_tasks').map((column) => column.name);
+    addColumnToTableIfNotExists(db, 'kanban_tasks', columns, 'workspace_id', 'TEXT');
+  }
+  if (tableExists(db, 'kanban_runs')) {
+    const columns = getTableInfo(db, 'kanban_runs').map((column) => column.name);
+    addColumnToTableIfNotExists(db, 'kanban_runs', columns, 'agent_run_id', 'TEXT');
+  }
+  if (tableExists(db, 'mc_items')) {
+    const columns = getTableInfo(db, 'mc_items').map((column) => column.name);
+    addColumnToTableIfNotExists(db, 'mc_items', columns, 'agent_run_id', 'TEXT');
+  }
+  if (tableExists(db, 'webhook_deliveries')) {
+    const columns = getTableInfo(db, 'webhook_deliveries').map((column) => column.name);
+    addColumnToTableIfNotExists(db, 'webhook_deliveries', columns, 'agent_run_id', 'TEXT');
+  }
+  if (tableExists(db, 'user_credentials')) {
+    const columns = getTableInfo(db, 'user_credentials').map((column) => column.name);
+    addColumnToTableIfNotExists(db, 'user_credentials', columns, 'secret_id', 'TEXT');
+  }
+};
+
 export const runMigrations = (db: Database) => {
   try {
     const usersTableInfo = db.prepare('PRAGMA table_info(users)').all() as { name: string }[];
@@ -722,6 +751,10 @@ export const runMigrations = (db: Database) => {
     // Inbound webhooks (source-routed headless agent runs).
     db.exec(WEBHOOKS_SCHEMA_SQL);
     ensureWebhookRetrySchema(db);
+
+    // Run spine: agent_workspaces, agent_runs, agent_run_events, secrets (P0–P4).
+    db.exec(RUN_SPINE_SCHEMA_SQL);
+    ensureRunSpineBridgeSchema(db);
 
     console.log('Database migrations completed successfully');
   } catch (error: any) {

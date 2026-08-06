@@ -432,6 +432,120 @@ ${WEBHOOK_SOURCES_TABLE_SCHEMA_SQL}
 ${WEBHOOK_DELIVERIES_TABLE_SCHEMA_SQL}
 `;
 
+/**
+ * Phase 1 — Isolated Agent Workspaces (PRD §5.4).
+ * One row per git worktree / sandbox copy bound to an autonomous run.
+ */
+export const AGENT_WORKSPACES_TABLE_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS agent_workspaces (
+    workspace_id      TEXT PRIMARY KEY NOT NULL,
+    project_id        TEXT NOT NULL,
+    run_id            TEXT,
+    task_id           TEXT,
+    mode              TEXT NOT NULL DEFAULT 'git_worktree',
+    root_path         TEXT NOT NULL,
+    base_branch       TEXT NOT NULL,
+    base_sha          TEXT,
+    feature_branch    TEXT NOT NULL,
+    head_sha          TEXT,
+    status            TEXT NOT NULL DEFAULT 'active',
+    last_error        TEXT,
+    created_at        DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at        DATETIME DEFAULT CURRENT_TIMESTAMP,
+    cleaned_at        DATETIME
+);
+CREATE INDEX IF NOT EXISTS idx_agent_workspaces_project ON agent_workspaces(project_id, status);
+CREATE INDEX IF NOT EXISTS idx_agent_workspaces_run ON agent_workspaces(run_id);
+CREATE INDEX IF NOT EXISTS idx_agent_workspaces_task ON agent_workspaces(task_id);
+`;
+
+/**
+ * Phase 2 — Canonical run spine (PRD §6.3). One row per execution across
+ * chat / kanban / mission-control / webhook / automation.
+ */
+export const AGENT_RUNS_TABLE_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS agent_runs (
+    run_id              TEXT PRIMARY KEY NOT NULL,
+    project_id          TEXT,
+    source              TEXT NOT NULL,
+    source_ref          TEXT,
+    workspace_id        TEXT,
+    app_session_id      TEXT,
+    provider            TEXT,
+    model               TEXT,
+    effort              TEXT,
+    permission_mode     TEXT,
+    profile_id          TEXT,
+    status              TEXT NOT NULL DEFAULT 'queued',
+    trigger             TEXT,
+    parent_run_id       TEXT,
+    root_run_id         TEXT,
+    title               TEXT,
+    error_summary       TEXT,
+    exit_code           INTEGER,
+    token_input         INTEGER,
+    token_output        INTEGER,
+    token_total         INTEGER,
+    cost_usd_estimate   REAL,
+    started_at          DATETIME,
+    first_token_at      DATETIME,
+    finished_at         DATETIME,
+    created_at          DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at          DATETIME DEFAULT CURRENT_TIMESTAMP,
+    meta_json           TEXT DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_agent_runs_project_created ON agent_runs(project_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_agent_runs_status ON agent_runs(status);
+CREATE INDEX IF NOT EXISTS idx_agent_runs_session ON agent_runs(app_session_id);
+CREATE INDEX IF NOT EXISTS idx_agent_runs_source ON agent_runs(source, source_ref);
+`;
+
+export const AGENT_RUN_EVENTS_TABLE_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS agent_run_events (
+    event_id     TEXT PRIMARY KEY NOT NULL,
+    run_id       TEXT NOT NULL,
+    seq          INTEGER NOT NULL,
+    ts           DATETIME NOT NULL,
+    source       TEXT,
+    type         TEXT NOT NULL,
+    severity     TEXT DEFAULT 'info',
+    payload_json TEXT DEFAULT '{}',
+    FOREIGN KEY (run_id) REFERENCES agent_runs(run_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_agent_run_events_run_seq ON agent_run_events(run_id, seq);
+`;
+
+/**
+ * Phase 4 — Secrets vault metadata (PRD §8.3). Values live in the OS
+ * keychain when available, else encrypted ciphertext in this table.
+ */
+export const SECRETS_TABLE_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS secrets (
+    secret_id       TEXT PRIMARY KEY NOT NULL,
+    name            TEXT NOT NULL,
+    scope           TEXT NOT NULL DEFAULT 'user',
+    scope_ref       TEXT,
+    backend         TEXT NOT NULL,
+    keychain_account TEXT,
+    ciphertext      BLOB,
+    nonce           BLOB,
+    content_type    TEXT DEFAULT 'token',
+    description     TEXT,
+    last_used_at    DATETIME,
+    expires_at      DATETIME,
+    created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(name, scope, scope_ref)
+);
+`;
+
+export const RUN_SPINE_SCHEMA_SQL = `
+${AGENT_WORKSPACES_TABLE_SCHEMA_SQL}
+${AGENT_RUNS_TABLE_SCHEMA_SQL}
+${AGENT_RUN_EVENTS_TABLE_SCHEMA_SQL}
+${SECRETS_TABLE_SCHEMA_SQL}
+`;
+
 export const INIT_SCHEMA_SQL = `
 -- Initialize authentication database
 PRAGMA foreign_keys = ON;
@@ -489,4 +603,6 @@ ${KANBAN_SCHEMA_SQL}
 ${MISSION_CONTROL_SCHEMA_SQL}
 
 ${WEBHOOKS_SCHEMA_SQL}
+
+${RUN_SPINE_SCHEMA_SQL}
 `;
