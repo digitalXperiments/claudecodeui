@@ -30,6 +30,8 @@ function normalizeTask(task: KanbanTask): KanbanTask {
     review_provider: task?.review_provider ?? null,
     implement_profile_id: task?.implement_profile_id ?? null,
     review_profile_id: task?.review_profile_id ?? null,
+    due_date: task?.due_date ?? null,
+    feature_branch: task?.feature_branch ?? null,
   };
 }
 
@@ -68,6 +70,7 @@ export type TaskPatch = {
   permissionMode?: string;
   tools?: KanbanTaskTools;
   scheduleCron?: string | null;
+  dueDate?: string | null;
   status?: KanbanTaskStatus;
 };
 
@@ -123,6 +126,7 @@ export const kanbanApi = {
     permissionMode?: string;
     tools?: KanbanTaskTools;
     scheduleCron?: string | null;
+    dueDate?: string | null;
   }): Promise<KanbanTask> {
     const res = await authenticatedFetch(`${BASE}/tasks`, {
       method: 'POST',

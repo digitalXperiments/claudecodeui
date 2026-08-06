@@ -6,12 +6,14 @@ import spawn from 'cross-spawn';
 
 import { githubTokensDb } from '@/modules/database/index.js';
 import { createProject } from '@/modules/projects/services/project-management.service.js';
+import { projectMemoryService } from '@/modules/providers/index.js';
 import type { WorkspacePathValidationResult } from '@/shared/types.js';
 import { AppError, validateWorkspacePath } from '@/shared/utils.js';
 
 type CloneProjectInput = {
   workspacePath: string;
   githubUrl: string;
+  enableMemory?: boolean;
   githubTokenId?: number | null;
   newGithubToken?: string | null;
   userId: number | string;
@@ -20,6 +22,8 @@ type CloneProjectInput = {
 type CloneCompletePayload = {
   project: Record<string, unknown>;
   message: string;
+  memory?: unknown;
+  memoryError?: string | null;
 };
 
 type CloneProjectEventHandlers = {
@@ -46,6 +50,7 @@ type CloneProjectDependencies = {
   ) => Promise<{ github_token: string } | null>;
   spawnGitClone: (cloneUrl: string, clonePath: string) => GitCloneProcess;
   registerProject: (projectPath: string, customName: string) => Promise<{ project: Record<string, unknown> }>;
+  enableMemory: (workspacePath: string) => Promise<unknown>;
   logError: (message: string, error: unknown) => void;
 };
 
@@ -142,6 +147,14 @@ const defaultDependencies: CloneProjectDependencies = {
       projectPath,
       customName,
     }) as Promise<{ project: Record<string, unknown> }>,
+  enableMemory: async (workspacePath: string): Promise<unknown> => {
+    const result = await projectMemoryService.enableMemory({
+      workspacePath,
+      vaultFolder: '',
+      enabled: true,
+    });
+    return result.status;
+  },
   logError: (message: string, error: unknown): void => {
     console.error(message, error);
   },
@@ -261,9 +274,20 @@ export async function startCloneProject(
       if (code === 0) {
         try {
           const createdProject = await dependencies.registerProject(clonePath, repoName);
+          let memory: unknown = null;
+          let memoryError: string | null = null;
+          if (input.enableMemory) {
+            try {
+              memory = await dependencies.enableMemory(clonePath);
+            } catch (error) {
+              memoryError = resolveErrorMessage(error);
+            }
+          }
           handlers.onComplete({
             project: createdProject.project,
             message: 'Repository cloned successfully',
+            memory,
+            memoryError,
           });
           resolve();
         } catch (error) {

@@ -1,8 +1,13 @@
+import { EventEmitter } from 'node:events';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { WebSocket } from 'ws';
+
 import {
   buildShellCommand,
+  isAgentShellRequestWithExistingSession,
+  waitForChatbarRunIfNeeded,
   type ShellIncomingMessage,
   type ShellWebSocketDependencies,
 } from '@/modules/websocket/services/shell-websocket.service.js';
@@ -14,6 +19,20 @@ const dependencies = {
   extractUrlsFromText: () => [],
   shouldAutoOpenUrlFromOutput: () => false,
 } satisfies ShellWebSocketDependencies;
+
+class TestShellSocket extends EventEmitter {
+  readyState: number = WebSocket.OPEN;
+  readonly frames: string[] = [];
+
+  send(frame: string): void {
+    this.frames.push(frame);
+  }
+
+  close(): void {
+    this.readyState = WebSocket.CLOSED;
+    this.emit('close', 1000, Buffer.alloc(0));
+  }
+}
 
 function build(message: ShellIncomingMessage): string {
   return buildShellCommand({ type: 'init', ...message }, dependencies);
@@ -52,8 +71,12 @@ test('codex maps modes onto -c sandbox/approval overrides', () => {
     'codex -c sandbox_mode="danger-full-access" -c approval_policy="never"',
   );
   assert.equal(
+    build({ provider: 'codex', hasSession: true, sessionId: 'c1', permissionMode: 'auto' }),
+    'codex resume "c1" -c sandbox_mode="workspace-write" -c sandbox_workspace_write.network_access=true -c approval_policy="never" || codex -c sandbox_mode="workspace-write" -c sandbox_workspace_write.network_access=true -c approval_policy="never"',
+  );
+  assert.equal(
     build({ provider: 'codex', hasSession: true, sessionId: 'c1', permissionMode: 'acceptEdits' }),
-    'codex resume "c1" -c sandbox_mode="workspace-write" -c approval_policy="never" || codex -c sandbox_mode="workspace-write" -c approval_policy="never"',
+    'codex resume "c1" -c sandbox_mode="workspace-write" -c sandbox_workspace_write.network_access=true -c approval_policy="never" || codex -c sandbox_mode="workspace-write" -c sandbox_workspace_write.network_access=true -c approval_policy="never"',
   );
 });
 
@@ -106,4 +129,127 @@ test('plain shells ignore the permission mode', () => {
     build({ isPlainShell: true, initialCommand: 'bash', permissionMode: 'plan' }),
     'bash',
   );
+});
+
+test('identifies every provider-backed shell with an existing session', () => {
+  for (const provider of ['claude', 'cursor', 'codex', 'opencode', 'grok', 'kimi', 'agy', 'pi']) {
+    assert.equal(
+      isAgentShellRequestWithExistingSession({
+        provider,
+        hasSession: true,
+        sessionId: `${provider}-session`,
+      }),
+      true,
+      provider,
+    );
+  }
+});
+
+test('does not identify plain shells or requests without an existing session', () => {
+  assert.equal(
+    isAgentShellRequestWithExistingSession({
+      provider: 'claude',
+      isPlainShell: true,
+      hasSession: true,
+      sessionId: 'plain-session',
+    }),
+    false,
+  );
+  assert.equal(
+    isAgentShellRequestWithExistingSession({
+      provider: 'plain-shell',
+      hasSession: true,
+      sessionId: 'plain-session',
+    }),
+    false,
+  );
+  assert.equal(
+    isAgentShellRequestWithExistingSession({
+      provider: 'claude',
+      initialCommand: 'bash',
+      hasSession: false,
+    }),
+    false,
+  );
+  assert.equal(
+    isAgentShellRequestWithExistingSession({ provider: 'claude', hasSession: false }),
+    false,
+  );
+  assert.equal(
+    isAgentShellRequestWithExistingSession({ provider: 'claude', hasSession: true }),
+    false,
+  );
+});
+
+test('waits for an active Chatbar run and then permits Shell continuation', async () => {
+  const socket = new TestShellSocket();
+  let active = true;
+  let releaseIdle: (() => void) | undefined;
+  const idle = new Promise<void>((resolve) => {
+    releaseIdle = resolve;
+  });
+  let waitCalled = false;
+
+  const result = waitForChatbarRunIfNeeded(
+    socket as unknown as WebSocket,
+    { provider: 'claude', hasSession: true, sessionId: 'app-session-1' },
+    {
+      ...dependencies,
+      isChatbarRunActive: () => active,
+      waitForChatbarRunIdle: async () => {
+        waitCalled = true;
+        await idle;
+        active = false;
+      },
+    },
+  );
+
+  assert.equal(waitCalled, true);
+  assert.equal(socket.frames.length, 1);
+  const waitingFrame = JSON.parse(socket.frames[0]) as { type: string; data: string };
+  assert.equal(waitingFrame.type, 'output');
+  assert.match(waitingFrame.data, /\x1b\[33m\[Shell waiting\]/);
+
+  let continued = false;
+  void result.then(() => {
+    continued = true;
+  });
+  await Promise.resolve();
+  assert.equal(continued, false);
+
+  releaseIdle?.();
+  assert.equal(await result, true);
+  assert.equal(continued, true);
+});
+
+test('fails closed when the Shell socket closes or no idle hook exists', async () => {
+  const closedSocket = new TestShellSocket();
+  let releaseIdle: (() => void) | undefined;
+  const idle = new Promise<void>((resolve) => {
+    releaseIdle = resolve;
+  });
+  const closedResult = waitForChatbarRunIfNeeded(
+    closedSocket as unknown as WebSocket,
+    { provider: 'codex', hasSession: true, sessionId: 'app-session-2' },
+    {
+      ...dependencies,
+      isChatbarRunActive: () => true,
+      waitForChatbarRunIdle: () => idle,
+    },
+  );
+  closedSocket.close();
+  assert.equal(await closedResult, false);
+  releaseIdle?.();
+
+  const noWaitHookSocket = new TestShellSocket();
+  const noWaitHookResult = await waitForChatbarRunIfNeeded(
+    noWaitHookSocket as unknown as WebSocket,
+    { provider: 'pi', hasSession: true, sessionId: 'app-session-3' },
+    {
+      ...dependencies,
+      isChatbarRunActive: () => true,
+    },
+  );
+  assert.equal(noWaitHookResult, false);
+  assert.equal(noWaitHookSocket.frames.length, 1);
 });

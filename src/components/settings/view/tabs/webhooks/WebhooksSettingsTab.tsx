@@ -50,6 +50,9 @@ type Draft = {
   skills_text: string;
   scope: 'global' | 'project';
   project_id: string;
+  retryMax: string;
+  retryBackoffSeconds: string;
+  secret: string;
 };
 
 const emptyDraft = (): Draft => ({
@@ -65,6 +68,9 @@ const emptyDraft = (): Draft => ({
   skills_text: '',
   scope: 'global',
   project_id: '',
+  retryMax: '',
+  retryBackoffSeconds: '',
+  secret: '',
 });
 
 function linesToList(text: string): string[] {
@@ -88,6 +94,9 @@ function sourceToDraft(row: WebhookSource): Draft {
     skills_text: (row.skills ?? []).join('\n'),
     scope: row.scope === 'project' ? 'project' : 'global',
     project_id: row.project_id ?? '',
+    retryMax: row.retryMax?.toString() ?? '',
+    retryBackoffSeconds: row.retryBackoffSeconds?.toString() ?? '',
+    secret: row.secret ?? '',
   };
 }
 
@@ -105,6 +114,15 @@ function draftToInput(draft: Draft): WebhookSourceInput {
     skills: linesToList(draft.skills_text),
     scope: draft.scope,
     project_id: draft.scope === 'project' ? draft.project_id || null : null,
+    retryMax:
+      draft.retryMax === ''
+        ? undefined
+        : Math.min(10, Math.max(0, Math.round(Number(draft.retryMax) || 0))),
+    retryBackoffSeconds:
+      draft.retryBackoffSeconds === ''
+        ? undefined
+        : Math.max(1, Math.round(Number(draft.retryBackoffSeconds) || 60)),
+    secret: draft.secret.trim() || null,
   };
 }
 
@@ -121,6 +139,20 @@ function statusColor(status: string): string {
   }
 }
 
+function relativeTime(iso: string | null): string {
+  if (!iso) return '';
+  const then = new Date(iso).getTime();
+  if (!Number.isFinite(then)) return '';
+  const diff = then - Date.now();
+  const mins = Math.round(Math.abs(diff) / 60000);
+  if (mins < 1) return diff >= 0 ? 'in <1m' : 'just now';
+  if (mins < 60) return diff >= 0 ? `in ${mins}m` : `${mins}m ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return diff >= 0 ? `in ${hours}h` : `${hours}h ago`;
+  const days = Math.round(hours / 24);
+  return diff >= 0 ? `in ${days}d` : `${days}d ago`;
+}
+
 export default function WebhooksSettingsTab() {
   const [sources, setSources] = useState<WebhookSource[]>([]);
   const [loading, setLoading] = useState(true);
@@ -134,6 +166,8 @@ export default function WebhooksSettingsTab() {
   const [deliveriesLoading, setDeliveriesLoading] = useState(false);
   const [copied, setCopied] = useState(false);
   const [testingId, setTestingId] = useState<string | null>(null);
+  const [replayingId, setReplayingId] = useState<string | null>(null);
+  const [showSecret, setShowSecret] = useState(false);
 
   const ingestUrl = useMemo(() => {
     if (typeof window === 'undefined') return '/api/hooks';
@@ -249,6 +283,19 @@ export default function WebhooksSettingsTab() {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setTestingId(null);
+    }
+  };
+
+  const handleReplay = async (row: WebhookSource, deliveryId: string) => {
+    setReplayingId(deliveryId);
+    setError(null);
+    try {
+      await webhooksApi.replayDelivery(row.source_id, deliveryId);
+      await loadDeliveries(row.source_id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setReplayingId(null);
     }
   };
 
@@ -440,6 +487,63 @@ export default function WebhooksSettingsTab() {
               </select>
             </div>
             <div>
+              <label className={labelClass}>Max retries (0-10)</label>
+              <Input
+                type="number"
+                min={0}
+                max={10}
+                value={draft.retryMax}
+                onChange={(e) => setDraft((d) => ({ ...d, retryMax: e.target.value }))}
+                placeholder="0"
+                className="mt-1"
+              />
+              <p className="mt-1 text-xs text-muted-foreground">
+                Automatic re-dispatches after a failed run. 0 disables retries.
+              </p>
+            </div>
+            <div>
+              <label className={labelClass}>Retry backoff (seconds)</label>
+              <Input
+                type="number"
+                min={1}
+                value={draft.retryBackoffSeconds}
+                onChange={(e) =>
+                  setDraft((d) => ({ ...d, retryBackoffSeconds: e.target.value }))
+                }
+                placeholder="60"
+                className="mt-1"
+              />
+              <p className="mt-1 text-xs text-muted-foreground">
+                Base delay; each retry waits backoff &times; attempt.
+              </p>
+            </div>
+            <div className="sm:col-span-2">
+              <label className={labelClass}>HMAC secret (optional)</label>
+              <div className="mt-1 flex gap-2">
+                <Input
+                  type={showSecret ? 'text' : 'password'}
+                  value={draft.secret}
+                  onChange={(e) => setDraft((d) => ({ ...d, secret: e.target.value }))}
+                  placeholder="leave blank to disable"
+                  autoComplete="off"
+                  className="flex-1"
+                />
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setShowSecret((v) => !v)}
+                >
+                  {showSecret ? 'Hide' : 'Show'}
+                </Button>
+              </div>
+              <p className="mt-1 text-xs text-muted-foreground">
+                When set, callers must sign the raw request body with HMAC-SHA256 using this
+                secret and send it as <code>x-webhook-signature</code> (optionally{' '}
+                <code>sha256=</code>-prefixed). Blank disables verification.
+              </p>
+            </div>
+            <div>
               <label className={labelClass}>Scope</label>
               <select
                 className={`${selectClass} mt-1`}
@@ -576,10 +680,35 @@ export default function WebhooksSettingsTab() {
                           <span className="text-xs text-muted-foreground">
                             {new Date(d.created_at).toLocaleString()}
                           </span>
+                          <span className="text-xs text-muted-foreground">
+                            attempt {(d.attempt ?? 1)}
+                          </span>
+                          {d.next_retry_at && (
+                            <span className="text-xs text-muted-foreground">
+                              retry {relativeTime(d.next_retry_at)}
+                            </span>
+                          )}
                           {d.app_session_id && (
                             <code className="text-xs text-muted-foreground">
                               session {d.app_session_id.slice(0, 8)}…
                             </code>
+                          )}
+                          {d.status === 'failed' && (
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => void handleReplay(row, d.delivery_id)}
+                              disabled={replayingId === d.delivery_id}
+                              title="Re-run this delivery"
+                            >
+                              {replayingId === d.delivery_id ? (
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                              ) : (
+                                <Play className="h-4 w-4" />
+                              )}
+                              Replay
+                            </Button>
                           )}
                         </div>
                         {d.error_message && (

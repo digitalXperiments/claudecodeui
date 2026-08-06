@@ -1,6 +1,9 @@
 import { chatRunRegistry, type RunCompletionEvent } from '@/modules/websocket/index.js';
 import { webhooksDb } from '@/modules/webhooks/webhooks.repository.js';
-import { extractWebhookRunOutcome } from '@/modules/webhooks/webhooks-runner.service.js';
+import {
+  extractWebhookRunOutcome,
+  handleDeliveryFailed,
+} from '@/modules/webhooks/webhooks-runner.service.js';
 
 let unsubscribe: (() => void) | null = null;
 
@@ -23,11 +26,28 @@ export function handleWebhookRunCompletion(event: RunCompletionEvent): void {
     const preview = outcome.text.slice(0, 2000) || null;
     const failed = event.aborted || !event.success || outcome.failed;
 
-    webhooksDb.finishDelivery(delivery.delivery_id, failed ? 'failed' : 'done', {
-      errorMessage: failed
-        ? outcome.errorMessage ||
-          (event.aborted ? 'Run aborted' : 'Provider run failed')
-        : null,
+    if (failed) {
+      const source = webhooksDb.getSourceById(delivery.source_id);
+      if (!source) {
+        webhooksDb.finishDelivery(delivery.delivery_id, 'failed', {
+          errorMessage:
+            outcome.errorMessage ||
+            (event.aborted ? 'Run aborted' : 'Provider run failed'),
+          resultPreview: preview,
+        });
+        return;
+      }
+      handleDeliveryFailed(delivery, source, {
+        errorMessage:
+          outcome.errorMessage ||
+          (event.aborted ? 'Run aborted' : 'Provider run failed'),
+        resultPreview: preview,
+      });
+      return;
+    }
+
+    webhooksDb.finishDelivery(delivery.delivery_id, 'done', {
+      errorMessage: null,
       resultPreview: preview,
     });
   } catch (error) {

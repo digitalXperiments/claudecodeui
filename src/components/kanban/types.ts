@@ -11,6 +11,8 @@ export type KanbanColumn = {
   order: number;
   runOnEnter?: boolean;
   permissionMode?: string;
+  /** Max concurrently active (queued/running) tasks; undefined = no limit. */
+  wipLimit?: number;
 };
 
 export type KanbanTaskTools = {
@@ -60,6 +62,10 @@ export type KanbanTask = {
   permission_mode: string;
   tools: KanbanTaskTools;
   schedule_cron: string | null;
+  /** ISO deadline; overdue cards show an escalating badge. */
+  due_date: string | null;
+  /** Git branch auto-created when an implementation run starts. */
+  feature_branch: string | null;
   status: KanbanTaskStatus;
   app_session_id: string | null;
   last_run_at: string | null;

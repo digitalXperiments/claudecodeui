@@ -7,6 +7,11 @@
 import { appConfigDb, systemNotificationsDb } from '@/modules/database/index.js';
 import type { CreateSystemNotificationInput } from '@/modules/database/index.js';
 import { providerAuthService, providerRegistry } from '@/modules/providers/index.js';
+import {
+  checkMcpServerHealth,
+  MCP_HEALTH_DEDUPE_PREFIX,
+  type McpServerHealthReport,
+} from '@/modules/auth-health/mcp-health.service.js';
 import { connectedClients, WS_OPEN_STATE } from '@/modules/websocket/index.js';
 
 export type AuthHealthProviderReport = {
@@ -22,6 +27,8 @@ export type AuthHealthReport = {
   /** ISO timestamp of when the probe ran. */
   checkedAt: string;
   providers: AuthHealthProviderReport[];
+  /** Per-provider MCP server health, probed alongside provider auth. */
+  mcpServers?: McpServerHealthReport[];
 };
 
 /** Re-login command hint shown in the notification body, per provider. */
@@ -81,6 +88,9 @@ let lastReport: AuthHealthReport | null = null;
 
 /** Per-provider epoch ms of the last alert we created; backs the 24h anti-spam cooldown. */
 const lastNotifiedAt = new Map<string, number>();
+
+/** Per-(provider, mcp server) epoch ms of the last alert; backs the same cooldown. */
+const lastMcpNotifiedAt = new Map<string, number>();
 
 export function getLastAuthHealthReport(): AuthHealthReport | null {
   return lastReport;
@@ -146,6 +156,14 @@ export async function checkAuthHealth(options?: { fresh?: boolean }): Promise<Au
   }
 
   const report: AuthHealthReport = { checkedAt: new Date().toISOString(), providers };
+
+  // MCP server health for the same enabled provider set, so broken tool
+  // servers surface in the same report (and watchdog pass) as broken auth.
+  const enabledProviderIds = new Set(
+    providerRegistry.listProviders().map((p) => p.id).filter((id) => !disabled.has(id)),
+  );
+  report.mcpServers = await checkMcpServerHealth({ providerIds: enabledProviderIds });
+
   lastReport = report;
   return report;
 }
@@ -162,6 +180,66 @@ export type AuthHealthPlanAction =
 
 function displayName(provider: string): string {
   return provider.charAt(0).toUpperCase() + provider.slice(1);
+}
+
+const mcpDedupeKey = (provider: string, name: string): string => `${MCP_HEALTH_DEDUPE_PREFIX}${provider}:${name}`;
+
+/**
+ * Pure notify/recover decision pass over MCP server health reports.
+ *
+ * - unhealthy with no open alert, outside the cooldown → create an alert.
+ * - unhealthy with an open alert, or inside the cooldown → no-op.
+ * - healthy again with an open alert → dismiss it (silent recovery).
+ */
+export function planMcpHealthNotifications(
+  reports: readonly McpServerHealthReport[],
+  openNotifications: readonly AuthHealthOpenNotification[],
+  lastNotified: ReadonlyMap<string, number>,
+  now: number,
+): AuthHealthPlanAction[] {
+  const actions: AuthHealthPlanAction[] = [];
+
+  for (const entry of reports) {
+    const dedupeKey = mcpDedupeKey(entry.provider, entry.name);
+    const open = openNotifications.find((n) => n.meta?.dedupeKey === dedupeKey);
+
+    if (entry.healthy) {
+      if (open) {
+        actions.push({
+          type: 'dismiss',
+          provider: entry.provider,
+          dedupeKey,
+          notificationId: open.notification_id,
+        });
+      }
+      continue;
+    }
+
+    if (open) {
+      continue;
+    }
+    const last = lastNotified.get(dedupeKey);
+    if (last !== undefined && now - last < RENOTIFY_COOLDOWN_MS) {
+      continue;
+    }
+
+    actions.push({
+      type: 'create',
+      provider: entry.provider,
+      input: {
+        kind: 'action_required',
+        severity: 'warning',
+        source: 'auth-health',
+        title: `MCP server "${entry.name}" is unhealthy (${entry.provider})`,
+        body: `${entry.error ?? 'Health probe failed.'} Open Settings → Agents to review the server config.`,
+        href: NOTIFICATION_HREF,
+        meta: { provider: entry.provider, mcpServer: entry.name },
+        dedupeKey,
+      },
+    });
+  }
+
+  return actions;
 }
 
 /**
@@ -300,6 +378,31 @@ export async function applyAuthHealthOutcomes(report: AuthHealthReport): Promise
         systemNotificationsDb.dismiss(action.notificationId);
       } catch (error) {
         console.warn(`[auth-health] failed to dismiss recovered alert for ${action.provider}:`, error);
+      }
+    }
+  }
+
+  // MCP server health pass shares the same inbox/dedupe machinery with its own
+  // per-(provider, server) cooldown map.
+  if (report.mcpServers && report.mcpServers.length > 0) {
+    const mcpActions = planMcpHealthNotifications(report.mcpServers, openNotifications, lastMcpNotifiedAt, now);
+    for (const action of mcpActions) {
+      if (action.type === 'create') {
+        const dedupeKey = action.input.dedupeKey ?? `${MCP_HEALTH_DEDUPE_PREFIX}${action.provider}`;
+        try {
+          systemNotificationsDb.create(action.input);
+          lastMcpNotifiedAt.set(dedupeKey, now);
+        } catch (error) {
+          console.warn(`[auth-health] failed to create MCP alert for ${dedupeKey}:`, error);
+          continue;
+        }
+        broadcastNotificationCreated();
+      } else {
+        try {
+          systemNotificationsDb.dismiss(action.notificationId);
+        } catch (error) {
+          console.warn(`[auth-health] failed to dismiss recovered MCP alert for ${action.dedupeKey}:`, error);
+        }
       }
     }
   }

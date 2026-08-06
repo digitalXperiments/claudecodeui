@@ -35,7 +35,8 @@ type ProviderCapabilities = {
 /**
  * The capability matrix mirrors what each runtime actually implements today:
  * - permission modes match the option sets accepted by each CLI/SDK.
- * - only the Claude SDK integration surfaces interactive permission requests.
+ * - Claude and Codex app-server integrations surface interactive permission
+ *   requests; the remaining headless integrations do not.
  * - Cursor has no token usage endpoint support (its store.db has no usage rows).
  */
 const PROVIDER_CAPABILITIES: Record<LLMProvider, ProviderCapabilities> = {
@@ -69,12 +70,14 @@ const PROVIDER_CAPABILITIES: Record<LLMProvider, ProviderCapabilities> = {
   },
   codex: {
     provider: 'codex',
-    permissionModes: ['default', 'acceptEdits', 'bypassPermissions'],
+    // Codex Auto uses on-request plus its model-backed auto_review reviewer;
+    // requests that the reviewer cannot safely classify still reach Chatbar.
+    permissionModes: ['default', 'auto', 'bypassPermissions'],
     defaultPermissionMode: 'default',
     supportsImages: true,
     supportsFiles: true,
     supportsAbort: true,
-    supportsPermissionRequests: false,
+    supportsPermissionRequests: true,
     supportsTokenUsage: true,
     supportsEffort: true,
   },

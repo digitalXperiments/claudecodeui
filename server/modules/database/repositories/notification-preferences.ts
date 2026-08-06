@@ -6,6 +6,19 @@
 
 import { getConnection } from '@/modules/database/connection.js';
 
+export type NotificationChannelRule = {
+  channel: 'webPush' | 'desktop' | 'inApp' | 'sound';
+  kinds?: string[];
+  sources?: string[];
+  enabled: boolean;
+};
+
+export type NotificationDigestPreferences = {
+  enabled: boolean;
+  time: string;
+  channels: string[];
+};
+
 type NotificationPreferences = {
   channels: {
     inApp: boolean;
@@ -19,6 +32,8 @@ type NotificationPreferences = {
     stop: boolean;
     error: boolean;
   };
+  rules: NotificationChannelRule[];
+  digest?: NotificationDigestPreferences;
 };
 
 const DEFAULT_NOTIFICATION_PREFERENCES: NotificationPreferences = {
@@ -33,7 +48,56 @@ const DEFAULT_NOTIFICATION_PREFERENCES: NotificationPreferences = {
     stop: true,
     error: true,
   },
+  rules: [],
 };
+
+const VALID_RULE_CHANNELS = ['webPush', 'desktop', 'inApp', 'sound'];
+
+function normalizeRules(value: unknown): NotificationChannelRule[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const rules: NotificationChannelRule[] = [];
+  for (const rule of value) {
+    if (!rule || typeof rule !== 'object') {
+      continue;
+    }
+    const candidate = rule as Record<string, unknown>;
+    if (!VALID_RULE_CHANNELS.includes(String(candidate.channel))) {
+      continue;
+    }
+    rules.push({
+      channel: String(candidate.channel) as NotificationChannelRule['channel'],
+      kinds: Array.isArray(candidate.kinds)
+        ? candidate.kinds.filter((kind): kind is string => typeof kind === 'string')
+        : undefined,
+      sources: Array.isArray(candidate.sources)
+        ? candidate.sources.filter((source): source is string => typeof source === 'string')
+        : undefined,
+      enabled: candidate.enabled !== false,
+    });
+  }
+  return rules;
+}
+
+function normalizeDigest(value: unknown): NotificationDigestPreferences | undefined {
+  if (!value || typeof value !== 'object') {
+    return undefined;
+  }
+  const source = value as Record<string, unknown>;
+  const time = typeof source.time === 'string' && /^\d{2}:\d{2}$/.test(source.time)
+    ? source.time
+    : '08:00';
+  const channels = Array.isArray(source.channels)
+    ? source.channels.filter((channel): channel is string => channel === 'webPush' || channel === 'desktop')
+    : ['webPush', 'desktop'];
+  return {
+    enabled: source.enabled === true,
+    time,
+    channels,
+  };
+}
 
 function normalizeNotificationPreferences(value: unknown): NotificationPreferences {
   const source = value && typeof value === 'object' ? (value as Record<string, any>) : {};
@@ -44,6 +108,8 @@ function normalizeNotificationPreferences(value: unknown): NotificationPreferenc
     Object.entries(sourceChannels)
       .filter(([key, channelValue]) => !['inApp', 'webPush', 'desktop', 'sound'].includes(key) && typeof channelValue === 'boolean')
   ) as Record<string, boolean>;
+
+  const digest = normalizeDigest(source.digest);
 
   return {
     channels: {
@@ -58,6 +124,8 @@ function normalizeNotificationPreferences(value: unknown): NotificationPreferenc
       stop: source.events?.stop !== false,
       error: source.events?.error !== false,
     },
+    rules: normalizeRules(source.rules),
+    ...(digest ? { digest } : {}),
   };
 }
 
@@ -105,6 +173,24 @@ export const notificationPreferencesDb = {
     ).run(userId, JSON.stringify(normalized));
 
     return normalized;
+  },
+
+  /** Returns every stored user's normalized preferences (used by the digest scheduler). */
+  listAll(): Array<{ userId: number; preferences: NotificationPreferences }> {
+    const db = getConnection();
+    const rows = db
+      .prepare('SELECT user_id, preferences_json FROM user_notification_preferences')
+      .all() as Array<{ user_id: number; preferences_json: string }>;
+
+    return rows.map((row) => {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(row.preferences_json);
+      } catch {
+        parsed = DEFAULT_NOTIFICATION_PREFERENCES;
+      }
+      return { userId: row.user_id, preferences: normalizeNotificationPreferences(parsed) };
+    });
   },
 
   // Legacy aliases used by existing services/routes

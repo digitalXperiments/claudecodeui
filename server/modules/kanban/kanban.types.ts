@@ -47,6 +47,12 @@ export type KanbanColumn = {
   order: number;
   runOnEnter?: boolean;
   permissionMode?: string;
+  /**
+   * Maximum number of concurrently active tasks (queued or running) allowed in
+   * this column. `undefined`/`null` means no limit. Used to gate auto-starting
+   * runs when a column is full.
+   */
+  wipLimit?: number;
 };
 
 /** Per-task tool permissions, stored inside `kanban_tasks.tools_json`. */
@@ -107,6 +113,12 @@ export type KanbanTaskRow = {
   permission_mode: string;
   tools_json: string;
   schedule_cron: string | null;
+  /** ISO deadline; overdue cards can be escalated. */
+  due_date: string | null;
+  /** Git branch auto-created when an implementation run starts. */
+  feature_branch: string | null;
+  /** ISO timestamp of the last overdue escalation for this task. */
+  escalated_at: string | null;
   status: KanbanTaskStatus;
   app_session_id: string | null;
   last_run_at: string | null;
@@ -177,6 +189,8 @@ export type CreateTaskInput = {
   permissionMode?: string;
   tools?: KanbanTaskTools;
   scheduleCron?: string | null;
+  dueDate?: string | null;
+  featureBranch?: string | null;
 };
 
 export type UpdateTaskInput = {
@@ -193,6 +207,10 @@ export type UpdateTaskInput = {
   permissionMode?: string;
   tools?: KanbanTaskTools;
   scheduleCron?: string | null;
+  dueDate?: string | null;
+  featureBranch?: string | null;
+  /** Last escalation sweep timestamp (managed by the scheduler, not clients). */
+  escalatedAt?: string | null;
   status?: KanbanTaskStatus;
 };
 

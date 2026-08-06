@@ -13,6 +13,7 @@ import type {
 type CloneWorkspaceParams = {
   workspacePath: string;
   githubUrl: string;
+  enableMemory: boolean;
   tokenMode: TokenMode;
   selectedGithubToken: string;
   newGithubToken: string;
@@ -114,6 +115,7 @@ export const createProjectRequest = async (payload: CreateProjectPayload) => {
 const buildCloneProgressQuery = ({
   workspacePath,
   githubUrl,
+  enableMemory,
   tokenMode,
   selectedGithubToken,
   newGithubToken,
@@ -122,6 +124,10 @@ const buildCloneProgressQuery = ({
     path: workspacePath.trim(),
     githubUrl: githubUrl.trim(),
   });
+
+  if (enableMemory) {
+    query.set('memoryEnabled', '1');
+  }
 
   if (tokenMode === 'stored' && selectedGithubToken) {
     query.set('githubTokenId', selectedGithubToken);

@@ -1,10 +1,13 @@
 import path from 'node:path';
 import http from 'node:http';
 import https from 'node:https';
-import { readdir, stat } from 'node:fs/promises';
+import { access, mkdir, readdir, stat, writeFile } from 'node:fs/promises';
 
-import { projectMemoryDb, projectsDb } from '@/modules/database/index.js';
+import { jsonrepair } from 'jsonrepair';
+
+import { projectMemoryDb, projectsDb, sessionsDb } from '@/modules/database/index.js';
 import { obsidianSettingsService } from '@/modules/providers/services/obsidian-settings.service.js';
+import { sessionsService } from '@/modules/providers/services/sessions.service.js';
 import { providerMcpService } from '@/modules/providers/services/mcp.service.js';
 import { mcpCatalogService } from '@/modules/providers/services/mcp-catalog.service.js';
 import { projectSkillsService } from '@/modules/providers/services/project-skills.service.js';
@@ -13,13 +16,20 @@ import {
   MEMORY_SKILL_DIRECTORY_NAME,
   renderMemorySkillTemplate,
 } from '@/modules/providers/shared/memory/memory-skill.template.js';
-import { scaffoldVault, type ScaffoldResult } from '@/modules/providers/shared/memory/memory.scaffold.js';
+import { resolveVaultTargetDir, scaffoldVault, type ScaffoldResult } from '@/modules/providers/shared/memory/memory.scaffold.js';
 import {
   buildObsidianMcpServerInput,
   OBSIDIAN_MCP_SERVER_NAME,
 } from '@/modules/providers/shared/memory/obsidian-mcp.config.js';
+import {
+  chatRunRegistry,
+  DETACHED_CONNECTION,
+  startProviderRun,
+  type ProviderSpawnFn,
+} from '@/modules/websocket/index.js';
 import type {
   LLMProvider,
+  NormalizedMessage,
   ObsidianConnectionTestResult,
   ObsidianMemorySettings,
   ProjectMemoryConfigInput,
@@ -182,6 +192,338 @@ const directoryExists = async (directoryPath: string): Promise<boolean> => {
     return false;
   }
 };
+
+// ---------------------------
+//----------------- VAULT STALENESS & CURATION ------------
+const DAY_MS = 24 * 60 * 60 * 1000;
+const DEFAULT_STALE_NOTE_DAYS = 90;
+
+export type StaleVaultNote = {
+  path: string;
+  relativePath: string;
+  lastModified: string;
+  daysOld: number;
+};
+
+export type MemoryCurationSuggestion = {
+  action: 'create' | 'update' | 'link';
+  path: string;
+  content: string;
+  reason: string;
+  confidence: number;
+};
+
+export type MemoryCurationResult = {
+  success: boolean;
+  suggestions: MemoryCurationSuggestion[];
+  error?: string;
+};
+
+export type MemoryCurationApplyResult = {
+  success: boolean;
+  created: boolean;
+  path: string;
+  error?: string;
+};
+
+/**
+ * Provider runtime entry points for headless memory-curation runs. Injected by
+ * server/index.js (the provider spawn fns live there); empty until configured.
+ */
+let curationRuntimes: Partial<Record<LLMProvider, ProviderSpawnFn>> = {};
+
+export function configureMemoryCurationRuntimes(
+  spawnFns: Partial<Record<LLMProvider, ProviderSpawnFn>>,
+): void {
+  curationRuntimes = spawnFns;
+}
+
+type VaultFileEntry = {
+  path: string;
+  relativePath: string;
+  mtimeMs: number;
+};
+
+/**
+ * Recursively walks a folder collecting every file, ignoring hidden entries
+ * (`.obsidian`, `.trash`, `.git`, ...). Best-effort: unreadable directories or
+ * files are skipped rather than aborting the walk.
+ */
+const collectVaultFiles = async (vaultRoot: string): Promise<VaultFileEntry[]> => {
+  const files: VaultFileEntry[] = [];
+  const walk = async (directoryPath: string, relativeDir: string): Promise<void> => {
+    const entries = await readdir(directoryPath, { withFileTypes: true }).catch(() => null);
+    if (!entries) {
+      return;
+    }
+    for (const entry of entries) {
+      if (entry.name.startsWith('.')) {
+        continue;
+      }
+      const filePath = path.join(directoryPath, entry.name);
+      const relativePath = relativeDir ? `${relativeDir}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        await walk(filePath, relativePath);
+        continue;
+      }
+      if (!entry.isFile()) {
+        continue;
+      }
+      const stats = await stat(filePath).catch(() => null);
+      if (!stats) {
+        continue;
+      }
+      files.push({ path: filePath, relativePath, mtimeMs: stats.mtimeMs });
+    }
+  };
+  await walk(vaultRoot, '');
+  return files;
+};
+
+const mapToStaleNotes = (
+  files: VaultFileEntry[],
+  now: number,
+  thresholdMs: number,
+): StaleVaultNote[] =>
+  files
+    .filter((file) => file.relativePath.toLowerCase().endsWith('.md'))
+    .filter((file) => now - file.mtimeMs >= thresholdMs)
+    .map((file) => ({
+      path: file.path,
+      relativePath: file.relativePath,
+      lastModified: new Date(file.mtimeMs).toISOString(),
+      daysOld: Math.floor((now - file.mtimeMs) / DAY_MS),
+    }))
+    .sort((a, b) => b.daysOld - a.daysOld);
+
+/**
+ * Walks the vault folder recursively (ignoring hidden directories such as
+ * `.obsidian` / `.trash`) and returns markdown notes whose mtime is at least
+ * `staleDays` old, newest-to-oldest by age. Returns [] when the vault is
+ * missing or the walk fails.
+ */
+export const listStaleNotes = async (
+  vaultPath: string,
+  staleDays = DEFAULT_STALE_NOTE_DAYS,
+): Promise<StaleVaultNote[]> => {
+  const vaultRoot = path.resolve(vaultPath);
+  const thresholdMs = staleDays * DAY_MS;
+  try {
+    if (!(await directoryExists(vaultRoot))) {
+      return [];
+    }
+    const files = await collectVaultFiles(vaultRoot);
+    return mapToStaleNotes(files, Date.now(), thresholdMs);
+  } catch {
+    return [];
+  }
+};
+
+const CURATION_ENVELOPE =
+  'Return ONLY a JSON array of suggestions, each exactly ' +
+  '{ "action": "create" | "update" | "link", "path": string (vault-relative, ends in .md), "content": string (markdown body for create/update actions), "reason": string (short), "confidence": number (0-1) }. ' +
+  'Do not invent facts that are not supported by the session context. If there is nothing worth recording, return [] (empty array). ' +
+  'Strict JSON only — no code fences, no prose. Escape every " and \\ and newline inside strings (use \\n for line breaks).';
+
+const buildMemoryCurationPrompt = (input: {
+  workspacePath: string;
+  vaultFolder: string;
+  notePaths: string[];
+  sessions: Array<{ provider: string; sessionId: string; customName: string; updatedAt: string }>;
+  transcript: string;
+}): string => {
+  const now = new Date().toISOString();
+  const sessionLines = input.sessions
+    .map((session) => `- ${session.provider} session "${session.customName || session.sessionId}" (updated ${session.updatedAt})`)
+    .join('\n');
+  const noteLines =
+    input.notePaths.length > 0 ? input.notePaths.join('\n') : '(vault folder is empty or not readable)';
+
+  return [
+    `Current time (ISO 8601): ${now}`,
+    `You are curating the Obsidian second brain for the project at "${input.workspacePath}".`,
+    `Its vault folder is \`${input.vaultFolder}/\`. Propose concrete edits to the notes below.`,
+    '',
+    '## Existing notes in the vault folder',
+    noteLines,
+    '',
+    '## Recent sessions for this project',
+    sessionLines || '(no persisted sessions found — base suggestions only on the vault content)',
+    input.transcript
+      ? `\n## Transcript of the most recent session\n${input.transcript}\n`
+      : '\n(no transcript available — use the session summaries above)',
+    '',
+    CURATION_ENVELOPE,
+  ].join('\n');
+};
+
+const stripCodeFences = (text: string): string =>
+  text.replace(/^```[\w]*\n?/gm, '').replace(/^```$/gm, '').trim();
+
+const extractFencedBlocks = (text: string): string[] => {
+  const blocks: string[] = [];
+  const re = /```(?:json|JSON)?\s*\n?([\s\S]*?)```/g;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(text)) !== null) {
+    const body = match[1]?.trim();
+    if (body) blocks.push(body);
+  }
+  return blocks;
+};
+
+const findBalancedJsonSlices = (text: string): string[] => {
+  const slices: string[] = [];
+  for (let startIdx = 0; startIdx < text.length; startIdx++) {
+    const open = text[startIdx];
+    if (open !== '{' && open !== '[') continue;
+    const close = open === '{' ? '}' : ']';
+    let depth = 0;
+    let inStr = false;
+    let escape = false;
+    for (let i = startIdx; i < text.length; i++) {
+      const c = text[i];
+      if (escape) {
+        escape = false;
+        continue;
+      }
+      if (c === '\\' && inStr) {
+        escape = true;
+        continue;
+      }
+      if (c === '"') {
+        inStr = !inStr;
+        continue;
+      }
+      if (inStr) continue;
+      if (c === open) depth++;
+      else if (c === close) {
+        depth--;
+        if (depth === 0) {
+          slices.push(text.slice(startIdx, i + 1));
+          startIdx = i;
+          break;
+        }
+      }
+    }
+  }
+  return slices;
+};
+
+const tryParseJson = (candidate: string): unknown => {
+  try {
+    return JSON.parse(candidate);
+  } catch {
+    const trimmed = candidate.trimStart();
+    if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) {
+      throw new Error('candidate is not JSON-shaped');
+    }
+    return JSON.parse(jsonrepair(candidate));
+  }
+};
+
+/**
+ * Tolerant parser for agent text: accepts plain arrays, fenced ```json blocks,
+ * and common LLM JSON mistakes (via jsonrepair). Mirrors the small approach
+ * used by Mission Control without importing from that module.
+ */
+const parseJsonFromAgentText = (raw: string): unknown => {
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    throw new Error('no JSON object or array found in text');
+  }
+  const candidates = [
+    ...extractFencedBlocks(trimmed),
+    trimmed,
+    stripCodeFences(trimmed),
+    ...findBalancedJsonSlices(stripCodeFences(trimmed)),
+    ...findBalancedJsonSlices(trimmed),
+  ];
+  const unique: string[] = [];
+  for (const candidate of candidates) {
+    const value = candidate.trim();
+    if (value && !unique.includes(value)) unique.push(value);
+  }
+  let lastError: Error | null = null;
+  for (const candidate of unique) {
+    try {
+      const parsed = tryParseJson(candidate);
+      if (Array.isArray(parsed)) return parsed;
+      if (parsed && typeof parsed === 'object') return parsed;
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+    }
+  }
+  throw lastError ?? new Error('no JSON object or array found in text');
+};
+
+const normalizeSuggestions = (value: unknown): MemoryCurationSuggestion[] => {
+  if (!Array.isArray(value)) {
+    throw new Error('Expected a JSON array of memory curation suggestions.');
+  }
+  const suggestions: MemoryCurationSuggestion[] = [];
+  for (const entry of value) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+    const record = entry as Record<string, unknown>;
+    const action = record.action;
+    if (action !== 'create' && action !== 'update' && action !== 'link') continue;
+    const notePath = typeof record.path === 'string' ? record.path.trim() : '';
+    if (!notePath || !notePath.toLowerCase().endsWith('.md')) continue;
+    suggestions.push({
+      action,
+      path: notePath,
+      content: typeof record.content === 'string' ? record.content : '',
+      reason: typeof record.reason === 'string' ? record.reason : '',
+      confidence: typeof record.confidence === 'number' ? Math.max(0, Math.min(1, record.confidence)) : 0.5,
+    });
+  }
+  return suggestions;
+};
+
+type CurationRunOutcome = {
+  text: string;
+  failed: boolean;
+  errorMessage: string | null;
+};
+
+const extractRunOutcome = (appSessionId: string): CurationRunOutcome => {
+  const events = chatRunRegistry.replayEvents(appSessionId, 0);
+  const textChunks: string[] = [];
+  const deltaChunks: string[] = [];
+  const errorChunks: string[] = [];
+  let failed = false;
+  for (const event of events) {
+    if (event.kind === 'complete') {
+      if (typeof event.exitCode === 'number' && event.exitCode !== 0) {
+        failed = true;
+      }
+      continue;
+    }
+    if (typeof event.content !== 'string') continue;
+    if (event.kind === 'error') {
+      errorChunks.push(event.content);
+    } else if (event.kind === 'text') {
+      textChunks.push(event.content);
+    } else if (event.kind === 'stream_delta') {
+      deltaChunks.push(event.content);
+    }
+  }
+  return {
+    text: (textChunks.length > 0 ? textChunks.join('\n') : deltaChunks.join('')).trim(),
+    failed,
+    errorMessage: errorChunks.join('\n').trim() || null,
+  };
+};
+
+const renderSessionTranscript = (messages: NormalizedMessage[]): string =>
+  messages
+    .filter(
+      (message) =>
+        (message.role === 'user' || message.role === 'assistant') &&
+        typeof message.content === 'string' &&
+        message.content.trim(),
+    )
+    .map((message) => `${message.role === 'user' ? 'USER' : 'ASSISTANT'}: ${message.content}`)
+    .join('\n');
 
 /**
  * Probes the Obsidian Local REST API root with the saved credentials. The
@@ -533,13 +875,15 @@ export const projectMemoryService = {
    * Filesystem-derived stats about the project's folder inside the vault. The
    * server is local to the vault, so no REST round-trip is needed.
    */
-  async getVaultStats(workspacePath: string): Promise<ProjectMemoryVaultStats> {
+  async getVaultStats(
+    workspacePath: string,
+  ): Promise<ProjectMemoryVaultStats & { staleNotes: StaleVaultNote[]; totalFiles: number }> {
     const resolved = resolveWorkspacePath(workspacePath);
     const row = projectMemoryDb.get(resolved);
     const settings = obsidianSettingsService.getSettings();
     const vaultFolder = row?.vault_folder ?? '';
 
-    const base: ProjectMemoryVaultStats = {
+    const base: ProjectMemoryVaultStats & { staleNotes: StaleVaultNote[]; totalFiles: number } = {
       workspacePath: resolved,
       vaultFolder,
       exists: false,
@@ -547,6 +891,8 @@ export const projectMemoryService = {
       entities: 0,
       sessions: 0,
       lastSessionWrite: null,
+      staleNotes: [],
+      totalFiles: 0,
     };
 
     if (!row || !row.enabled || !settings.vaultPath.trim() || !vaultFolder) {
@@ -592,6 +938,16 @@ export const projectMemoryService = {
       findLastSessionWrite(),
     ]);
 
+    let staleNotes: StaleVaultNote[] = [];
+    let totalFiles = 0;
+    try {
+      const vaultFiles = await collectVaultFiles(folderRoot);
+      staleNotes = mapToStaleNotes(vaultFiles, Date.now(), DEFAULT_STALE_NOTE_DAYS * DAY_MS);
+      totalFiles = vaultFiles.length;
+    } catch {
+      // Staleness is best-effort; keep the rest of the stats.
+    }
+
     return {
       workspacePath: resolved,
       vaultFolder,
@@ -600,6 +956,174 @@ export const projectMemoryService = {
       entities,
       sessions,
       lastSessionWrite,
+      staleNotes,
+      totalFiles,
     };
+  },
+
+  /**
+   * Headless curation pass: a provider agent reviews recent session outcomes
+   * for the project and proposes concrete vault edits (create/update/link
+   * notes) WITHOUT writing anything. The user reviews and applies each
+   * suggestion via `applyMemoryCurationSuggestion`.
+   */
+  async curateProjectMemory(params: {
+    workspacePath: string;
+    vaultFolder?: string;
+    provider?: LLMProvider;
+    limit?: number;
+  }): Promise<MemoryCurationResult> {
+    const workspacePath = resolveWorkspacePath(params.workspacePath);
+    const provider = params.provider ?? 'claude';
+    const spawnFn = curationRuntimes[provider];
+    if (!spawnFn) {
+      throw new AppError(`Provider "${provider}" runtime is not available for memory curation.`, {
+        code: 'MEMORY_CURATION_RUNTIME_UNAVAILABLE',
+        statusCode: 400,
+      });
+    }
+
+    const row = projectMemoryDb.get(workspacePath);
+    const vaultFolder = normalizeVaultFolder(params.vaultFolder ?? row?.vault_folder ?? '', workspacePath);
+    const settings = obsidianSettingsService.getSettings();
+    const vaultPath = settings.vaultPath.trim();
+    const folderRoot = vaultPath ? path.join(vaultPath, vaultFolder) : '';
+
+    const limit = Math.max(1, Math.min(params.limit ?? 10, 50));
+
+    let sessionRows: ReturnType<typeof sessionsDb.getSessionsByProjectPathPage> = [];
+    try {
+      sessionRows = sessionsDb.getSessionsByProjectPathPage(workspacePath, limit, 0);
+    } catch {
+      sessionRows = [];
+    }
+
+    const sessions = sessionRows.map((session) => ({
+      provider: session.provider,
+      sessionId: session.session_id,
+      customName: session.custom_name ?? '',
+      updatedAt: session.updated_at ?? session.created_at ?? '',
+    }));
+
+    let notePaths: string[] = [];
+    try {
+      if (folderRoot && (await directoryExists(folderRoot))) {
+        const vaultFiles = await collectVaultFiles(folderRoot);
+        notePaths = vaultFiles
+          .filter((file) => file.relativePath.toLowerCase().endsWith('.md'))
+          .map((file) => file.relativePath);
+      }
+    } catch {
+      notePaths = [];
+    }
+
+    let transcript = '';
+    const latest = sessions[0];
+    if (latest) {
+      try {
+        const history = await sessionsService.fetchHistory(latest.sessionId, { limit: 40 });
+        transcript = renderSessionTranscript(history.messages);
+      } catch {
+        transcript = '';
+      }
+    }
+
+    const prompt = buildMemoryCurationPrompt({
+      workspacePath,
+      vaultFolder,
+      notePaths,
+      sessions,
+      transcript,
+    });
+
+    const created = sessionsService.createAppSession(provider, workspacePath);
+    const appSessionId = created.sessionId;
+
+    const result = await startProviderRun({
+      appSessionId,
+      provider,
+      providerSessionId: null,
+      projectPath: workspacePath,
+      spawnFn,
+      content: prompt,
+      options: { permissionMode: 'bypassPermissions', unattended: true },
+      connection: DETACHED_CONNECTION,
+      userId: null,
+    });
+
+    if (!result.ok) {
+      throw new AppError('A memory curation run is already in progress for this project.', {
+        code: 'MEMORY_CURATION_RUN_IN_PROGRESS',
+        statusCode: 409,
+      });
+    }
+
+    await result.completion;
+    const { text, failed, errorMessage } = extractRunOutcome(appSessionId);
+
+    if (failed) {
+      return {
+        success: false,
+        suggestions: [],
+        error: errorMessage ?? (text || 'Memory curation run failed.'),
+      };
+    }
+
+    try {
+      const parsed = parseJsonFromAgentText(text);
+      return { success: true, suggestions: normalizeSuggestions(parsed) };
+    } catch (error) {
+      return {
+        success: false,
+        suggestions: [],
+        error: error instanceof Error ? error.message : 'Failed to parse curation suggestions.',
+      };
+    }
+  },
+
+  /**
+   * Applies one curation suggestion: writes the note into the vault folder
+   * (creating parent directories) after enforcing the anti-path-escape rule.
+   * `created` reports whether the note did not previously exist.
+   */
+  async applyMemoryCurationSuggestion(input: {
+    vaultPath?: string;
+    vaultFolder: string;
+    path: string;
+    content: string;
+  }): Promise<MemoryCurationApplyResult> {
+    try {
+      const vaultPath = input.vaultPath?.trim() || obsidianSettingsService.getSettings().vaultPath.trim();
+      if (!vaultPath) {
+        return { success: false, created: false, path: '', error: 'Obsidian vault settings are not configured.' };
+      }
+      const vaultFolder = input.vaultFolder?.trim() || '';
+      if (!vaultFolder) {
+        return { success: false, created: false, path: '', error: 'vaultFolder is required.' };
+      }
+      const notePath = input.path?.trim() || '';
+      if (!notePath) {
+        return { success: false, created: false, path: '', error: 'Note path is required.' };
+      }
+      if (!notePath.toLowerCase().endsWith('.md')) {
+        return { success: false, created: false, path: '', error: 'Note path must end in .md.' };
+      }
+
+      const targetDir = resolveVaultTargetDir(vaultPath, vaultFolder);
+      const targetPath = resolveVaultTargetDir(targetDir, notePath);
+
+      await mkdir(path.dirname(targetPath), { recursive: true });
+      let created = false;
+      try {
+        await access(targetPath);
+      } catch {
+        created = true;
+      }
+      await writeFile(targetPath, input.content ?? '', 'utf8');
+      return { success: true, created, path: targetPath };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to apply memory curation suggestion.';
+      return { success: false, created: false, path: '', error: message };
+    }
   },
 };

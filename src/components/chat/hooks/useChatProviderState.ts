@@ -8,6 +8,10 @@ import {
   PERMISSION_MODE_CHANGED_EVENT,
   type PermissionModeChangedDetail,
 } from '../../../constants/permissionModeEvents';
+import {
+  PROVIDER_DEFAULT_EFFORT_CHANGED_EVENT,
+  type ProviderDefaultEffortChangedDetail,
+} from '../../../constants/providerEffortEvents';
 import type {
   ProjectSession,
   LLMProvider,
@@ -34,6 +38,7 @@ const FALLBACK_DEFAULT_MODEL: Record<LLMProvider, string> = {
 };
 
 const PROVIDERS: LLMProvider[] = ['claude', 'cursor', 'codex', 'opencode', 'grok', 'kimi', 'agy', 'pi'];
+const CODEX_FAST_MODE_STORAGE_KEY = 'codex-fast-mode';
 
 const readStoredProvider = (): LLMProvider => {
   const storedProvider = localStorage.getItem('selected-provider');
@@ -64,7 +69,7 @@ const FALLBACK_PERMISSION_MODES: Record<LLMProvider, PermissionMode[]> = {
   claude: ['default', 'auto', 'acceptEdits', 'bypassPermissions', 'plan'],
   // Cursor headless only supports default vs -f (bypass).
   cursor: ['default', 'bypassPermissions'],
-  codex: ['default', 'acceptEdits', 'bypassPermissions'],
+  codex: ['default', 'auto', 'bypassPermissions'],
   opencode: ['default', 'acceptEdits', 'auto', 'plan'],
   grok: ['default', 'acceptEdits', 'auto', 'bypassPermissions', 'plan'],
   kimi: ['default', 'plan', 'auto', 'bypassPermissions'],
@@ -161,6 +166,9 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
   const [codexModel, setCodexModel] = useState<string>(() => {
     return localStorage.getItem('codex-model') || FALLBACK_DEFAULT_MODEL.codex;
   });
+  const [codexFastMode, setCodexFastMode] = useState<boolean>(() => (
+    localStorage.getItem(CODEX_FAST_MODE_STORAGE_KEY) === 'true'
+  ));
   const [providerEfforts, setProviderEfforts] = useState<Partial<Record<LLMProvider, string>>>(() => {
     return PROVIDERS.reduce<Partial<Record<LLMProvider, string>>>((acc, targetProvider) => {
       acc[targetProvider] = localStorage.getItem(`${targetProvider}-effort`) || DEFAULT_EFFORT_VALUE;
@@ -271,6 +279,12 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     localStorage.setItem(`${targetProvider}-effort`, effort);
   }, []);
 
+  const selectCodexFastMode = useCallback((enabled: boolean) => {
+    const nextEnabled = Boolean(enabled);
+    setCodexFastMode(nextEnabled);
+    localStorage.setItem(CODEX_FAST_MODE_STORAGE_KEY, String(nextEnabled));
+  }, []);
+
   const loadProviderModels = useCallback(async (options: { bypassCache?: boolean } = {}) => {
     const requestId = providerModelsRequestIdRef.current + 1;
     providerModelsRequestIdRef.current = requestId;
@@ -291,13 +305,21 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
           }
 
           const queryString = params.toString();
-          const response = await authenticatedFetch(`/api/providers/${p}/models${queryString ? `?${queryString}` : ''}`);
-          const body = (await response.json()) as ProviderModelsApiResponse;
-          if (!body.success || !body.data?.models || !body.data?.cache) {
+          try {
+            const response = await authenticatedFetch(`/api/providers/${p}/models${queryString ? `?${queryString}` : ''}`);
+            const body = (await response.json()) as ProviderModelsApiResponse;
+            if (!body.success || !body.data?.models || !body.data?.cache) {
+              return null;
+            }
+
+            return {
+              provider: p,
+              data: body.data,
+            };
+          } catch (error) {
+            console.warn(`Unable to load ${p} models:`, error);
             return null;
           }
-
-          return body.data;
         }),
       );
 
@@ -308,18 +330,17 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
       const nextCatalog: Partial<Record<LLMProvider, ProviderModelsDefinition>> = {};
       const nextCacheCatalog: Partial<Record<LLMProvider, ProviderModelsCacheInfo>> = {};
 
-      enabledProviders.forEach((p, i) => {
-        const entry = results[i];
+      results.forEach((entry) => {
         if (!entry) {
           return;
         }
 
-        nextCatalog[p] = entry.models;
-        nextCacheCatalog[p] = entry.cache;
+        nextCatalog[entry.provider] = entry.data.models;
+        nextCacheCatalog[entry.provider] = entry.data.cache;
       });
 
-      setProviderModelCatalog(nextCatalog);
-      setProviderModelCacheCatalog(nextCacheCatalog);
+      setProviderModelCatalog((previous) => ({ ...previous, ...nextCatalog }));
+      setProviderModelCacheCatalog((previous) => ({ ...previous, ...nextCacheCatalog }));
     } catch (error) {
       console.error('Error loading provider models:', error);
     } finally {
@@ -485,6 +506,17 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     [sessionModelOverride, providerModels, provider],
   );
 
+  // Fast mode is advertised per Codex model in the live model catalog. Until
+  // that catalog arrives, keep the control available for Codex's supported
+  // fallback models; a model with an explicit false value disables it.
+  const currentProviderSupportsFastMode = useMemo(() => {
+    if (provider !== 'codex') {
+      return false;
+    }
+
+    return getModelOption('codex', currentProviderModel)?.supportsFastMode ?? true;
+  }, [currentProviderModel, getModelOption, provider]);
+
   useEffect(() => {
     const claude = providerModelCatalog.claude;
     if (claude) {
@@ -609,6 +641,25 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
       setProviderEfforts((previous) => ({ ...previous, ...nextEfforts }));
     }
   }, [providerEfforts, providerModels, reconcileStoredEffort]);
+
+  useEffect(() => {
+    const handleDefaultEffortChanged = (event: Event) => {
+      const detail = (event as CustomEvent<ProviderDefaultEffortChangedDetail>).detail;
+      if (!detail || !PROVIDERS.includes(detail.provider as LLMProvider) || typeof detail.effort !== 'string') {
+        return;
+      }
+
+      const targetProvider = detail.provider as LLMProvider;
+      setProviderEfforts((previous) => (
+        previous[targetProvider] === detail.effort
+          ? previous
+          : { ...previous, [targetProvider]: detail.effort }
+      ));
+    };
+
+    window.addEventListener(PROVIDER_DEFAULT_EFFORT_CHANGED_EVENT, handleDefaultEffortChanged);
+    return () => window.removeEventListener(PROVIDER_DEFAULT_EFFORT_CHANGED_EVENT, handleDefaultEffortChanged);
+  }, []);
 
   // Load the per-session model/effort overrides whenever the open
   // conversation (or its provider) changes. The stored model is normalized
@@ -848,6 +899,9 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     setClaudeModel,
     codexModel,
     setCodexModel,
+    fastMode: provider === 'codex' && codexFastMode && currentProviderSupportsFastMode,
+    supportsFastMode: provider === 'codex' && currentProviderSupportsFastMode,
+    selectCodexFastMode,
     currentProviderEffort,
     currentProviderEffortOptions,
     opencodeModel,

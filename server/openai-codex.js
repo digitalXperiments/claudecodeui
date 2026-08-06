@@ -1,9 +1,10 @@
 /**
- * OpenAI Codex SDK Integration
+ * OpenAI Codex app-server Integration
  * =============================
  *
- * This module provides integration with the OpenAI Codex SDK for non-interactive
- * chat sessions. It mirrors the pattern used in claude-sdk.js for consistency.
+ * This module provides integration with the OpenAI Codex app-server for
+ * interactive chat sessions. It mirrors the normalized message and approval
+ * bridge used in claude-sdk.js for consistency.
  *
  * ## Usage
  *
@@ -13,207 +14,303 @@
  * - getActiveCodexSessions() - List all active sessions
  */
 
-import { Codex } from '@openai/codex-sdk';
-
 import { buildCodexInputItems, normalizeImageDescriptors } from './shared/image-attachments.js';
-import { notifyRunFailed, notifyRunStopped } from './services/notification-orchestrator.js';
+import { createCodexAppServer } from './codex-app-server.js';
+import {
+  createNotificationEvent,
+  notifyUserIfEnabled,
+  notifyRunFailed,
+  notifyRunStopped,
+} from './services/notification-orchestrator.js';
+import { createRequestId, waitForToolApproval } from './claude-sdk.js';
 import { sessionsService } from './modules/providers/services/sessions.service.js';
 import { providerAuthService } from './modules/providers/services/provider-auth.service.js';
 import { providerModelsService } from './modules/providers/services/provider-models.service.js';
+import { obsidianSettingsService } from './modules/providers/services/obsidian-settings.service.js';
+import {
+  buildObsidianCodexRuntimeConfig,
+  OBSIDIAN_MCP_SERVER_NAME,
+} from './modules/providers/shared/memory/obsidian-mcp.config.js';
+import { resolveCodexServiceTier } from './modules/providers/list/codex/codex-service-tier.js';
 import { createCompleteMessage, createNormalizedMessage } from './shared/utils.js';
+import { buildCodexTokenUsage } from './modules/providers/list/codex/codex-token-usage.js';
 
 const activeCodexSessions = new Map();
 
-function readUsageNumber(value) {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : 0;
-}
-
-function extractCodexTokenBudget(event) {
-  const info = event?.info || event?.payload?.info || event?.usage?.info;
-  const usage = info?.total_token_usage || event?.usage?.total_token_usage || event?.usage;
-  if (!usage || typeof usage !== 'object') {
-    return null;
-  }
-
-  const inputTokens = readUsageNumber(usage.input_tokens);
-  const outputTokens = readUsageNumber(usage.output_tokens);
-  const used = readUsageNumber(usage.total_tokens) || inputTokens + outputTokens;
-
-  return {
-    used,
-    total: readUsageNumber(info?.model_context_window || event?.usage?.model_context_window) || 200000,
-    inputTokens,
-    outputTokens,
-    breakdown: {
-      input: inputTokens,
-      output: outputTokens,
-    },
-  };
-}
-
 /**
- * Transform Codex SDK event to WebSocket message format
- * @param {object} event - SDK event
- * @returns {object} - Transformed event for WebSocket
- */
-function transformCodexEvent(event) {
-  // Map SDK event types to a consistent format
-  switch (event.type) {
-    case 'item.started':
-    case 'item.updated':
-    case 'item.completed':
-      const item = event.item;
-      if (!item) {
-        return { type: event.type, item: null };
-      }
-
-      // Transform based on item type
-      switch (item.type) {
-        case 'agent_message':
-          return {
-            type: 'item',
-            itemType: 'agent_message',
-            message: {
-              role: 'assistant',
-              content: item.text
-            }
-          };
-
-        case 'reasoning':
-          return {
-            type: 'item',
-            itemType: 'reasoning',
-            message: {
-              role: 'assistant',
-              content: item.text,
-              isReasoning: true
-            }
-          };
-
-        case 'command_execution':
-          return {
-            type: 'item',
-            itemType: 'command_execution',
-            command: item.command,
-            output: item.aggregated_output,
-            exitCode: item.exit_code,
-            status: item.status
-          };
-
-        case 'file_change':
-          return {
-            type: 'item',
-            itemType: 'file_change',
-            changes: item.changes,
-            status: item.status
-          };
-
-        case 'mcp_tool_call':
-          return {
-            type: 'item',
-            itemType: 'mcp_tool_call',
-            server: item.server,
-            tool: item.tool,
-            arguments: item.arguments,
-            result: item.result,
-            error: item.error,
-            status: item.status
-          };
-
-        case 'web_search':
-          return {
-            type: 'item',
-            itemType: 'web_search',
-            query: item.query
-          };
-
-        case 'todo_list':
-          return {
-            type: 'item',
-            itemType: 'todo_list',
-            items: item.items
-          };
-
-        case 'error':
-          return {
-            type: 'item',
-            itemType: 'error',
-            message: {
-              role: 'error',
-              content: item.message
-            }
-          };
-
-        default:
-          return {
-            type: 'item',
-            itemType: item.type,
-            item: item
-          };
-      }
-
-    case 'turn.started':
-      return {
-        type: 'turn_started'
-      };
-
-    case 'turn.completed':
-      return {
-        type: 'turn_complete',
-        usage: event.usage
-      };
-
-    case 'turn.failed':
-      return {
-        type: 'turn_failed',
-        error: event.error
-      };
-
-    case 'thread.started':
-      return {
-        type: 'thread_started',
-        threadId: event.thread_id || event.id
-      };
-
-    case 'error':
-      return {
-        type: 'error',
-        message: event.message
-      };
-
-    default:
-      return {
-        type: event.type,
-        data: event
-      };
-  }
-}
-
-/**
- * Map permission mode to Codex SDK options
- * @param {string} permissionMode - 'default', 'acceptEdits', or 'bypassPermissions'
- * @returns {object} - { sandboxMode, approvalPolicy }
+ * Map permission mode to Codex app-server options
+ * @param {string} permissionMode - 'default', 'auto', or 'bypassPermissions'
+ * @returns {object} - app-server sandbox and approval settings
  */
 function mapPermissionModeToCodexOptions(permissionMode) {
   switch (permissionMode) {
+    case 'auto':
     case 'acceptEdits':
       return {
-        sandboxMode: 'workspace-write',
-        approvalPolicy: 'never'
+        sandbox: 'workspace-write',
+        approvalPolicy: 'on-request',
+        approvalsReviewer: 'auto_review',
       };
     case 'bypassPermissions':
       return {
-        sandboxMode: 'danger-full-access',
-        approvalPolicy: 'never'
+        sandbox: 'danger-full-access',
+        approvalPolicy: 'never',
+        approvalsReviewer: 'user',
       };
     case 'default':
     default:
       return {
-        sandboxMode: 'workspace-write',
-        approvalPolicy: 'untrusted'
+        sandbox: 'workspace-write',
+        approvalPolicy: 'untrusted',
+        approvalsReviewer: 'user',
       };
   }
+}
+
+/**
+ * Resolve CloudCLI's managed Obsidian MCP into the environment/configuration
+ * used by the Codex CLI child process. Codex's standalone config is still
+ * honored for every other MCP server; this explicit overlay also covers runs
+ * whose HOME/project config is not the one CloudCLI used to fan out MCPs.
+ */
+function loadManagedObsidianCodexRuntime() {
+  try {
+    const settings = obsidianSettingsService.getSettings();
+    if (!settings.restApiKey || !settings.restApiKey.trim()) {
+      return null;
+    }
+
+    return buildObsidianCodexRuntimeConfig(settings);
+  } catch (error) {
+    console.warn(
+      `[Codex app-server] Could not inject managed ${OBSIDIAN_MCP_SERVER_NAME} MCP:`,
+      error instanceof Error ? error.message : error,
+    );
+    return null;
+  }
+}
+
+function appServerItemToLegacy(item) {
+  if (!item || typeof item !== 'object') {
+    return null;
+  }
+
+  const base = { type: 'item', uuid: item.id };
+  switch (item.type) {
+    case 'agentMessage':
+      // Codex uses commentary agent messages for progress/narration and
+      // final_answer for the reply proper. Keep commentary on the existing
+      // reasoning path so it is rendered as one collapsible thinking block
+      // instead of looking like a normal assistant answer.
+      if (item.phase === 'commentary') {
+        return {
+          ...base,
+          itemType: 'reasoning',
+          message: {
+            role: 'assistant',
+            content: item.text || '',
+            isReasoning: true,
+          },
+        };
+      }
+      return {
+        ...base,
+        itemType: 'agent_message',
+        message: { role: 'assistant', content: item.text || '' },
+      };
+    case 'reasoning':
+      return {
+        ...base,
+        itemType: 'reasoning',
+        message: {
+          role: 'assistant',
+          content: Array.isArray(item.summary) ? item.summary.join('\n') : '',
+          isReasoning: true,
+        },
+      };
+    case 'commandExecution':
+      return {
+        ...base,
+        itemType: 'command_execution',
+        command: item.command,
+        output: item.aggregatedOutput,
+        exitCode: item.exitCode,
+        status: item.status,
+      };
+    case 'fileChange':
+      return {
+        ...base,
+        itemType: 'file_change',
+        changes: item.changes,
+        status: item.status,
+      };
+    case 'mcpToolCall':
+      return {
+        ...base,
+        itemType: 'mcp_tool_call',
+        server: item.server,
+        tool: item.tool,
+        arguments: item.arguments,
+        result: item.result,
+        error: item.error,
+        status: item.status,
+      };
+    case 'webSearch':
+      return {
+        ...base,
+        itemType: 'web_search',
+        query: item.query,
+      };
+    case 'plan':
+      return {
+        ...base,
+        itemType: 'todo_list',
+        items: item.text ? [{ text: item.text, completed: false }] : [],
+      };
+    case 'error':
+      return {
+        ...base,
+        itemType: 'error',
+        message: { role: 'error', content: item.message || 'Unknown error' },
+      };
+    default:
+      return {
+        ...base,
+        itemType: item.type || 'Unknown',
+        item,
+      };
+  }
+}
+
+function buildCodexAppServerInput(command, images, workingDirectory) {
+  const sdkInput = normalizeImageDescriptors(images).length > 0
+    ? buildCodexInputItems(command, images, workingDirectory)
+    : [{ type: 'text', text: command }];
+
+  return sdkInput.map((item) => (
+    item.type === 'local_image'
+      ? { type: 'localImage', path: item.path }
+      : item
+  ));
+}
+
+function extractAppServerTokenBudget(tokenUsage, model) {
+  return buildCodexTokenUsage({
+    total: tokenUsage?.total,
+    last: tokenUsage?.last,
+    modelContextWindow: tokenUsage?.modelContextWindow,
+    model,
+  });
+}
+
+function codexApprovalDecision(decision) {
+  if (!decision || decision.cancelled) {
+    return 'cancel';
+  }
+  if (!decision.allow) {
+    return 'decline';
+  }
+  return decision.rememberEntry ? 'acceptForSession' : 'accept';
+}
+
+function codexLegacyApprovalDecision(decision) {
+  if (!decision || decision.cancelled) {
+    return 'abort';
+  }
+  if (!decision.allow) {
+    return 'denied';
+  }
+  return decision.rememberEntry ? 'approved_for_session' : 'approved';
+}
+
+function normalizeCodexQuestionInput(questions) {
+  return Array.isArray(questions)
+    ? questions.map((question) => ({
+      question: question.question || '',
+      header: question.header || undefined,
+      multiSelect: false,
+      options: Array.isArray(question.options)
+        ? question.options.map((option) => ({
+          label: option.label || '',
+          description: option.description || undefined,
+        }))
+        : [],
+    }))
+    : [];
+}
+
+function toCodexQuestionAnswers(questions, answers) {
+  if (!answers || typeof answers !== 'object') {
+    return {};
+  }
+
+  const result = {};
+  for (const question of Array.isArray(questions) ? questions : []) {
+    const answer = answers[question.question];
+    if (typeof answer !== 'string' || !answer.trim()) {
+      continue;
+    }
+    result[question.id] = { answers: answer.split(',').map((part) => part.trim()).filter(Boolean) };
+  }
+  return result;
+}
+
+async function waitForCodexApproval({
+  rpc,
+  request,
+  ws,
+  sessionId,
+  sessionSummary,
+  abortSignal,
+  toolName,
+  input,
+  providerRequest,
+}) {
+  const requestId = createRequestId();
+  sendMessage(ws, createNormalizedMessage({
+    kind: 'permission_request',
+    requestId,
+    toolName,
+    input,
+    sessionId,
+    provider: 'codex',
+  }));
+
+  notifyUserIfEnabled({
+    userId: ws?.userId || null,
+    event: createNotificationEvent({
+      provider: 'codex',
+      sessionId,
+      kind: 'action_required',
+      code: 'permission.required',
+      meta: { toolName, sessionName: sessionSummary },
+      severity: 'warning',
+      requiresUserAction: true,
+      dedupeKey: `codex:permission:${sessionId || 'none'}:${requestId}`,
+    }),
+  });
+
+  const decision = await waitForToolApproval(requestId, {
+    timeoutMs: 0,
+    signal: abortSignal,
+    metadata: {
+      _sessionId: sessionId,
+      _toolName: toolName,
+      _input: input,
+      _receivedAt: new Date(),
+    },
+    onCancel: (reason) => {
+      sendMessage(ws, createNormalizedMessage({
+        kind: 'permission_cancelled',
+        requestId,
+        reason,
+        sessionId,
+        provider: 'codex',
+      }));
+    },
+  });
+
+  await providerRequest(decision, request, rpc);
 }
 
 /**
@@ -230,6 +327,8 @@ export async function queryCodex(command, options = {}, ws) {
     projectPath,
     model,
     effort,
+    serviceTier: requestedServiceTier,
+    fastMode,
     images,
     permissionMode = 'default'
   } = options;
@@ -241,134 +340,425 @@ export async function queryCodex(command, options = {}, ws) {
   );
 
   const workingDirectory = cwd || projectPath || process.cwd();
-  const { sandboxMode, approvalPolicy } = mapPermissionModeToCodexOptions(permissionMode);
+  const { sandbox, approvalPolicy, approvalsReviewer } = mapPermissionModeToCodexOptions(permissionMode);
+  const managedObsidianRuntime = loadManagedObsidianCodexRuntime();
   const catalog = (await providerModelsService.getProviderModels('codex')).models;
   const selectedModel = catalog.OPTIONS.find((option) => option.value === resolvedModel) || null;
   const allowedEfforts = selectedModel?.effort?.values?.map((value) => value.value) || [];
   const resolvedEffort = typeof effort === 'string' && effort !== 'default' && allowedEfforts.includes(effort)
     ? effort
     : undefined;
+  let activeModel = resolvedModel;
+  const serviceTier = resolveCodexServiceTier({
+    serviceTier: requestedServiceTier,
+    fastMode,
+  });
+  const serviceTierOverride = serviceTier === undefined ? {} : { serviceTier };
 
-  let codex;
-  let thread;
+  let appServer;
+  let rpcUnsubscribe;
   let capturedSessionId = sessionId;
+  let turnId = null;
   let sessionCreatedSent = false;
   let terminalFailure = null;
   const abortController = new AbortController();
+  const streamedMessageItems = new Set();
+  const streamedMessageText = new Map();
+  const agentMessagePhases = new Map();
+  const completedStreamedMessageItems = new Set();
+  let resolveTurn;
+  let rejectTurn;
+  const turnFinished = new Promise((resolve, reject) => {
+    resolveTurn = resolve;
+    rejectTurn = reject;
+  });
 
-  try {
-    codex = new Codex();
-
-    const threadOptions = {
-      workingDirectory,
-      skipGitRepoCheck: true,
-      sandboxMode,
-      approvalPolicy,
-      model: resolvedModel,
-      modelReasoningEffort: resolvedEffort,
-    };
-
-    if (sessionId) {
-      thread = codex.resumeThread(sessionId, threadOptions);
-    } else {
-      thread = codex.startThread(threadOptions);
-    }
-
-    const registerSession = (id) => {
-      if (!id) {
-        return;
+  const getSessionRecord = () => capturedSessionId && activeCodexSessions.get(capturedSessionId);
+  const sendNormalized = (raw) => {
+    const normalized = sessionsService.normalizeMessage('codex', raw, capturedSessionId || sessionId || null);
+    for (const message of normalized) {
+      if (message.kind !== 'complete') {
+        sendMessage(ws, message);
       }
-      activeCodexSessions.set(id, {
-        thread,
-        codex,
-        status: 'running',
-        abortController,
-        startedAt: new Date().toISOString()
+    }
+  };
+
+  const handleApprovalRequest = async (request) => {
+    const params = request.params || {};
+    const requestSessionId = params.threadId
+      || params.conversationId
+      || capturedSessionId
+      || sessionId
+      || null;
+
+    if (request.method === 'execCommandApproval') {
+      await waitForCodexApproval({
+        rpc: appServer,
+        request,
+        ws,
+        sessionId: requestSessionId,
+        sessionSummary,
+        abortSignal: abortController.signal,
+        toolName: 'Bash',
+        input: {
+          command: Array.isArray(params.command)
+            ? params.command.join(' ')
+            : params.command || '',
+          cwd: params.cwd || workingDirectory,
+          reason: params.reason || undefined,
+        },
+        providerRequest: async (decision, approvalRequest, rpc) => {
+          rpc.respond(approvalRequest.id, {
+            decision: codexLegacyApprovalDecision(decision),
+          });
+        },
       });
-    };
-
-    if (capturedSessionId) {
-      registerSession(capturedSessionId);
+      return;
     }
 
-    // Execute with streaming. Turns with image attachments send structured
-    // input items so Codex reads the images from their local asset paths.
-    const turnInput = normalizeImageDescriptors(images).length > 0
-      ? buildCodexInputItems(command, images, workingDirectory)
-      : command;
-    const streamedTurn = await thread.runStreamed(turnInput, {
-      signal: abortController.signal
-    });
+    if (request.method === 'applyPatchApproval') {
+      await waitForCodexApproval({
+        rpc: appServer,
+        request,
+        ws,
+        sessionId: requestSessionId,
+        sessionSummary,
+        abortSignal: abortController.signal,
+        toolName: 'FileChanges',
+        input: {
+          changes: params.fileChanges,
+          reason: params.reason || undefined,
+          grantRoot: params.grantRoot || undefined,
+        },
+        providerRequest: async (decision, approvalRequest, rpc) => {
+          rpc.respond(approvalRequest.id, {
+            decision: codexLegacyApprovalDecision(decision),
+          });
+        },
+      });
+      return;
+    }
 
-    for await (const event of streamedTurn.events) {
-      // Capture thread/session id lazily from the stream (Codex emits this asynchronously).
-      if (event.type === 'thread.started') {
-        const discoveredSessionId = event.thread_id || event.id || null;
-        if (discoveredSessionId && !capturedSessionId) {
-          capturedSessionId = discoveredSessionId;
-          registerSession(capturedSessionId);
+    if (request.method === 'item/commandExecution/requestApproval') {
+      await waitForCodexApproval({
+        rpc: appServer,
+        request,
+        ws,
+        sessionId: requestSessionId,
+        sessionSummary,
+        abortSignal: abortController.signal,
+        toolName: 'Bash',
+        input: {
+          command: params.command || '',
+          cwd: params.cwd || workingDirectory,
+          reason: params.reason || undefined,
+          additionalPermissions: params.additionalPermissions || undefined,
+        },
+        providerRequest: async (decision, approvalRequest, rpc) => {
+          rpc.respond(approvalRequest.id, { decision: codexApprovalDecision(decision) });
+        },
+      });
+      return;
+    }
 
-          if (ws.setSessionId && typeof ws.setSessionId === 'function') {
-            ws.setSessionId(capturedSessionId);
-          }
+    if (request.method === 'item/fileChange/requestApproval') {
+      await waitForCodexApproval({
+        rpc: appServer,
+        request,
+        ws,
+        sessionId: requestSessionId,
+        sessionSummary,
+        abortSignal: abortController.signal,
+        toolName: 'FileChanges',
+        input: {
+          reason: params.reason || undefined,
+          grantRoot: params.grantRoot || undefined,
+        },
+        providerRequest: async (decision, approvalRequest, rpc) => {
+          rpc.respond(approvalRequest.id, { decision: codexApprovalDecision(decision) });
+        },
+      });
+      return;
+    }
 
-          if (!sessionId && !sessionCreatedSent) {
-            sessionCreatedSent = true;
-            sendMessage(ws, createNormalizedMessage({ kind: 'session_created', newSessionId: capturedSessionId, sessionId: capturedSessionId, provider: 'codex' }));
-          }
+    if (request.method === 'item/permissions/requestApproval') {
+      await waitForCodexApproval({
+        rpc: appServer,
+        request,
+        ws,
+        sessionId: requestSessionId,
+        sessionSummary,
+        abortSignal: abortController.signal,
+        toolName: 'CodexPermissions',
+        input: {
+          cwd: params.cwd || workingDirectory,
+          reason: params.reason || undefined,
+          permissions: params.permissions,
+        },
+        providerRequest: async (decision, approvalRequest, rpc) => {
+          const approved = Boolean(decision?.allow) && !decision.cancelled;
+          rpc.respond(approvalRequest.id, {
+            permissions: approved ? approvalRequest.params?.permissions || {} : {},
+            scope: decision?.rememberEntry ? 'session' : 'turn',
+            strictAutoReview: false,
+          });
+        },
+      });
+      return;
+    }
+
+    if (request.method === 'item/tool/requestUserInput') {
+      const questions = normalizeCodexQuestionInput(params.questions);
+      await waitForCodexApproval({
+        rpc: appServer,
+        request,
+        ws,
+        sessionId: requestSessionId,
+        sessionSummary,
+        abortSignal: abortController.signal,
+        toolName: 'AskUserQuestion',
+        input: { questions },
+        providerRequest: async (decision, approvalRequest, rpc) => {
+          const answers = decision?.allow
+            ? toCodexQuestionAnswers(params.questions, decision.updatedInput?.answers)
+            : {};
+          rpc.respond(approvalRequest.id, { answers });
+        },
+      });
+      return;
+    }
+
+    // Do not leave an unsupported Codex request hanging forever. An empty
+    // response lets the app-server turn fail normally and surfaces its error.
+    console.warn(`[Codex] Unsupported app-server request: ${request.method}`);
+    appServer.respond(request.id, {});
+  };
+
+  const handleAppServerMessage = (message) => {
+    if (!message || typeof message !== 'object') {
+      return;
+    }
+
+    if (typeof message.id !== 'undefined' && typeof message.method === 'string') {
+      void handleApprovalRequest(message).catch((error) => {
+        console.error('[Codex] Approval request handler failed:', error);
+        try {
+          appServer.respond(message.id, {});
+        } catch {
+          // The app-server may already be shutting down after the failure.
         }
-      }
+      });
+      return;
+    }
 
-      // Check if session was aborted
-      if (abortController.signal.aborted) {
+    const params = message.params || {};
+    if (params.threadId && capturedSessionId && params.threadId !== capturedSessionId) {
+      return;
+    }
+
+    switch (message.method) {
+      case 'item/started': {
+        const item = params.item;
+        if (item?.type === 'agentMessage' && typeof item.id === 'string') {
+          agentMessagePhases.set(item.id, item.phase || null);
+        }
         break;
       }
-      if (capturedSessionId) {
-        const session = activeCodexSessions.get(capturedSessionId);
-        if (session?.status === 'aborted') {
-          break;
+      case 'item/agentMessage/delta':
+        if (params.itemId && params.delta) {
+          streamedMessageItems.add(params.itemId);
+          streamedMessageText.set(
+            params.itemId,
+            `${streamedMessageText.get(params.itemId) || ''}${params.delta}`,
+          );
+          sendMessage(ws, createNormalizedMessage({
+            kind: agentMessagePhases.get(params.itemId) === 'commentary'
+              ? 'thinking'
+              : 'stream_delta',
+            content: params.delta,
+            sessionId: capturedSessionId || sessionId || null,
+            provider: 'codex',
+          }));
         }
-      }
-
-      if (event.type === 'item.started' || event.type === 'item.updated') {
-        continue;
-      }
-
-      const transformed = transformCodexEvent(event);
-
-      // Normalize the transformed event into NormalizedMessage(s) via adapter
-      const normalizedMsgs = sessionsService.normalizeMessage('codex', transformed, capturedSessionId || sessionId || null);
-      for (const msg of normalizedMsgs) {
-        // The adapter maps `turn.completed` to a bare `complete` carrying no
-        // exitCode/success. The authoritative terminal event is emitted below
-        // via createCompleteMessage — forwarding this one would close the run
-        // early in the chat run registry with empty outcome metadata (kanban
-        // then records the run as failed with a null exit code), and the real
-        // terminal complete gets dropped by the exactly-one-complete contract.
-        if (msg.kind === 'complete') {
-          continue;
+        break;
+      case 'item/reasoning/summaryTextDelta':
+        if (params.delta) {
+          sendMessage(ws, createNormalizedMessage({
+            kind: 'thinking',
+            content: params.delta,
+            sessionId: capturedSessionId || sessionId || null,
+            provider: 'codex',
+          }));
         }
-        sendMessage(ws, msg);
-      }
+        break;
+      case 'item/completed': {
+        const item = params.item;
+        if (!item) break;
+        if (item.type === 'agentMessage') {
+          const itemId = typeof item.id === 'string'
+            ? item.id
+            : typeof params.itemId === 'string'
+              ? params.itemId
+              : null;
+          if (itemId && completedStreamedMessageItems.has(itemId)) {
+            break;
+          }
+          const itemPhase = item.phase || (itemId ? agentMessagePhases.get(itemId) : null);
+          const streamedItemIds = [...streamedMessageItems];
+          const matchingStreamedItemId = itemId && streamedMessageItems.has(itemId)
+            ? itemId
+            : streamedItemIds.find((streamedItemId) =>
+              typeof item.text === 'string'
+              && streamedMessageText.get(streamedItemId) === item.text,
+            ) || (streamedItemIds.length === 1 ? streamedItemIds[0] : null);
 
-      if (event.type === 'turn.failed' && !terminalFailure) {
-        terminalFailure = event.error || new Error('Turn failed');
-        notifyRunFailed({
-          userId: ws?.userId || null,
-          provider: 'codex',
-          sessionId: capturedSessionId || sessionId || null,
-          sessionName: sessionSummary,
-          error: terminalFailure
-        });
+          if (matchingStreamedItemId) {
+            const matchingPhase = agentMessagePhases.get(matchingStreamedItemId) || itemPhase;
+            streamedMessageItems.delete(matchingStreamedItemId);
+            streamedMessageText.delete(matchingStreamedItemId);
+            agentMessagePhases.delete(matchingStreamedItemId);
+            if (!completedStreamedMessageItems.has(matchingStreamedItemId)) {
+              completedStreamedMessageItems.add(matchingStreamedItemId);
+              if (matchingPhase !== 'commentary') {
+                sendMessage(ws, createNormalizedMessage({
+                  kind: 'stream_end',
+                  sessionId: capturedSessionId || sessionId || null,
+                  provider: 'codex',
+                }));
+              }
+            }
+            break;
+          }
+        }
+        if (item.type === 'reasoning') break;
+        const legacy = appServerItemToLegacy(item);
+        if (legacy) sendNormalized(legacy);
+        break;
       }
-
-      // Extract and send token usage if available (normalized to match Claude format)
-      if (event.type === 'turn.completed') {
-        const tokenBudget = extractCodexTokenBudget(event);
+      case 'thread/tokenUsage/updated': {
+        const tokenBudget = extractAppServerTokenBudget(params.tokenUsage, activeModel);
         if (tokenBudget) {
-          sendMessage(ws, createNormalizedMessage({ kind: 'status', text: 'token_budget', tokenBudget, sessionId: capturedSessionId || sessionId || null, provider: 'codex' }));
+          sendMessage(ws, createNormalizedMessage({
+            kind: 'status',
+            text: 'token_budget',
+            tokenBudget,
+            sessionId: capturedSessionId || sessionId || null,
+            provider: 'codex',
+          }));
         }
+        break;
       }
+      case 'turn/completed': {
+        const turn = params.turn || {};
+        if (turn.status === 'failed') {
+          terminalFailure = new Error(turn.error?.message || 'Turn failed');
+        }
+        resolveTurn(turn);
+        break;
+      }
+      case 'error': {
+        if (params.willRetry) break;
+        terminalFailure = new Error(params.error?.message || 'Codex turn failed');
+        rejectTurn(terminalFailure);
+        break;
+      }
+      default:
+        break;
+    }
+  };
+
+  try {
+    const managedConfig = managedObsidianRuntime?.config
+      ? {
+        ...managedObsidianRuntime.config,
+        ...(sandbox === 'workspace-write'
+          ? { sandbox_workspace_write: { network_access: true } }
+          : {}),
+      }
+      : {};
+    appServer = createCodexAppServer({
+      cwd: workingDirectory,
+      env: managedObsidianRuntime?.env,
+      config: managedConfig,
+    });
+    rpcUnsubscribe = appServer.onMessage(handleAppServerMessage);
+    await appServer.request('initialize', {
+      clientInfo: { name: 'cloudcli', title: 'CloudCLI', version: '0.1.0' },
+      capabilities: { experimentalApi: true },
+    });
+    appServer.notify('initialized');
+
+    const threadMethod = sessionId ? 'thread/resume' : 'thread/start';
+    const threadParams = sessionId
+      ? {
+        threadId: sessionId,
+        cwd: workingDirectory,
+        model: resolvedModel,
+        approvalPolicy,
+        approvalsReviewer,
+        sandbox,
+        ...serviceTierOverride,
+      }
+      : {
+        cwd: workingDirectory,
+        model: resolvedModel,
+        approvalPolicy,
+        approvalsReviewer,
+        sandbox,
+        ...serviceTierOverride,
+      };
+    const threadResult = await appServer.request(threadMethod, threadParams);
+    const thread = threadResult?.thread || {};
+    if (typeof thread.model === 'string' && thread.model.trim()) {
+      activeModel = thread.model.trim();
+    }
+    capturedSessionId = thread.id || thread.sessionId || capturedSessionId;
+    if (!capturedSessionId) {
+      throw new Error('Codex app-server did not return a thread id');
+    }
+
+    activeCodexSessions.set(capturedSessionId, {
+      rpc: appServer,
+      status: 'running',
+      abortController,
+      startedAt: new Date().toISOString(),
+      ws,
+      turnId: null,
+    });
+    if (ws.setSessionId && typeof ws.setSessionId === 'function') {
+      ws.setSessionId(capturedSessionId);
+    }
+    if (!sessionId && !sessionCreatedSent) {
+      sessionCreatedSent = true;
+      sendMessage(ws, createNormalizedMessage({
+        kind: 'session_created',
+        newSessionId: capturedSessionId,
+        sessionId: capturedSessionId,
+        provider: 'codex',
+      }));
+    }
+
+    const turnResult = await appServer.request('turn/start', {
+      threadId: capturedSessionId,
+      input: buildCodexAppServerInput(command, images, workingDirectory),
+      model: resolvedModel,
+      effort: resolvedEffort || null,
+      approvalPolicy,
+      approvalsReviewer,
+      ...serviceTierOverride,
+    });
+    turnId = turnResult?.turn?.id || null;
+    const session = getSessionRecord();
+    if (session) session.turnId = turnId;
+    await turnFinished;
+
+    if (terminalFailure) {
+      sendMessage(ws, createNormalizedMessage({
+        kind: 'error',
+        content: terminalFailure.message,
+        sessionId: capturedSessionId || sessionId || null,
+        provider: 'codex',
+      }));
     }
 
     // Send the terminal completion event — skipped for aborted runs, whose
@@ -379,10 +769,18 @@ export async function queryCodex(command, options = {}, ws) {
       sendMessage(ws, createCompleteMessage({
         provider: 'codex',
         sessionId: capturedSessionId || sessionId || null,
-        actualSessionId: capturedSessionId || thread.id || sessionId || null,
+        actualSessionId: capturedSessionId || sessionId || null,
         exitCode: terminalFailure ? 1 : 0,
       }));
-      if (!terminalFailure) {
+      if (terminalFailure) {
+        notifyRunFailed({
+          userId: ws?.userId || null,
+          provider: 'codex',
+          sessionId: capturedSessionId || sessionId || null,
+          sessionName: sessionSummary,
+          error: terminalFailure,
+        });
+      } else {
         notifyRunStopped({
           userId: ws?.userId || null,
           provider: 'codex',
@@ -403,7 +801,7 @@ export async function queryCodex(command, options = {}, ws) {
     if (!wasAborted) {
       console.error('[Codex] Error:', error);
 
-      // Check if Codex SDK is available for a clearer error message
+      // Check if Codex CLI is available for a clearer error message
       const installed = await providerAuthService.isProviderInstalled('codex');
       const errorContent = !installed
         ? 'Codex CLI is not configured. Please set up authentication first.'
@@ -415,18 +813,18 @@ export async function queryCodex(command, options = {}, ws) {
         sessionId: capturedSessionId || sessionId || null,
         exitCode: 1,
       }));
-      if (!terminalFailure) {
-        notifyRunFailed({
-          userId: ws?.userId || null,
-          provider: 'codex',
-          sessionId: capturedSessionId || sessionId || null,
-          sessionName: sessionSummary,
-          error
-        });
-      }
+      notifyRunFailed({
+        userId: ws?.userId || null,
+        provider: 'codex',
+        sessionId: capturedSessionId || sessionId || null,
+        sessionName: sessionSummary,
+        error,
+      });
     }
 
   } finally {
+    rpcUnsubscribe?.();
+    appServer?.close();
     // Update session status
     if (capturedSessionId) {
       const session = activeCodexSessions.get(capturedSessionId);
@@ -452,6 +850,14 @@ export function abortCodexSession(sessionId) {
   session.status = 'aborted';
   try {
     session.abortController?.abort();
+    if (session.turnId && session.rpc) {
+      void session.rpc.request('turn/interrupt', {
+        threadId: sessionId,
+        turnId: session.turnId,
+      }).catch((error) => {
+        console.warn(`[Codex] Failed to interrupt session ${sessionId}:`, error?.message || error);
+      });
+    }
   } catch (error) {
     console.warn(`[Codex] Failed to abort session ${sessionId}:`, error);
   }

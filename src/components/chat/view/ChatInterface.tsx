@@ -95,6 +95,9 @@ function ChatInterface({
     setClaudeModel,
     codexModel,
     setCodexModel,
+    fastMode,
+    supportsFastMode,
+    selectCodexFastMode,
     currentProviderEffort,
     currentProviderEffortOptions,
     opencodeModel,
@@ -353,6 +356,11 @@ function ChatInterface({
     if (model) {
       sendOptions.model = model;
     }
+    if (targetProvider === 'codex') {
+      // Codex app-server expects the catalog service-tier id (`priority`) and
+      // needs an explicit null to clear a prior Fast selection on the thread.
+      sendOptions.serviceTier = fastMode ? 'priority' : null;
+    }
 
     const sent = sendMessage({
       type: 'chat.send',
@@ -393,6 +401,7 @@ function ChatInterface({
     sendMessage,
     resolvePermissionModeForProvider,
     permissionMode,
+    fastMode,
     persistSessionModelEffort,
     addMessage,
     onSessionProcessing,
@@ -461,6 +470,7 @@ function ChatInterface({
     cyclePermissionMode,
     currentProviderModel,
     currentProviderEffort,
+    fastMode,
     persistSessionModelEffort,
     isLoading: isProcessing,
     canAbortSession,
@@ -693,6 +703,9 @@ function ChatInterface({
           onSelectEffort={(nextEffort) =>
             selectProviderEffort(provider, nextEffort, currentSessionId || selectedSession?.id || null)
           }
+          fastMode={fastMode}
+          supportsFastMode={supportsFastMode}
+          onToggleFastMode={() => selectCodexFastMode(!fastMode)}
           modelLabel={currentModelLabel}
           onOpenModelSelector={openModelSelector}
           tokenBudget={tokenBudget}

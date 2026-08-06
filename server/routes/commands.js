@@ -40,7 +40,15 @@ const readModelProvider = (value) => {
 const hasConcreteSessionId = (value) =>
   typeof value === "string" && value.trim().length > 0;
 
-const resolveCommandModel = async (provider, catalog, sessionId) => {
+const readModelValue = (value) =>
+  typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+
+const resolveCommandModel = async (provider, catalog, sessionId, preferredModel) => {
+  const requestedModel = readModelValue(preferredModel);
+  if (requestedModel) {
+    return requestedModel;
+  }
+
   if (!hasConcreteSessionId(sessionId)) {
     return catalog.DEFAULT;
   }
@@ -60,6 +68,7 @@ export const executeModelsCommand = async (args, context) => {
     currentProvider,
     catalog,
     context?.sessionId,
+    context?.model,
   );
   const availableModels = catalog.OPTIONS.map((option) => option.value);
   const availableOptions = catalog.OPTIONS.map((option) => ({
@@ -269,7 +278,12 @@ Custom commands can be created in:
         : null;
     const model =
       modelFromUsage ||
-      (await resolveCommandModel(provider, catalog, context?.sessionId));
+      (await resolveCommandModel(
+        provider,
+        catalog,
+        context?.sessionId,
+        context?.model,
+      ));
 
     const contextUsed = Number(tokenUsage.contextUsed ?? 0) || 0;
     const contextWindow =
@@ -379,7 +393,12 @@ Custom commands can be created in:
 
     const statusProvider = readModelProvider(context?.provider);
     const statusCatalog = (await providerModelsService.getProviderModels(statusProvider)).models;
-    const model = await resolveCommandModel(statusProvider, statusCatalog, context?.sessionId);
+    const model = await resolveCommandModel(
+      statusProvider,
+      statusCatalog,
+      context?.sessionId,
+      context?.model,
+    );
     const memoryUsage = process.memoryUsage();
 
     return {

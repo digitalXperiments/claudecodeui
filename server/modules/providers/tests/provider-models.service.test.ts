@@ -111,8 +111,8 @@ test('provider models are cached for the three-day ttl', async () => {
       }),
     });
 
-    const first = await service.getProviderModels('codex');
-    const cached = await service.getProviderModels('codex');
+    const first = await service.getProviderModels('cursor');
+    const cached = await service.getProviderModels('cursor');
     assert.equal(loadCount, 1);
     assert.equal(cached.models.DEFAULT, first.models.DEFAULT);
     assert.equal(cached.cache.source, 'memory');
@@ -122,15 +122,15 @@ test('provider models are cached for the three-day ttl', async () => {
     assert.equal(loadCount, 1);
 
     currentTime += 2;
-    const refreshed = await service.getProviderModels('codex');
+    const refreshed = await service.getProviderModels('cursor');
     assert.equal(loadCount, 2);
-    assert.equal(refreshed.models.DEFAULT, 'codex-2');
+    assert.equal(refreshed.models.DEFAULT, 'cursor-2');
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
 
-test('claude provider models are always loaded directly from the provider', async () => {
+test('claude and codex provider models are always loaded directly from the provider', async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'provider-model-cache-claude-direct-'));
   let loadCount = 0;
 
@@ -151,11 +151,16 @@ test('claude provider models are always loaded directly from the provider', asyn
 
     const first = await service.getProviderModels('claude');
     const second = await service.getProviderModels('claude');
+    const third = await service.getProviderModels('codex');
+    const fourth = await service.getProviderModels('codex');
 
-    assert.equal(loadCount, 2);
+    assert.equal(loadCount, 4);
     assert.equal(first.models.DEFAULT, 'claude-1');
     assert.equal(second.models.DEFAULT, 'claude-2');
     assert.equal(second.cache.source, 'fresh');
+    assert.equal(third.models.DEFAULT, 'codex-3');
+    assert.equal(fourth.models.DEFAULT, 'codex-4');
+    assert.equal(fourth.cache.source, 'fresh');
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
@@ -349,6 +354,11 @@ test('changeActiveModel mirrors the override under the provider-native session i
     // mirrored entry must resolve the changed model for that id.
     const resumedModel = await service.resolveResumeModel('cursor', 'provider-session-1', null);
     assert.equal(resumedModel, 'composer-2');
+
+    const appSessionModel = await service.getCurrentActiveModel('cursor', 'app-session-1');
+    const providerSessionModel = await service.getCurrentActiveModel('cursor', 'provider-session-1');
+    assert.equal(appSessionModel.model, 'composer-2');
+    assert.equal(providerSessionModel.model, 'composer-2');
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }

@@ -283,6 +283,7 @@ export default function KanbanView({ selectedProject, isVisible, projects: proje
                 onOpenTask={openEditTask}
                 onAddTask={openNewTask}
                 onToggleRunOnEnter={board.setColumnRunOnEnter}
+                onSetColumnWipLimit={board.setColumnWipLimit}
                 projectNameById={projectNameById}
                 taskById={taskById}
               />

@@ -52,6 +52,10 @@ export type ShellWebSocketDependencies = {
   normalizeDetectedUrl: (url: string) => string | null;
   extractUrlsFromText: (content: string) => string[];
   shouldAutoOpenUrlFromOutput: (content: string) => boolean;
+  /** Return whether Chatbar currently owns an active run for an app session. */
+  isChatbarRunActive?: (appSessionId: string) => boolean;
+  /** Resolve when the active Chatbar run for an app session becomes idle. */
+  waitForChatbarRunIdle?: (appSessionId: string) => Promise<void>;
   /**
    * Adopt a provider session the interactive shell created back into the app:
    * called when a shell PTY ends, is replaced, or its websocket detaches, so
@@ -86,6 +90,33 @@ function readBoolean(value: unknown, fallback = false): boolean {
  */
 function readNumber(value: unknown, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+}
+
+function isPlainShellRequest(message: ShellIncomingMessage): boolean {
+  const hasSession = readBoolean(message.hasSession);
+  const initialCommand = readString(message.initialCommand);
+  const provider = readString(message.provider, 'claude');
+
+  return (
+    readBoolean(message.isPlainShell) ||
+    (!!initialCommand && !hasSession) ||
+    provider === 'plain-shell'
+  );
+}
+
+/**
+ * Identifies an agent-backed shell request that can resume an existing app
+ * session. The non-plain shell path is intentionally provider-agnostic so
+ * every provider-native session gets the same Chatbar coordination guard.
+ */
+export function isAgentShellRequestWithExistingSession(
+  message: ShellIncomingMessage,
+): boolean {
+  return (
+    !isPlainShellRequest(message) &&
+    readBoolean(message.hasSession) &&
+    Boolean(readString(message.sessionId))
+  );
 }
 
 /**
@@ -160,6 +191,12 @@ function resolveShellPermissionMode(provider: string, permissionMode: string): s
     return '';
   }
 
+  // Legacy alias: Codex previously surfaced the workspace-write/no-approval
+  // mode as acceptEdits. The Codex CLI calls this "Auto".
+  if (provider === 'codex' && permissionMode === 'acceptEdits') {
+    return 'auto';
+  }
+
   // Legacy alias: opencode previously exposed `bypassPermissions` for what is
   // really `--auto`. Old persisted session values and kanban tasks still carry
   // it, so keep resolving it to the real mode (see opencode-cli.js).
@@ -182,12 +219,13 @@ function resolveShellPermissionMode(provider: string, permissionMode: string): s
  */
 function buildCodexPermissionFlags(permissionMode: string): string {
   switch (permissionMode) {
+    case 'auto':
     case 'acceptEdits':
-      return ' -c sandbox_mode="workspace-write" -c approval_policy="never"';
+      return ' -c sandbox_mode="workspace-write" -c sandbox_workspace_write.network_access=true -c approval_policy="never"';
     case 'bypassPermissions':
       return ' -c sandbox_mode="danger-full-access" -c approval_policy="never"';
     case 'default':
-      return ' -c sandbox_mode="workspace-write" -c approval_policy="untrusted"';
+      return ' -c sandbox_mode="workspace-write" -c sandbox_workspace_write.network_access=true -c approval_policy="untrusted"';
     default:
       return '';
   }
@@ -265,10 +303,7 @@ export function buildShellCommand(
   const projectPath = readString(message.projectPath);
   const resumeSessionId = resolveResumeSessionId(message, dependencies);
   const permissionMode = resolveShellPermissionMode(provider, readString(message.permissionMode));
-  const isPlainShell =
-    readBoolean(message.isPlainShell) ||
-    (!!initialCommand && !hasSession) ||
-    provider === 'plain-shell';
+  const isPlainShell = isPlainShellRequest(message);
 
   if (isPlainShell) {
     return initialCommand;
@@ -456,6 +491,104 @@ function captureShellSessionSync(
   }
 }
 
+const CHATBAR_WAIT_OUTPUT =
+  '\r\n\x1b[33m[Shell waiting] Chatbar is still running for this session. Shell will start when Chatbar finishes.\x1b[0m\r\n';
+
+function sendShellWaitingOutput(ws: WebSocket): boolean {
+  if (ws.readyState !== WebSocket.OPEN) {
+    return false;
+  }
+
+  try {
+    ws.send(JSON.stringify({ type: 'output', data: CHATBAR_WAIT_OUTPUT }));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function waitForChatbarIdleOrSocketClose(
+  ws: WebSocket,
+  appSessionId: string,
+  waitForChatbarRunIdle: (appSessionId: string) => Promise<void>,
+): Promise<'idle' | 'closed' | 'failed'> {
+  return new Promise((resolve) => {
+    let settled = false;
+    let cleanup = () => {};
+    const settle = (result: 'idle' | 'closed' | 'failed') => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      cleanup();
+      resolve(result);
+    };
+    const onClose = () => settle('closed');
+    cleanup = () => ws.off('close', onClose);
+
+    ws.once('close', onClose);
+    if (ws.readyState !== WebSocket.OPEN) {
+      settle('closed');
+      return;
+    }
+
+    void waitForChatbarRunIdle(appSessionId).then(
+      () => settle('idle'),
+      () => settle('failed'),
+    );
+  });
+}
+
+/**
+ * Prevents a provider-native Shell TUI from competing with Chatbar for the
+ * same session. A failed/missing wait signal fails closed and never starts a
+ * second provider process.
+ */
+export async function waitForChatbarRunIfNeeded(
+  ws: WebSocket,
+  message: ShellIncomingMessage,
+  dependencies: ShellWebSocketDependencies,
+): Promise<boolean> {
+  if (!isAgentShellRequestWithExistingSession(message) || !dependencies.isChatbarRunActive) {
+    return true;
+  }
+
+  const appSessionId = readString(message.sessionId);
+  let isActive: boolean;
+  try {
+    isActive = dependencies.isChatbarRunActive(appSessionId);
+  } catch {
+    return false;
+  }
+
+  if (!isActive) {
+    return true;
+  }
+
+  if (!sendShellWaitingOutput(ws) || !dependencies.waitForChatbarRunIdle) {
+    return false;
+  }
+
+  const waitResult = await waitForChatbarIdleOrSocketClose(
+    ws,
+    appSessionId,
+    dependencies.waitForChatbarRunIdle,
+  );
+  if (waitResult !== 'idle') {
+    return false;
+  }
+
+  if (ws.readyState !== WebSocket.OPEN) {
+    return false;
+  }
+
+  try {
+    return !dependencies.isChatbarRunActive(appSessionId);
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Handles websocket connections used by the standalone shell terminal UI.
  */
@@ -485,9 +618,7 @@ export function handleShellConnection(
         const initialCommand = readString(data.initialCommand);
         const forceRestart = readBoolean(data.forceRestart);
         const isPlainShell =
-          readBoolean(data.isPlainShell) ||
-          (!!initialCommand && !hasSession) ||
-          provider === 'plain-shell';
+          isPlainShellRequest(data);
 
         urlDetectionBuffer = '';
         announcedAuthUrls.clear();
@@ -510,6 +641,10 @@ export function handleShellConnection(
         // process for agent shells; plain shells may still reconnect.
         const isAgentShell = !isPlainShell;
         const shouldStartFresh = isLoginCommand || forceRestart || isAgentShell;
+
+        if (!(await waitForChatbarRunIfNeeded(ws, data, dependencies))) {
+          return;
+        }
 
         if (shouldStartFresh) {
           const oldSession = ptySessionsMap.get(ptySessionKey);

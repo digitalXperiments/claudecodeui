@@ -21,7 +21,7 @@ import {
 
 export const PROVIDER_MODELS_CACHE_TTL_MS = 3 * 24 * 60 * 60 * 1000;
 const PROVIDER_MODELS_CACHE_VERSION = 2;
-const UNCACHED_PROVIDERS = new Set<LLMProvider>(['claude']);
+const UNCACHED_PROVIDERS = new Set<LLMProvider>(['claude', 'codex']);
 
 type ProviderModelsServiceDependencies = {
   resolveProvider?: (provider: LLMProvider) => Pick<IProvider, 'models'>;
@@ -331,7 +331,35 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
   const getCurrentActiveModel = async (
     provider: LLMProvider,
     sessionId?: string,
-  ): Promise<ProviderCurrentActiveModel> => resolveProvider(provider).models.getCurrentActiveModel(sessionId);
+  ): Promise<ProviderCurrentActiveModel> => {
+    const currentModel = await resolveProvider(provider).models.getCurrentActiveModel(sessionId);
+    const normalizedSessionId = typeof sessionId === 'string' ? sessionId.trim() : '';
+
+    if (!normalizedSessionId) {
+      return currentModel;
+    }
+
+    // The provider adapter may only know its global/configured model. CloudCLI
+    // owns a session-scoped override for providers whose runtime cannot expose
+    // the active model, so prefer that override whenever it exists.
+    const changedModel = await getChangedActiveModel(provider, normalizedSessionId);
+    if (changedModel.supported && changedModel.changed && changedModel.model?.trim()) {
+      return { model: changedModel.model.trim() };
+    }
+
+    // A gateway session can have a different provider-native id. The change
+    // path mirrors overrides under both ids, but checking the native id here
+    // also covers overrides written before that mirror was introduced.
+    const providerSessionId = getProviderSessionId(normalizedSessionId)?.trim();
+    if (providerSessionId && providerSessionId !== normalizedSessionId) {
+      const providerChangedModel = await getChangedActiveModel(provider, providerSessionId);
+      if (providerChangedModel.supported && providerChangedModel.changed && providerChangedModel.model?.trim()) {
+        return { model: providerChangedModel.model.trim() };
+      }
+    }
+
+    return currentModel;
+  };
 
   const changeActiveModel = async (
     provider: LLMProvider,

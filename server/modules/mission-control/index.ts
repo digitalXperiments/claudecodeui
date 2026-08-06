@@ -4,6 +4,13 @@ export { configureMissionControlRuntimes } from '@/modules/mission-control/missi
 export {
   runSectionProduce,
   applyItemAction,
+  retryItem,
+  previewItemResolution,
+} from '@/modules/mission-control/mission-control-runner.service.js';
+export type {
+  ProduceRunResult,
+  RetryItemResult,
+  PreviewItemResolutionResult,
 } from '@/modules/mission-control/mission-control-runner.service.js';
 export {
   startMissionControlScheduler,

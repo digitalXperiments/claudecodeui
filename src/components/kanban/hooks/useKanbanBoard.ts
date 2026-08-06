@@ -245,6 +245,29 @@ export function useKanbanBoard() {
     [state.board],
   );
 
+  const setColumnWipLimit = useCallback(
+    async (columnId: string, wipLimit?: number) => {
+      const board = state.board;
+      if (!board) {
+        return;
+      }
+      const columns = board.columns.map((col) =>
+        col.id === columnId ? { ...col, wipLimit } : col,
+      );
+      setState((prev) => (prev.board ? { ...prev, board: { ...prev.board, columns } } : prev));
+      try {
+        const updated = await kanbanApi.updateBoard(board.board_id, { columns });
+        setState((prev) => ({ ...prev, board: updated }));
+      } catch (error) {
+        setState((prev) => ({
+          ...prev,
+          error: error instanceof Error ? error.message : 'Failed to update WIP limit',
+        }));
+      }
+    },
+    [state.board],
+  );
+
   const clearError = useCallback(() => setState((prev) => ({ ...prev, error: null })), []);
 
   return {
@@ -259,6 +282,7 @@ export function useKanbanBoard() {
     addDependency,
     removeDependency,
     setColumnRunOnEnter,
+    setColumnWipLimit,
     clearError,
   };
 }

@@ -1,3 +1,5 @@
+import { createHmac, timingSafeEqual } from 'node:crypto';
+
 import type { Request } from 'express';
 
 import type { WebhookIngestPayload } from '@/modules/webhooks/webhooks.types.js';
@@ -8,10 +10,43 @@ function readString(value: unknown): string {
   return '';
 }
 
-function firstHeader(req: Request, name: string): string {
+export function firstHeader(req: Request, name: string): string {
   const raw = req.headers[name.toLowerCase()];
   if (Array.isArray(raw)) return raw[0] ?? '';
   return typeof raw === 'string' ? raw : '';
+}
+
+/**
+ * HMAC-SHA256 signature check for inbound webhooks. The sender signs the raw
+ * request body and sends the hex digest in `x-webhook-signature`, optionally
+ * with a `sha256=` prefix (GitHub-style). Constant-time comparison is used when
+ * the lengths match; mismatched lengths short-circuit to false.
+ */
+export function verifyWebhookSignature(
+  sourceSecret: string,
+  rawBody: Buffer | undefined,
+  signatureHeader: string | undefined,
+): boolean {
+  if (!sourceSecret) return false;
+  if (!signatureHeader) return false;
+
+  let header = signatureHeader.trim();
+  if (header.startsWith('sha256=')) {
+    header = header.slice('sha256='.length).trim();
+  }
+  if (!header || !/^[0-9a-fA-F]+$/.test(header)) {
+    return false;
+  }
+
+  const computed = Buffer.from(
+    createHmac('sha256', sourceSecret).update(rawBody ?? Buffer.alloc(0)).digest('hex'),
+    'hex',
+  );
+  const provided = Buffer.from(header, 'hex');
+  if (computed.length !== provided.length) {
+    return false;
+  }
+  return timingSafeEqual(computed, provided);
 }
 
 /**

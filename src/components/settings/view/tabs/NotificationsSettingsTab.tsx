@@ -1,9 +1,13 @@
-import { Bell, BellOff, BellRing, Loader2, Play, Volume2 } from 'lucide-react';
+import { Bell, BellOff, BellRing, Clock, Filter, Loader2, Play, Volume2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import { Button } from '../../../../shared/view/ui';
 import { playChatCompletionSound } from '../../../../utils/notificationSound';
-import type { NotificationPreferencesState } from '../../types/types';
+import type {
+  NotificationChannelRule,
+  NotificationDigestPreferences,
+  NotificationPreferencesState,
+} from '../../types/types';
 
 type NotificationsSettingsTabProps = {
   notificationPreferences: NotificationPreferencesState;
@@ -25,6 +29,17 @@ type NotificationsSettingsTabProps = {
   onDisableDesktopNotifications?: () => void;
 };
 
+const DIGEST_CHANNELS = ['webPush', 'desktop'];
+const QUIET_CHANNELS = ['webPush', 'desktop'];
+const EVENT_KINDS = ['actionRequired', 'error', 'stop'];
+const SOURCE_OPTIONS = ['chat', 'kanban', 'mission-control', 'auth-health', 'webhooks', 'system'];
+
+const DEFAULT_DIGEST: NotificationDigestPreferences = {
+  enabled: false,
+  time: '08:00',
+  channels: ['webPush', 'desktop'],
+};
+
 export default function NotificationsSettingsTab({
   notificationPreferences,
   onNotificationPreferencesChange,
@@ -42,6 +57,87 @@ export default function NotificationsSettingsTab({
 
   const pushSupported = pushPermission !== 'unsupported';
   const pushDenied = pushPermission === 'denied';
+
+  const digest = notificationPreferences.digest ?? DEFAULT_DIGEST;
+
+  // --- Daily digest handlers ---
+  const updateDigest = (patch: Partial<NotificationDigestPreferences>) => {
+    onNotificationPreferencesChange({
+      ...notificationPreferences,
+      digest: { ...digest, ...patch },
+    });
+  };
+
+  // --- Channel routing handlers ---
+  const quietRulesFor = (channel: string) =>
+    notificationPreferences.rules.filter(
+      (rule) => rule.channel === channel && rule.enabled === false,
+    );
+
+  const isQuietFor = (channel: string) => quietRulesFor(channel).length > 0;
+
+  const setQuietFor = (channel: string, quiet: boolean) => {
+    const otherRules = notificationPreferences.rules.filter(
+      (rule) => rule.channel !== channel || rule.enabled === true,
+    );
+    const rules = quiet
+      ? [...otherRules, { channel, kinds: [...EVENT_KINDS], sources: [], enabled: false }]
+      : otherRules;
+    onNotificationPreferencesChange({ ...notificationPreferences, rules });
+  };
+
+  const updateQuietRule = (
+    channel: string,
+    updater: (rule: NotificationChannelRule) => NotificationChannelRule,
+  ) => {
+    const keptRules = notificationPreferences.rules.filter(
+      (rule) => rule.channel !== channel || rule.enabled === true,
+    );
+    const existing = quietRulesFor(channel)[0];
+    const updated = updater(
+      existing ?? { channel, kinds: [...EVENT_KINDS], sources: [], enabled: false },
+    );
+    onNotificationPreferencesChange({
+      ...notificationPreferences,
+      rules: [...keptRules, updated],
+    });
+  };
+
+  const toggleQuietKind = (channel: string, kind: string) => {
+    updateQuietRule(channel, (rule) => {
+      const current = rule.kinds.length > 0 ? rule.kinds : [...EVENT_KINDS];
+      const next = current.includes(kind)
+        ? current.length === 1
+          ? current
+          : current.filter((item) => item !== kind)
+        : [...current, kind];
+      return { ...rule, kinds: next };
+    });
+  };
+
+  const toggleQuietSource = (channel: string, source: string) => {
+    updateQuietRule(channel, (rule) => {
+      const current = rule.sources.length > 0 ? rule.sources : [...SOURCE_OPTIONS];
+      const next = current.includes(source)
+        ? current.length === 1
+          ? current
+          : current.filter((item) => item !== source)
+        : [...current, source];
+      return { ...rule, sources: next };
+    });
+  };
+
+  const isKindQuiet = (channel: string, kind: string) => {
+    const rules = quietRulesFor(channel);
+    if (rules.length === 0) return false;
+    return rules.some((rule) => rule.kinds.length === 0 || rule.kinds.includes(kind));
+  };
+
+  const isSourceQuiet = (channel: string, source: string) => {
+    const rules = quietRulesFor(channel);
+    if (rules.length === 0) return false;
+    return rules.some((rule) => rule.sources.length === 0 || rule.sources.includes(source));
+  };
 
   return (
     <div className="space-y-6 md:space-y-8">
@@ -254,6 +350,169 @@ export default function NotificationsSettingsTab({
             {t('notifications.events.error')}
           </label>
         </div>
+      </div>
+
+      <div className="space-y-4 rounded-lg border border-border bg-card p-4">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="space-y-1">
+            <div className="flex items-center gap-2">
+              <Clock className="h-4 w-4 text-blue-600" />
+              <h4 className="font-medium text-foreground">
+                {t('notifications.digest.title', { defaultValue: 'Daily digest' })}
+              </h4>
+            </div>
+            <p className="text-sm text-muted-foreground">
+              {t('notifications.digest.description', {
+                defaultValue: 'Replace per-event pushes with a single daily summary.',
+              })}
+            </p>
+          </div>
+
+          <label className="flex shrink-0 items-center gap-2 text-sm text-foreground">
+            <input
+              type="checkbox"
+              checked={digest.enabled}
+              onChange={(event) => updateDigest({ enabled: event.target.checked })}
+              className="h-4 w-4"
+            />
+            {t('notifications.digest.enabled', { defaultValue: 'Enabled' })}
+          </label>
+        </div>
+
+        {digest.enabled && (
+          <div className="space-y-3">
+            <div className="flex items-center gap-2">
+              <label htmlFor="digest-time" className="text-sm text-foreground">
+                {t('notifications.digest.time', { defaultValue: 'Delivery time' })}
+              </label>
+              <input
+                id="digest-time"
+                type="time"
+                value={digest.time}
+                onChange={(event) => updateDigest({ time: event.target.value })}
+                className="rounded-md border border-border bg-background px-2 py-1 text-sm text-foreground"
+              />
+            </div>
+
+            <div className="space-y-1">
+              <p className="text-sm font-medium text-foreground">
+                {t('notifications.digest.channels', { defaultValue: 'Delivery channels' })}
+              </p>
+              <div className="space-y-1">
+                {DIGEST_CHANNELS.map((channel) => (
+                  <label key={channel} className="flex items-center gap-2 text-sm text-foreground">
+                    <input
+                      type="checkbox"
+                      checked={digest.channels.includes(channel)}
+                      onChange={(event) =>
+                        updateDigest({
+                          channels: event.target.checked
+                            ? [...digest.channels, channel]
+                            : digest.channels.filter((item) => item !== channel),
+                        })
+                      }
+                      className="h-4 w-4"
+                    />
+                    {channel === 'webPush'
+                      ? t('notifications.digest.channelWebPush', { defaultValue: 'Web push' })
+                      : t('notifications.digest.channelDesktop', { defaultValue: 'Desktop' })}
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            <p className="text-xs text-muted-foreground">
+              {t('notifications.digest.hint', {
+                defaultValue: 'While enabled, per-event web push and desktop alerts are replaced by this daily summary.',
+              })}
+            </p>
+          </div>
+        )}
+      </div>
+
+      <div className="space-y-4 rounded-lg border border-border bg-card p-4">
+        <div className="space-y-1">
+          <div className="flex items-center gap-2">
+            <Filter className="h-4 w-4 text-blue-600" />
+            <h4 className="font-medium text-foreground">
+              {t('notifications.routing.title', { defaultValue: 'Channel routing' })}
+            </h4>
+          </div>
+          <p className="text-sm text-muted-foreground">
+            {t('notifications.routing.description', {
+              defaultValue: 'Silence specific event types or sources per channel.',
+            })}
+          </p>
+        </div>
+
+        {QUIET_CHANNELS.map((channel) => (
+          <div key={channel} className="space-y-2 rounded-md border border-border p-3">
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-sm font-medium text-foreground">
+                {channel === 'webPush'
+                  ? t('notifications.routing.webPush', { defaultValue: 'Web push' })
+                  : t('notifications.routing.desktop', { defaultValue: 'Desktop' })}
+              </p>
+              <label className="flex shrink-0 items-center gap-2 text-sm text-foreground">
+                <input
+                  type="checkbox"
+                  checked={isQuietFor(channel)}
+                  onChange={(event) => setQuietFor(channel, event.target.checked)}
+                  className="h-4 w-4"
+                />
+                {t('notifications.routing.quietMode', { defaultValue: 'Quiet mode' })}
+              </label>
+            </div>
+
+            {isQuietFor(channel) && (
+              <div className="space-y-3">
+                <div className="space-y-1">
+                  <p className="text-xs font-medium text-muted-foreground">
+                    {t('notifications.routing.kinds', { defaultValue: 'Silence these event types' })}
+                  </p>
+                  <div className="flex flex-wrap gap-3">
+                    {EVENT_KINDS.map((kind) => (
+                      <label key={kind} className="flex items-center gap-1.5 text-sm text-foreground">
+                        <input
+                          type="checkbox"
+                          checked={isKindQuiet(channel, kind)}
+                          onChange={() => toggleQuietKind(channel, kind)}
+                          className="h-4 w-4"
+                        />
+                        {t(`notifications.events.${kind}`)}
+                      </label>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="space-y-1">
+                  <p className="text-xs font-medium text-muted-foreground">
+                    {t('notifications.routing.sources', { defaultValue: 'Silence these sources' })}
+                  </p>
+                  <div className="flex flex-wrap gap-3">
+                    {SOURCE_OPTIONS.map((source) => (
+                      <label key={source} className="flex items-center gap-1.5 text-sm text-foreground">
+                        <input
+                          type="checkbox"
+                          checked={isSourceQuiet(channel, source)}
+                          onChange={() => toggleQuietSource(channel, source)}
+                          className="h-4 w-4"
+                        />
+                        {source}
+                      </label>
+                    ))}
+                  </div>
+                </div>
+
+                <p className="text-xs text-muted-foreground">
+                  {t('notifications.routing.emptyHint', {
+                    defaultValue: 'No boxes ticked = silence everything on this channel.',
+                  })}
+                </p>
+              </div>
+            )}
+          </div>
+        ))}
       </div>
     </div>
   );

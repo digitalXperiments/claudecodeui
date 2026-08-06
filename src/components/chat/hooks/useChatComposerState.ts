@@ -57,6 +57,8 @@ interface UseChatComposerStateArgs {
   /** Effective model for the open conversation (its own choice, or the provider default). */
   currentProviderModel: string;
   currentProviderEffort: string;
+  /** Whether Codex Fast mode is enabled for the next turn. */
+  fastMode: boolean;
   /** Pins a session to the model/effort a message was actually sent with. */
   persistSessionModelEffort: (
     provider: LLMProvider,
@@ -257,6 +259,7 @@ export function useChatComposerState({
   resolvePermissionModeForProvider,
   currentProviderModel,
   currentProviderEffort,
+  fastMode,
   persistSessionModelEffort,
   isLoading,
   canAbortSession,
@@ -712,10 +715,12 @@ export function useChatComposerState({
       toolsSettings,
       skipPermissions: toolsSettings?.skipPermissions || false,
       sessionSummary: getNotificationSessionSummary(selectedSession, currentInput),
+      ...(provider === 'codex' ? { serviceTier: fastMode ? 'priority' : null } : {}),
     };
   }, [
     currentProviderModel,
     currentProviderEffort,
+    fastMode,
     permissionMode,
     provider,
     resolvePermissionModeForProvider,

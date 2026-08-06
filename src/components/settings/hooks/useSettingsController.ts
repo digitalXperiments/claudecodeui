@@ -172,12 +172,49 @@ const createDefaultNotificationPreferences = (): NotificationPreferencesState =>
     stop: true,
     error: true,
   },
+  rules: [],
+  digest: {
+    enabled: false,
+    time: '08:00',
+    channels: ['webPush', 'desktop'],
+  },
 });
 
 const normalizeNotificationPreferences = (
   preferences?: Partial<NotificationPreferencesState> | null,
 ): NotificationPreferencesState => {
   const defaults = createDefaultNotificationPreferences();
+
+  const rules = Array.isArray(preferences?.rules)
+    ? preferences.rules
+        .filter((rule) => rule && typeof rule === 'object' && typeof rule.channel === 'string')
+        .map((rule) => ({
+          channel: rule.channel,
+          kinds: Array.isArray(rule.kinds)
+            ? rule.kinds.filter((kind): kind is string => typeof kind === 'string')
+            : [],
+          sources: Array.isArray(rule.sources)
+            ? rule.sources.filter((source): source is string => typeof source === 'string')
+            : [],
+          enabled: rule.enabled !== false,
+        }))
+    : defaults.rules;
+
+  const digestSource = preferences?.digest;
+  const digest: NotificationPreferencesState['digest'] = {
+    enabled: Boolean(digestSource?.enabled),
+    time:
+      typeof digestSource?.time === 'string' && /^\d{2}:\d{2}$/.test(digestSource.time)
+        ? digestSource.time
+        : defaults.digest?.time ?? '08:00',
+    channels:
+      Array.isArray(digestSource?.channels) && digestSource.channels.length > 0
+        ? digestSource.channels.filter(
+            (channel): channel is 'webPush' | 'desktop' =>
+              channel === 'webPush' || channel === 'desktop',
+          )
+        : ['webPush', 'desktop'],
+  };
 
   return {
     channels: {
@@ -191,6 +228,8 @@ const normalizeNotificationPreferences = (
       stop: preferences?.events?.stop ?? defaults.events.stop,
       error: preferences?.events?.error ?? defaults.events.error,
     },
+    rules,
+    digest,
   };
 };
 

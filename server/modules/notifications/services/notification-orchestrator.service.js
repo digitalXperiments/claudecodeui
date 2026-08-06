@@ -9,6 +9,11 @@ const KIND_TO_PREF_KEY = {
   error: 'error'
 };
 
+// Event kinds that are captured into the daily digest summary. Other kinds
+// (e.g. push.enabled confirmations) keep their per-event push behavior even
+// when digest mode is on.
+const DIGEST_ELIGIBLE_KINDS = new Set(['action_required', 'stop', 'error']);
+
 const PROVIDER_LABELS = {
   claude: 'Claude',
   cursor: 'Cursor',
@@ -53,7 +58,8 @@ function createNotificationEvent({
   meta = {},
   severity = 'info',
   dedupeKey = null,
-  requiresUserAction = false
+  requiresUserAction = false,
+  source = null
 }) {
   return {
     provider,
@@ -64,6 +70,7 @@ function createNotificationEvent({
     severity,
     requiresUserAction,
     dedupeKey,
+    source: source || (provider && provider !== 'system' ? provider : 'system'),
     createdAt: new Date().toISOString()
   };
 }
@@ -221,12 +228,52 @@ const notificationChannels = [
   }
 ];
 
+/**
+ * Per-channel routing rules from preferences.rules. Each rule targets one
+ * channel with optional kinds/sources matchers (empty = match all). A rule
+ * with enabled:false BLOCKS matching events; enabled:true FORCE-ALLOWS and
+ * overrides any block. Deterministic order:
+ *   any force-allow match -> allow
+ *   else any block match    -> block
+ *   else                    -> allow
+ */
+function channelAllowedByRules(preferences, channelId, event) {
+  const rules = Array.isArray(preferences?.rules) ? preferences.rules : [];
+  const channelRules = rules.filter((rule) => rule && rule.channel === channelId);
+  if (channelRules.length === 0) {
+    return true;
+  }
+
+  const eventKind = event?.kind || 'info';
+  const prefKey = KIND_TO_PREF_KEY[eventKind] || eventKind;
+  const eventSource = event?.source || event?.provider || null;
+
+  const matchesRule = (rule) => {
+    const kinds = Array.isArray(rule.kinds) ? rule.kinds : [];
+    const sources = Array.isArray(rule.sources) ? rule.sources : [];
+    const kindsMatch = kinds.length === 0 || kinds.includes(eventKind) || kinds.includes(prefKey);
+    const sourcesMatch = sources.length === 0 || (eventSource !== null && sources.includes(eventSource));
+    return kindsMatch && sourcesMatch;
+  };
+
+  if (channelRules.some((rule) => rule.enabled === true && matchesRule(rule))) {
+    return true;
+  }
+  if (channelRules.some((rule) => rule.enabled === false && matchesRule(rule))) {
+    return false;
+  }
+  return true;
+}
+
 function notifyUserIfEnabled({ userId, event }) {
   if (!userId || !event) {
     return;
   }
 
-  const normalizedEvent = normalizeNotificationSession(event);
+  const normalizedEvent = normalizeNotificationSession({
+    ...event,
+    source: event.source || (event.provider ? event.provider : 'system')
+  });
   const preferences = notificationPreferencesDb.getPreferences(userId);
   if (!isNotificationEventEnabled(preferences, normalizedEvent)) {
     return;
@@ -240,8 +287,45 @@ function notifyUserIfEnabled({ userId, event }) {
     if (!channel.isEnabled(preferences)) {
       continue;
     }
+    // Digest mode suppresses per-event webPush/desktop for digest-eligible
+    // kinds; the daily summary is pushed by the digest scheduler instead.
+    if (
+      channel.id === 'webPush' || channel.id === 'desktop'
+    ) {
+      if (preferences?.digest?.enabled === true && DIGEST_ELIGIBLE_KINDS.has(normalizedEvent.kind)) {
+        continue;
+      }
+    }
+    if (!channelAllowedByRules(preferences, channel.id, normalizedEvent)) {
+      continue;
+    }
     Promise.resolve(channel.send({ userId, event: normalizedEvent, payload })).catch((err) => {
       console.error(`Notification channel "${channel.id}" send error:`, err);
+    });
+  }
+}
+
+/**
+ * Pushes a summary notification through the given channels (default webPush +
+ * desktop), honoring the user's channel enablement. Used by the daily digest.
+ */
+function notifyDigest({ userId, title, body, channels = ['webPush', 'desktop'] }) {
+  if (!userId || !title) {
+    return;
+  }
+  const preferences = notificationPreferencesDb.getPreferences(userId);
+  const payload = {
+    title,
+    body,
+    data: { tag: 'digest' }
+  };
+  for (const channelId of channels) {
+    const channel = notificationChannels.find((candidate) => candidate.id === channelId);
+    if (!channel || !channel.isEnabled(preferences)) {
+      continue;
+    }
+    Promise.resolve(channel.send({ userId, payload })).catch((err) => {
+      console.error(`Notification channel "${channel.id}" digest send error:`, err);
     });
   }
 }
@@ -280,7 +364,9 @@ function notifyRunFailed({ userId, provider, sessionId = null, error, sessionNam
 
 export {
   buildNotificationPayload,
+  channelAllowedByRules,
   createNotificationEvent,
+  notifyDigest,
   notifyUserIfEnabled,
   notifyRunStopped,
   notifyRunFailed

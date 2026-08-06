@@ -341,8 +341,7 @@ export const chatRunRegistry = {
       return false;
     }
 
-    run.writer.updateWebSocket(connection);
-    return true;
+    return run.writer.updateWebSocket(connection);
   },
 
   /**

@@ -3,6 +3,7 @@ import type { AgentRunProfile } from '@/modules/database/index.js';
 import { sessionsService } from '@/modules/providers/index.js';
 import { DETACHED_CONNECTION, startProviderRun, type ProviderSpawnFn } from '@/modules/websocket/index.js';
 import { kanbanDb } from '@/modules/kanban/kanban.repository.js';
+import { ensureFeatureBranch } from '@/modules/kanban/git-branch.service.js';
 import {
   COLUMN_REVIEW,
   isKanbanProvider,
@@ -346,6 +347,24 @@ export const kanbanRunner = {
         code: 'KANBAN_PROJECT_PATH_MISSING',
         statusCode: 400,
       });
+    }
+
+    // Implementation runs work on a dedicated feature branch. Create (or switch
+    // to) one when the task doesn't reference a branch yet. Best-effort — a
+    // non-git project or a failed checkout never fails the run.
+    if (role === 'implement' && !task.feature_branch) {
+      const branch = ensureFeatureBranch(projectPath, task);
+      if (branch) {
+        try {
+          kanbanDb.updateTask(task.task_id, { featureBranch: branch });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          console.warn('[Kanban] failed to persist feature branch', {
+            taskId: task.task_id,
+            error: message,
+          });
+        }
+      }
     }
 
     // Reuse the task's existing session only when it belongs to the same

@@ -35,6 +35,9 @@ export type CreateFolderResponse = {
 export type CreateProjectPayload = {
   path: string;
   customName?: string;
+  memory?: {
+    enabled: boolean;
+  };
 };
 
 export type CreateProjectApiError = {
@@ -55,11 +58,13 @@ export type CloneProgressEvent = {
   type?: string;
   message?: string;
   project?: Record<string, unknown>;
+  memoryError?: string | null;
 };
 
 export type WizardFormState = {
   workspacePath: string;
   githubUrl: string;
+  enableMemory: boolean;
   tokenMode: TokenMode;
   selectedGithubToken: string;
   newGithubToken: string;

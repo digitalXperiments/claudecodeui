@@ -36,6 +36,9 @@ export type WebhookSource = {
   profile_id: string | null;
   scope: WebhookScope;
   project_id: string | null;
+  retryMax: number;
+  retryBackoffSeconds: number;
+  secret: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -48,6 +51,8 @@ export type WebhookDelivery = {
   app_session_id: string | null;
   error_message: string | null;
   result_preview: string | null;
+  attempt: number;
+  next_retry_at: string | null;
   created_at: string;
   finished_at: string | null;
 };
@@ -66,6 +71,9 @@ export type CreateWebhookSourceInput = {
   profile_id?: string | null;
   scope?: WebhookScope;
   project_id?: string | null;
+  retryMax?: number;
+  retryBackoffSeconds?: number;
+  secret?: string | null;
 };
 
 export type UpdateWebhookSourceInput = {
@@ -82,6 +90,9 @@ export type UpdateWebhookSourceInput = {
   profile_id?: string | null;
   scope?: WebhookScope;
   project_id?: string | null;
+  retryMax?: number;
+  retryBackoffSeconds?: number;
+  secret?: string | null;
 };
 
 /** Normalized fields extracted from body / query / headers on ingest. */

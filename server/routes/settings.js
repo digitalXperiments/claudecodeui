@@ -200,6 +200,16 @@ router.get('/notification-preferences', async (req, res) => {
 router.put('/notification-preferences', async (req, res) => {
   try {
     const preferences = notificationPreferencesDb.updatePreferences(req.user.id, req.body || {});
+
+    // Re-sync daily digest schedules when preferences change. Lazily imported
+    // to avoid any module-load circularity with the notifications module.
+    try {
+      const { syncNotificationDigestSchedules } = await import('../modules/notifications/index.js');
+      syncNotificationDigestSchedules();
+    } catch (syncError) {
+      console.error('Error syncing notification digest schedules:', syncError);
+    }
+
     res.json({ success: true, preferences });
   } catch (error) {
     console.error('Error saving notification preferences:', error);

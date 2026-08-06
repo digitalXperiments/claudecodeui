@@ -191,6 +191,48 @@ test('codex history: non-image attachments strip the tag and surface as path att
   assert.deepEqual(messages[0].images, [{ path: '.cloudcli/assets/data.xlsx', name: 'data.xlsx' }]);
 });
 
+test('codex commentary history is normalized as thinking, not assistant text', () => {
+  const provider = new CodexSessionsProvider();
+  const messages = provider.normalizeMessage(
+    {
+      type: 'assistant',
+      phase: 'commentary',
+      timestamp: '2026-07-03T10:00:00.000Z',
+      message: {
+        role: 'assistant',
+        content: 'I am checking the project context first.',
+        isReasoning: true,
+      },
+    },
+    SESSION_ID,
+  );
+
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].kind, 'thinking');
+  assert.equal(messages[0].content, 'I am checking the project context first.');
+});
+
+test('codex final-answer history remains normal assistant text', () => {
+  const provider = new CodexSessionsProvider();
+  const messages = provider.normalizeMessage(
+    {
+      type: 'assistant',
+      phase: 'final_answer',
+      timestamp: '2026-07-03T10:00:00.000Z',
+      message: {
+        role: 'assistant',
+        content: 'The implementation is complete.',
+      },
+    },
+    SESSION_ID,
+  );
+
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].kind, 'text');
+  assert.equal(messages[0].role, 'assistant');
+  assert.equal(messages[0].content, 'The implementation is complete.');
+});
+
 // ---------------------------------------------------------------- Cursor
 
 test('cursor history: <images_input> inside user_query is stripped and attached', () => {

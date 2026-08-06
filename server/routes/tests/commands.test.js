@@ -11,7 +11,10 @@ test('models command returns available models only for the active provider', asy
 
   providerModelsService.getProviderModels = async () => ({
     models: {
-      OPTIONS: [{ value: 'gpt-5.4', label: 'gpt-5.4' }],
+      OPTIONS: [
+        { value: 'gpt-5.4', label: 'gpt-5.4' },
+        { value: 'gpt-5.6-luna', label: 'GPT-5.6 Luna' },
+      ],
       DEFAULT: 'gpt-5.4',
     },
     cache: {
@@ -30,16 +33,17 @@ test('models command returns available models only for the active provider', asy
   try {
     const result = await executeModelsCommand([], {
       provider: 'codex',
-      model: 'gpt-5.4',
+      model: 'gpt-5.6-luna',
     });
 
     assert.equal(result.type, 'builtin');
     assert.equal(result.action, 'models');
     assert.equal(result.data.current.provider, 'codex');
-    assert.equal(result.data.current.model, 'gpt-5.4');
+    assert.equal(result.data.current.model, 'gpt-5.6-luna');
     assert.deepEqual(Object.keys(result.data.available), ['codex']);
     assert.deepEqual(result.data.available.codex, result.data.availableModels);
     assert.ok(result.data.availableModels.includes('gpt-5.4'));
+    assert.ok(result.data.availableModels.includes('gpt-5.6-luna'));
     assert.equal(result.data.available.claude, undefined);
     assert.equal(result.data.available.cursor, undefined);
     assert.equal(getCurrentActiveModelCalls, 0);

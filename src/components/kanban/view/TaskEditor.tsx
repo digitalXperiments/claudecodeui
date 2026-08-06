@@ -74,6 +74,7 @@ type TaskEditorProps = {
       skills?: string[];
     };
     scheduleCron?: string | null;
+    dueDate?: string | null;
   }) => Promise<KanbanTask | void>;
   onUpdate: (taskId: string, patch: TaskPatch) => Promise<void>;
   onDelete: (taskId: string) => Promise<void>;
@@ -161,6 +162,7 @@ export default function TaskEditor(props: TaskEditorProps) {
   >([]);
   const [skillsLoading, setSkillsLoading] = useState(false);
   const [scheduleCron, setScheduleCron] = useState('');
+  const [dueDate, setDueDate] = useState('');
   /** Draft dependency ids while creating; applied after create. Live task uses task.dependsOn. */
   const [draftDependsOn, setDraftDependsOn] = useState<string[]>([]);
   const [depSearch, setDepSearch] = useState('');
@@ -230,6 +232,7 @@ export default function TaskEditor(props: TaskEditorProps) {
         skillsTouchedRef.current = true;
       }
       setScheduleCron(task.schedule_cron ?? '');
+      setDueDate(task.due_date ? task.due_date.slice(0, 10) : '');
       setDraftDependsOn([]);
     } else {
       setTitle('');
@@ -252,6 +255,7 @@ export default function TaskEditor(props: TaskEditorProps) {
       setMcpServersSelected([]);
       setSkillsSelected([]);
       setScheduleCron('');
+      setDueDate('');
       setDraftDependsOn([]);
     }
     // Intentionally keyed on identity, not the task/draft/columns/projects
@@ -605,6 +609,7 @@ export default function TaskEditor(props: TaskEditorProps) {
         permissionMode: resolvePermissionMode(),
         tools: buildTools(),
         scheduleCron: scheduleCron.trim() ? scheduleCron.trim() : null,
+        dueDate: dueDate ? new Date(`${dueDate}T00:00:00`).toISOString() : null,
         ...(projectId ? { projectId } : {}),
       };
       if (task) {
@@ -734,7 +739,7 @@ export default function TaskEditor(props: TaskEditorProps) {
                   type="button"
                   size="sm"
                   variant="secondary"
-                  className="touch-manipulation shrink-0"
+                  className="shrink-0 touch-manipulation"
                   onClick={() => void handleGenerateFields()}
                   disabled={generating || !title.trim()}
                   title={
@@ -902,7 +907,7 @@ export default function TaskEditor(props: TaskEditorProps) {
                             {skill.name || skill.directoryName}
                           </span>
                           {skill.description ? (
-                            <span className="mt-0.5 block text-[11px] text-muted-foreground line-clamp-2">
+                            <span className="mt-0.5 line-clamp-2 block text-[11px] text-muted-foreground">
                               {skill.description}
                             </span>
                           ) : null}
@@ -1087,6 +1092,22 @@ export default function TaskEditor(props: TaskEditorProps) {
               />
             </div>
 
+            <div className="flex flex-col gap-1">
+              <label className={labelClass} htmlFor="kanban-due">
+                Due date
+              </label>
+              <Input
+                id="kanban-due"
+                type="date"
+                value={dueDate}
+                onChange={(e) => setDueDate(e.target.value)}
+                className="h-9"
+              />
+              <p className="text-[11px] leading-snug text-muted-foreground">
+                Overdue cards are flagged and escalated in the notification inbox.
+              </p>
+            </div>
+
             <div className="flex flex-col gap-2 rounded-md border border-border p-3">
               <span className={labelClass}>
                 Permissions
@@ -1227,6 +1248,14 @@ export default function TaskEditor(props: TaskEditorProps) {
             {isEdit && task ? (
               <div className="flex flex-col gap-1 border-t border-border pt-3">
                 <span className={labelClass}>Run</span>
+                {task.feature_branch ? (
+                  <p className="flex items-center gap-1 text-xs text-muted-foreground">
+                    <GitBranch className="h-3 w-3 shrink-0" />
+                    <span className="truncate" title={task.feature_branch}>
+                      Branch: {task.feature_branch}
+                    </span>
+                  </p>
+                ) : null}
                 {task.last_run_at ? (
                   <p className="text-xs text-muted-foreground">
                     Last run {new Date(task.last_run_at).toLocaleString()}

@@ -45,6 +45,7 @@ export type UseShellRuntimeOptions = {
   isPlainShell: boolean;
   minimal: boolean;
   autoConnect: boolean;
+  waitForChat: boolean;
   isRestarting: boolean;
   onProcessComplete?: ((exitCode: number) => void) | null;
   onOutputRef?: MutableRefObject<(() => void) | null>;

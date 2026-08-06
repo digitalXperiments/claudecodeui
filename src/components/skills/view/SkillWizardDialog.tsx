@@ -16,6 +16,7 @@ import { useProjectsOptions } from '../hooks/useProjectsOptions';
 import { useGlobalSkills } from '../hooks/useGlobalSkills';
 import { useProjectSkills } from '../hooks/useProjectSkills';
 import { useSkillWizardSession } from '../hooks/useSkillWizardSession';
+import { testSkill, type SkillTestResult } from '../api/skillTest';
 import type { SkillWizardDraft } from '../lib/skillWizardPrompt';
 import type { GlobalSkillScope } from '../types';
 
@@ -101,6 +102,8 @@ export default function SkillWizardDialog({
   const [selectedProviders, setSelectedProviders] = useState<LLMProvider[]>(FANOUT_PROVIDERS);
   const [composerValue, setComposerValue] = useState('');
   const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<SkillTestResult | null>(null);
   const [toast, setToast] = useState<WizardToast | null>(null);
   const [previewFlash, setPreviewFlash] = useState(false);
 
@@ -130,6 +133,8 @@ export default function SkillWizardDialog({
     setSelectedProviders(FANOUT_PROVIDERS);
     setComposerValue('');
     setSaving(false);
+    setTesting(false);
+    setTestResult(null);
     resetRef.current();
     void startRef.current({ provider: resolvedProvider, projectPath, transcript: seedTranscript });
   }, [open, defaultProvider, defaultSaveTarget, enabledProviders, projectPath, seedTranscript]);
@@ -236,6 +241,38 @@ export default function SkillWizardDialog({
       setSaving(false);
     }
   }, [draft, saving, saveTarget, projectPath, scope, selectedProjects, selectedProviders, addProjectSkills, addGlobalSkills, showToast, onSaved, onOpenChange, t]);
+
+  const handleDryRun = useCallback(async () => {
+    if (!draft || testing || streaming) {
+      return;
+    }
+
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const workspacePath = saveTarget === 'project'
+        ? projectPath
+        : (scope === 'projects' ? selectedProjects[0] : projectPath);
+      const result = await testSkill({
+        content: draft.content,
+        provider,
+        workspacePath,
+      }, saveTarget);
+      setTestResult(result);
+      if (result.success) {
+        showToast(t('wizard.testSuccess', { defaultValue: 'Skill test finished.' }), 'success');
+      } else {
+        showToast(
+          result.errorMessage || t('wizard.testFailure', { defaultValue: 'Skill test failed.' }),
+          'error',
+        );
+      }
+    } catch (testError) {
+      showToast(testError instanceof Error ? testError.message : t('wizard.testFailure', { defaultValue: 'Skill test failed.' }), 'error');
+    } finally {
+      setTesting(false);
+    }
+  }, [draft, testing, streaming, provider, saveTarget, projectPath, scope, selectedProjects, showToast, t]);
 
   return (
     <>
@@ -358,6 +395,38 @@ export default function SkillWizardDialog({
                   </div>
                 )}
               </div>
+
+              {testResult && (
+                <div className="flex-shrink-0 border-t border-border/60 bg-background">
+                  <div className="flex items-center justify-between gap-2 px-4 py-2 text-xs font-medium">
+                    <span
+                      className={cn(
+                        'truncate',
+                        testResult.success ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400',
+                      )}
+                    >
+                      {testResult.success
+                        ? t('wizard.testPassed', { defaultValue: 'Dry-run passed' })
+                        : t('wizard.testFailed', { defaultValue: 'Dry-run failed' })}
+                      <span className="ml-2 font-normal text-muted-foreground">
+                        {testResult.durationMs} ms
+                      </span>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setTestResult(null)}
+                      className="shrink-0 text-muted-foreground hover:text-foreground"
+                    >
+                      {t('wizard.testClose', { defaultValue: 'Close' })}
+                    </button>
+                  </div>
+                  <pre className="max-h-40 overflow-auto px-4 pb-3 font-mono text-xs leading-relaxed text-foreground">
+                    {testResult.text.trim()
+                      || testResult.errorMessage?.trim()
+                      || t('wizard.testNoOutput', { defaultValue: 'No output' })}
+                  </pre>
+                </div>
+              )}
             </div>
           </div>
 
@@ -443,9 +512,20 @@ export default function SkillWizardDialog({
               )}
               <Button
                 type="button"
+                variant="outline"
                 size="sm"
                 className="w-full sm:w-auto"
-                disabled={!canCreate}
+                disabled={!draft || saving || testing || streaming}
+                onClick={() => void handleDryRun()}
+              >
+                {testing && <Loader2 className="h-4 w-4 animate-spin" />}
+                {testing ? t('wizard.testing', { defaultValue: 'Testing…' }) : t('wizard.testSkill', { defaultValue: 'Test skill' })}
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                className="w-full sm:w-auto"
+                disabled={!canCreate || testing}
                 onClick={() => void handleCreate()}
               >
                 {saving && <Loader2 className="h-4 w-4 animate-spin" />}

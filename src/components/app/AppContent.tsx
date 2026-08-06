@@ -1,4 +1,4 @@
-import { useCallback, useEffect } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 
@@ -55,6 +55,7 @@ function AppContentInner() {
   const { isMobile } = useDeviceSettings({ trackPWA: false });
   const { ws, sendMessage, subscribe } = useWebSocket();
   const { panelWidth, sidebarRef, handleResizeStart } = useSidebarResize(isMobile);
+  const runningSessionLastSeqRef = useRef(new Map<string, number>());
 
   const {
     processingSessions,
@@ -100,6 +101,27 @@ function AppContentInner() {
     markSessionProcessing,
   });
 
+  useEffect(() => {
+    return subscribe((event) => {
+      if (typeof event.sessionId !== 'string' || typeof event.seq !== 'number') {
+        return;
+      }
+
+      // `seq` is scoped to one provider run. Clear the background cursor at
+      // the terminal frame so a later turn in the same conversation can
+      // legitimately start again at seq=1.
+      if (event.kind === 'complete') {
+        runningSessionLastSeqRef.current.delete(event.sessionId);
+        return;
+      }
+
+      const known = runningSessionLastSeqRef.current.get(event.sessionId) ?? 0;
+      if (event.seq > known) {
+        runningSessionLastSeqRef.current.set(event.sessionId, event.seq);
+      }
+    });
+  }, [subscribe]);
+
   const refreshRunningSessions = useCallback(async () => {
     try {
       const response = await api.runningSessions();
@@ -110,26 +132,36 @@ function AppContentInner() {
       const payload = (await response.json()) as RunningSessionsApiPayload;
       const sessions = Array.isArray(payload.data?.sessions) ? payload.data.sessions : [];
 
-      syncProcessingSessions(
-        sessions
-          .map((session) => {
-            if (typeof session.sessionId !== 'string' || !session.sessionId) {
-              return null;
-            }
+      const normalizedSessions = sessions
+        .map((session) => {
+          if (typeof session.sessionId !== 'string' || !session.sessionId) {
+            return null;
+          }
 
-            return {
-              sessionId: session.sessionId,
-              startedAt: parseStartedAt(session.startedAt),
-              statusText: typeof session.statusText === 'string' ? session.statusText : undefined,
-              canInterrupt: typeof session.canInterrupt === 'boolean' ? session.canInterrupt : undefined,
-            };
-          })
-          .filter((session): session is NonNullable<typeof session> => Boolean(session)),
-      );
+          return {
+            sessionId: session.sessionId,
+            startedAt: parseStartedAt(session.startedAt),
+            statusText: typeof session.statusText === 'string' ? session.statusText : undefined,
+            canInterrupt: typeof session.canInterrupt === 'boolean' ? session.canInterrupt : undefined,
+          };
+        })
+        .filter((session): session is NonNullable<typeof session> => Boolean(session));
+
+      syncProcessingSessions(normalizedSessions);
+
+      if (normalizedSessions.length > 0) {
+        sendMessage({
+          type: 'chat.subscribe',
+          sessions: normalizedSessions.map((session) => ({
+            sessionId: session.sessionId,
+            lastSeq: runningSessionLastSeqRef.current.get(session.sessionId) ?? 0,
+          })),
+        });
+      }
     } catch (error) {
       console.error('[AppContent] Failed to sync running sessions:', error);
     }
-  }, [syncProcessingSessions]);
+  }, [sendMessage, syncProcessingSessions]);
 
   useEffect(() => {
     void refreshRunningSessions();

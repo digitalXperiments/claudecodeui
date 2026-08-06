@@ -11,7 +11,7 @@ import type {
   RefObject,
   TouchEvent,
 } from 'react';
-import { Paperclip, MessageSquareIcon, XIcon, Loader2, ChevronDown, Check, ArrowUpIcon, Cpu, Sparkles, Gauge } from 'lucide-react';
+import { Paperclip, MessageSquareIcon, XIcon, Loader2, ChevronDown, Check, ArrowUpIcon, Cpu, Sparkles, Gauge, Zap } from 'lucide-react';
 
 import { useVoiceInput } from '../../hooks/useVoiceInput';
 import { useVoiceAvailable } from '../../hooks/useVoiceAvailable';
@@ -77,6 +77,9 @@ interface ChatComposerProps {
   effort: string;
   availableEffortOptions: NonNullable<ProviderModelOption['effort']>['values'];
   onSelectEffort: (effort: string) => void;
+  fastMode: boolean;
+  supportsFastMode: boolean;
+  onToggleFastMode: () => void;
   modelLabel: string;
   onOpenModelSelector: () => void;
   tokenBudget: Record<string, unknown> | null;
@@ -142,6 +145,9 @@ export default function ChatComposer({
   effort,
   availableEffortOptions,
   onSelectEffort,
+  fastMode,
+  supportsFastMode,
+  onToggleFastMode,
   modelLabel,
   onOpenModelSelector,
   tokenBudget,
@@ -619,6 +625,43 @@ export default function ChatComposer({
                   document.body,
                 )}
               </div>
+            )}
+
+            {provider === 'codex' && (
+              <Tooltip
+                content={supportsFastMode
+                  ? fastMode
+                    ? t('input.fastModeOn', {
+                        defaultValue: 'Fast mode on · 1.5× speed with higher usage',
+                      })
+                    : t('input.fastModeOff', {
+                        defaultValue: 'Enable Fast mode · 1.5× speed with higher usage',
+                      })
+                  : t('input.fastModeUnavailable', {
+                      defaultValue: 'Fast mode is not available for this model',
+                    })}
+                position="top"
+                delay={250}
+              >
+                <button
+                  type="button"
+                  onClick={onToggleFastMode}
+                  disabled={!supportsFastMode}
+                  aria-pressed={fastMode}
+                  aria-label={t('input.fastMode', { defaultValue: 'Toggle Fast mode' })}
+                  title={t('input.fastMode', { defaultValue: 'Toggle Fast mode' })}
+                  className={`flex h-8 items-center gap-1.5 rounded-lg border px-2 text-xs font-medium transition-all duration-200 sm:px-2.5 ${
+                    fastMode
+                      ? 'border-amber-300/70 bg-amber-50 text-amber-700 hover:bg-amber-100 dark:border-amber-500/40 dark:bg-amber-900/20 dark:text-amber-300 dark:hover:bg-amber-900/30'
+                      : supportsFastMode
+                        ? 'border-border/60 bg-muted/40 text-muted-foreground hover:bg-muted'
+                        : 'cursor-not-allowed border-border/40 bg-muted/30 text-muted-foreground/50'
+                  }`}
+                >
+                  <Zap className="h-3.5 w-3.5 shrink-0" />
+                  <span className="hidden sm:inline">Fast</span>
+                </button>
+              </Tooltip>
             )}
 
             <TokenUsageSummary usage={tokenBudget} onClick={onShowTokenUsage} />

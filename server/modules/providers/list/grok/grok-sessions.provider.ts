@@ -75,6 +75,68 @@ export function resolveGrokSessionDir(projectPath: string, sessionId: string): s
 }
 
 /**
+ * Grok's `exit_plan_mode` tool is invoked with empty args (`{}`). The real plan
+ * lives in `plan.md` inside the session directory (see Grok plan-mode docs).
+ * CloudCLI's PlanDisplay expects `input.plan` markdown — read it from disk so
+ * the chat card is not stuck on "Generating plan…".
+ */
+export function readGrokSessionPlanMarkdown(projectPath: string, sessionId: string): string {
+  if (!projectPath || !sessionId) {
+    return '';
+  }
+  return readPlanMarkdownFromDir(resolveGrokSessionDir(projectPath, sessionId));
+}
+
+export function readPlanMarkdownFromDir(sessionDir: string): string {
+  if (!sessionDir) {
+    return '';
+  }
+  try {
+    const planPath = path.join(sessionDir, 'plan.md');
+    if (!fsSync.existsSync(planPath)) {
+      return '';
+    }
+    const text = fsSync.readFileSync(planPath, 'utf8');
+    return typeof text === 'string' ? text : '';
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Pull a plan markdown string from exit_plan_mode / ExitPlanMode tool input
+ * shapes used by Claude (inline `plan`) and Grok (empty args, or planContent).
+ */
+export function extractPlanMarkdownFromToolInput(input: unknown): string {
+  if (typeof input === 'string' && input.trim()) {
+    return input;
+  }
+  const record = readObjectRecord(input);
+  if (!record) {
+    return '';
+  }
+  for (const key of ['plan', 'planContent', 'content', 'markdown'] as const) {
+    const value = record[key];
+    if (typeof value === 'string' && value.trim()) {
+      return value;
+    }
+  }
+  return '';
+}
+
+/**
+ * Ensure ExitPlanMode toolInput has a string `plan` field for PlanDisplay.
+ * Prefers any plan text already on the input; falls back to session plan.md.
+ */
+export function ensureExitPlanModeToolInput(
+  toolInput: unknown,
+  planMarkdown: string,
+): { plan: string } {
+  const existing = extractPlanMarkdownFromToolInput(toolInput);
+  return { plan: existing || planMarkdown || '' };
+}
+
+/**
  * Grok reports two different token notions:
  * - **Context occupancy** (`signals.json` → contextTokensUsed / contextWindowTokens)
  *   — what `/context` shows (e.g. 188k / 500k). This is the live window fill.
@@ -495,7 +557,11 @@ export class GrokSessionsProvider implements IProviderSessions {
               continue;
             }
             const toolId = typeof call.id === 'string' ? call.id : `${baseId}_tool_${i}`;
-            const toolName = typeof call.name === 'string' ? call.name : 'Unknown Tool';
+            let toolName = typeof call.name === 'string' ? call.name : 'Unknown Tool';
+            // Map Grok interactive tool names onto CloudCLI panel ids (live path
+            // does the same in normalizeMessage).
+            if (toolName === 'ask_user_question') toolName = 'AskUserQuestion';
+            if (toolName === 'exit_plan_mode') toolName = 'ExitPlanMode';
             let toolInput: unknown = call.arguments;
             if (typeof toolInput === 'string') {
               try {
@@ -503,6 +569,16 @@ export class GrokSessionsProvider implements IProviderSessions {
               } catch {
                 // Keep raw string when arguments are not valid JSON.
               }
+            }
+
+            // Grok exit_plan_mode args are `{}`; hydrate plan.md so history
+            // reloads show the Implementation plan card content.
+            if (toolName === 'ExitPlanMode') {
+              const sessionDir = path.dirname(historyPath);
+              toolInput = ensureExitPlanModeToolInput(
+                toolInput,
+                readPlanMarkdownFromDir(sessionDir),
+              );
             }
 
             const message = createNormalizedMessage({

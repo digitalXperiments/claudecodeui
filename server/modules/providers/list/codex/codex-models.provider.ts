@@ -24,6 +24,7 @@ export const CODEX_FALLBACK_MODELS: ProviderModelsDefinition = {
     {
       value: 'gpt-5.5',
       label: 'gpt-5.5',
+      supportsFastMode: true,
       effort: {
         default: 'medium',
         values: [{ value: 'low' }, { value: 'medium' }, { value: 'high' }, { value: 'xhigh' }],
@@ -32,6 +33,7 @@ export const CODEX_FALLBACK_MODELS: ProviderModelsDefinition = {
     {
       value: 'gpt-5.4',
       label: 'gpt-5.4',
+      supportsFastMode: true,
       effort: {
         default: 'medium',
         values: [{ value: 'low' }, { value: 'medium' }, { value: 'high' }, { value: 'xhigh' }],
@@ -40,6 +42,7 @@ export const CODEX_FALLBACK_MODELS: ProviderModelsDefinition = {
     {
       value: 'gpt-5.4-mini',
       label: 'gpt-5.4-mini',
+      supportsFastMode: false,
       effort: {
         default: 'medium',
         values: [{ value: 'low' }, { value: 'medium' }, { value: 'high' }, { value: 'xhigh' }],
@@ -61,6 +64,7 @@ type CodexCachedModel = {
     effort?: string;
     description?: string;
   }>;
+  additional_speed_tiers?: string[];
 };
 
 const CODEX_MODELS_CACHE_PATH = path.join(os.homedir(), '.codex', 'models_cache.json');
@@ -96,6 +100,8 @@ const mapCodexModel = (model: CodexCachedModel): ProviderModelOption => {
     value: model.slug as string,
     label: readOptionalString(model.display_name) ?? (model.slug as string),
     description: readOptionalString(model.description),
+    supportsFastMode: Array.isArray(model.additional_speed_tiers)
+      && model.additional_speed_tiers.includes('fast'),
     effort: effortValues.length > 0
       ? {
           default: readOptionalString(model.default_reasoning_level) ?? undefined,

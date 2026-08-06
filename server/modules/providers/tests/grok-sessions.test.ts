@@ -1,7 +1,15 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 
-import { GrokSessionsProvider } from '@/modules/providers/list/grok/grok-sessions.provider.js';
+import {
+  ensureExitPlanModeToolInput,
+  extractPlanMarkdownFromToolInput,
+  GrokSessionsProvider,
+  readPlanMarkdownFromDir,
+} from '@/modules/providers/list/grok/grok-sessions.provider.js';
 
 // Grok runs over the Agent Client Protocol (`grok agent stdio`), which streams
 // `session/update` notifications discriminated by `sessionUpdate`. These tests
@@ -47,6 +55,46 @@ test('ACP tool_call surfaces a tool_use card with name, input and id', () => {
   assert.equal(out[0].toolName, 'Read');
   assert.equal(out[0].toolId, 'call-1');
   assert.deepEqual(out[0].toolInput, { file_path: '/tmp/x.ts' });
+});
+
+test('exit_plan_mode tool_call maps to ExitPlanMode (plan body hydrated by grok-cli)', () => {
+  const out = provider.normalizeMessage(
+    {
+      sessionUpdate: 'tool_call',
+      toolCallId: 'call-exit',
+      title: 'exit_plan_mode',
+      rawInput: {},
+      _meta: { 'x.ai/tool': { name: 'exit_plan_mode' } },
+    },
+    'sid',
+  );
+  assert.equal(out[0].toolName, 'ExitPlanMode');
+  assert.deepEqual(out[0].toolInput, {});
+});
+
+test('extractPlanMarkdownFromToolInput prefers string plan fields', () => {
+  assert.equal(extractPlanMarkdownFromToolInput({ plan: '# Hello' }), '# Hello');
+  assert.equal(extractPlanMarkdownFromToolInput({ planContent: 'body' }), 'body');
+  assert.equal(extractPlanMarkdownFromToolInput({}), '');
+  assert.equal(extractPlanMarkdownFromToolInput({ plan: { nested: true } }), '');
+});
+
+test('ensureExitPlanModeToolInput falls back to disk plan markdown', () => {
+  assert.deepEqual(ensureExitPlanModeToolInput({}, '# From disk'), { plan: '# From disk' });
+  assert.deepEqual(ensureExitPlanModeToolInput({ plan: '# Inline' }, '# From disk'), {
+    plan: '# Inline',
+  });
+});
+
+test('readPlanMarkdownFromDir returns plan.md contents', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cloudcli-plan-'));
+  try {
+    fs.writeFileSync(path.join(dir, 'plan.md'), '# Phase 0\n\nDo the thing.\n');
+    assert.equal(readPlanMarkdownFromDir(dir), '# Phase 0\n\nDo the thing.\n');
+    assert.equal(readPlanMarkdownFromDir(path.join(dir, 'missing')), '');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('terminal tool_call_update surfaces a tool_result stitched by toolId', () => {

@@ -15,7 +15,12 @@ import mime from 'mime-types';
 import Database from 'better-sqlite3';
 
 import { AppError, WORKSPACES_ROOT, getOpenCodeDatabasePath, validateWorkspacePath } from '@/shared/utils.js';
-import { closeSessionsWatcher, initializeSessionsWatcher } from '@/modules/providers/index.js';
+import {
+    closeSessionsWatcher,
+    initializeSessionsWatcher,
+    configureSkillTestRuntimes,
+    configureMemoryCurationRuntimes,
+} from '@/modules/providers/index.js';
 import { createWebSocketServer } from '@/modules/websocket/index.js';
 
 import { getConnectableHost } from '../shared/networkHosts.js';
@@ -52,6 +57,7 @@ import {
     queryCodex,
     abortCodexSession,
 } from './openai-codex.js';
+import { buildCodexTokenUsage } from './modules/providers/list/codex/codex-token-usage.js';
 import {
     spawnOpenCode,
     abortOpenCodeSession,
@@ -111,12 +117,22 @@ import webhooksIngestRoutes from './modules/webhooks/webhooks-ingest.routes.js';
 import {
     configureWebhookRuntimes,
     initWebhookAutomation,
+    startWebhookRetryScheduler,
+    stopWebhookRetryScheduler,
 } from './modules/webhooks/index.js';
+import {
+    startNotificationDigestScheduler,
+    stopNotificationDigestScheduler,
+    syncNotificationDigestSchedules,
+} from './modules/notifications/index.js';
 import { browserUseService } from './modules/browser-use/browser-use.service.js';
 import { startEnabledPluginServers, stopAllPlugins, getPluginPort } from './utils/plugin-process-manager.js';
 import { initializeDatabase, projectsDb, sessionsDb } from './modules/database/index.js';
 import { syncGrokShellSession } from './modules/providers/list/grok/grok-shell-sync.js';
-import { broadcastCanonicalSessionUpsert } from './modules/websocket/services/chat-run-registry.service.js';
+import {
+    broadcastCanonicalSessionUpsert,
+    chatRunRegistry,
+} from './modules/websocket/services/chat-run-registry.service.js';
 import { configureWebPush } from './services/vapid-keys.js';
 import { validateApiKey, authenticateToken, authenticateWebSocket } from './middleware/auth.js';
 import { IS_PLATFORM } from './constants/config.js';
@@ -145,11 +161,6 @@ const MAX_FILE_UPLOAD_SIZE_BYTES = MAX_FILE_UPLOAD_SIZE_MB * 1024 * 1024;
 const MAX_FILE_UPLOAD_COUNT = 20;
 
 console.log('SERVER_PORT from env:', process.env.SERVER_PORT);
-
-function readUsageNumber(value) {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : 0;
-}
 
 const app = express();
 const server = http.createServer(app);
@@ -180,6 +191,40 @@ configureMissionControlRuntimes(providerSpawnFns);
 // Webhooks: source-routed headless agent runs (dictation, external tools, …).
 configureWebhookRuntimes(providerSpawnFns);
 initWebhookAutomation();
+
+// Skill wizard dry-run tests and memory auto-curation reuse the same runtimes.
+configureSkillTestRuntimes(providerSpawnFns);
+configureMemoryCurationRuntimes(providerSpawnFns);
+
+// Shell must not resume a provider-native session while Chatbar is still
+// using it. Register before checking isProcessing again so an already-finished
+// run cannot leave the Shell wait unresolved.
+function waitForChatbarRunIdle(appSessionId) {
+    return new Promise((resolve) => {
+        let settled = false;
+        let unsubscribe = () => {};
+        const settle = () => {
+            if (settled) {
+                return;
+            }
+            settled = true;
+            unsubscribe();
+            resolve();
+        };
+
+        unsubscribe = chatRunRegistry.onRunComplete((event) => {
+            if (event.appSessionId === appSessionId) {
+                settle();
+            }
+        });
+
+        // Covers the race where the run completed before this listener was
+        // attached, as well as the already-idle case.
+        if (!chatRunRegistry.isProcessing(appSessionId)) {
+            settle();
+        }
+    });
+}
 
 // Single WebSocket server that handles chat, shell, and plugin proxy paths.
 const wss = createWebSocketServer(server, {
@@ -216,6 +261,8 @@ const wss = createWebSocketServer(server, {
 
             return null;
         },
+        isChatbarRunActive: (appSessionId) => chatRunRegistry.isProcessing(appSessionId),
+        waitForChatbarRunIdle,
         // Adopt sessions the interactive TUI created (Grok forks a fresh id
         // when it can't resume) so Chat ↔ Shell stay on one transcript, then
         // broadcast the canonical upsert so open chat views refetch.
@@ -255,7 +302,11 @@ app.use(express.json({
             return false;
         }
         return contentType.includes('json');
-    }
+    },
+    verify: (req, _res, buf) => {
+        // Keep the raw body for webhook HMAC signature verification.
+        req.rawBody = buf;
+    },
 }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
@@ -1326,10 +1377,7 @@ app.get('/api/projects/:projectId/sessions/:sessionId/token-usage', authenticate
                 throw error;
             }
             const lines = fileContent.trim().split('\n');
-            let inputTokens = 0;
-            let outputTokens = 0;
-            let totalTokens = 0;
-            let contextWindow = 200000; // Default for Codex/OpenAI
+            let latestTokenInfo = null;
 
             // Find the latest token_count event with info (scan from end)
             for (let i = lines.length - 1; i >= 0; i--) {
@@ -1338,15 +1386,7 @@ app.get('/api/projects/:projectId/sessions/:sessionId/token-usage', authenticate
 
                     // Codex stores token info in event_msg with type: "token_count"
                     if (entry.type === 'event_msg' && entry.payload?.type === 'token_count' && entry.payload?.info) {
-                        const tokenInfo = entry.payload.info;
-                        if (tokenInfo.total_token_usage) {
-                            inputTokens = tokenInfo.total_token_usage.input_tokens || 0;
-                            outputTokens = tokenInfo.total_token_usage.output_tokens || 0;
-                            totalTokens = tokenInfo.total_token_usage.total_tokens || inputTokens + outputTokens;
-                        }
-                        if (tokenInfo.model_context_window) {
-                            contextWindow = tokenInfo.model_context_window;
-                        }
+                        latestTokenInfo = entry.payload.info;
                         break; // Stop after finding the latest token count
                     }
                 } catch (parseError) {
@@ -1355,14 +1395,27 @@ app.get('/api/projects/:projectId/sessions/:sessionId/token-usage', authenticate
                 }
             }
 
-            return res.json({
-                used: totalTokens,
-                total: contextWindow,
-                inputTokens,
-                outputTokens,
+            return res.json(buildCodexTokenUsage({
+                total: latestTokenInfo?.total_token_usage,
+                last: latestTokenInfo?.last_token_usage,
+                modelContextWindow: latestTokenInfo?.model_context_window,
+            }) || {
+                used: 0,
+                total: 0,
+                contextUsed: 0,
+                contextWindow: 0,
+                contextFree: 0,
+                contextPercent: null,
+                cumulativeUsed: 0,
+                billedInputTokens: 0,
+                billedOutputTokens: 0,
+                lastTurnInputTokens: 0,
+                lastTurnOutputTokens: 0,
+                inputTokens: 0,
+                outputTokens: 0,
                 breakdown: {
-                    input: inputTokens,
-                    output: outputTokens
+                    input: 0,
+                    output: 0
                 }
             });
         }
@@ -1768,6 +1821,19 @@ async function startServer() {
             console.error('[auth-health] watchdog start failed:', error.message);
         }
 
+        try {
+            startWebhookRetryScheduler();
+        } catch (error) {
+            console.error('[Webhooks] retry scheduler start failed:', error.message);
+        }
+
+        try {
+            startNotificationDigestScheduler();
+            syncNotificationDigestSchedules();
+        } catch (error) {
+            console.error('[Notifications] digest scheduler start failed:', error.message);
+        }
+
         // Configure Web Push (VAPID keys)
         configureWebPush();
 
@@ -1827,6 +1893,16 @@ async function startServer() {
                 stopAuthHealthWatchdog();
             } catch (err) {
                 console.error('[auth-health] Error stopping watchdog during shutdown:', err?.message || err);
+            }
+            try {
+                stopWebhookRetryScheduler();
+            } catch (err) {
+                console.error('[Webhooks] Error stopping retry scheduler during shutdown:', err?.message || err);
+            }
+            try {
+                stopNotificationDigestScheduler();
+            } catch (err) {
+                console.error('[Notifications] Error stopping digest scheduler during shutdown:', err?.message || err);
             }
             try {
                 await browserUseService.stopAllSessions();

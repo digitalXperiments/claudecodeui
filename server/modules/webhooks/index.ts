@@ -5,6 +5,8 @@ export {
   configureWebhookRuntimes,
   getWebhookSpawnFn,
   startWebhookDelivery,
+  handleDeliveryFailed,
+  reconstructPayloadFromDelivery,
   buildWebhookPrompt,
   buildRuntimeOptions,
   extractWebhookRunOutcome,
@@ -14,4 +16,9 @@ export {
   stopWebhookAutomation,
   handleWebhookRunCompletion,
 } from '@/modules/webhooks/webhooks-automation.service.js';
+export {
+  startWebhookRetryScheduler,
+  stopWebhookRetryScheduler,
+  isWebhookRetrySchedulerRunning,
+} from '@/modules/webhooks/webhooks-retry-scheduler.service.js';
 export * from '@/modules/webhooks/webhooks.types.js';

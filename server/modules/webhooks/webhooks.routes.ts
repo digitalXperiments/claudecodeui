@@ -8,7 +8,7 @@ import {
   type UpdateWebhookSourceInput,
   type WebhookScope,
 } from '@/modules/webhooks/webhooks.types.js';
-import { startWebhookDelivery } from '@/modules/webhooks/webhooks-runner.service.js';
+import { startWebhookDelivery, reconstructPayloadFromDelivery } from '@/modules/webhooks/webhooks-runner.service.js';
 
 const router = express.Router();
 
@@ -117,7 +117,25 @@ function parseBody(
       : {}),
     ...(scope !== undefined ? { scope } : {}),
     ...(projectId !== undefined ? { project_id: projectId } : {}),
+    ...(body.retryMax !== undefined
+      ? { retryMax: readNumber(body.retryMax, 0) }
+      : {}),
+    ...(body.retryBackoffSeconds !== undefined
+      ? { retryBackoffSeconds: readNumber(body.retryBackoffSeconds, 60) }
+      : {}),
+    ...(body.secret !== undefined
+      ? { secret: body.secret === null ? null : readString(body.secret) || null }
+      : {}),
   };
+}
+
+function readNumber(value: unknown, fallback: number): number {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && value.trim() !== '') {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return fallback;
 }
 
 router.get(
@@ -225,6 +243,49 @@ router.get(
     const limit = Number.isFinite(limitRaw) ? limitRaw : 50;
     const deliveries = webhooksDb.listDeliveries(id, limit);
     res.json({ success: true, deliveries });
+  }),
+);
+
+/** Re-dispatch a previous delivery using its stored request payload. */
+router.post(
+  '/:id/deliveries/:deliveryId/replay',
+  asyncHandler(async (req, res) => {
+    const id = paramId(req.params.id);
+    const deliveryId = paramId(req.params.deliveryId);
+
+    const source = webhooksDb.getSourceById(id);
+    if (!source) {
+      throw new AppError('Webhook source not found', {
+        code: 'WEBHOOK_NOT_FOUND',
+        statusCode: 404,
+      });
+    }
+
+    const delivery = webhooksDb.getDeliveryById(deliveryId);
+    if (!delivery || delivery.source_id !== id) {
+      throw new AppError('Webhook delivery not found', {
+        code: 'WEBHOOK_DELIVERY_NOT_FOUND',
+        statusCode: 404,
+      });
+    }
+
+    if (delivery.status === 'running') {
+      throw new AppError('Webhook delivery is currently running', {
+        code: 'WEBHOOK_DELIVERY_RUNNING',
+        statusCode: 409,
+      });
+    }
+
+    const payload = reconstructPayloadFromDelivery(delivery);
+    const started = await startWebhookDelivery({ source, payload, deliveryId });
+
+    res.status(202).json({
+      success: true,
+      deliveryId: started.deliveryId,
+      appSessionId: started.appSessionId,
+      source: started.source,
+      status: 'accepted',
+    });
   }),
 );
 

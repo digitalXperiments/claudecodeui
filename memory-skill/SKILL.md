@@ -10,6 +10,20 @@ This project keeps a persistent memory in an Obsidian vault. Your job is to
 this session or a future one — inherits everything you learned. Treat it as
 shared team knowledge, not a scratchpad.
 
+## STRICT RULE — all temp activity goes in `tmp/cloudcli/`
+
+Never scatter temporary folders or scratch files around the repo, your home
+directory, `/tmp`, or the OS temp dir. **Any** temp activity — scratch dirs,
+downloaded assets, session artifacts, sandboxes, caches — **must** live under
+the project root's `tmp/cloudcli/` directory. This applies to **every**
+provider and every session.
+
+- Create it if missing: `mkdir -p tmp/cloudcli`.
+- Use a subfolder per task/agent for isolation: `tmp/cloudcli/<task>/`.
+- Remove your own leftovers when done.
+- Non-negotiable: a stray temp dir outside `tmp/cloudcli/` is a violation and
+  must be corrected.
+
 You reach the vault through the **Obsidian MCP server** (`@fazer-ai/mcp-obsidian`,
 backed by the Local REST API plugin). Use these **exact** tool names and argument
 names — do not guess or invent them. The `filename` argument is **required** and
@@ -19,15 +33,25 @@ must be the **full vault path including the `.md` extension** (e.g.
 | Purpose | Tool | Required args | Notes |
 | --- | --- | --- | --- |
 | Check the vault is reachable | `obsidian_status` | (none) | |
-| Full-text search | `obsidian_simple_search` | `query` (string) | Optional `contextLength` (number). |
+| Full-text search | `obsidian_simple_search` | `query` (string) | Optional `contextLength` (number, use ~50) and `limit` (number, default 20 files). Returns `{ results, truncated? }`. |
 | List a folder | `obsidian_list_vault_directory` | `pathToDirectory` (string) | Use `obsidian_list_vault_root` (no args) for the root. |
 | Read a note | `obsidian_get_file` | `filename` (string) | Full path incl. `.md`. |
 | Create / overwrite a note | `obsidian_put_file` | `filename`, `content` (strings) | Replaces the whole file. |
 | Append to a note (creates it if missing) | `obsidian_post_file` | `filename`, `content` (strings) | Use for Session logs. |
 | Insert relative to a heading / block | `obsidian_patch_file` | `filename`, `operation`, `targetType`, `target`, `content` | `operation`: `append`/`prepend`/`replace`; `targetType`: `heading`/`block`/`frontmatter`. |
 
-There is **no dedicated backlinks tool** — find references to a note by running
-`obsidian_simple_search` for `[[note-name]]`.
+There is **no dedicated backlinks tool**, but `obsidian_get_file` already returns
+`links` and `backlinks` for the note it reads — use those first. Only fall back to
+`obsidian_simple_search` for `[[note-name]]` when you need matches inside notes you
+have not read.
+
+**Keep searches narrow.** `obsidian_simple_search` scans the whole vault, and a
+broad one- or two-word query can return tens of thousands of characters and
+overrun the tool-output limit. Use specific multi-word queries, pass
+`contextLength: 50`, and prefer `obsidian_list_vault_directory` +
+`obsidian_get_file` when you are browsing rather than searching. Results are
+capped at 20 files and 5 matches per file; a `truncated` field in the response
+means you should narrow the query rather than raise `limit`.
 
 > If these tools are not available, the Obsidian MCP server is not connected —
 > tell the user and continue without memory rather than guessing.
@@ -56,9 +80,11 @@ All paths in this skill mean `MEMORY_ROOT/<path>` (e.g. `MEMORY_ROOT/00-Overview
 2. `obsidian_get_file` `MEMORY_ROOT/00-Overview.md` to load the project frame.
    - If it (or the folder) does not exist, **bootstrap** it: `obsidian_put_file`
      a starter `00-Overview.md` and `Index.md`, then continue.
-3. `obsidian_simple_search` for terms relevant to your task; read the top hits
-   with `obsidian_get_file`.
-4. For any note central to your task, skim its links to find related context.
+3. `obsidian_simple_search` for terms relevant to your task — specific
+   multi-word phrases, with `contextLength: 50`; read the top hits with
+   `obsidian_get_file`.
+4. For any note central to your task, skim the `links` / `backlinks` returned by
+   `obsidian_get_file` to find related context.
 
 Do this before writing code or making decisions — prior context prevents
 re-litigating settled questions.

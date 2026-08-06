@@ -7,12 +7,13 @@ import {
   Loader2,
   PlugZap,
   RefreshCw,
+  Sparkles,
 } from 'lucide-react';
 
 import { Badge, Button, Input } from '../../../shared/view/ui';
 import { useObsidianSettings } from '../hooks/useObsidianSettings';
 import { useProjectMemory } from '../hooks/useProjectMemory';
-import type { MemoryProject } from '../types';
+import type { MemoryCurationSuggestion, MemoryProject } from '../types';
 
 type ProjectMemoryProps = {
   currentProjects: MemoryProject[];
@@ -102,6 +103,11 @@ export default function ProjectMemory({ currentProjects }: ProjectMemoryProps) {
     vaultStats,
     isLoadingStats,
     refreshVaultStats,
+    curate,
+    applySuggestion,
+    isCurating,
+    curationResult,
+    curationError,
   } = useProjectMemory({ workspacePath: selectedPath });
 
   // Local editable copies of the global settings form.
@@ -184,7 +190,38 @@ export default function ProjectMemory({ currentProjects }: ProjectMemoryProps) {
     }
   };
 
+  const handleCurate = async () => {
+    setActionError(null);
+    try {
+      await curate();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Failed to run memory curation');
+    }
+  };
+
+  const handleApplySuggestion = async (suggestion: MemoryCurationSuggestion) => {
+    setActionError(null);
+    try {
+      const result = await applySuggestion(suggestion);
+      if (!result.success) {
+        setActionError(result.error ?? 'Failed to apply suggestion');
+        return;
+      }
+      await refreshVaultStats();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Failed to apply suggestion');
+    }
+  };
+
   const enabled = Boolean(status?.enabled);
+
+  const actionBadgeClass: Record<MemoryCurationSuggestion['action'], string> = {
+    create: 'rounded-full border-emerald-500/30 bg-emerald-500/10 text-xs text-emerald-700 dark:text-emerald-300',
+    update: 'rounded-full border-amber-500/30 bg-amber-500/10 text-xs text-amber-700 dark:text-amber-300',
+    link: 'rounded-full border-sky-500/30 bg-sky-500/10 text-xs text-sky-700 dark:text-sky-300',
+  };
+
+  const staleNoteThresholdDays = 90;
 
   return (
     <div className="min-w-0 space-y-6 overflow-x-hidden">
@@ -410,6 +447,8 @@ export default function ProjectMemory({ currentProjects }: ProjectMemoryProps) {
                     <span aria-hidden="true">·</span>
                     <span><span className="font-semibold text-foreground">{vaultStats.sessions}</span> session notes</span>
                     <span aria-hidden="true">·</span>
+                    <span><span className="font-semibold text-foreground">{vaultStats.totalFiles}</span> total files</span>
+                    <span aria-hidden="true">·</span>
                     <span>
                       Last write: {vaultStats.lastSessionWrite ? formatRelativeTime(vaultStats.lastSessionWrite) : 'never'}
                     </span>
@@ -436,6 +475,116 @@ export default function ProjectMemory({ currentProjects }: ProjectMemoryProps) {
                   </>
                 ) : (
                   <span>Vault stats unavailable.</span>
+                )}
+              </div>
+            )}
+
+            {enabled && vaultStats?.exists && vaultStats.staleNotes.length > 0 && (
+              <div className="space-y-1.5 rounded-lg border border-border/60 bg-muted/15 px-3 py-2">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-medium text-muted-foreground">
+                    Stale notes ({vaultStats.staleNotes.length} untouched for {staleNoteThresholdDays}+ days)
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => void refreshVaultStats()}
+                    aria-label="Refresh stale notes"
+                    className="inline-flex h-5 w-5 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                  >
+                    <RefreshCw className="h-3 w-3" />
+                  </button>
+                </div>
+                <ul className="max-h-40 space-y-1 overflow-y-auto pr-1">
+                  {vaultStats.staleNotes.map((note) => (
+                    <li key={note.path} className="flex items-center justify-between gap-2 text-xs">
+                      <a
+                        href={`obsidian://open?path=${encodeURIComponent(note.path)}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="min-w-0 truncate font-mono text-foreground underline-offset-2 hover:underline"
+                        title={note.relativePath}
+                      >
+                        {note.relativePath}
+                      </a>
+                      <span className="shrink-0 text-muted-foreground">{note.daysOld}d ago</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {enabled && (
+              <div className="space-y-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => void handleCurate()}
+                    disabled={isCurating || isBusy}
+                  >
+                    {isCurating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
+                    Suggest memory updates
+                  </Button>
+                  {curationError && (
+                    <span className="text-xs text-red-600 dark:text-red-400">{curationError}</span>
+                  )}
+                </div>
+
+                {curationResult && curationResult.success && curationResult.suggestions.length > 0 && (
+                  <div className="space-y-2">
+                    <p className="text-xs text-muted-foreground">
+                      Review the suggested vault edits below and apply the ones you want. Nothing is written until you click Apply.
+                    </p>
+                    {curationResult.suggestions.map((suggestion, index) => (
+                      <div
+                        key={`${suggestion.action}-${suggestion.path}-${index}`}
+                        className="space-y-1.5 rounded-lg border border-border/60 bg-muted/15 p-3"
+                      >
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Badge variant="outline" className={actionBadgeClass[suggestion.action]}>
+                            {suggestion.action}
+                          </Badge>
+                          <code className="min-w-0 flex-1 truncate font-mono text-xs text-foreground" title={suggestion.path}>
+                            {suggestion.path}
+                          </code>
+                          <span className="shrink-0 text-xs text-muted-foreground">
+                            {Math.round(suggestion.confidence * 100)}%
+                          </span>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() => void handleApplySuggestion(suggestion)}
+                            disabled={isBusy}
+                          >
+                            {isBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
+                            Apply
+                          </Button>
+                        </div>
+                        {suggestion.reason && (
+                          <p className="text-xs text-muted-foreground">{suggestion.reason}</p>
+                        )}
+                        {suggestion.content && (
+                          <pre className="max-h-32 overflow-y-auto whitespace-pre-wrap break-words rounded-md bg-background/70 px-3 py-2 text-[11px] leading-relaxed text-muted-foreground">
+                            {suggestion.content}
+                          </pre>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {curationResult && curationResult.success && curationResult.suggestions.length === 0 && (
+                  <p className="text-xs text-muted-foreground">
+                    The agent found no durable facts worth recording right now.
+                  </p>
+                )}
+
+                {curationResult && !curationResult.success && (
+                  <p className="text-xs text-red-600 dark:text-red-400">
+                    {curationResult.error ?? 'Memory curation failed.'}
+                  </p>
                 )}
               </div>
             )}

@@ -31,6 +31,7 @@ type ShellProps = {
   onProcessComplete?: ((exitCode: number) => void) | null;
   minimal?: boolean;
   autoConnect?: boolean;
+  waitForChat?: boolean;
   isActive?: boolean;
 };
 
@@ -42,6 +43,7 @@ export default function Shell({
   onProcessComplete = null,
   minimal = false,
   autoConnect = false,
+  waitForChat = false,
   isActive = true,
 }: ShellProps) {
   const { t } = useTranslation('chat');
@@ -68,6 +70,7 @@ export default function Shell({
     isPlainShell,
     minimal,
     autoConnect,
+    waitForChat,
     isRestarting,
     onProcessComplete,
     onOutputRef,
@@ -259,6 +262,8 @@ export default function Shell({
       ? t('shell.resumeSession', { displayName: sessionDisplayNameLong })
       : t('shell.startSession');
 
+  const isWaitingForChat = Boolean(waitForChat && !isPlainShell && selectedSession);
+
   const connectingDescription = isPlainShell
     ? t('shell.runCommand', {
         command: initialCommand || t('shell.defaultCommand'),
@@ -266,8 +271,20 @@ export default function Shell({
       })
     : t('shell.startCli', { projectName: selectedProject.displayName });
 
-  const overlayMode = !isInitialized ? 'loading' : isConnecting ? 'connecting' : !isConnected ? 'connect' : null;
-  const overlayDescription = overlayMode === 'connecting' ? connectingDescription : readyDescription;
+  const overlayMode = !isInitialized
+    ? 'loading'
+    : isWaitingForChat
+      ? 'waiting'
+      : isConnecting
+        ? 'connecting'
+        : !isConnected
+          ? 'connect'
+          : null;
+  const overlayDescription = overlayMode === 'connecting'
+    ? connectingDescription
+    : isWaitingForChat
+      ? t('shell.waitingForChatDescription')
+      : readyDescription;
 
   return (
     <div className="flex h-full w-full flex-col bg-gray-900">
@@ -286,7 +303,7 @@ export default function Shell({
         disconnectTitle={t('shell.actions.disconnectTitle')}
         restartLabel={t('shell.actions.restart')}
         restartTitle={t('shell.actions.restartTitle')}
-        disableRestart={isRestarting || !isInitialized}
+        disableRestart={isRestarting || !isInitialized || isWaitingForChat}
       />
 
       <div className="relative flex-1 overflow-hidden p-2">
@@ -301,6 +318,7 @@ export default function Shell({
             mode={overlayMode}
             description={overlayDescription}
             loadingLabel={t('shell.loading')}
+            waitingLabel={t('shell.waitingForChat')}
             connectLabel={t('shell.actions.connect')}
             connectTitle={t('shell.actions.connectTitle')}
             connectingLabel={t('shell.connecting')}

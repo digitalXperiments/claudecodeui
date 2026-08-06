@@ -179,6 +179,41 @@ export const missionControlApi = {
     return parseJson(res);
   },
 
+  /** Re-run the section's produce step for just this item, refreshing it in place. */
+  async retryItem(itemId: string): Promise<{
+    success: boolean;
+    item?: McItem | null;
+    error?: string;
+    message?: string;
+  }> {
+    const res = await authenticatedFetch(
+      `/api/mission-control/items/${encodeURIComponent(itemId)}/retry`,
+      { method: 'POST' },
+    );
+    return parseJson(res);
+  },
+
+  /** Preview what resolving an item would produce, without mutating it. */
+  async previewItem(
+    itemId: string,
+    actionId?: string,
+    body?: Record<string, unknown>,
+  ): Promise<{
+    success: boolean;
+    preview?: Record<string, unknown>;
+    type?: 'static' | 'agent';
+    error?: string;
+  }> {
+    const res = await authenticatedFetch(
+      `/api/mission-control/items/${encodeURIComponent(itemId)}/preview`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ actionId, body }),
+      },
+    );
+    return parseJson(res);
+  },
+
   /** Render the code cards / screenshots an X article draft still needs. */
   async generateAssets(
     itemId: string,

@@ -148,3 +148,29 @@ test('parseJsonFromAgentText: repairs unescaped quotes inside string values', ()
   assert.equal(item?.dedupeKey, 'slack-summary-2026-07-22');
   assert.match(item?.body.markdown ?? '', /operating normal/);
 });
+
+test('parseJsonFromAgentText: repairs quoted Slack phrases followed by punctuation', () => {
+  // Real Daily Slack Summaries output used quotes inside markdown prose and
+  // followed them with punctuation. jsonrepair alone rejects this shape.
+  const text = `
+\`\`\`json
+[
+  {
+    "title": "Slack Summary — 2026-08-05",
+    "summary": "A summary",
+    "body": {
+      "markdown": "Ram was on leave ("you should be on leave"). Another message said ("We did it finalllyyyyyyyy") and thanked the team."
+    },
+    "dedupeKey": "slack-summary:2026-08-05",
+    "confidence": 0.85
+  }
+]
+\`\`\``;
+
+  const parsed = parseJsonFromAgentText(text);
+  assert.ok(Array.isArray(parsed));
+  const item = parsed as { body: { markdown: string }; dedupeKey: string }[];
+  assert.equal(item[0]?.dedupeKey, 'slack-summary:2026-08-05');
+  assert.match(item[0]?.body.markdown ?? '', /you should be on leave/);
+  assert.match(item[0]?.body.markdown ?? '', /We did it finalllyyyyyyyy/);
+});

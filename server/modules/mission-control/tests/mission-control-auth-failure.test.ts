@@ -139,6 +139,34 @@ test('a well-formed produce run is unaffected', async () => {
   });
 });
 
+test('Slack summaries with quoted prose no longer become parse-failed items', async () => {
+  await withIsolatedDatabase(async () => {
+    const section = seedReviewSection();
+    stubClaudeRuntime(`
+Now reading the full channel histories.
+\`\`\`json
+[
+  {
+    "title": "Slack Summary — 2026-08-05",
+    "summary": "A summary",
+    "body": {
+      "markdown": "A message said ("you should be on leave")."
+    },
+    "dedupeKey": "slack-summary:2026-08-05",
+    "confidence": 0.85
+  }
+]
+\`\`\``, 0);
+
+    const result = await runSectionProduce(section.section_id);
+
+    assert.equal(result.error, undefined);
+    assert.equal(result.created, 1);
+    assert.equal(result.items[0]?.dedupe_key, 'slack-summary:2026-08-05');
+    assert.equal(result.items[0]?.body.markdown, 'A message said ("you should be on leave").');
+  });
+});
+
 // Guards the false-positive risk of scanning output for auth wording: a draft
 // that legitimately talks about expired sessions must still be created.
 test('drafts whose content mentions expired sessions are still created', async () => {

@@ -97,6 +97,120 @@ function looksLikeJsonValue(text: string): boolean {
   return t.startsWith('{') || t.startsWith('[');
 }
 
+/**
+ * Escape quote characters that are clearly prose inside a JSON string.
+ *
+ * `jsonrepair` handles most model mistakes, but it cannot always distinguish
+ * a quote in prose from a string terminator when the prose quote is followed
+ * by punctuation (for example, a quoted phrase followed by `).`). A Slack
+ * summary hit exactly that case. Only use this after jsonrepair has already
+ * failed, so strict JSON and normal repair behavior remain unchanged.
+ */
+function escapeLikelyUnescapedQuotes(text: string): string {
+  let output = '';
+  let inString = false;
+  let escaped = false;
+  let stringIsObjectKey = false;
+  let previousSignificant = '';
+  const containers: string[] = [];
+
+  const startsJsonValue = (index: number): boolean => {
+    const first = text[index] ?? '';
+    if (first === '"' || first === '{' || first === '[') return true;
+
+    for (const literal of ['true', 'false', 'null']) {
+      if (!text.startsWith(literal, index)) continue;
+      let end = index + literal.length;
+      while (end < text.length && /\s/.test(text[end] ?? '')) end += 1;
+      if (text[end] === ',' || text[end] === '}' || text[end] === ']') {
+        return true;
+      }
+    }
+
+    const number = /^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/.exec(text.slice(index));
+    if (!number) return false;
+    let end = index + number[0].length;
+    while (end < text.length && /\s/.test(text[end] ?? '')) end += 1;
+    return text[end] === ',' || text[end] === '}' || text[end] === ']';
+  };
+
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+
+    if (escaped) {
+      output += char;
+      escaped = false;
+      continue;
+    }
+
+    if (inString && char === '\\') {
+      output += char;
+      escaped = true;
+      continue;
+    }
+
+    if (char !== '"') {
+      output += char;
+      if (!inString && !/\s/.test(char)) {
+        if (char === '{' || char === '[') containers.push(char);
+        if (char === '}' || char === ']') containers.pop();
+        previousSignificant = char;
+      }
+      continue;
+    }
+
+    if (!inString) {
+      output += char;
+      inString = true;
+      stringIsObjectKey =
+        containers.at(-1) === '{'
+        && (previousSignificant === '{' || previousSignificant === ',');
+      continue;
+    }
+
+    let nextIndex = index + 1;
+    while (nextIndex < text.length && /\s/.test(text[nextIndex] ?? '')) {
+      nextIndex += 1;
+    }
+    const next = text[nextIndex] ?? '';
+
+    // A comma is only a likely JSON delimiter when what follows can begin a
+    // JSON value/key. A comma followed by prose means the quote is still part
+    // of the current string.
+    let afterDelimiterIndex = nextIndex + 1;
+    while (
+      afterDelimiterIndex < text.length
+      && /\s/.test(text[afterDelimiterIndex] ?? '')
+    ) {
+      afterDelimiterIndex += 1;
+    }
+    const afterDelimiter = text[afterDelimiterIndex] ?? '';
+    const closesAfterComma = next === ',' && startsJsonValue(afterDelimiterIndex);
+    const looksLikeTerminator = stringIsObjectKey
+      ? next === ':'
+      : next === '}'
+        || next === ']'
+        || next === ''
+        || closesAfterComma;
+
+    // `"quoted text"}` inside a string is still prose when the actual JSON
+    // string terminator follows the brace. Keep both prose quotes escaped.
+    const delimiterFollowedByQuote =
+      (next === '}' || next === ']') && text[afterDelimiterIndex] === '"';
+
+    if (!looksLikeTerminator || delimiterFollowedByQuote) {
+      output += '\\"';
+      continue;
+    }
+
+    output += char;
+    inString = false;
+    stringIsObjectKey = false;
+  }
+
+  return output;
+}
+
 function tryParseJson(candidate: string): unknown {
   try {
     return JSON.parse(candidate);
@@ -109,7 +223,15 @@ function tryParseJson(candidate: string): unknown {
     }
     // Models frequently emit almost-JSON: unescaped " in prose, trailing commas,
     // single quotes, raw newlines inside strings.
-    return JSON.parse(jsonrepair(candidate));
+    try {
+      return JSON.parse(jsonrepair(candidate));
+    } catch (repairError) {
+      const quoteEscaped = escapeLikelyUnescapedQuotes(candidate);
+      if (quoteEscaped === candidate) {
+        throw repairError;
+      }
+      return JSON.parse(jsonrepair(quoteEscaped));
+    }
   }
 }
 

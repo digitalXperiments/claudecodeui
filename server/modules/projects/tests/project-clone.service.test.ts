@@ -20,6 +20,7 @@ function buildDependencies(overrides: Partial<NonNullable<TestDependencies>> = {
       throw new Error('spawnGitClone should be overridden in this test');
     },
     registerProject: async () => ({ project: { projectId: 'project-1' } }),
+    enableMemory: async () => undefined,
     logError: () => undefined,
     ...overrides,
   };
@@ -180,4 +181,34 @@ test('startCloneProject completes and emits complete payload when git exits succ
   };
   assert.equal(resolvedCompletePayload.message, 'Repository cloned successfully');
   assert.equal((resolvedCompletePayload.project.projectId as string) || '', 'project-1');
+});
+
+test('startCloneProject enables memory before emitting clone completion when requested', async () => {
+  const gitProcess = createMockGitProcess();
+  let enabledPath = '';
+
+  const operation = await startCloneProject(
+    {
+      workspacePath: '/workspace/root',
+      githubUrl: 'https://github.com/example/repo.git',
+      enableMemory: true,
+      userId: 1,
+    },
+    {
+      onProgress: () => undefined,
+      onComplete: () => undefined,
+    },
+    buildDependencies({
+      spawnGitClone: () => gitProcess as any,
+      enableMemory: async (workspacePath) => {
+        enabledPath = workspacePath;
+        return { enabled: true };
+      },
+    }),
+  );
+
+  gitProcess.emit('close', 0);
+  await operation.waitForCompletion;
+
+  assert.equal(enabledPath, '/workspace/root/repo');
 });

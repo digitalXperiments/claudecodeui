@@ -396,9 +396,12 @@
     },
     "models": {
       "title": "Models",
-      "description": "Choose the model {{agent}} loads by default when you open chat.",
+      "description": "Choose the model {{agent}} loads by default when you open chat. Models that support it also offer a default reasoning effort.",
       "defaultLabel": "Default model",
       "defaultDescription": "Used the next time chat loads for this agent.",
+      "defaultEffortLabel": "Default effort",
+      "defaultEffortDescription": "Used for new chats with the selected model. Choose Default to let the provider decide.",
+      "defaultEffortOption": "Default",
       "loading": "Loading…",
       "loadError": "Could not load models for this agent.",
       "visibleLabel": "Models shown on new session",

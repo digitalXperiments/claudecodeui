@@ -892,3 +892,219 @@ export async function applyItemAction(
     });
   }
 }
+
+export type RetryItemResult = {
+  success: boolean;
+  item: McItem;
+  error?: string;
+  message?: string;
+};
+
+/**
+ * Re-run the section's produce step for a single item and refresh that item in
+ * place. Runs the same produce prompt as the section, finds the draft that
+ * matches this item (by dedupe key, then title), and resets the item to
+ * `pending` with the fresh body. A provider/runtime failure marks the item
+ * `failed` (retryable). No kanban bridge is triggered.
+ */
+export async function retryItem(itemId: string): Promise<RetryItemResult> {
+  const item = missionControlDb.getItem(itemId);
+  if (!item) {
+    throw new AppError('Item not found', {
+      code: 'MC_ITEM_NOT_FOUND',
+      statusCode: 404,
+    });
+  }
+  if (item.status !== 'pending' && item.status !== 'failed') {
+    throw new AppError(`Item is '${item.status}', not retryable`, {
+      code: 'MC_ITEM_NOT_ACTIONABLE',
+      statusCode: 400,
+    });
+  }
+  const section = missionControlDb.getSection(item.section_id);
+  if (!section) {
+    throw new AppError('Section not found for item', {
+      code: 'MC_SECTION_NOT_FOUND',
+      statusCode: 404,
+    });
+  }
+
+  let text: string;
+  let success: boolean;
+  let errorMessage: string | null;
+  try {
+    const run = await runMissionControlAgent({
+      section,
+      prompt: buildProducePrompt(section),
+      tools: section.produce_tools,
+    });
+    text = run.text;
+    success = run.success;
+    errorMessage = run.errorMessage;
+  } catch (error) {
+    // Runtime unavailable / run-in-progress: surface on the item so it stays
+    // retryable instead of throwing a 500 at the user.
+    const message = error instanceof Error ? error.message : String(error);
+    const failed = missionControlDb.setItemStatus(itemId, 'failed', { error: message });
+    return { success: false, item: failed, error: message };
+  }
+
+  if (!success) {
+    const msg =
+      resolveProviderAuthFailure(section.provider, errorMessage, text)
+      || errorMessage
+      || text.slice(0, 500)
+      || `Provider "${section.provider}" run failed`;
+    const failed = missionControlDb.setItemStatus(itemId, 'failed', { error: msg });
+    return { success: false, item: failed, error: msg };
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = parseJsonFromAgentText(text);
+  } catch {
+    // Unparseable output: nothing to match against, keep the item as-is.
+    return {
+      success: false,
+      item: missionControlDb.getItem(itemId)!,
+      error: 'Retry produced unparseable output',
+    };
+  }
+
+  const drafts = coerceDrafts(parsed);
+  const match = drafts.find(
+    (draft) => draft.dedupeKey === item.dedupe_key || draft.title === item.title,
+  );
+  if (!match) {
+    return {
+      success: false,
+      item: missionControlDb.getItem(itemId)!,
+      error: 'Retry produced no matching item',
+    };
+  }
+
+  // Reset status to pending with the fresh body (clear the error, drop any
+  // stale resolved_at) before patching title/summary/confidence.
+  missionControlDb.setItemStatus(itemId, 'pending', {
+    body: match.body,
+    error: null,
+    resolvedAt: null,
+  });
+  const updated = missionControlDb.updateItem(itemId, {
+    title: match.title,
+    summary: match.summary || item.summary,
+    confidence: match.confidence,
+  });
+  return {
+    success: true,
+    item: updated ?? missionControlDb.getItem(itemId)!,
+    message: 'Item retried: refreshed from a fresh produce run.',
+  };
+}
+
+/** Read-only instruction appended to resolve prompts during previews. */
+const PREVIEW_READ_ONLY_NOTE =
+  '\n\nIMPORTANT: This is a READ-ONLY preview. Do NOT perform any external action, send anything, post anything, or modify files. Return ONLY the JSON object that would result from this action.';
+
+export type PreviewItemResolutionResult =
+  | { success: true; preview: Record<string, unknown>; type: 'static' | 'agent' }
+  | { success: false; error: string };
+
+/**
+ * Preview what resolving an item with a given action would produce, WITHOUT
+ * mutating the item or running the kanban bridge.
+ *
+ * - Sections with no resolve prompt (or dry runs) resolve instantly: the
+ *   preview is the body that would be approved (`type: 'static'`).
+ * - Otherwise the resolve agent runs in read-only mode and the parsed JSON is
+ *   returned (`type: 'agent'`).
+ */
+export async function previewItemResolution(
+  itemId: string,
+  actionId?: string,
+  editedBody?: Record<string, unknown>,
+): Promise<PreviewItemResolutionResult> {
+  const item = missionControlDb.getItem(itemId);
+  if (!item) {
+    throw new AppError('Item not found', {
+      code: 'MC_ITEM_NOT_FOUND',
+      statusCode: 404,
+    });
+  }
+  if (item.status !== 'pending' && item.status !== 'failed') {
+    throw new AppError(`Item is '${item.status}', not actionable`, {
+      code: 'MC_ITEM_NOT_ACTIONABLE',
+      statusCode: 400,
+    });
+  }
+  const section = missionControlDb.getSection(item.section_id);
+  if (!section) {
+    throw new AppError('Section not found for item', {
+      code: 'MC_SECTION_NOT_FOUND',
+      statusCode: 404,
+    });
+  }
+
+  const sectionActions = section.actions ?? [];
+  const action = actionId
+    ? item.actions.find((a) => a.id === actionId)
+        ?? sectionActions.find((a) => a.id === actionId)
+    : item.actions.find((a) => a.kind === 'approve' && a.terminal !== false)
+        ?? sectionActions.find((a) => a.kind === 'approve' && a.terminal !== false);
+  if (!action) {
+    throw new AppError(
+      actionId ? `Action ${actionId} not on item` : 'No previewable approve action on item',
+      {
+        code: 'MC_BAD_ACTION',
+        statusCode: 400,
+      },
+    );
+  }
+
+  const body = editedBody ?? item.body;
+
+  // No agent needed: resolving would just approve the body (or dry-run).
+  if (!section.resolve_prompt.trim() || section.dry_run) {
+    return { success: true, preview: { approved: true, body }, type: 'static' };
+  }
+
+  let text: string;
+  let success: boolean;
+  let errorMessage: string | null;
+  try {
+    const prompt =
+      buildResolvePrompt(section, action.id, action.label, body) + PREVIEW_READ_ONLY_NOTE;
+    const run = await runMissionControlAgent({
+      section,
+      prompt,
+      tools: section.resolve_tools,
+    });
+    text = run.text;
+    success = run.success;
+    errorMessage = run.errorMessage;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { success: false, error: message };
+  }
+
+  if (!success) {
+    const message =
+      resolveProviderAuthFailure(section.provider, errorMessage, text)
+      || errorMessage
+      || text.slice(0, 500)
+      || `Provider "${section.provider}" run failed`;
+    return { success: false, error: message };
+  }
+
+  try {
+    const parsed = parseJsonFromAgentText(text);
+    const preview =
+      parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? (parsed as Record<string, unknown>)
+        : { value: parsed };
+    return { success: true, preview, type: 'agent' };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { success: false, error: `Preview output could not be parsed: ${message}` };
+  }
+}

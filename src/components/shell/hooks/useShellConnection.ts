@@ -26,6 +26,7 @@ type UseShellConnectionOptions = {
   onProcessCompleteRef: MutableRefObject<((exitCode: number) => void) | null | undefined>;
   isInitialized: boolean;
   autoConnect: boolean;
+  waitForChat: boolean;
   closeSocket: () => void;
   clearTerminalScreen: () => void;
   onOutputRef?: MutableRefObject<(() => void) | null>;
@@ -50,6 +51,7 @@ export function useShellConnection({
   onProcessCompleteRef,
   isInitialized,
   autoConnect,
+  waitForChat,
   closeSocket,
   clearTerminalScreen,
   onOutputRef,
@@ -220,7 +222,13 @@ export function useShellConnection({
   );
 
   const connectToShell = useCallback((options?: { forceRestart?: boolean }) => {
-    if (!isInitialized || isConnected || isConnecting || connectingRef.current) {
+    if (
+      !isInitialized
+      || (waitForChat && !isPlainShellRef.current)
+      || isConnected
+      || isConnecting
+      || connectingRef.current
+    ) {
       return;
     }
 
@@ -229,7 +237,7 @@ export function useShellConnection({
     connectingRef.current = true;
     setIsConnecting(true);
     connectWebSocket(true);
-  }, [connectWebSocket, isConnected, isConnecting, isInitialized]);
+  }, [connectWebSocket, isConnected, isConnecting, isInitialized, isPlainShellRef, waitForChat]);
 
   const disconnectFromShell = useCallback((options?: { suppressAutoConnect?: boolean }) => {
     if (options?.suppressAutoConnect) {
@@ -247,6 +255,7 @@ export function useShellConnection({
   useEffect(() => {
     if (
       !autoConnect ||
+      (waitForChat && !isPlainShellRef.current) ||
       suppressAutoConnectRef.current ||
       !isInitialized ||
       isConnecting ||
@@ -256,7 +265,19 @@ export function useShellConnection({
     }
 
     connectToShell();
-  }, [autoConnect, connectToShell, isConnected, isConnecting, isInitialized]);
+  }, [autoConnect, connectToShell, isConnected, isConnecting, isInitialized, isPlainShellRef, waitForChat]);
+
+  // Chatbar and Shell cannot safely drive the same provider-native session at
+  // the same time. If a run starts after Shell connected (for example from
+  // another tab), release the PTY and let the normal auto-connect effect
+  // reopen it after the run completes.
+  useEffect(() => {
+    if (!waitForChat || isPlainShellRef.current || (!isConnected && !isConnecting)) {
+      return;
+    }
+
+    disconnectFromShell();
+  }, [disconnectFromShell, isConnected, isConnecting, isPlainShellRef, waitForChat]);
 
   // When the chatbar permission mode changes, relaunch the interactive CLI so
   // it starts with the new mode's flags (TUI processes can't change mode after

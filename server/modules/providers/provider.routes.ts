@@ -716,6 +716,8 @@ type HandoffPayload = {
   mode: SessionHandoffMode;
   saveToFile: boolean;
   saveToMemory: boolean;
+  includeGitState: boolean;
+  includeKanbanState: boolean;
 };
 
 const parseHandoffPayload = async (payload: unknown): Promise<HandoffPayload> => {
@@ -763,6 +765,8 @@ const parseHandoffPayload = async (payload: unknown): Promise<HandoffPayload> =>
     mode: rawMode as SessionHandoffMode,
     saveToFile: body.saveToFile === true,
     saveToMemory: body.saveToMemory === true,
+    includeGitState: body.includeGitState === true,
+    includeKanbanState: body.includeKanbanState === true,
   };
 };
 
@@ -779,6 +783,78 @@ router.post(
     const result = await sessionHandoffService.createHandoffSession({
       sourceSessionId: sessionId,
       ...payload,
+    });
+    res.status(201).json(createApiSuccessResponse(result));
+  }),
+);
+
+/**
+ * Reverse handoff: hands the work back to the provider that originally started
+ * it (resolved from the `continued_from_session_id` lineage), or to the
+ * explicitly requested provider. Reuses the handoff payload shape.
+ */
+router.post(
+  '/sessions/:sessionId/reverse-handoff',
+  asyncHandler(async (req: Request, res: Response) => {
+    const sessionId = parseSessionId(req.params.sessionId);
+    const payload = await parseHandoffPayload(req.body);
+    const result = await sessionHandoffService.reverseHandoffSession({
+      sessionId,
+      ...payload,
+    });
+    res.status(201).json(createApiSuccessResponse(result));
+  }),
+);
+
+/**
+ * Merge handoff: merges the transcripts of one or more source sessions into a
+ * single continuation session. Requires every session to share a project and
+ * at least one source session id. `targetProvider`/`targetModel` fall back to
+ * the first source session's provider.
+ */
+router.post(
+  '/sessions/merge',
+  asyncHandler(async (req: Request, res: Response) => {
+    const body = req.body ?? {};
+    const rawSessionIds = Array.isArray(body.sessionIds) ? body.sessionIds : [];
+    if (rawSessionIds.length === 0 || rawSessionIds.some((id: unknown) => typeof id !== 'string' || !id.trim())) {
+      throw new AppError('sessionIds must be a non-empty array of session id strings.', {
+        code: 'HANDOFF_MERGE_SESSION_IDS_INVALID',
+        statusCode: 400,
+      });
+    }
+    const sessionIds = rawSessionIds.map((id: unknown) => parseSessionId(id));
+
+    const rawTargetProvider = body.targetProvider;
+    let targetProvider: LLMProvider | undefined;
+    if (rawTargetProvider !== undefined && rawTargetProvider !== null) {
+      targetProvider = parseProvider(rawTargetProvider);
+      const disabledProviders = await getDisabledProviderIds();
+      if (disabledProviders.has(targetProvider)) {
+        throw new AppError(`Provider "${targetProvider}" is disabled.`, {
+          code: 'PROVIDER_DISABLED',
+          statusCode: 400,
+        });
+      }
+    }
+
+    const rawMode = readOptionalQueryString(body.mode) ?? 'summary';
+    if (!HANDOFF_MODES.has(rawMode as SessionHandoffMode)) {
+      throw new AppError('mode must be one of "summary", "full", or "fresh".', {
+        code: 'INVALID_HANDOFF_MODE',
+        statusCode: 400,
+      });
+    }
+
+    const result = await sessionHandoffService.mergeSessions({
+      sessionIds,
+      targetProvider,
+      targetModel: readOptionalQueryString(body.targetModel),
+      mode: rawMode as SessionHandoffMode,
+      saveToFile: body.saveToFile === true,
+      saveToMemory: body.saveToMemory === true,
+      includeGitState: body.includeGitState === true,
+      includeKanbanState: body.includeKanbanState === true,
     });
     res.status(201).json(createApiSuccessResponse(result));
   }),

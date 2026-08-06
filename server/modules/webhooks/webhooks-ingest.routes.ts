@@ -7,7 +7,9 @@ import { webhooksDb } from '@/modules/webhooks/webhooks.repository.js';
 import { startWebhookDelivery } from '@/modules/webhooks/webhooks-runner.service.js';
 import {
   extractApiKey,
+  firstHeader,
   parseIngestRequest,
+  verifyWebhookSignature,
   wantsWait,
 } from '@/modules/webhooks/webhooks-ingest.util.js';
 
@@ -71,6 +73,19 @@ async function handleIngest(req: express.Request, res: express.Response): Promis
       code: 'WEBHOOK_SOURCE_NOT_FOUND',
       statusCode: 404,
     });
+  }
+
+  // HMAC verification: sources with a secret require a valid signature over the
+  // raw request body. Sources without a secret stay backwards compatible.
+  if (sourceRow.secret && sourceRow.secret.trim()) {
+    const signature = firstHeader(req, 'x-webhook-signature');
+    const rawBody = (req as express.Request & { rawBody?: Buffer }).rawBody;
+    if (!verifyWebhookSignature(sourceRow.secret, rawBody, signature)) {
+      throw new AppError('Invalid webhook signature', {
+        code: 'WEBHOOK_SIGNATURE_INVALID',
+        statusCode: 401,
+      });
+    }
   }
 
   if (!sourceRow.enabled) {

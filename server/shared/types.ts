@@ -78,8 +78,10 @@ export type ProviderModelOption = {
    * Concrete model id the provider resolves `value` to (e.g. `opus[1m]` →
    * `claude-opus-5[1m]`). Sessions report the resolved id, so this is what lets
    * a running session be matched back to its catalog entry.
-   */
+  */
   resolvedModel?: string;
+  /** Whether the provider advertises Codex Fast mode for this model. */
+  supportsFastMode?: boolean;
   effort?: {
     default?: string;
     values: {

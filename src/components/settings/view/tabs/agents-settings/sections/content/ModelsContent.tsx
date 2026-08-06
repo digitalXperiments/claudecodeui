@@ -3,9 +3,14 @@ import { useTranslation } from 'react-i18next';
 
 import { authenticatedFetch } from '../../../../../../../utils/api';
 import { readHiddenModels, writeHiddenModels } from '../../../../../../../utils/modelVisibility';
+import { DEFAULT_EFFORT_VALUE } from '../../../../../../chat/constants/providerEffort';
 import { AGENT_NAMES } from '../../../../../constants/constants';
+import {
+  PROVIDER_DEFAULT_EFFORT_CHANGED_EVENT,
+  type ProviderDefaultEffortChangedDetail,
+} from '../../../../../../../constants/providerEffortEvents';
 import type { AgentProvider } from '../../../../../types/types';
-import type { ProviderModelsDefinition } from '../../../../../../../types/app';
+import type { ProviderModelOption, ProviderModelsDefinition } from '../../../../../../../types/app';
 
 type ModelsContentProps = {
   agent: AgentProvider;
@@ -19,6 +24,29 @@ type ProviderModelsApiResponse = {
 };
 
 const storageKey = (agent: AgentProvider) => `${agent}-model`;
+const effortStorageKey = (agent: AgentProvider) => `${agent}-effort`;
+
+const writeDefaultEffort = (agent: AgentProvider, effort: string) => {
+  localStorage.setItem(effortStorageKey(agent), effort);
+  window.dispatchEvent(
+    new CustomEvent<ProviderDefaultEffortChangedDetail>(PROVIDER_DEFAULT_EFFORT_CHANGED_EVENT, {
+      detail: { provider: agent, effort },
+    }),
+  );
+};
+
+const getEffortOptions = (model: ProviderModelOption | undefined) => model?.effort?.values ?? [];
+
+const normalizeEffort = (model: ProviderModelOption | undefined, effort: string | null | undefined): string => {
+  const values = getEffortOptions(model).map((option) => option.value);
+  if (values.length === 0) {
+    return DEFAULT_EFFORT_VALUE;
+  }
+  if (effort === DEFAULT_EFFORT_VALUE || (effort && values.includes(effort))) {
+    return effort;
+  }
+  return DEFAULT_EFFORT_VALUE;
+};
 
 export default function ModelsContent({ agent }: ModelsContentProps) {
   const { t } = useTranslation('settings');
@@ -26,11 +54,15 @@ export default function ModelsContent({ agent }: ModelsContentProps) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [defaultModel, setDefaultModel] = useState<string>(() => localStorage.getItem(storageKey(agent)) || '');
+  const [defaultEffort, setDefaultEffort] = useState<string>(
+    () => localStorage.getItem(effortStorageKey(agent)) || DEFAULT_EFFORT_VALUE,
+  );
   const [hiddenModels, setHiddenModels] = useState<string[]>(() => readHiddenModels(agent));
   const [searchQuery, setSearchQuery] = useState('');
 
   useEffect(() => {
     setDefaultModel(localStorage.getItem(storageKey(agent)) || '');
+    setDefaultEffort(localStorage.getItem(effortStorageKey(agent)) || DEFAULT_EFFORT_VALUE);
     setHiddenModels(readHiddenModels(agent));
   }, [agent]);
 
@@ -51,8 +83,13 @@ export default function ModelsContent({ agent }: ModelsContentProps) {
         }
         setModels(body.data.models);
         setDefaultModel((current) => {
-          if (current) return current;
-          return body.data?.models?.DEFAULT ?? '';
+          const options = body.data?.models?.OPTIONS ?? [];
+          if (options.some((option) => option.value === current)) return current;
+          const stored = localStorage.getItem(storageKey(agent));
+          if (options.some((option) => option.value === stored)) return stored as string;
+          return options.find((option) => option.value === body.data?.models?.DEFAULT)?.value
+            ?? options[0]?.value
+            ?? '';
         });
       } catch {
         if (!cancelled) {
@@ -69,10 +106,50 @@ export default function ModelsContent({ agent }: ModelsContentProps) {
     };
   }, [agent, t]);
 
-  const handleChange = (event: React.ChangeEvent<HTMLSelectElement>) => {
+  const defaultModelOption = useMemo(
+    () => models?.OPTIONS.find((option) => option.value === defaultModel),
+    [defaultModel, models],
+  );
+  const effortOptions = useMemo(
+    () => getEffortOptions(defaultModelOption).filter((option) => option.value !== DEFAULT_EFFORT_VALUE),
+    [defaultModelOption],
+  );
+
+  // Effort support is model-specific for some providers. Keep a previously
+  // saved value when the new default model supports it, otherwise fall back to
+  // the provider/model default rather than sending an invalid effort.
+  useEffect(() => {
+    if (loading || !defaultModelOption) return;
+    const nextEffort = normalizeEffort(
+      defaultModelOption,
+      localStorage.getItem(effortStorageKey(agent)) || defaultEffort,
+    );
+    if (nextEffort !== defaultEffort) {
+      setDefaultEffort(nextEffort);
+    }
+    if (localStorage.getItem(effortStorageKey(agent)) !== nextEffort) {
+      writeDefaultEffort(agent, nextEffort);
+    }
+  }, [agent, defaultEffort, defaultModelOption, loading]);
+
+  const handleModelChange = (event: React.ChangeEvent<HTMLSelectElement>) => {
     const value = event.target.value;
     setDefaultModel(value);
     localStorage.setItem(storageKey(agent), value);
+
+    const selectedModel = models?.OPTIONS.find((option) => option.value === value);
+    const nextEffort = normalizeEffort(
+      selectedModel,
+      localStorage.getItem(effortStorageKey(agent)) || defaultEffort,
+    );
+    setDefaultEffort(nextEffort);
+    writeDefaultEffort(agent, nextEffort);
+  };
+
+  const handleEffortChange = (event: React.ChangeEvent<HTMLSelectElement>) => {
+    const value = normalizeEffort(defaultModelOption, event.target.value);
+    setDefaultEffort(value);
+    writeDefaultEffort(agent, value);
   };
 
   const options = useMemo(() => models?.OPTIONS ?? [], [models]);
@@ -115,7 +192,7 @@ export default function ModelsContent({ agent }: ModelsContentProps) {
         <p className="text-sm text-muted-foreground">
           {t('agents.models.description', {
             agent: AGENT_NAMES[agent],
-            defaultValue: `Choose the model ${AGENT_NAMES[agent]} loads by default when you open chat.`,
+            defaultValue: `Choose the model ${AGENT_NAMES[agent]} loads by default when you open chat. Models that support it also offer a default reasoning effort.`,
           })}
         </p>
       </div>
@@ -138,7 +215,7 @@ export default function ModelsContent({ agent }: ModelsContentProps) {
           ) : (
             <select
               value={defaultModel}
-              onChange={handleChange}
+              onChange={handleModelChange}
               className="w-56 rounded-lg border border-input bg-card p-2 text-sm text-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
             >
               {(models?.OPTIONS ?? []).map((option) => (
@@ -154,6 +231,38 @@ export default function ModelsContent({ agent }: ModelsContentProps) {
           <p className="mt-3 border-t border-border/50 pt-3 text-xs text-muted-foreground">
             {models.OPTIONS.find((option) => option.value === defaultModel)?.description}
           </p>
+        )}
+
+        {!loading && !error && effortOptions.length > 0 && (
+          <div className="mt-4 border-t border-border/50 pt-4">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-sm font-medium text-foreground">
+                  {t('agents.models.defaultEffortLabel', { defaultValue: 'Default effort' })}
+                </div>
+                <div className="mt-0.5 text-xs text-muted-foreground">
+                  {t('agents.models.defaultEffortDescription', {
+                    defaultValue: 'Used for new chats with the selected model. Choose Default to let the provider decide.',
+                  })}
+                </div>
+              </div>
+
+              <select
+                value={defaultEffort}
+                onChange={handleEffortChange}
+                className="w-56 rounded-lg border border-input bg-card p-2 text-sm text-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+              >
+                <option value={DEFAULT_EFFORT_VALUE}>
+                  {t('agents.models.defaultEffortOption', { defaultValue: 'Default' })}
+                </option>
+                {effortOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.value}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
         )}
       </div>
 

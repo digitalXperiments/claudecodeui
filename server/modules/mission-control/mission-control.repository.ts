@@ -617,6 +617,42 @@ export const missionControlDb = {
   },
 
   /**
+   * Patch item metadata (title/summary/confidence) and optionally the body or
+   * error without touching the review status. Returns the updated item, or
+   * `null` when the item no longer exists.
+   */
+  updateItem(
+    itemId: string,
+    patch: {
+      title?: string;
+      summary?: string;
+      confidence?: number;
+      body?: Record<string, unknown>;
+      error?: string | null;
+    },
+  ): McItem | null {
+    const existing = this.getItem(itemId);
+    if (!existing) return null;
+    const db = getConnection();
+    const ts = nowIso();
+    db.prepare(
+      `UPDATE mc_items SET
+        title = ?, summary = ?, body_json = ?, confidence = ?, error = ?,
+        updated_at = ?
+       WHERE item_id = ?`,
+    ).run(
+      patch.title !== undefined ? patch.title : existing.title,
+      patch.summary !== undefined ? patch.summary : existing.summary,
+      JSON.stringify(patch.body !== undefined ? patch.body : existing.body),
+      patch.confidence !== undefined ? patch.confidence : existing.confidence,
+      patch && 'error' in patch ? patch.error : existing.error,
+      ts,
+      itemId,
+    );
+    return this.getItem(itemId);
+  },
+
+  /**
    * Hard-delete an item so its dedupe_key can be reused on the next produce run.
    * (Dismiss only soft-closes and keeps the unique key.)
    */

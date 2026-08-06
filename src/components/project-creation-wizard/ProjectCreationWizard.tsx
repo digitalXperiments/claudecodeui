@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useState } from 'react';
 import { FolderPlus, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+
 import ErrorBanner from './components/ErrorBanner';
 import StepConfiguration from './components/StepConfiguration';
 import StepReview from './components/StepReview';
@@ -19,6 +20,7 @@ type ProjectCreationWizardProps = {
 const initialFormState: WizardFormState = {
   workspacePath: '',
   githubUrl: '',
+  enableMemory: false,
   tokenMode: 'stored',
   selectedGithubToken: '',
   newGithubToken: '',
@@ -93,6 +95,7 @@ export default function ProjectCreationWizard({
           {
             workspacePath: formState.workspacePath,
             githubUrl: formState.githubUrl,
+            enableMemory: formState.enableMemory,
             tokenMode: formState.tokenMode,
             selectedGithubToken: formState.selectedGithubToken,
             newGithubToken: formState.newGithubToken,
@@ -109,6 +112,7 @@ export default function ProjectCreationWizard({
 
       const project = await createProjectRequest({
         path: formState.workspacePath.trim(),
+        ...(formState.enableMemory ? { memory: { enabled: true } } : {}),
       });
 
       onProjectCreated?.(project);
@@ -159,6 +163,7 @@ export default function ProjectCreationWizard({
             <StepConfiguration
               workspacePath={formState.workspacePath}
               githubUrl={formState.githubUrl}
+              enableMemory={formState.enableMemory}
               tokenMode={formState.tokenMode}
               selectedGithubToken={formState.selectedGithubToken}
               newGithubToken={formState.newGithubToken}
@@ -168,6 +173,7 @@ export default function ProjectCreationWizard({
               isCreating={isCreating}
               onWorkspacePathChange={(workspacePath) => updateField('workspacePath', workspacePath)}
               onGithubUrlChange={(githubUrl) => updateField('githubUrl', githubUrl)}
+              onEnableMemoryChange={(enableMemory) => updateField('enableMemory', enableMemory)}
               onTokenModeChange={updateTokenMode}
               onSelectedGithubTokenChange={(selectedGithubToken) =>
                 updateField('selectedGithubToken', selectedGithubToken)

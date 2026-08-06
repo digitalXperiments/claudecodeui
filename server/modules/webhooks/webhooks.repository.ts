@@ -26,6 +26,9 @@ type SourceRow = {
   profile_id: string | null;
   scope: string | null;
   project_id: string | null;
+  retry_max: number | null;
+  retry_backoff_seconds: number | null;
+  secret: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -38,6 +41,8 @@ type DeliveryRow = {
   app_session_id: string | null;
   error_message: string | null;
   result_preview: string | null;
+  attempt: number | null;
+  next_retry_at: string | null;
   created_at: string;
   finished_at: string | null;
 };
@@ -87,6 +92,9 @@ function mapSource(row: SourceRow): WebhookSource {
     profile_id: row.profile_id || null,
     scope: (row.scope === 'project' ? 'project' : 'global') as WebhookScope,
     project_id: row.project_id || null,
+    retryMax: row.retry_max ?? 0,
+    retryBackoffSeconds: row.retry_backoff_seconds ?? 60,
+    secret: row.secret || null,
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
@@ -101,6 +109,8 @@ function mapDelivery(row: DeliveryRow): WebhookDelivery {
     app_session_id: row.app_session_id,
     error_message: row.error_message,
     result_preview: row.result_preview,
+    attempt: row.attempt ?? 0,
+    next_retry_at: row.next_retry_at || null,
     created_at: row.created_at,
     finished_at: row.finished_at,
   };
@@ -149,8 +159,9 @@ export const webhooksDb = {
       `INSERT INTO webhook_sources (
         source_id, source, name, description, enabled, provider, model, prompt,
         permission_mode, mcp_tools_json, skills_json, profile_id, scope, project_id,
+        retry_max, retry_backoff_seconds, secret,
         created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       sourceId,
       slug,
@@ -166,6 +177,9 @@ export const webhooksDb = {
       input.profile_id ?? null,
       scope,
       scope === 'project' ? input.project_id ?? null : null,
+      input.retryMax ?? 0,
+      input.retryBackoffSeconds ?? 60,
+      input.secret || null,
       now,
       now,
     );
@@ -198,6 +212,11 @@ export const webhooksDb = {
         ? { scope: input.scope === 'project' ? 'project' : 'global' }
         : {}),
       ...(input.project_id !== undefined ? { project_id: input.project_id } : {}),
+      ...(input.retryMax !== undefined ? { retryMax: input.retryMax } : {}),
+      ...(input.retryBackoffSeconds !== undefined
+        ? { retryBackoffSeconds: input.retryBackoffSeconds }
+        : {}),
+      ...(input.secret !== undefined ? { secret: input.secret } : {}),
       updated_at: nowIso(),
     };
 
@@ -210,7 +229,8 @@ export const webhooksDb = {
       `UPDATE webhook_sources SET
         source = ?, name = ?, description = ?, enabled = ?, provider = ?, model = ?,
         prompt = ?, permission_mode = ?, mcp_tools_json = ?, skills_json = ?,
-        profile_id = ?, scope = ?, project_id = ?, updated_at = ?
+        profile_id = ?, scope = ?, project_id = ?, retry_max = ?, retry_backoff_seconds = ?,
+        secret = ?, updated_at = ?
       WHERE source_id = ?`,
     ).run(
       next.source,
@@ -226,6 +246,9 @@ export const webhooksDb = {
       next.profile_id,
       next.scope,
       next.project_id,
+      next.retryMax,
+      next.retryBackoffSeconds,
+      next.secret || null,
       next.updated_at,
       sourceId,
     );
@@ -250,14 +273,15 @@ export const webhooksDb = {
     const now = nowIso();
     db.prepare(
       `INSERT INTO webhook_deliveries (
-        delivery_id, source_id, status, request_json, app_session_id, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?)`,
+        delivery_id, source_id, status, request_json, app_session_id, attempt, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       deliveryId,
       params.sourceId,
       params.status || 'accepted',
       JSON.stringify(params.request ?? {}),
       params.appSessionId ?? null,
+      1,
       now,
     );
     const created = this.getDeliveryById(deliveryId);
@@ -327,5 +351,80 @@ export const webhooksDb = {
       nowIso(),
       deliveryId,
     );
+  },
+
+  /** Set only the next retry timestamp; status is managed by the caller. */
+  scheduleWebhookRetry(deliveryId: string, nextRetryAtIso: string): void {
+    const db = getConnection();
+    db.prepare(`UPDATE webhook_deliveries SET next_retry_at = ? WHERE delivery_id = ?`).run(
+      nextRetryAtIso,
+      deliveryId,
+    );
+  },
+
+  /**
+   * Mark a delivery failed, stamping finished_at and (when provided) scheduling
+   * the next retry attempt in one write.
+   */
+  markDeliveryFailed(
+    deliveryId: string,
+    params: {
+      errorMessage?: string | null;
+      resultPreview?: string | null;
+      nextRetryAtIso?: string;
+    } = {},
+  ): void {
+    const db = getConnection();
+    db.prepare(
+      `UPDATE webhook_deliveries
+       SET status = 'failed', error_message = ?, result_preview = ?, finished_at = ?,
+           next_retry_at = COALESCE(?, next_retry_at)
+       WHERE delivery_id = ?`,
+    ).run(
+      params.errorMessage ?? null,
+      params.resultPreview ?? null,
+      nowIso(),
+      params.nextRetryAtIso ?? null,
+      deliveryId,
+    );
+  },
+
+  incrementDeliveryAttempt(deliveryId: string): void {
+    const db = getConnection();
+    db.prepare(`UPDATE webhook_deliveries SET attempt = attempt + 1 WHERE delivery_id = ?`).run(
+      deliveryId,
+    );
+  },
+
+  /** Prepare a previously-failed delivery for another dispatch (replay/retry). */
+  resetDeliveryForReplay(deliveryId: string): void {
+    const db = getConnection();
+    db.prepare(
+      `UPDATE webhook_deliveries
+       SET status = 'accepted', error_message = NULL, result_preview = NULL,
+           attempt = attempt + 1, next_retry_at = NULL, finished_at = NULL
+       WHERE delivery_id = ?`,
+    ).run(deliveryId);
+  },
+
+  /**
+   * Failed deliveries whose source still allows automatic retries and whose
+   * next_retry_at has passed, ordered soonest-first.
+   */
+  listRetryableDeliveries(nowIsoTime: string): WebhookDelivery[] {
+    const db = getConnection();
+    const rows = db
+      .prepare(
+        `SELECT d.* FROM webhook_deliveries d
+         JOIN webhook_sources s ON s.source_id = d.source_id
+         WHERE d.status = 'failed'
+           AND d.next_retry_at IS NOT NULL
+           AND datetime(d.next_retry_at) <= datetime(?)
+           AND s.retry_max > 0
+           AND d.attempt <= s.retry_max
+         ORDER BY d.next_retry_at ASC`,
+      )
+      .all(nowIsoTime) as DeliveryRow[];
+    return rows.map(mapDelivery);
   },
 };

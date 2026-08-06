@@ -87,6 +87,11 @@ export function useChatRealtimeHandlers({
   // listener so back-to-back permission events can dedupe and re-arm the
   // notification sound before React finishes a rerender.
   const pendingPermissionRequestsRef = useRef(pendingPermissionRequests);
+  // Replayed run frames keep their original normalized id. Tracking those ids
+  // lets a remounted chat recover missed frames while dropping an overlapping
+  // replay from another subscription, without treating a later run's seq=1
+  // as stale merely because an earlier run used the same session id.
+  const processedEventIdsRef = useRef(new Map<string, Set<string>>());
 
   useEffect(() => {
     pendingPermissionRequestsRef.current = pendingPermissionRequests;
@@ -104,9 +109,33 @@ export function useChatRealtimeHandlers({
       // routed into whatever session happens to be on screen.
       const sid = (typeof msg.sessionId === 'string' && msg.sessionId) || null;
 
-      // Record replay progress for every sequenced live event.
-      if (sid && typeof msg.seq === 'number') {
+      // Every live run frame is sequenced. Reconnects and periodic status
+      // refreshes can replay a frame that this socket already received, so
+      // delivery must be idempotent before any stream text is appended.
+      if (sid && typeof msg.seq === 'number' && Number.isFinite(msg.seq)) {
         const known = lastSeqRef.current.get(sid) ?? 0;
+        const eventId = typeof msg.id === 'string' && msg.id ? msg.id : null;
+        if (eventId) {
+          let processedIds = processedEventIdsRef.current.get(sid);
+          if (!processedIds) {
+            processedIds = new Set<string>();
+            processedEventIdsRef.current.set(sid, processedIds);
+          }
+          if (processedIds.has(eventId)) {
+            return;
+          }
+          processedIds.add(eventId);
+          if (processedIds.size > 5000) {
+            const oldest = processedIds.values().next().value;
+            if (typeof oldest === 'string') {
+              processedIds.delete(oldest);
+            }
+          }
+        } else if (msg.seq <= known) {
+          // Older providers may omit ids; keep the sequence fallback for
+          // those frames only.
+          return;
+        }
         if (msg.seq > known) {
           lastSeqRef.current.set(sid, msg.seq);
         }
@@ -214,9 +243,6 @@ export function useChatRealtimeHandlers({
             sessionStore.updateThinkingStream(sid, entry.text, provider);
           }, 100);
         }
-        if (sid !== activeViewSessionId) {
-          sessionStore.appendRealtime(sid, msg as unknown as NormalizedMessage);
-        }
         return;
       }
 
@@ -236,10 +262,6 @@ export function useChatRealtimeHandlers({
             entry.timer = null;
             sessionStore.updateStreaming(sid, entry.text, provider);
           }, 100);
-        }
-        // Also route to store for non-active sessions
-        if (sid !== activeViewSessionId) {
-          sessionStore.appendRealtime(sid, msg as unknown as NormalizedMessage);
         }
         return;
       }
@@ -276,6 +298,14 @@ export function useChatRealtimeHandlers({
       // --- UI side effects for specific kinds ---
       switch (msg.kind) {
         case 'complete': {
+          // Sequence numbers belong to one provider run. A later message in
+          // the same conversation starts a fresh run, so do not let the old
+          // cursor suppress its seq=1 stream after this terminal frame.
+          if (sid) {
+            lastSeqRef.current.delete(sid);
+            processedEventIdsRef.current.delete(sid);
+          }
+
           // Flush any remaining streaming state for this session only.
           if (sid) {
             const streamEntry = streamBuffersRef.current.get(sid);
@@ -370,7 +400,9 @@ export function useChatRealtimeHandlers({
         }
 
         case 'status': {
-          if (msg.text === 'token_budget' && msg.tokenBudget) {
+          // Token telemetry is stored for the currently visible session only;
+          // a background run must not replace the modal's usage numbers.
+          if (msg.text === 'token_budget' && msg.tokenBudget && sid === activeViewSessionId) {
             setTokenBudget(msg.tokenBudget as Record<string, unknown>);
           } else if (msg.text && sid) {
             onSessionProcessing?.(sid, {

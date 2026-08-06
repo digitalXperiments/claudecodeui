@@ -4,6 +4,8 @@ import { AppError, asyncHandler } from '@/shared/utils.js';
 import { missionControlDb } from '@/modules/mission-control/mission-control.repository.js';
 import {
   applyItemAction,
+  previewItemResolution,
+  retryItem,
   runSectionProduce,
 } from '@/modules/mission-control/mission-control-runner.service.js';
 import { syncMissionControlSchedules } from '@/modules/mission-control/mission-control-scheduler.service.js';
@@ -338,6 +340,30 @@ router.post(
       return;
     }
     res.json({ deleted: false, item, pendingCount });
+  }),
+);
+
+// POST /items/:id/retry — re-run produce for just this item
+router.post(
+  '/items/:id/retry',
+  asyncHandler(async (req, res) => {
+    const itemId = paramId(req.params.id);
+    const result = await retryItem(itemId);
+    res.json(result);
+  }),
+);
+
+// POST /items/:id/preview — show what resolving this item would produce
+router.post(
+  '/items/:id/preview',
+  asyncHandler(async (req, res) => {
+    const actionId = readString(req.body?.actionId).trim() || undefined;
+    const body =
+      req.body?.body && typeof req.body.body === 'object' && !Array.isArray(req.body.body)
+        ? (req.body.body as Record<string, unknown>)
+        : undefined;
+    const result = await previewItemResolution(paramId(req.params.id), actionId, body);
+    res.json(result);
   }),
 );
 

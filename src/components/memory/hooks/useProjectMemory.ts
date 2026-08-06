@@ -3,6 +3,9 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { authenticatedFetch } from '../../../utils/api';
 import type {
   ApiResponse,
+  MemoryCurationApplyResult,
+  MemoryCurationResult,
+  MemoryCurationSuggestion,
   ProjectMemoryStatus,
   ProjectMemoryStatusResponse,
   ProjectMemoryVaultStats,
@@ -189,5 +192,81 @@ export function useProjectMemory({ workspacePath }: UseProjectMemoryArgs) {
     void refreshVaultStats();
   }, [refreshVaultStats]);
 
-  return { status, isLoading, isBusy, error, refresh, enable, disable, rescaffold, vaultStats, isLoadingStats, refreshVaultStats };
+  const [isCurating, setIsCurating] = useState(false);
+  const [curationResult, setCurationResult] = useState<MemoryCurationResult | null>(null);
+  const [curationError, setCurationError] = useState<string | null>(null);
+
+  const curate = useCallback(async () => {
+    if (!workspacePath) {
+      throw new Error('Select a project first.');
+    }
+    setIsCurating(true);
+    setCurationError(null);
+    try {
+      const response = await authenticatedFetch('/api/project-memory/curate', {
+        method: 'POST',
+        body: JSON.stringify({ workspacePath }),
+      });
+      const data = await toResponseJson<ApiResponse<MemoryCurationResult>>(response);
+      if (!response.ok || !data.success) {
+        throw new Error(getApiErrorMessage(data, 'Failed to run memory curation'));
+      }
+      setCurationResult(data.data);
+      return data.data;
+    } catch (err) {
+      setCurationResult(null);
+      setCurationError(err instanceof Error ? err.message : 'Failed to run memory curation');
+      throw err;
+    } finally {
+      setIsCurating(false);
+    }
+  }, [workspacePath]);
+
+  const applySuggestion = useCallback(async (suggestion: MemoryCurationSuggestion) => {
+    if (!workspacePath || !status?.vaultFolder) {
+      throw new Error('Project memory is not enabled.');
+    }
+    setIsBusy(true);
+    setError(null);
+    try {
+      const response = await authenticatedFetch('/api/project-memory/curate/apply', {
+        method: 'POST',
+        body: JSON.stringify({
+          workspacePath,
+          vaultFolder: status.vaultFolder,
+          path: suggestion.path,
+          content: suggestion.content,
+        }),
+      });
+      const data = await toResponseJson<ApiResponse<MemoryCurationApplyResult>>(response);
+      if (!response.ok || !data.success) {
+        throw new Error(getApiErrorMessage(data, 'Failed to apply suggestion'));
+      }
+      return data.data;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to apply suggestion');
+      throw err;
+    } finally {
+      setIsBusy(false);
+    }
+  }, [workspacePath, status?.vaultFolder]);
+
+  return {
+    status,
+    isLoading,
+    isBusy,
+    error,
+    refresh,
+    enable,
+    disable,
+    rescaffold,
+    vaultStats,
+    isLoadingStats,
+    refreshVaultStats,
+    curate,
+    applySuggestion,
+    isCurating,
+    curationResult,
+    curationError,
+  };
 }

@@ -267,7 +267,10 @@ function handleChatSubscribe(
       timestamp: new Date().toISOString(),
     });
 
-    // Replay only for RUNNING runs, strictly after the ack. Completed runs
+    // Replay only for RUNNING runs, strictly after the ack. Repeated subscribe
+    // messages can therefore send an overlapping buffer, but the frontend
+    // treats the stable event ids as idempotency keys before appending stream
+    // text. Completed runs
     // are fully persisted to the provider transcript and served over REST —
     // replaying them (e.g. after a page reload where the client's lastSeq is
     // 0) would duplicate messages the history fetch already returned.

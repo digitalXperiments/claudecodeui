@@ -129,8 +129,10 @@ export class ChatSessionWriter {
    * Keeps the `updateWebSocket` name because provider runtimes feature-detect
    * it as part of the `WebSocketWriter`-compatible surface.
    */
-  updateWebSocket(newConnection: RealtimeClientConnection): void {
+  updateWebSocket(newConnection: RealtimeClientConnection): boolean {
+    const wasAlreadyAttached = this.connections.has(newConnection);
     this.connections.add(newConnection);
+    return !wasAlreadyAttached;
   }
 
   /**

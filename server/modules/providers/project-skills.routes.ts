@@ -1,7 +1,11 @@
+import path from 'node:path';
+
 import express, { type Request, type Response } from 'express';
 
 import { projectSkillsService } from '@/modules/providers/services/project-skills.service.js';
+import { testSkill } from '@/modules/providers/services/skill-test.service.js';
 import type {
+  LLMProvider,
   ProjectSkillCreateInput,
   ProviderSkillCreateEntry,
   ProviderSkillCreateFile,
@@ -127,6 +131,34 @@ const readPathParam = (value: unknown, name: string): string => {
   });
 };
 
+const KNOWN_LLM_PROVIDERS: LLMProvider[] = [
+  'claude',
+  'codex',
+  'cursor',
+  'opencode',
+  'grok',
+  'kimi',
+  'agy',
+  'pi',
+];
+
+const readTestProvider = (value: unknown): LLMProvider => {
+  const normalized = readOptionalString(value) ?? 'claude';
+  const provider = normalized.toLowerCase() as LLMProvider;
+  if (!KNOWN_LLM_PROVIDERS.includes(provider)) {
+    throw new AppError(`Unsupported provider "${normalized}".`, {
+      code: 'PROJECT_SKILL_TEST_PROVIDER_INVALID',
+      statusCode: 400,
+    });
+  }
+  return provider;
+};
+
+const readOptionalWorkspacePath = (value: unknown): string | undefined => {
+  const normalized = readOptionalString(value);
+  return normalized ? path.resolve(normalized) : undefined;
+};
+
 // ----------------- Project skills routes -----------------
 router.get(
   '/',
@@ -134,6 +166,20 @@ router.get(
     const workspacePath = readRequiredString(req.query.workspacePath, 'workspacePath');
     const skills = await projectSkillsService.listProjectSkills({ workspacePath });
     res.json(createApiSuccessResponse({ workspacePath, skills }));
+  }),
+);
+
+router.post(
+  '/test',
+  asyncHandler(async (req: Request, res: Response) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const content = readRequiredString(body.content, 'content');
+    const provider = readTestProvider(body.provider);
+    const workspacePath = readOptionalWorkspacePath(body.workspacePath);
+    const testPrompt = readOptionalString(body.testPrompt);
+
+    const result = await testSkill({ provider, content, workspacePath, testPrompt });
+    res.json(createApiSuccessResponse({ result }));
   }),
 );
 

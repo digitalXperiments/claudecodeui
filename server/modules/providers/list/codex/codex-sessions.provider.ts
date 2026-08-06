@@ -7,6 +7,8 @@ import type { IProviderSessions } from '@/shared/interfaces.js';
 import type { AnyRecord, FetchHistoryOptions, FetchHistoryResult, NormalizedMessage } from '@/shared/types.js';
 import { createNormalizedMessage, generateMessageId, readObjectRecord, sliceTailPage } from '@/shared/utils.js';
 
+import { buildCodexTokenUsage } from './codex-token-usage.js';
+
 const PROVIDER = 'codex';
 
 type CodexHistoryResult =
@@ -124,12 +126,13 @@ async function getCodexSessionMessages(
 
         if (entry.type === 'event_msg' && entry.payload?.type === 'token_count' && entry.payload?.info) {
           const info = entry.payload.info as AnyRecord;
-          if (info.total_token_usage) {
-            const usage = info.total_token_usage as AnyRecord;
-            tokenUsage = {
-              used: usage.total_tokens || 0,
-              total: info.model_context_window || 200000,
-            };
+          const normalizedUsage = buildCodexTokenUsage({
+            total: info.total_token_usage,
+            last: info.last_token_usage,
+            modelContextWindow: info.model_context_window,
+          });
+          if (normalizedUsage) {
+            tokenUsage = normalizedUsage;
           }
         }
 
@@ -158,13 +161,16 @@ async function getCodexSessionMessages(
         ) {
           const textContent = extractCodexTextContent(entry.payload.content);
           if (textContent.trim()) {
+            const isCommentary = entry.payload.phase === 'commentary';
             messages.push({
-              type: 'assistant',
+              type: isCommentary ? 'thinking' : 'assistant',
               timestamp: entry.timestamp,
               message: {
                 role: 'assistant',
                 content: textContent,
+                isReasoning: isCommentary,
               },
+              phase: entry.payload.phase,
             });
           }
         }
@@ -314,7 +320,7 @@ export class CodexSessionsProvider implements IProviderSessions {
     const ts = raw.timestamp || new Date().toISOString();
     const baseId = raw.uuid || generateMessageId('codex');
 
-    if (raw.type === 'thinking' || raw.isReasoning) {
+    if (raw.type === 'thinking' || raw.isReasoning || raw.phase === 'commentary') {
       const thinkingContent = typeof raw.message?.content === 'string'
         ? raw.message.content
         : '';

@@ -3,6 +3,7 @@ export {
   checkAuthHealth,
   getLastAuthHealthReport,
   planAuthHealthNotifications,
+  planMcpHealthNotifications,
   applyAuthHealthOutcomes,
   getDisabledProviders,
   setDisabledProviders,
@@ -17,6 +18,18 @@ export type {
   AuthHealthOpenNotification,
   AuthHealthPlanAction,
 } from '@/modules/auth-health/auth-health.service.js';
+export {
+  checkMcpServerHealth,
+  probeMcpServerHealth,
+  probeUrlReachable,
+  resolveExecutableOnPath,
+  MCP_HEALTH_DEDUPE_PREFIX,
+} from '@/modules/auth-health/mcp-health.service.js';
+export type {
+  McpServerHealthReport,
+  McpServerHealthProbe,
+  McpServerHealthStatus,
+} from '@/modules/auth-health/mcp-health.service.js';
 export {
   startAuthHealthWatchdog,
   stopAuthHealthWatchdog,

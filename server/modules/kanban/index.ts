@@ -25,11 +25,15 @@ export {
   enqueueTask,
   requeuePersisted,
   getQueueStatus,
+  isColumnAtWipLimit,
+  blockTaskForWip,
 } from '@/modules/kanban/kanban-queue.service.js';
 export {
   startKanbanScheduler,
   stopKanbanScheduler,
   syncSchedules,
   getScheduledJobCount,
+  sweepOverdueTasks,
 } from '@/modules/kanban/kanban-scheduler.service.js';
+export { ensureFeatureBranch } from '@/modules/kanban/git-branch.service.js';
 export * from '@/modules/kanban/kanban.types.js';

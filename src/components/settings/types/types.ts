@@ -31,6 +31,19 @@ export type ClaudePermissionsState = {
   skipPermissions: boolean;
 };
 
+export type NotificationChannelRule = {
+  channel: string;
+  kinds: string[];
+  sources: string[];
+  enabled: boolean;
+};
+
+export type NotificationDigestPreferences = {
+  enabled: boolean;
+  time: string;
+  channels: string[];
+};
+
 export type NotificationPreferencesState = {
   channels: {
     inApp: boolean;
@@ -43,6 +56,8 @@ export type NotificationPreferencesState = {
     stop: boolean;
     error: boolean;
   };
+  rules: NotificationChannelRule[];
+  digest?: NotificationDigestPreferences;
 };
 
 export type CursorPermissionsState = {

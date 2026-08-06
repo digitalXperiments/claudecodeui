@@ -11,6 +11,8 @@ type StandaloneShellProps = {
   isPlainShell?: boolean | null;
   isActive?: boolean;
   autoConnect?: boolean;
+  /** Keep the provider TUI from competing with an active Chatbar run. */
+  waitForChat?: boolean;
   onComplete?: ((exitCode: number) => void) | null;
   onClose?: (() => void) | null;
   title?: string | null;
@@ -27,6 +29,7 @@ export default function StandaloneShell({
   isPlainShell = null,
   isActive = true,
   autoConnect = true,
+  waitForChat = false,
   onComplete = null,
   onClose = null,
   title = null,
@@ -67,6 +70,7 @@ export default function StandaloneShell({
           initialCommand={command}
           isPlainShell={shouldUsePlainShell}
           isActive={isActive}
+          waitForChat={waitForChat}
           onProcessComplete={handleProcessComplete}
           minimal={minimal}
           autoConnect={minimal ? true : autoConnect}

@@ -52,6 +52,9 @@ function mapTask(row: KanbanTaskRow, dependsOn: string[]): KanbanTask {
     review_provider: rest.review_provider ?? null,
     implement_profile_id: rest.implement_profile_id ?? null,
     review_profile_id: rest.review_profile_id ?? null,
+    due_date: rest.due_date ?? null,
+    feature_branch: rest.feature_branch ?? null,
+    escalated_at: rest.escalated_at ?? null,
     tools: parseTools(tools_json),
     dependsOn,
   };
@@ -143,8 +146,8 @@ export const kanbanDb = {
       `INSERT INTO kanban_tasks (
          task_id, board_id, project_id, title, description, prompt, column_id, position,
          assignee_provider, review_provider, implement_profile_id, review_profile_id,
-         permission_mode, tools_json, schedule_cron, status
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         permission_mode, tools_json, schedule_cron, due_date, feature_branch, status
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       taskId,
       input.boardId,
@@ -161,6 +164,8 @@ export const kanbanDb = {
       input.permissionMode ?? 'default',
       JSON.stringify(input.tools ?? {}),
       input.scheduleCron ?? null,
+      input.dueDate ?? null,
+      input.featureBranch ?? null,
       'todo',
     );
     return kanbanDb.getTask(taskId)!;
@@ -250,6 +255,10 @@ export const kanbanDb = {
       tools_json: patch.tools !== undefined ? JSON.stringify(patch.tools) : existing.tools_json,
       schedule_cron:
         patch.scheduleCron !== undefined ? patch.scheduleCron : existing.schedule_cron,
+      due_date: patch.dueDate !== undefined ? patch.dueDate : existing.due_date,
+      feature_branch:
+        patch.featureBranch !== undefined ? patch.featureBranch : existing.feature_branch,
+      escalated_at: patch.escalatedAt !== undefined ? patch.escalatedAt : existing.escalated_at,
       status: patch.status ?? existing.status,
     };
 
@@ -258,7 +267,8 @@ export const kanbanDb = {
          title = ?, description = ?, prompt = ?, project_id = ?, column_id = ?, position = ?,
          assignee_provider = ?, review_provider = ?, implement_profile_id = ?, review_profile_id = ?,
          permission_mode = ?, tools_json = ?,
-         schedule_cron = ?, status = ?, updated_at = CURRENT_TIMESTAMP
+         schedule_cron = ?, due_date = ?, feature_branch = ?, escalated_at = ?,
+         status = ?, updated_at = CURRENT_TIMESTAMP
        WHERE task_id = ?`,
     ).run(
       next.title,
@@ -274,6 +284,9 @@ export const kanbanDb = {
       next.permission_mode,
       next.tools_json,
       next.schedule_cron,
+      next.due_date,
+      next.feature_branch,
+      next.escalated_at,
       next.status,
       taskId,
     );
@@ -360,6 +373,23 @@ export const kanbanDb = {
     const rows = db
       .prepare(`SELECT * FROM kanban_tasks WHERE status = ?`)
       .all(status) as KanbanTaskRow[];
+    return rows.map((row) => mapTask(row, kanbanDb.listDependencies(row.task_id)));
+  },
+
+  /**
+   * Tasks whose due date is before `nowIso` and that are still open work
+   * (`todo`/`queued`). Due dates are stored as ISO TEXT, so a plain string
+   * comparison is reliable for consistently-formatted values.
+   */
+  listOverdueTasks(nowIso: string): KanbanTask[] {
+    const db = getConnection();
+    const rows = db
+      .prepare(
+        `SELECT * FROM kanban_tasks
+         WHERE due_date IS NOT NULL AND due_date != '' AND due_date < ?
+           AND status IN ('todo', 'queued')`,
+      )
+      .all(nowIso) as KanbanTaskRow[];
     return rows.map((row) => mapTask(row, kanbanDb.listDependencies(row.task_id)));
   },
 

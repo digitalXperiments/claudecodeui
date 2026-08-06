@@ -1,11 +1,15 @@
+import path from 'node:path';
+
 import express, { type Request, type Response } from 'express';
 
 import { globalSkillsService } from '@/modules/providers/services/global-skills.service.js';
 import { projectMemoryService } from '@/modules/providers/services/project-memory.service.js';
+import { testSkill } from '@/modules/providers/services/skill-test.service.js';
 import { MEMORY_SKILL_DIRECTORY_NAME } from '@/modules/providers/shared/memory/memory-skill.template.js';
 import type {
   GlobalSkillCreateInput,
   GlobalSkillScope,
+  LLMProvider,
   ProviderSkillCreateEntry,
   ProviderSkillCreateFile,
 } from '@/shared/types.js';
@@ -167,12 +171,54 @@ const readPathParam = (value: unknown, name: string): string => {
   });
 };
 
+const KNOWN_LLM_PROVIDERS: LLMProvider[] = [
+  'claude',
+  'codex',
+  'cursor',
+  'opencode',
+  'grok',
+  'kimi',
+  'agy',
+  'pi',
+];
+
+const readTestProvider = (value: unknown): LLMProvider => {
+  const normalized = readOptionalString(value) ?? 'claude';
+  const provider = normalized.toLowerCase() as LLMProvider;
+  if (!KNOWN_LLM_PROVIDERS.includes(provider)) {
+    throw new AppError(`Unsupported provider "${normalized}".`, {
+      code: 'GLOBAL_SKILL_TEST_PROVIDER_INVALID',
+      statusCode: 400,
+    });
+  }
+  return provider;
+};
+
+const readOptionalWorkspacePath = (value: unknown): string | undefined => {
+  const normalized = readOptionalString(value);
+  return normalized ? path.resolve(normalized) : undefined;
+};
+
 // ----------------- Global skills routes -----------------
 router.get(
   '/',
   asyncHandler(async (_req: Request, res: Response) => {
     const skills = await globalSkillsService.listGlobalSkills();
     res.json(createApiSuccessResponse({ skills }));
+  }),
+);
+
+router.post(
+  '/test',
+  asyncHandler(async (req: Request, res: Response) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const content = readRequiredString(body.content, 'content');
+    const provider = readTestProvider(body.provider);
+    const workspacePath = readOptionalWorkspacePath(body.workspacePath);
+    const testPrompt = readOptionalString(body.testPrompt);
+
+    const result = await testSkill({ provider, content, workspacePath, testPrompt });
+    res.json(createApiSuccessResponse({ result }));
   }),
 );
 

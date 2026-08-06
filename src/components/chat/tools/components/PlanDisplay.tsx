@@ -28,6 +28,23 @@ interface PlanDisplayProps {
   toolId?: string;
 }
 
+function planTextFromUnknown(value: unknown): string {
+  if (typeof value === 'string' && value.trim()) {
+    return value.replace(/\\n/g, '\n');
+  }
+  if (!value || typeof value !== 'object') {
+    return '';
+  }
+  const record = value as Record<string, unknown>;
+  for (const key of ['plan', 'planContent', 'content', 'markdown'] as const) {
+    const candidate = record[key];
+    if (typeof candidate === 'string' && candidate.trim()) {
+      return candidate.replace(/\\n/g, '\n');
+    }
+  }
+  return '';
+}
+
 export const PlanDisplay: React.FC<PlanDisplayProps> = ({
   title,
   content,
@@ -42,6 +59,13 @@ export const PlanDisplay: React.FC<PlanDisplayProps> = ({
   const pendingRequest = permissionCtx?.pendingPermissionRequests.find(
     (r) => r.toolName === 'ExitPlanMode' || r.toolName === 'exit_plan_mode'
   );
+
+  // Grok may attach plan markdown on the permission request before (or instead
+  // of) hydrating the tool_use card input. Prefer explicit content, then the
+  // pending permission payload, so the card never stays empty while waiting.
+  const displayContent = content?.trim()
+    ? content
+    : planTextFromUnknown(pendingRequest?.input);
 
   const handleBuild = () => {
     if (pendingRequest && permissionCtx) {
@@ -66,7 +90,7 @@ export const PlanDisplay: React.FC<PlanDisplayProps> = ({
           <div className="flex items-center gap-2">
             <FileText className="h-4 w-4 shrink-0 text-muted-foreground" />
             <CardTitle className="text-sm font-semibold">
-              {isStreaming ? <Shimmer>{title}</Shimmer> : title}
+              {isStreaming && !displayContent ? <Shimmer>{title}</Shimmer> : title}
             </CardTitle>
           </div>
           <CollapsibleTrigger className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground">
@@ -78,9 +102,9 @@ export const PlanDisplay: React.FC<PlanDisplayProps> = ({
         {/* Collapsible content */}
         <CollapsibleContent>
           <CardContent className="px-4 pb-4 pt-3">
-            {content ? (
+            {displayContent ? (
               <MarkdownContent
-                content={content}
+                content={displayContent}
                 className="prose prose-sm max-w-none dark:prose-invert"
               />
             ) : isStreaming ? (

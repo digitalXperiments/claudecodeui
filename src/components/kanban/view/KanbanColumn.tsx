@@ -14,10 +14,19 @@ type KanbanColumnProps = {
   onOpenTask: (task: KanbanTask) => void;
   onAddTask: (columnId: string) => void;
   onToggleRunOnEnter: (columnId: string, runOnEnter: boolean) => void;
+  onSetColumnWipLimit: (columnId: string, wipLimit?: number) => void;
   projectNameById: Map<string, string> | null;
   /** Lookup for dependency titles on cards. */
   taskById?: Map<string, KanbanTask>;
 };
+
+/** Cycling through these on the WIP badge toggles the column's limit. */
+const WIP_PRESETS = [undefined, 1, 2, 3, 5] as const;
+
+function nextWipPreset(current?: number): number | undefined {
+  const index = WIP_PRESETS.findIndex((p) => p === current);
+  return WIP_PRESETS[(index + 1) % WIP_PRESETS.length];
+}
 
 export default function KanbanColumn({
   column,
@@ -25,6 +34,7 @@ export default function KanbanColumn({
   onOpenTask,
   onAddTask,
   onToggleRunOnEnter,
+  onSetColumnWipLimit,
   projectNameById,
   taskById,
 }: KanbanColumnProps) {
@@ -34,15 +44,42 @@ export default function KanbanColumn({
   });
 
   const sortedTasks = [...tasks].sort((a, b) => a.position - b.position);
+  const activeCount = sortedTasks.filter(
+    (t) => t.status === 'queued' || t.status === 'running',
+  ).length;
+  const hasWip = typeof column.wipLimit === 'number' && column.wipLimit >= 0;
+  const atWip = hasWip && activeCount >= (column.wipLimit as number);
 
   return (
     <div className="flex h-full w-[min(20rem,calc(100vw-2rem))] shrink-0 snap-center flex-col rounded-lg bg-muted/40 md:w-72">
       <div className="flex flex-shrink-0 items-center justify-between gap-2 px-3 py-2">
         <div className="flex min-w-0 items-center gap-1.5 text-sm font-semibold text-foreground">
           <span className="truncate">{column.name}</span>
-          <span className="rounded bg-muted px-1.5 text-xs font-normal text-muted-foreground">
-            {sortedTasks.length}
-          </span>
+          <Tooltip
+            content={
+              hasWip
+                ? `WIP limit ${column.wipLimit} — click to change (active ${activeCount})`
+                : 'No WIP limit — click to set a limit on active tasks'
+            }
+            position="top"
+          >
+            <button
+              type="button"
+              onClick={() => onSetColumnWipLimit(column.id, nextWipPreset(column.wipLimit))}
+              className={cn(
+                'rounded px-1.5 text-xs font-normal transition-colors hover:bg-accent',
+                hasWip
+                  ? atWip
+                    ? 'bg-destructive/15 text-destructive'
+                    : 'bg-muted text-muted-foreground'
+                  : 'bg-muted text-muted-foreground',
+              )}
+              aria-label={`WIP limit for ${column.name}`}
+              title={`WIP limit ${hasWip ? column.wipLimit : 'off'} (${activeCount} active)`}
+            >
+              {hasWip ? `${activeCount}/${column.wipLimit}` : sortedTasks.length}
+            </button>
+          </Tooltip>
         </div>
         <div className="flex shrink-0 items-center gap-0.5">
           <Tooltip

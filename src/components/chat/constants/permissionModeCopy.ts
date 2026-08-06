@@ -80,10 +80,10 @@ export const PERMISSION_MODE_COPY: Record<
       summary: 'Workspace write sandbox; only trusted commands auto-run, others need approval.',
       technical: 'sandboxMode=workspace-write, approvalPolicy=untrusted',
     },
-    acceptEdits: {
-      label: 'Accept Edits',
-      summary: 'Workspace write sandbox with no approval prompts for commands in the project.',
-      technical: 'sandboxMode=workspace-write, approvalPolicy=never',
+    auto: {
+      label: 'Auto',
+      summary: 'A model reviews requested actions; safe ones run automatically and uncertain ones can prompt here.',
+      technical: 'sandboxMode=workspace-write, approvalPolicy=on-request, approvalsReviewer=auto_review',
     },
     bypassPermissions: {
       label: 'Bypass Permissions',

@@ -4,12 +4,14 @@ import {
   Check,
   Clock,
   Download,
+  Eye,
   Loader2,
   Pencil,
   Play,
   Plus,
   Radar,
   RefreshCw,
+  RotateCw,
   Trash2,
   X,
 } from 'lucide-react';
@@ -143,6 +145,15 @@ export default function MissionControlPanel({
   const [editingBodyId, setEditingBodyId] = useState<string | null>(null);
   const [bodyDraft, setBodyDraft] = useState('');
   const [bodyError, setBodyError] = useState<string | null>(null);
+
+  // Per-item retry / resolution preview
+  const [retryingItemId, setRetryingItemId] = useState<string | null>(null);
+  const [previewingItemId, setPreviewingItemId] = useState<string | null>(null);
+  const [previewData, setPreviewData] = useState<{
+    itemId: string;
+    type: 'static' | 'agent';
+    preview: Record<string, unknown>;
+  } | null>(null);
 
   const projectNameById = useMemo(() => {
     const map = new Map<string, string>();
@@ -525,6 +536,57 @@ export default function MissionControlPanel({
       setError(err instanceof Error ? err.message : 'Action failed');
     } finally {
       setActingItemId(null);
+    }
+  };
+
+  /** Re-run produce for just this item and refresh it in place. */
+  const retryItem = async (item: McItem) => {
+    setRetryingItemId(item.item_id);
+    setError(null);
+    setStatusMessage(null);
+    try {
+      const result = await missionControlApi.retryItem(item.item_id);
+      if (result.success) {
+        setStatusMessage(result.message || 'Item retried');
+      } else {
+        setError(result.error || 'Retry failed');
+      }
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Retry failed');
+    } finally {
+      setRetryingItemId(null);
+    }
+  };
+
+  /** Preview the resolution result for an action without committing it. */
+  const previewItem = async (item: McItem, actionId: string) => {
+    setPreviewingItemId(item.item_id);
+    setError(null);
+    try {
+      let body: Record<string, unknown> | undefined;
+      if (editingBodyId === item.item_id) {
+        const parsed = parseBodyDraft();
+        if (!parsed) {
+          setPreviewingItemId(null);
+          return;
+        }
+        body = parsed;
+      }
+      const result = await missionControlApi.previewItem(item.item_id, actionId, body);
+      if (result.success && result.preview) {
+        setPreviewData({
+          itemId: item.item_id,
+          type: result.type ?? 'agent',
+          preview: result.preview,
+        });
+      } else {
+        setError(result.error || 'Preview failed');
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Preview failed');
+    } finally {
+      setPreviewingItemId(null);
     }
   };
 
@@ -1027,29 +1089,93 @@ export default function MissionControlPanel({
                         : item.status !== 'resolving'
                           ? item.actions.filter((a) => a.kind === 'delete' || a.id === 'delete')
                           : [];
-                      if (visibleActions.length === 0) return null;
+                      if (visibleActions.length === 0 && !actionable) return null;
+                      const itemPreview = previewData?.itemId === item.item_id ? previewData : null;
                       return (
-                        <div className="flex flex-wrap gap-2">
-                          {visibleActions.map((action) => (
-                            <button
-                              key={action.id}
-                              type="button"
-                              disabled={actingItemId === item.item_id}
-                              onClick={() => void actOnItem(item, action.id)}
-                              className={`inline-flex min-h-9 touch-manipulation items-center gap-1 rounded-lg px-3 py-2 text-xs font-medium transition-colors disabled:opacity-50 sm:min-h-0 sm:py-1.5 ${actionButtonClass(action.style)}`}
-                            >
-                              {actingItemId === item.item_id ? (
-                                <Loader2 className="h-3 w-3 animate-spin" />
-                              ) : action.kind === 'approve' ? (
-                                <Check className="h-3 w-3" />
-                              ) : action.kind === 'delete' ? (
-                                <Trash2 className="h-3 w-3" />
-                              ) : action.kind === 'dismiss' ? (
-                                <X className="h-3 w-3" />
+                        <div className="space-y-2">
+                          {itemPreview ? (
+                            <div className="rounded-lg border border-primary/30 bg-primary/5 p-2.5">
+                              <div className="mb-1.5 flex items-center justify-between gap-2">
+                                <p className="text-[10px] font-medium uppercase text-muted-foreground">
+                                  {itemPreview.type === 'static'
+                                    ? 'Preview — instant resolve'
+                                    : 'Preview — agent result'}
+                                </p>
+                                <button
+                                  type="button"
+                                  className="shrink-0 text-muted-foreground hover:text-foreground"
+                                  onClick={() => setPreviewData(null)}
+                                  aria-label="Close preview"
+                                >
+                                  <X className="h-3.5 w-3.5" />
+                                </button>
+                              </div>
+                              {itemPreview.type === 'static' ? (
+                                <p className="mb-1.5 text-[10px] text-muted-foreground">
+                                  This action resolves instantly — the body below is what would be
+                                  approved.
+                                </p>
                               ) : null}
-                              {action.label}
-                            </button>
-                          ))}
+                              <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-background p-2.5 text-[11px] leading-relaxed text-foreground/90">
+                                {JSON.stringify(itemPreview.preview, null, 2)}
+                              </pre>
+                            </div>
+                          ) : null}
+                          <div className="flex flex-wrap gap-2">
+                            {actionable ? (
+                              <button
+                                type="button"
+                                disabled={actingItemId === item.item_id || retryingItemId === item.item_id}
+                                onClick={() => void retryItem(item)}
+                                title="Re-run produce for just this item"
+                                className="inline-flex min-h-9 touch-manipulation items-center gap-1 rounded-lg border border-border bg-background px-3 py-2 text-xs font-medium text-foreground transition-colors hover:bg-muted/70 disabled:opacity-50 sm:min-h-0 sm:py-1.5"
+                              >
+                                {retryingItemId === item.item_id ? (
+                                  <Loader2 className="h-3 w-3 animate-spin" />
+                                ) : (
+                                  <RotateCw className="h-3 w-3" />
+                                )}
+                                Retry
+                              </button>
+                            ) : null}
+                            {visibleActions.map((action) => (
+                              <div key={action.id} className="flex items-center gap-1.5">
+                                <button
+                                  type="button"
+                                  disabled={actingItemId === item.item_id}
+                                  onClick={() => void actOnItem(item, action.id)}
+                                  className={`inline-flex min-h-9 touch-manipulation items-center gap-1 rounded-lg px-3 py-2 text-xs font-medium transition-colors disabled:opacity-50 sm:min-h-0 sm:py-1.5 ${actionButtonClass(action.style)}`}
+                                >
+                                  {actingItemId === item.item_id ? (
+                                    <Loader2 className="h-3 w-3 animate-spin" />
+                                  ) : action.kind === 'approve' ? (
+                                    <Check className="h-3 w-3" />
+                                  ) : action.kind === 'delete' ? (
+                                    <Trash2 className="h-3 w-3" />
+                                  ) : action.kind === 'dismiss' ? (
+                                    <X className="h-3 w-3" />
+                                  ) : null}
+                                  {action.label}
+                                </button>
+                                {actionable && action.kind === 'approve' ? (
+                                  <button
+                                    type="button"
+                                    disabled={actingItemId === item.item_id || previewingItemId === item.item_id}
+                                    onClick={() => void previewItem(item, action.id)}
+                                    title={`Preview “${action.label}” result`}
+                                    className="inline-flex h-9 touch-manipulation items-center gap-1 rounded-lg border border-border bg-background px-2 text-[10px] font-medium text-muted-foreground transition-colors hover:bg-muted/70 hover:text-foreground disabled:opacity-50 sm:h-auto sm:py-1.5"
+                                  >
+                                    {previewingItemId === item.item_id ? (
+                                      <Loader2 className="h-3 w-3 animate-spin" />
+                                    ) : (
+                                      <Eye className="h-3 w-3" />
+                                    )}
+                                    Preview
+                                  </button>
+                                ) : null}
+                              </div>
+                            ))}
+                          </div>
                         </div>
                       );
                     })()}

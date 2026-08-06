@@ -3,6 +3,28 @@
  * Defines display behavior for all tool types 
  */
 
+/**
+ * Claude puts plan markdown on `input.plan`. Grok's exit_plan_mode is often
+ * `{}` until the server hydrates `plan` from session plan.md — accept several
+ * field names and reject non-string objects so PlanDisplay never gets `{}`.
+ */
+function extractPlanMarkdown(input: unknown): string {
+  if (typeof input === 'string' && input.trim()) {
+    return input.replace(/\\n/g, '\n');
+  }
+  if (!input || typeof input !== 'object') {
+    return '';
+  }
+  const record = input as Record<string, unknown>;
+  for (const key of ['plan', 'planContent', 'content', 'markdown'] as const) {
+    const value = record[key];
+    if (typeof value === 'string' && value.trim()) {
+      return value.replace(/\\n/g, '\n');
+    }
+  }
+  return '';
+}
+
 export interface ToolDisplayConfig {
   input: {
     type: 'one-line' | 'collapsible' | 'plan' | 'hidden';
@@ -525,7 +547,7 @@ export const TOOL_CONFIGS: Record<string, ToolDisplayConfig> = {
       defaultOpen: true,
       contentType: 'markdown',
       getContentProps: (input) => ({
-        content: input.plan?.replace(/\\n/g, '\n') || input.plan
+        content: extractPlanMarkdown(input),
       })
     },
     result: {
@@ -533,7 +555,7 @@ export const TOOL_CONFIGS: Record<string, ToolDisplayConfig> = {
     }
   },
 
-  // Also register as ExitPlanMode (the actual tool name used by Claude)
+  // Also register as ExitPlanMode (the actual tool name used by Claude / Grok)
   ExitPlanMode: {
     input: {
       type: 'plan',
@@ -541,7 +563,7 @@ export const TOOL_CONFIGS: Record<string, ToolDisplayConfig> = {
       defaultOpen: true,
       contentType: 'markdown',
       getContentProps: (input) => ({
-        content: input.plan?.replace(/\\n/g, '\n') || input.plan
+        content: extractPlanMarkdown(input),
       })
     },
     result: {

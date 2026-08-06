@@ -256,6 +256,7 @@ router.get('/clone-progress', async (req, res) => {
     const queryParams = req.query as Record<string, unknown>;
     const workspacePath = readQueryStringValue(queryParams.path);
     const githubUrl = readQueryStringValue(queryParams.githubUrl);
+    const enableMemory = ['1', 'true'].includes(readQueryStringValue(queryParams.memoryEnabled).trim());
     const githubTokenId = readOptionalNumericQueryValue(queryParams.githubTokenId);
     const newGithubToken = readQueryStringValue(queryParams.newGithubToken) || null;
 
@@ -272,6 +273,7 @@ router.get('/clone-progress', async (req, res) => {
       {
         workspacePath,
         githubUrl,
+        enableMemory,
         githubTokenId,
         newGithubToken,
         userId,
@@ -280,8 +282,8 @@ router.get('/clone-progress', async (req, res) => {
         onProgress: (message) => {
           sendEvent('progress', { message });
         },
-        onComplete: ({ project, message }) => {
-          sendEvent('complete', { project, message });
+        onComplete: ({ project, message, memory, memoryError }) => {
+          sendEvent('complete', { project, message, memory, memoryError });
         },
       },
     );

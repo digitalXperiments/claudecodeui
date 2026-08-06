@@ -247,6 +247,26 @@ test('attachConnection fans the live stream out to every attached socket', async
   });
 });
 
+test('attaching the same socket twice is idempotent', async () => {
+  await withIsolatedDatabase(() => {
+    sessionsDb.createAppSession('app-run-12', 'opencode', '/workspace/demo');
+    const connection = new FakeConnection();
+    const run = chatRunRegistry.startRun({
+      appSessionId: 'app-run-12',
+      provider: 'opencode',
+      providerSessionId: null,
+      connection,
+      userId: null,
+    });
+    assert.ok(run);
+
+    assert.equal(chatRunRegistry.attachConnection('app-run-12', connection), false);
+    run.writer.send({ kind: 'stream_delta', provider: 'opencode', sessionId: 'o', content: 'once' });
+
+    assert.deepEqual(connection.frames.map((frame) => frame.content), ['once']);
+  });
+});
+
 test('detachConnection removes a closed socket from every run', async () => {
   await withIsolatedDatabase(() => {
     sessionsDb.createAppSession('app-run-10', 'opencode', '/workspace/demo');

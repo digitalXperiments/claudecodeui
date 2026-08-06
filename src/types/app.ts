@@ -6,6 +6,8 @@ export type ProviderModelOption = {
   description?: string;
   /** Concrete model id the provider resolves `value` to (e.g. `claude-opus-5[1m]`). */
   resolvedModel?: string;
+  /** Whether the provider advertises Codex Fast mode for this model. */
+  supportsFastMode?: boolean;
   effort?: {
     default?: string;
     values: {

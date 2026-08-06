@@ -11,6 +11,8 @@ import { providerModelsService } from './modules/providers/services/provider-mod
 import { mcpCatalogService } from './modules/providers/services/mcp-catalog.service.js';
 import { appendImagesInputTag } from './shared/image-attachments.js';
 import {
+  ensureExitPlanModeToolInput,
+  readGrokSessionPlanMarkdown,
   readGrokSessionTokenUsage,
   resolveGrokSessionDir,
 } from './modules/providers/list/grok/grok-sessions.provider.js';
@@ -863,15 +865,16 @@ async function spawnGrok(command, options = {}, ws) {
     // Exit-plan approval: Grok uses `_x.ai/exit_plan_mode` (mirrors Claude's
     // ExitPlanMode interactive tool). The PlanDisplay component already keys
     // off toolName ExitPlanMode / exit_plan_mode.
+    //
+    // Important: Grok invokes exit_plan_mode with empty args (`{}`). The plan
+    // body lives in session `plan.md` (agent writes it before exiting). Read
+    // that file so PlanDisplay is not stuck on "Generating plan…".
     if (isRequest && (message.method === '_x.ai/exit_plan_mode' || message.method === 'x.ai/exit_plan_mode')) {
       const params = message.params || {};
       const requestId = createRequestId();
       const toolName = 'ExitPlanMode';
-      const toolInput = {
-        plan: typeof params.plan === 'string'
-          ? params.plan
-          : (typeof params.planContent === 'string' ? params.planContent : params),
-      };
+      const planFromDisk = readGrokSessionPlanMarkdown(workingDir, finalSessionId);
+      const toolInput = ensureExitPlanModeToolInput(params, planFromDisk);
 
       // Headless runs have no human to review the plan — reject rather than
       // hang forever or silently let it proceed unreviewed.
@@ -927,7 +930,11 @@ async function spawnGrok(command, options = {}, ws) {
         : toolName === 'exit_plan_mode'
           ? 'ExitPlanMode'
           : toolName;
-      const toolInput = toolCall.rawInput ?? toolCall.content;
+      let toolInput = toolCall.rawInput ?? toolCall.content;
+      if (uiToolName === 'ExitPlanMode') {
+        const planFromDisk = readGrokSessionPlanMarkdown(workingDir, finalSessionId);
+        toolInput = ensureExitPlanModeToolInput(toolInput, planFromDisk);
+      }
 
       // Headless runs (kanban/mission-control) have no websocket/human to
       // answer this — waiting indefinitely (timeoutMs: 0 below) used to hang
@@ -1005,6 +1012,15 @@ async function spawnGrok(command, options = {}, ws) {
 
     const normalized = sessionsService.normalizeMessage('grok', update, finalSessionId);
     for (const msg of normalized) {
+      // Hydrate ExitPlanMode tool cards with plan.md — Grok's tool_call rawInput
+      // is `{}`, so without this the chatbar shows "Generating plan…" forever.
+      if (
+        msg?.kind === 'tool_use'
+        && (msg.toolName === 'ExitPlanMode' || msg.toolName === 'exit_plan_mode')
+      ) {
+        const planFromDisk = readGrokSessionPlanMarkdown(workingDir, finalSessionId);
+        msg.toolInput = ensureExitPlanModeToolInput(msg.toolInput, planFromDisk);
+      }
       ws.send(msg);
     }
   });

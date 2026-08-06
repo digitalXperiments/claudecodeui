@@ -51,6 +51,13 @@ export type ObsidianConnectionTestResponse = {
   result: ObsidianConnectionTestResult;
 };
 
+export type StaleVaultNote = {
+  path: string;
+  relativePath: string;
+  lastModified: string;
+  daysOld: number;
+};
+
 export type ProjectMemoryVaultStats = {
   workspacePath: string;
   vaultFolder: string;
@@ -59,8 +66,31 @@ export type ProjectMemoryVaultStats = {
   entities: number;
   sessions: number;
   lastSessionWrite: string | null;
+  staleNotes: StaleVaultNote[];
+  totalFiles: number;
 };
 
 export type ProjectMemoryVaultStatsResponse = {
   stats: ProjectMemoryVaultStats;
+};
+
+export type MemoryCurationSuggestion = {
+  action: 'create' | 'update' | 'link';
+  path: string;
+  content: string;
+  reason: string;
+  confidence: number;
+};
+
+export type MemoryCurationResult = {
+  success: boolean;
+  suggestions: MemoryCurationSuggestion[];
+  error?: string;
+};
+
+export type MemoryCurationApplyResult = {
+  success: boolean;
+  created: boolean;
+  path: string;
+  error?: string;
 };

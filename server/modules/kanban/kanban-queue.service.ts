@@ -6,7 +6,13 @@ import {
   setOnTaskDone,
   type KanbanEnqueueContext,
 } from '@/modules/kanban/kanban-automation.service.js';
-import { COLUMN_IN_PROGRESS, type KanbanRunTrigger } from '@/modules/kanban/kanban.types.js';
+import {
+  COLUMN_IN_PROGRESS,
+  COLUMN_REVIEW,
+  type KanbanBoard,
+  type KanbanRunTrigger,
+  type KanbanTask,
+} from '@/modules/kanban/kanban.types.js';
 
 type QueueItem = { taskId: string; trigger: KanbanRunTrigger; context?: KanbanEnqueueContext };
 
@@ -23,10 +29,90 @@ const DEFAULT_CONCURRENCY = 3;
  */
 const pending: QueueItem[] = [];
 const inFlight = new Set<string>();
+/**
+ * Tasks that have already been told their column is at its WIP limit. Gates
+ * comment spam: we only annotate the first time a task is WIP-blocked, not on
+ * every re-scan while the column stays full.
+ */
+const wipBlocked = new Set<string>();
 let concurrency = DEFAULT_CONCURRENCY;
 
 function isTracked(taskId: string): boolean {
   return inFlight.has(taskId) || pending.some((item) => item.taskId === taskId);
+}
+
+/**
+ * True when the given column has `wipLimit` set and already contains at least
+ * that many active (queued or running) tasks. `excludeTaskId` / `excludeTaskIds`
+ * are ignored from the count (e.g. the task being moved within its own column).
+ */
+export function isColumnAtWipLimit(
+  board: KanbanBoard | null,
+  columnId: string,
+  options: { excludeTaskId?: string; excludeTaskIds?: string[] } = {},
+): boolean {
+  if (!board) {
+    return false;
+  }
+  const column = board.columns.find((col) => col.id === columnId);
+  const limit = column?.wipLimit;
+  if (limit === undefined || limit === null || limit <= 0) {
+    return false;
+  }
+  const excluded = new Set<string>();
+  if (options.excludeTaskId) {
+    excluded.add(options.excludeTaskId);
+  }
+  for (const id of options.excludeTaskIds ?? []) {
+    excluded.add(id);
+  }
+  let active = 0;
+  for (const task of kanbanDb.listTasksByColumn(columnId)) {
+    if (excluded.has(task.task_id)) {
+      continue;
+    }
+    if (task.status === 'queued' || task.status === 'running') {
+      active += 1;
+    }
+  }
+  return active >= limit;
+}
+
+/** Annotate a task once with the WIP-waiting comment. */
+function addWipBlockComment(taskId: string, columnName: string): void {
+  if (wipBlocked.has(taskId)) {
+    return;
+  }
+  wipBlocked.add(taskId);
+  try {
+    kanbanDb.addComment({
+      taskId,
+      authorType: 'agent',
+      author: null,
+      body: `WIP limit reached in ${columnName}; will auto-start when a slot frees.`,
+    });
+  } catch {
+    // best-effort
+  }
+}
+
+/**
+ * If the task's column is at its WIP limit, park the task back at `todo` with a
+ * hint comment and return true (caller should not enqueue). The task is picked
+ * up again by `releaseWipWaiters` the next time a run in that column settles.
+ */
+export function blockTaskForWip(
+  task: KanbanTask,
+  board: KanbanBoard | null,
+  options: { excludeTaskId?: string; excludeTaskIds?: string[] } = {},
+): boolean {
+  if (!isColumnAtWipLimit(board, task.column_id, { excludeTaskId: task.task_id, ...options })) {
+    return false;
+  }
+  kanbanDb.setTaskStatus(task.task_id, 'todo');
+  const columnName = board?.columns.find((col) => col.id === task.column_id)?.name ?? task.column_id;
+  addWipBlockComment(task.task_id, columnName);
+  return true;
 }
 
 function drain(): void {
@@ -61,7 +147,12 @@ function drain(): void {
  * Review triggers require a review agent; all other triggers require an
  * implementation agent.
  */
-export function enqueueTask(taskId: string, trigger: KanbanRunTrigger, context?: KanbanEnqueueContext): void {
+export function enqueueTask(
+  taskId: string,
+  trigger: KanbanRunTrigger,
+  context?: KanbanEnqueueContext,
+  options: { excludeWipTaskIds?: string[] } = {},
+): void {
   if (isTracked(taskId)) {
     return;
   }
@@ -90,6 +181,12 @@ export function enqueueTask(taskId: string, trigger: KanbanRunTrigger, context?:
     kanbanDb.setTaskStatus(taskId, 'blocked');
     return;
   }
+  // WIP gate: auto-runs respect the destination column's active-task cap.
+  const board = kanbanDb.getBoard(task.board_id);
+  if (blockTaskForWip(task, board, { excludeTaskIds: options.excludeWipTaskIds })) {
+    return;
+  }
+  wipBlocked.delete(task.task_id);
   kanbanDb.setTaskStatus(taskId, 'queued');
   pending.push({ taskId, trigger, context });
   drain();
@@ -123,6 +220,18 @@ function cascadeDependents(doneTaskId: string): void {
       // We call the repository directly (not the HTTP route) so this move does
       // not re-fire the column-move trigger. Use an interim `todo` status —
       // `enqueueTask` owns the lifecycle and would no-op if we pre-set `queued`.
+      const board = kanbanDb.getBoard(dependent.board_id);
+      if (isColumnAtWipLimit(board, COLUMN_IN_PROGRESS, { excludeTaskId: dependentId })) {
+        // WIP full — keep the dependent parked with a hint; `releaseWipWaiters`
+        // promotes it the next time a run in In Progress settles.
+        if (dependent.status !== 'blocked') {
+          kanbanDb.setTaskStatus(dependentId, 'blocked');
+        }
+        const columnName =
+          board?.columns.find((col) => col.id === COLUMN_IN_PROGRESS)?.name ?? 'In Progress';
+        addWipBlockComment(dependentId, columnName);
+        continue;
+      }
       if (dependent.column_id !== COLUMN_IN_PROGRESS) {
         kanbanDb.moveTaskToColumn(dependentId, COLUMN_IN_PROGRESS, 'todo');
       }
@@ -134,9 +243,71 @@ function cascadeDependents(doneTaskId: string): void {
   }
 }
 
+/** True when the task has the agent its column needs for an auto-run. */
+function taskHasAutoRunAgent(task: KanbanTask): boolean {
+  return task.column_id === COLUMN_REVIEW
+    ? Boolean(task.review_provider)
+    : Boolean(task.assignee_provider);
+}
+
+/**
+ * A run in `settledTaskId`'s column has settled, freeing a WIP slot (the
+ * settling task is leaving the run lifecycle). Re-scan for tasks that were
+ * parked because their column was at its WIP limit (tracked in `wipBlocked`) —
+ * in the settled column, or parked as `blocked` on the board — and let
+ * `enqueueTask` restart what it can. `enqueueTask` dedupes tracked tasks and
+ * re-checks the WIP limit, so this cannot loop or over-enqueue.
+ *
+ * Only tasks in `wipBlocked` are considered: an idle `todo` task with an agent
+ * was never asked to wait, so settling a run must not start it unprompted.
+ *
+ * The settling task itself is deliberately *not* mutated here: the completion
+ * handler sets its final status right after this hook, and its still-active
+ * `running` status would otherwise make it a candidate for the very next
+ * settle. Instead it is excluded from the WIP count so the freed slot is
+ * visible to the promoted candidates.
+ */
+function releaseWipWaiters(settledTaskId: string): void {
+  const settled = kanbanDb.getTask(settledTaskId);
+  if (!settled) {
+    return;
+  }
+
+  const candidates = new Map<string, KanbanTask>();
+  for (const task of kanbanDb.listTasksByColumn(settled.column_id)) {
+    if (
+      task.task_id !== settledTaskId &&
+      (task.status === 'todo' || task.status === 'blocked')
+    ) {
+      candidates.set(task.task_id, task);
+    }
+  }
+  for (const task of kanbanDb.listTasksByBoard(settled.board_id)) {
+    if (task.status === 'blocked' && dependenciesSatisfied(task.task_id)) {
+      candidates.set(task.task_id, task);
+    }
+  }
+
+  for (const candidate of candidates.values()) {
+    if (!wipBlocked.has(candidate.task_id)) {
+      continue;
+    }
+    if (!taskHasAutoRunAgent(candidate)) {
+      continue;
+    }
+    if (candidate.column_id !== COLUMN_REVIEW && candidate.column_id !== COLUMN_IN_PROGRESS) {
+      kanbanDb.moveTaskToColumn(candidate.task_id, COLUMN_IN_PROGRESS, 'todo');
+    }
+    enqueueTask(candidate.task_id, candidate.column_id === COLUMN_REVIEW ? 'review' : 'dependency', undefined, {
+      excludeWipTaskIds: [settledTaskId],
+    });
+  }
+}
+
 function handleRunSettled(taskId: string): void {
   inFlight.delete(taskId);
   drain();
+  releaseWipWaiters(taskId);
 }
 
 /**
@@ -174,6 +345,7 @@ export function stopKanbanQueue(): void {
   setOnEnqueue(null);
   pending.length = 0;
   inFlight.clear();
+  wipBlocked.clear();
 }
 
 /** Introspection for tests / diagnostics. */

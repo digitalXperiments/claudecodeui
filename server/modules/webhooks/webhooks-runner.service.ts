@@ -14,6 +14,7 @@ import type { AnyRecord, LLMProvider } from '@/shared/types.js';
 import { AppError } from '@/shared/utils.js';
 import { webhooksDb } from '@/modules/webhooks/webhooks.repository.js';
 import type {
+  WebhookDelivery,
   WebhookIngestPayload,
   WebhookSource,
 } from '@/modules/webhooks/webhooks.types.js';
@@ -198,13 +199,82 @@ export type WebhookRunStartResult = {
 };
 
 /**
+ * Rebuild an ingest payload from a persisted delivery row (stored request_json
+ * shape produced by `createDelivery`). Used for manual replay and the retry
+ * scheduler.
+ */
+export function reconstructPayloadFromDelivery(
+  delivery: WebhookDelivery,
+): WebhookIngestPayload {
+  const request = delivery.request ?? {};
+  const text = typeof request.text === 'string' ? request.text : '';
+  const title = typeof request.title === 'string' ? request.title : '';
+  const source = typeof request.source === 'string' ? request.source : '';
+  const meta =
+    request.meta && typeof request.meta === 'object' && !Array.isArray(request.meta)
+      ? (request.meta as Record<string, unknown>)
+      : {};
+  return {
+    source,
+    text,
+    title,
+    payload: request.payload !== undefined ? request.payload : (text || {}),
+    meta,
+    raw: { ...request },
+  };
+}
+
+/**
+ * Finalize a failed delivery, scheduling a retry when the source policy allows.
+ * Guards against double-processing: when the delivery is already failed with a
+ * pending next_retry_at, only error/result fields are refreshed so the retry is
+ * scheduled exactly once per failure (attempt stays constant until re-run).
+ */
+export function handleDeliveryFailed(
+  delivery: WebhookDelivery,
+  source: WebhookSource,
+  params: { errorMessage?: string | null; resultPreview?: string | null } = {},
+): void {
+  const current = webhooksDb.getDeliveryById(delivery.delivery_id);
+  if (!current) {
+    return;
+  }
+
+  const alreadyScheduled = current.status === 'failed' && Boolean(current.next_retry_at);
+  if (alreadyScheduled) {
+    webhooksDb.markDeliveryFailed(delivery.delivery_id, params);
+    return;
+  }
+
+  const retryMax = source.retryMax ?? 0;
+  const attempt = current.attempt ?? 0;
+  if (retryMax > 0 && attempt <= retryMax) {
+    const backoffSeconds = Math.max(1, source.retryBackoffSeconds ?? 60);
+    const nextRetryAtIso = new Date(
+      Date.now() + backoffSeconds * attempt * 1000,
+    ).toISOString();
+    webhooksDb.markDeliveryFailed(delivery.delivery_id, {
+      ...params,
+      nextRetryAtIso,
+    });
+    return;
+  }
+
+  webhooksDb.markDeliveryFailed(delivery.delivery_id, params);
+}
+
+/**
  * Create a delivery, start a headless provider run, return immediately.
  * Status is finalized by webhooks-automation onRunComplete (and by the
  * completion promise when the caller awaits wait mode).
+ *
+ * When `deliveryId` is provided (retry scheduler / manual replay), the existing
+ * delivery row is reset for replay instead of creating a new one.
  */
 export async function startWebhookDelivery(params: {
   source: WebhookSource;
   payload: WebhookIngestPayload;
+  deliveryId?: string;
 }): Promise<WebhookRunStartResult> {
   const { source, payload } = params;
 
@@ -229,18 +299,33 @@ export async function startWebhookDelivery(params: {
   const created = sessionsService.createAppSession(provider, projectPath);
   const appSessionId = created.sessionId;
 
-  const delivery = webhooksDb.createDelivery({
-    sourceId: source.source_id,
-    request: {
-      source: payload.source,
-      title: payload.title,
-      text: payload.text.slice(0, 4000),
-      hasPayload: payload.payload != null && payload.payload !== '',
-      meta: payload.meta,
-    },
-    status: 'accepted',
-    appSessionId,
-  });
+  let delivery: WebhookDelivery;
+  if (params.deliveryId) {
+    const existing = webhooksDb.getDeliveryById(params.deliveryId);
+    if (!existing) {
+      throw new AppError('Webhook delivery not found', {
+        code: 'WEBHOOK_DELIVERY_NOT_FOUND',
+        statusCode: 404,
+      });
+    }
+    // App session is created before the reset so app_session_id can link below.
+    webhooksDb.resetDeliveryForReplay(params.deliveryId);
+    webhooksDb.markDeliveryRunning(params.deliveryId, appSessionId);
+    delivery = webhooksDb.getDeliveryById(params.deliveryId) as WebhookDelivery;
+  } else {
+    delivery = webhooksDb.createDelivery({
+      sourceId: source.source_id,
+      request: {
+        source: payload.source,
+        title: payload.title,
+        text: payload.text.slice(0, 4000),
+        hasPayload: payload.payload != null && payload.payload !== '',
+        meta: payload.meta,
+      },
+      status: 'accepted',
+      appSessionId,
+    });
+  }
 
   const prompt = buildWebhookPrompt(source, payload, delivery.delivery_id);
   const options = buildRuntimeOptions(source, profile);
@@ -258,7 +343,7 @@ export async function startWebhookDelivery(params: {
   });
 
   if (!result.ok) {
-    webhooksDb.finishDelivery(delivery.delivery_id, 'failed', {
+    handleDeliveryFailed(delivery, source, {
       errorMessage: 'A run is already in progress for this session',
     });
     throw new AppError('A run is already in progress for this session', {
@@ -276,7 +361,7 @@ export async function startWebhookDelivery(params: {
     // for concurrent updates (last write wins on status fields).
     const preview = outcome.text.slice(0, 2000) || null;
     if (outcome.failed) {
-      webhooksDb.finishDelivery(delivery.delivery_id, 'failed', {
+      handleDeliveryFailed(delivery, source, {
         errorMessage: outcome.errorMessage || 'Provider run failed',
         resultPreview: preview,
       });
@@ -301,7 +386,7 @@ export async function startWebhookDelivery(params: {
       error: message,
     });
     try {
-      webhooksDb.finishDelivery(delivery.delivery_id, 'failed', {
+      handleDeliveryFailed(delivery, source, {
         errorMessage: message,
       });
     } catch {

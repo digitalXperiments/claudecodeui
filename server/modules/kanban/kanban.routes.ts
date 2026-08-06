@@ -5,7 +5,7 @@ import { kanbanDb, KanbanCycleError } from '@/modules/kanban/kanban.repository.j
 import { kanbanRunner } from '@/modules/kanban/kanban-runner.service.js';
 import { handleManualColumnMove } from '@/modules/kanban/kanban-automation.service.js';
 import { generateTaskFields } from '@/modules/kanban/kanban-generate.service.js';
-import { enqueueTask } from '@/modules/kanban/kanban-queue.service.js';
+import { enqueueTask, blockTaskForWip } from '@/modules/kanban/kanban-queue.service.js';
 import { syncSchedules } from '@/modules/kanban/kanban-scheduler.service.js';
 import {
   COLUMN_IN_PROGRESS,
@@ -91,12 +91,23 @@ function validateColumns(value: unknown): KanbanColumn[] | undefined {
         statusCode: 400,
       });
     }
+    let wipLimit: number | undefined;
+    if (col.wipLimit !== undefined && col.wipLimit !== null) {
+      if (typeof col.wipLimit !== 'number' || !Number.isInteger(col.wipLimit) || col.wipLimit < 0) {
+        throw new AppError(`Invalid wipLimit for column "${name}": must be a non-negative integer`, {
+          code: 'KANBAN_INVALID_COLUMNS',
+          statusCode: 400,
+        });
+      }
+      wipLimit = col.wipLimit;
+    }
     return {
       id,
       name,
       order: typeof col.order === 'number' ? col.order : index,
       runOnEnter: typeof col.runOnEnter === 'boolean' ? col.runOnEnter : undefined,
       permissionMode: readOptionalString(col.permissionMode),
+      wipLimit,
     } satisfies KanbanColumn;
   });
 }
@@ -112,6 +123,36 @@ function validateStatus(value: unknown): KanbanTaskStatus | undefined {
     });
   }
   return value as KanbanTaskStatus;
+}
+
+/**
+ * Parse a client-supplied due date. `null`/empty clears it; anything that
+ * doesn't parse as a date is ignored (kept as-is for updates, unset for
+ * creates). Valid values are normalised to an ISO timestamp.
+ */
+function parseDueDate(value: unknown): string | null | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (value === null || value === '') {
+    return null;
+  }
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+  try {
+    const parsed = new Date(trimmed);
+    if (Number.isNaN(parsed.getTime())) {
+      return undefined;
+    }
+    return parsed.toISOString();
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -290,6 +331,7 @@ router.post(
       tools: (body.tools as KanbanTaskTools) ?? undefined,
       scheduleCron:
         body.scheduleCron === null ? null : readOptionalString(body.scheduleCron) ?? undefined,
+      dueDate: parseDueDate(body.dueDate),
     });
     if (task.schedule_cron) {
       syncSchedules();
@@ -339,6 +381,7 @@ router.put(
       tools: (body.tools as KanbanTaskTools) ?? undefined,
       scheduleCron:
         body.scheduleCron === null ? null : readOptionalString(body.scheduleCron) ?? undefined,
+      dueDate: parseDueDate(body.dueDate),
       status: validateStatus(body.status),
     });
 
@@ -365,12 +408,17 @@ router.put(
       // directory). Bridged cards start without one until the user assigns it.
       const hasProject = Boolean(task.project_id && task.project_id.trim());
 
+      // WIP gate: when the entered column is at its active-task limit, park the
+      // card at `todo` with a hint instead of auto-running. It will be picked
+      // up automatically once a slot frees.
+      const atWipLimit = blockTaskForWip(task, board);
+
       if (enteredId === COLUMN_REVIEW) {
-        if (task.review_provider && hasProject) {
+        if (task.review_provider && hasProject && !atWipLimit) {
           enqueueTask(task.task_id, 'review');
         }
       } else if (enteredId === COLUMN_IN_PROGRESS || enteredColumn?.runOnEnter) {
-        if (task.assignee_provider && hasProject) {
+        if (task.assignee_provider && hasProject && !atWipLimit) {
           enqueueTask(task.task_id, 'column_move');
         }
       }

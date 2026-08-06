@@ -2,6 +2,7 @@ import express, { type Request, type Response } from 'express';
 
 import { obsidianSettingsService } from '@/modules/providers/services/obsidian-settings.service.js';
 import { projectMemoryService } from '@/modules/providers/services/project-memory.service.js';
+import type { LLMProvider } from '@/shared/types.js';
 import { AppError, asyncHandler, createApiSuccessResponse } from '@/shared/utils.js';
 
 const router = express.Router();
@@ -127,6 +128,38 @@ router.post(
   asyncHandler(async (_req: Request, res: Response) => {
     const results = await projectMemoryService.resyncMemorySkill();
     res.json(createApiSuccessResponse({ results }));
+  }),
+);
+
+// ----------------- Memory curation -----------------
+router.post(
+  '/curate',
+  asyncHandler(async (req: Request, res: Response) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const workspacePath = readRequiredString(body.workspacePath, 'workspacePath');
+    const result = await projectMemoryService.curateProjectMemory({
+      workspacePath,
+      vaultFolder: typeof body.vaultFolder === 'string' ? body.vaultFolder : undefined,
+      provider: typeof body.provider === 'string' && body.provider ? (body.provider as LLMProvider) : undefined,
+      limit: typeof body.limit === 'number' && body.limit > 0 ? Math.floor(body.limit) : undefined,
+    });
+    res.json(createApiSuccessResponse(result));
+  }),
+);
+
+router.post(
+  '/curate/apply',
+  asyncHandler(async (req: Request, res: Response) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const vaultFolder = readRequiredString(body.vaultFolder, 'vaultFolder');
+    const notePath = readRequiredString(body.path, 'path');
+    const result = await projectMemoryService.applyMemoryCurationSuggestion({
+      vaultPath: typeof body.vaultPath === 'string' ? body.vaultPath : undefined,
+      vaultFolder,
+      path: notePath,
+      content: typeof body.content === 'string' ? body.content : '',
+    });
+    res.json(createApiSuccessResponse(result));
   }),
 );
 

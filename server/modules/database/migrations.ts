@@ -603,6 +603,43 @@ const ensureMissionControlKanbanBridgeSchema = (db: Database): void => {
   addColumnToTableIfNotExists(db, 'mc_sections', columns, 'kanban_mcp_tools_json', "TEXT DEFAULT '[]'");
 };
 
+/**
+ * Additive kanban task columns for due dates, auto-created git feature branches,
+ * and the last escalation sweep timestamp. Idempotent.
+ */
+const ensureKanbanDueDateAndBranchSchema = (db: Database): void => {
+  if (!tableExists(db, 'kanban_tasks')) {
+    return;
+  }
+  let columns = getTableInfo(db, 'kanban_tasks').map((column) => column.name);
+  addColumnToTableIfNotExists(db, 'kanban_tasks', columns, 'due_date', 'TEXT');
+  columns = getTableInfo(db, 'kanban_tasks').map((column) => column.name);
+  addColumnToTableIfNotExists(db, 'kanban_tasks', columns, 'feature_branch', 'TEXT');
+  columns = getTableInfo(db, 'kanban_tasks').map((column) => column.name);
+  addColumnToTableIfNotExists(db, 'kanban_tasks', columns, 'escalated_at', 'DATETIME');
+};
+
+/**
+ * Additive webhook columns: per-source retry/backoff policy + HMAC secret, and
+ * per-delivery attempt/next-retry bookkeeping. Idempotent.
+ */
+const ensureWebhookRetrySchema = (db: Database): void => {
+  if (tableExists(db, 'webhook_sources')) {
+    let columns = getTableInfo(db, 'webhook_sources').map((column) => column.name);
+    addColumnToTableIfNotExists(db, 'webhook_sources', columns, 'retry_max', 'INTEGER DEFAULT 0');
+    columns = getTableInfo(db, 'webhook_sources').map((column) => column.name);
+    addColumnToTableIfNotExists(db, 'webhook_sources', columns, 'retry_backoff_seconds', 'INTEGER DEFAULT 60');
+    columns = getTableInfo(db, 'webhook_sources').map((column) => column.name);
+    addColumnToTableIfNotExists(db, 'webhook_sources', columns, 'secret', 'TEXT');
+  }
+  if (tableExists(db, 'webhook_deliveries')) {
+    let columns = getTableInfo(db, 'webhook_deliveries').map((column) => column.name);
+    addColumnToTableIfNotExists(db, 'webhook_deliveries', columns, 'attempt', 'INTEGER DEFAULT 0');
+    columns = getTableInfo(db, 'webhook_deliveries').map((column) => column.name);
+    addColumnToTableIfNotExists(db, 'webhook_deliveries', columns, 'next_retry_at', 'DATETIME');
+  }
+};
+
 export const runMigrations = (db: Database) => {
   try {
     const usersTableInfo = db.prepare('PRAGMA table_info(users)').all() as { name: string }[];
@@ -676,6 +713,7 @@ export const runMigrations = (db: Database) => {
     db.exec(KANBAN_SCHEMA_SQL);
     ensureKanbanGlobalBoardSchema(db);
     ensureKanbanAgentWorkflowSchema(db);
+    ensureKanbanDueDateAndBranchSchema(db);
 
     // Mission Control (sections + reviewable items).
     db.exec(MISSION_CONTROL_SCHEMA_SQL);
@@ -683,6 +721,7 @@ export const runMigrations = (db: Database) => {
 
     // Inbound webhooks (source-routed headless agent runs).
     db.exec(WEBHOOKS_SCHEMA_SQL);
+    ensureWebhookRetrySchema(db);
 
     console.log('Database migrations completed successfully');
   } catch (error: any) {

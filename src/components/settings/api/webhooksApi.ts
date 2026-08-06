@@ -16,6 +16,9 @@ export type WebhookSource = {
   profile_id: string | null;
   scope: 'global' | 'project';
   project_id: string | null;
+  retryMax: number;
+  retryBackoffSeconds: number;
+  secret: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -28,6 +31,8 @@ export type WebhookDelivery = {
   app_session_id: string | null;
   error_message: string | null;
   result_preview: string | null;
+  attempt: number;
+  next_retry_at: string | null;
   created_at: string;
   finished_at: string | null;
 };
@@ -46,6 +51,9 @@ export type WebhookSourceInput = {
   profile_id?: string | null;
   scope?: 'global' | 'project';
   project_id?: string | null;
+  retryMax?: number;
+  retryBackoffSeconds?: number;
+  secret?: string | null;
 };
 
 const BASE = '/api/webhooks';
@@ -117,6 +125,18 @@ export const webhooksApi = {
       method: 'POST',
       body: JSON.stringify(body ?? {}),
     });
+    const data = await parse<{ deliveryId: string; appSessionId: string }>(res);
+    return data;
+  },
+
+  async replayDelivery(
+    id: string,
+    deliveryId: string,
+  ): Promise<{ deliveryId: string; appSessionId: string }> {
+    const res = await authenticatedFetch(
+      `${BASE}/${encodeURIComponent(id)}/deliveries/${encodeURIComponent(deliveryId)}/replay`,
+      { method: 'POST' },
+    );
     const data = await parse<{ deliveryId: string; appSessionId: string }>(res);
     return data;
   },

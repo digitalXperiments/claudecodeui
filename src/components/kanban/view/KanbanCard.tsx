@@ -1,6 +1,6 @@
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import { Ban, Clock, FolderGit2, GitBranch, Loader2 } from 'lucide-react';
+import { Ban, Calendar, Clock, FolderGit2, GitBranch, Loader2 } from 'lucide-react';
 
 import { Badge } from '../../../shared/view/ui';
 import { cn } from '../../../lib/utils';
@@ -58,6 +58,14 @@ export default function KanbanCard({
     }
   }
   const blockedByTitles = openDeps.slice(0, 2).map((t) => t.title);
+
+  const dueAt = task.due_date ? new Date(task.due_date).getTime() : null;
+  const overdue =
+    dueAt !== null &&
+    !Number.isNaN(dueAt) &&
+    dueAt < Date.now() &&
+    task.status !== 'done' &&
+    task.status !== 'failed';
 
   return (
     <div
@@ -122,6 +130,24 @@ export default function KanbanCard({
           <span className="inline-flex items-center gap-0.5">
             <Clock className="h-3 w-3" />
             {task.schedule_cron}
+          </span>
+        ) : null}
+        {task.due_date ? (
+          <span
+            className={cn(
+              'inline-flex items-center gap-0.5',
+              overdue ? 'font-medium text-destructive' : '',
+            )}
+            title={overdue ? 'Overdue' : `Due ${new Date(task.due_date).toLocaleString()}`}
+          >
+            <Calendar className="h-3 w-3" />
+            {new Date(task.due_date).toLocaleDateString()}
+          </span>
+        ) : null}
+        {task.feature_branch ? (
+          <span className="inline-flex max-w-28 items-center gap-0.5 truncate" title={task.feature_branch}>
+            <GitBranch className="h-3 w-3" />
+            <span className="truncate">{task.feature_branch}</span>
           </span>
         ) : null}
       </div>

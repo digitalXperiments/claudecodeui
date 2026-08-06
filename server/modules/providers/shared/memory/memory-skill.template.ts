@@ -34,6 +34,20 @@ The goal is a compounding wiki: every agent, in every session, inherits the
 context left by previous ones. Treat memory as shared team knowledge, not a
 scratchpad.
 
+## STRICT RULE — all temp activity goes in \`tmp/cloudcli/\`
+
+Never scatter temporary folders or scratch files around the repo, your home
+directory, \`/tmp\`, or the OS temp dir. **Any** temp activity — scratch dirs,
+downloaded assets, session artifacts, sandboxes, caches — **must** live under
+the project root's \`tmp/cloudcli/\` directory. This applies to **every**
+provider and every session.
+
+- Create it if missing: \`mkdir -p tmp/cloudcli\`.
+- Use a subfolder per task/agent for isolation: \`tmp/cloudcli/<task>/\`.
+- Remove your own leftovers when done.
+- Non-negotiable: a stray temp dir outside \`tmp/cloudcli/\` is a violation and
+  must be corrected.
+
 ## Obsidian MCP tools — exact names & arguments
 
 Use these **exact** tool names and argument names. Do not guess or invent them
@@ -46,7 +60,7 @@ the \`.md\` extension**, e.g. \`${MEMORY_SKILL_VAULT_FOLDER_TOKEN}/00-Overview.m
 | Purpose | Tool | Required args | Notes |
 | --- | --- | --- | --- |
 | Read a note | \`obsidian_get_file\` | \`filename\` (string) | Full path incl. \`.md\`. |
-| Full-text search | \`obsidian_simple_search\` | \`query\` (string) | Optional \`contextLength\` (number). |
+| Full-text search | \`obsidian_simple_search\` | \`query\` (string) | Optional \`contextLength\` (number, use ~50) and \`limit\` (number, default 20 files). Returns \`{ results, truncated? }\`. Keep queries narrow — see below. |
 | List a folder | \`obsidian_list_vault_directory\` | \`pathToDirectory\` (string) | Use \`obsidian_list_vault_root\` (no args) for the vault root. |
 | Check vault is reachable | \`obsidian_status\` | (none) | |
 
@@ -96,8 +110,26 @@ When you see \`Unexpected end of JSON input\` from a write tool:
 Never tell the user "memory failed" or skip the session log because of this
 error alone: the write worked.
 
-There is **no dedicated backlinks tool** — find references to a note by running
-\`obsidian_simple_search\` for \`[[note-name]]\`.
+### ⚠️ Keep \`obsidian_simple_search\` queries narrow
+
+\`obsidian_simple_search\` scans the entire vault, so a broad one- or two-word
+query can return tens of thousands of characters and **fail outright** by
+overrunning the tool-output token limit. That is a real error, but the fix is the
+query, not a retry:
+
+- Search for **specific multi-word phrases**, not single generic terms.
+- Pass \`"contextLength": 50\` to keep snippets short.
+- When you are browsing rather than searching, use
+  \`obsidian_list_vault_directory\` + \`obsidian_get_file\` instead.
+
+Results are capped at 20 files and 5 matches per file. A \`truncated\` field in
+the response means the query was too broad — narrow it rather than raising
+\`limit\`.
+
+There is **no dedicated backlinks tool**, but \`obsidian_get_file\` already returns
+\`links\` and \`backlinks\` for the note it reads — use those first. Only fall back
+to \`obsidian_simple_search\` for \`[[note-name]]\` when you need matches inside
+notes you have not read.
 
 > If these tools are not available — meaning \`obsidian_status\` itself fails with a
 > **connection** error (not the false \`Unexpected end of JSON input\` above) — the
@@ -115,8 +147,8 @@ There is **no dedicated backlinks tool** — find references to a note by runnin
 ## At the START of a task (always)
 
 1. \`obsidian_get_file\` \`{ "filename": "${MEMORY_SKILL_VAULT_FOLDER_TOKEN}/00-Overview.md" }\` to load the project frame.
-2. \`obsidian_simple_search\` \`{ "query": "<terms relevant to your task>" }\`; read the top hits with \`obsidian_get_file\`.
-3. For any note central to your task, \`obsidian_simple_search\` \`[[note-name]]\` to find related context (backlinks).
+2. \`obsidian_simple_search\` \`{ "query": "<specific multi-word phrase for your task>", "contextLength": 50 }\`; read the top hits with \`obsidian_get_file\`.
+3. For any note central to your task, use the \`links\` / \`backlinks\` that \`obsidian_get_file\` returned for it to find related context.
 
 Do this before writing code or making decisions. Prior context prevents
 re-litigating settled questions.
@@ -151,6 +183,16 @@ fine — but always leave a trace so the timeline stays continuous.
 Remember: \`obsidian_post_file\` will report \`Unexpected end of JSON input\` even
 though the session note was appended successfully. Do not retry it — that
 duplicates the entry.
+
+## Curation
+
+Memory is curated by later passes, so keep your session log a clean source of
+durable facts:
+
+- Prefer updating the existing note over creating a near-duplicate — search before you write.
+- Capture the "why" behind decisions; future agents need the reasoning, not just the outcome.
+- Flag anything uncertain as an open question in the session log instead of guessing in a note.
+- If a fact only matters for this one session, leave it in the session log — don't promote noise.
 
 ## Conventions
 

@@ -66,6 +66,9 @@ function MainContent({
 
   const shouldShowTasksTab = Boolean(tasksEnabled && isTaskMasterInstalled);
   const shouldShowBrowserTab = browserUseEnabled;
+  const selectedSessionIsProcessing = Boolean(
+    selectedSession?.id && processingSessions.has(selectedSession.id),
+  );
 
   const {
     editingFile,
@@ -201,6 +204,8 @@ function MainContent({
                 session={selectedSession}
                 showHeader={false}
                 isActive={activeTab === 'shell'}
+                autoConnect={!selectedSessionIsProcessing}
+                waitForChat={selectedSessionIsProcessing}
               />
             </div>
           )}

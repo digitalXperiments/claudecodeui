@@ -709,21 +709,31 @@ export function useChatSessionState({
       setTokenBudget(null);
       return;
     }
+    let cancelled = false;
+    const requestSessionId = selectedSession.id;
     const fetchInitialTokenUsage = async () => {
       try {
         // The backend resolves the provider from the indexed session row.
-        const url = `/api/projects/${selectedProject.projectId}/sessions/${selectedSession.id}/token-usage`;
+        const url = `/api/projects/${selectedProject.projectId}/sessions/${requestSessionId}/token-usage`;
         const response = await authenticatedFetch(url);
+        if (cancelled) return;
         if (response.ok) {
-          setTokenBudget(await response.json());
+          const budget = await response.json();
+          if (!cancelled) setTokenBudget(budget);
         } else {
           setTokenBudget(null);
         }
       } catch (error) {
-        console.error('Failed to fetch initial token usage:', error);
+        if (!cancelled) {
+          console.error('Failed to fetch initial token usage:', error);
+        }
       }
     };
     fetchInitialTokenUsage();
+
+    return () => {
+      cancelled = true;
+    };
   }, [selectedProject, selectedSession?.id]);
 
   const visibleMessages = useMemo(() => {

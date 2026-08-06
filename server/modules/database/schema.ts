@@ -196,6 +196,9 @@ CREATE TABLE IF NOT EXISTS kanban_tasks (
     permission_mode   TEXT DEFAULT 'default',
     tools_json        TEXT DEFAULT '{}', -- {allowedCommands:[], disallowedCommands:[]}
     schedule_cron     TEXT,              -- NULL = not scheduled
+    due_date          TEXT,              -- ISO deadline; overdue cards can be escalated
+    feature_branch    TEXT,              -- git branch auto-created when a run starts
+    escalated_at      DATETIME,          -- last escalation sweep timestamp
     status            TEXT DEFAULT 'todo', -- todo|queued|running|done|failed|blocked
     app_session_id    TEXT,              -- links to sessions(session_id) once run
     last_run_at       DATETIME,
@@ -393,6 +396,9 @@ CREATE TABLE IF NOT EXISTS webhook_sources (
     profile_id       TEXT,
     scope            TEXT DEFAULT 'global',
     project_id       TEXT,
+    retry_max            INTEGER DEFAULT 0,   -- max automatic retries after failure (0 = none)
+    retry_backoff_seconds INTEGER DEFAULT 60, -- base backoff between retry attempts
+    secret               TEXT,                -- HMAC secret for inbound signature verification
     created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at       DATETIME DEFAULT CURRENT_TIMESTAMP
 );
@@ -409,6 +415,8 @@ CREATE TABLE IF NOT EXISTS webhook_deliveries (
     app_session_id   TEXT,
     error_message    TEXT,
     result_preview   TEXT,
+    attempt          INTEGER DEFAULT 0,     -- how many times this delivery has run
+    next_retry_at    DATETIME,              -- when the retry scheduler should re-run it
     created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
     finished_at      DATETIME,
     FOREIGN KEY (source_id) REFERENCES webhook_sources(source_id) ON DELETE CASCADE

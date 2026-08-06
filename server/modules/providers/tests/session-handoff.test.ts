@@ -419,3 +419,259 @@ test('createHandoffSession rejects unknown source sessions with a 404 error', as
     );
   });
 });
+
+test('buildHandoffContextSections renders git/kanban sections only when present', () => {
+  const gitState = 'Changes since HEAD:\n```\n M server/index.js\n```';
+  const kanbanState = 'Active kanban cards for this project:\n- Fix login [in_progress]';
+
+  const both = sessionHandoffService.buildHandoffDocument(buildDocumentInput(
+    [textMessage('user', 'goal'), textMessage('assistant', 'turn')],
+    'summary',
+  ));
+  assert.equal(both.includes('## Working tree state'), false);
+  assert.equal(both.includes('## Kanban context'), false);
+
+  const withContext = buildDocumentInput([textMessage('user', 'goal')], 'summary');
+  const document = sessionHandoffService.buildHandoffDocument({
+    ...withContext,
+    gitState,
+    kanbanState,
+  });
+  assert.match(document, /## Working tree state\n\nChanges since HEAD:/);
+  assert.match(document, /## Kanban context\n\nActive kanban cards for this project:\n- Fix login \[in_progress\]/);
+
+  const gitOnly = sessionHandoffService.buildHandoffDocument({
+    ...withContext,
+    gitState,
+    kanbanState: null,
+  });
+  assert.match(gitOnly, /## Working tree state/);
+  assert.equal(gitOnly.includes('## Kanban context'), false);
+
+  const kanbanOnly = sessionHandoffService.buildHandoffDocument({
+    ...withContext,
+    gitState: null,
+    kanbanState,
+  });
+  assert.equal(kanbanOnly.includes('## Working tree state'), false);
+  assert.match(kanbanOnly, /## Kanban context/);
+});
+
+test('createHandoffSession with includeGitState/includeKanbanState degrades gracefully when unavailable', async () => {
+  // The isolated temp project is not a git repo and has no kanban board, so
+  // both capture helpers resolve null and the document omits the sections.
+  await withIsolatedDatabase(async ({ projectPath }) => {
+    sessionsDb.createAppSession('source-session-id', 'claude', projectPath);
+
+    const historyResult: FetchHistoryResult = {
+      messages: [textMessage('user', 'goal'), textMessage('assistant', 'turn')],
+      total: 2,
+      hasMore: false,
+      offset: 0,
+      limit: null,
+    };
+    const fetchMock = mock.method(sessionsService, 'fetchHistory', async () => historyResult);
+    const summarizerMock = mock.method(sessionSummarizerService, 'summarizeConversation', async () => null);
+
+    try {
+      const result = await sessionHandoffService.createHandoffSession({
+        sourceSessionId: 'source-session-id',
+        targetProvider: 'codex',
+        mode: 'summary',
+        includeGitState: true,
+        includeKanbanState: true,
+      });
+
+      assert.ok(result.handoffPrompt);
+      const prompt = result.handoffPrompt as string;
+      assert.match(prompt, /## Goal\n\ngoal/);
+      assert.equal(prompt.includes('## Working tree state'), false);
+      assert.equal(prompt.includes('## Kanban context'), false);
+    } finally {
+      fetchMock.mock.restore();
+      summarizerMock.mock.restore();
+    }
+  });
+});
+
+test('reverseHandoffSession returns work to the origin provider from the lineage', async () => {
+  await withIsolatedDatabase(async ({ projectPath }) => {
+    // Lineage: origin (claude) -> intermediary (codex) -> current session.
+    sessionsDb.createAppSession('origin-session-id', 'claude', projectPath);
+    sessionsDb.createAppSession('intermediary-session-id', 'codex', projectPath);
+    sessionsDb.createAppSession('current-session-id', 'grok', projectPath);
+    sessionsDb.setContinuedFrom('intermediary-session-id', 'origin-session-id');
+    sessionsDb.setContinuedFrom('current-session-id', 'intermediary-session-id');
+
+    const historyResult: FetchHistoryResult = {
+      messages: [textMessage('user', 'goal'), textMessage('assistant', 'turn')],
+      total: 2,
+      hasMore: false,
+      offset: 0,
+      limit: null,
+    };
+    const fetchMock = mock.method(sessionsService, 'fetchHistory', async () => historyResult);
+    const summarizerMock = mock.method(sessionSummarizerService, 'summarizeConversation', async () => null);
+
+    try {
+      const result = await sessionHandoffService.reverseHandoffSession({
+        sessionId: 'current-session-id',
+        mode: 'summary',
+      });
+
+      assert.equal(result.provider, 'claude');
+      assert.equal(sessionsDb.getSessionById(result.sessionId)?.continued_from_session_id, 'current-session-id');
+      assert.ok(result.handoffPrompt);
+      assert.match(result.handoffPrompt as string, /hands the work back to the provider that originally started it/);
+    } finally {
+      fetchMock.mock.restore();
+      summarizerMock.mock.restore();
+    }
+  });
+});
+
+test('reverseHandoffSession honors an explicit targetProvider over lineage discovery', async () => {
+  await withIsolatedDatabase(async ({ projectPath }) => {
+    sessionsDb.createAppSession('origin-session-id', 'claude', projectPath);
+    sessionsDb.createAppSession('current-session-id', 'grok', projectPath);
+    sessionsDb.setContinuedFrom('current-session-id', 'origin-session-id');
+
+    const historyResult: FetchHistoryResult = {
+      messages: [textMessage('user', 'goal')],
+      total: 1,
+      hasMore: false,
+      offset: 0,
+      limit: null,
+    };
+    const fetchMock = mock.method(sessionsService, 'fetchHistory', async () => historyResult);
+    const summarizerMock = mock.method(sessionSummarizerService, 'summarizeConversation', async () => null);
+
+    try {
+      const result = await sessionHandoffService.reverseHandoffSession({
+        sessionId: 'current-session-id',
+        targetProvider: 'kimi',
+        mode: 'summary',
+      });
+      assert.equal(result.provider, 'kimi');
+    } finally {
+      fetchMock.mock.restore();
+      summarizerMock.mock.restore();
+    }
+  });
+});
+
+test('reverseHandoffSession rejects unknown sessions with a 404 error', async () => {
+  await withIsolatedDatabase(async () => {
+    await assert.rejects(
+      sessionHandoffService.reverseHandoffSession({ sessionId: 'missing-session-id' }),
+      (error: unknown) => {
+        assert.equal((error as { statusCode?: number }).statusCode, 404);
+        assert.equal((error as { code?: string }).code, 'SESSION_NOT_FOUND');
+        return true;
+      },
+    );
+  });
+});
+
+test('mergeSessions merges transcripts of multiple sessions into one continuation', async () => {
+  await withIsolatedDatabase(async ({ projectPath }) => {
+    sessionsDb.createAppSession('session-a', 'claude', projectPath);
+    sessionsDb.createAppSession('session-b', 'codex', projectPath);
+
+    const historyA: FetchHistoryResult = {
+      messages: [textMessage('user', 'goal from a'), textMessage('assistant', 'work from a')],
+      total: 2,
+      hasMore: false,
+      offset: 0,
+      limit: null,
+    };
+    const historyB: FetchHistoryResult = {
+      messages: [textMessage('user', 'goal from b'), textMessage('assistant', 'work from b')],
+      total: 2,
+      hasMore: false,
+      offset: 0,
+      limit: null,
+    };
+    const fetchMock = mock.method(
+      sessionsService,
+      'fetchHistory',
+      async (sessionId: string) => (sessionId === 'session-a' ? historyA : historyB),
+    );
+
+    try {
+      const result = await sessionHandoffService.mergeSessions({
+        sessionIds: ['session-a', 'session-b'],
+        targetProvider: 'claude',
+        mode: 'summary',
+      });
+
+      assert.ok(result.handoffPrompt);
+      const prompt = result.handoffPrompt as string;
+      assert.match(prompt, /## Merged sessions/);
+      assert.match(prompt, /1\. claude session `session-a`/);
+      assert.match(prompt, /2\. codex session `session-b`/);
+      assert.match(prompt, /## Session 1 \(claude\)/);
+      assert.match(prompt, /## Session 2 \(codex\)/);
+      assert.match(prompt, /goal from a/);
+      assert.match(prompt, /work from b/);
+      assert.match(prompt, /merged into one\./);
+      assert.equal(sessionsDb.getSessionById(result.sessionId)?.continued_from_session_id, 'session-a');
+
+      // The mechanical summary writes the full merged transcript to disk as a
+      // safety net for the continuation.
+      assert.ok(result.backupFilePath);
+      const backupContent = await readFile(result.backupFilePath as string, 'utf8');
+      assert.match(backupContent, /## Session 2 \(codex\)/);
+      assert.match(backupContent, /work from b/);
+    } finally {
+      fetchMock.mock.restore();
+    }
+  });
+});
+
+test('mergeSessions rejects sessions from different projects', async () => {
+  await withIsolatedDatabase(async ({ projectPath }) => {
+    const otherProject = path.join(path.dirname(projectPath), 'other-project');
+    await mkdir(otherProject, { recursive: true });
+    sessionsDb.createAppSession('session-a', 'claude', projectPath);
+    sessionsDb.createAppSession('session-b', 'codex', otherProject);
+
+    const historyResult: FetchHistoryResult = {
+      messages: [textMessage('user', 'goal')],
+      total: 1,
+      hasMore: false,
+      offset: 0,
+      limit: null,
+    };
+    const fetchMock = mock.method(sessionsService, 'fetchHistory', async () => historyResult);
+
+    try {
+      await assert.rejects(
+        sessionHandoffService.mergeSessions({
+          sessionIds: ['session-a', 'session-b'],
+          mode: 'summary',
+        }),
+        (error: unknown) => {
+          assert.equal((error as { statusCode?: number }).statusCode, 400);
+          assert.equal((error as { code?: string }).code, 'HANDOFF_MERGE_PROJECT_MISMATCH');
+          return true;
+        },
+      );
+    } finally {
+      fetchMock.mock.restore();
+    }
+  });
+});
+
+test('mergeSessions rejects empty session id lists', async () => {
+  await withIsolatedDatabase(async () => {
+    await assert.rejects(
+      sessionHandoffService.mergeSessions({ sessionIds: [], mode: 'summary' }),
+      (error: unknown) => {
+        assert.equal((error as { statusCode?: number }).statusCode, 400);
+        assert.equal((error as { code?: string }).code, 'HANDOFF_MERGE_EMPTY');
+        return true;
+      },
+    );
+  });
+});
