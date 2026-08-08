@@ -5,7 +5,9 @@ import {
   Download,
   Expand,
   ExternalLink,
+  KeyRound,
   Loader2,
+  MessageCircleQuestion,
   MonitorPlay,
   RefreshCw,
   Settings,
@@ -15,7 +17,7 @@ import {
 } from 'lucide-react';
 
 import { cn } from '../../../lib/utils';
-import { Badge, Button } from '../../../shared/view/ui';
+import { Badge, Button, Input } from '../../../shared/view/ui';
 import { authenticatedFetch } from '../../../utils/api';
 import type { SettingsMainTab } from '../../settings/types/types';
 
@@ -50,6 +52,16 @@ type BrowserUseSession = {
     y: number;
     actor: 'agent';
   } | null;
+};
+
+type BrowserHumanPrompt = {
+  id: string;
+  sessionId: string | null;
+  prompt: string;
+  choices: string[];
+  secret: boolean;
+  createdAt: string;
+  expiresAt: string;
 };
 
 type BrowserUsePanelProps = {
@@ -133,6 +145,9 @@ export default function BrowserUsePanel({ isVisible, onShowSettings }: BrowserUs
   const [isInstalling, setIsInstalling] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [pendingPrompts, setPendingPrompts] = useState<BrowserHumanPrompt[]>([]);
+  const [promptAnswers, setPromptAnswers] = useState<Record<string, string>>({});
+  const [promptBusyId, setPromptBusyId] = useState<string | null>(null);
 
   const selectedSession = useMemo(
     () => sessions.find((session) => session.id === selectedSessionId) || sessions[0] || null,
@@ -181,10 +196,30 @@ export default function BrowserUsePanel({ isVisible, onShowSettings }: BrowserUs
     }
   }, []);
 
+  const refreshPrompts = useCallback(async () => {
+    try {
+      const response = await authenticatedFetch('/api/browser-use/prompts');
+      const data = await readJson<{ data: { prompts: BrowserHumanPrompt[] } }>(response);
+      setPendingPrompts(data.data.prompts);
+    } catch {
+      // Prompt polling is best-effort; the MCP pending-prompt tools remain
+      // available if the panel is not authenticated or is being reloaded.
+    }
+  }, []);
+
   useEffect(() => {
     if (!isVisible) return;
     void refresh();
   }, [isVisible, refresh]);
+
+  useEffect(() => {
+    if (!isVisible) return undefined;
+    void refreshPrompts();
+    const interval = window.setInterval(() => {
+      void refreshPrompts();
+    }, 1_000);
+    return () => window.clearInterval(interval);
+  }, [isVisible, refreshPrompts]);
 
   const runAction = useCallback(async (action: () => Promise<void>) => {
     setIsBusy(true);
@@ -198,6 +233,28 @@ export default function BrowserUsePanel({ isVisible, onShowSettings }: BrowserUs
       setIsBusy(false);
     }
   }, [refresh]);
+
+  const answerPrompt = useCallback(async (promptId: string, answer: string) => {
+    setPromptBusyId(promptId);
+    setError(null);
+    try {
+      const response = await authenticatedFetch(`/api/browser-use/prompts/${encodeURIComponent(promptId)}/answer`, {
+        method: 'POST',
+        body: JSON.stringify({ answer }),
+      });
+      await readJson(response);
+      setPendingPrompts((current) => current.filter((prompt) => prompt.id !== promptId));
+      setPromptAnswers((current) => {
+        const next = { ...current };
+        delete next[promptId];
+        return next;
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to answer browser prompt');
+    } finally {
+      setPromptBusyId(null);
+    }
+  }, []);
 
   const stopSession = () => runAction(async () => {
     if (!selectedSession) return;
@@ -383,6 +440,66 @@ export default function BrowserUsePanel({ isVisible, onShowSettings }: BrowserUs
       {error && (
         <div className="border-b border-destructive/20 bg-destructive/10 px-4 py-2 text-sm text-destructive">
           {error}
+        </div>
+      )}
+
+      {pendingPrompts.length > 0 && (
+        <div className="border-b border-amber-500/30 bg-amber-500/10 px-4 py-3">
+          <div className="mx-auto max-w-7xl space-y-2">
+            {pendingPrompts.map((prompt) => {
+              const answer = promptAnswers[prompt.id] || '';
+              const busy = promptBusyId === prompt.id;
+              return (
+                <div key={prompt.id} className="rounded-md border border-amber-500/30 bg-background/80 p-3 shadow-sm">
+                  <div className="flex items-start gap-2">
+                    {prompt.secret ? <KeyRound className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" /> : <MessageCircleQuestion className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />}
+                    <div className="min-w-0 flex-1">
+                      <div className="text-xs font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300">
+                        Human input required{prompt.secret ? ' · secret' : ''}
+                      </div>
+                      <p className="mt-1 text-sm text-foreground">{prompt.prompt}</p>
+                      {prompt.choices.length > 0 && (
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          {prompt.choices.map((choice) => (
+                            <Button
+                              key={choice}
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              disabled={busy}
+                              onClick={() => void answerPrompt(prompt.id, choice)}
+                            >
+                              {choice}
+                            </Button>
+                          ))}
+                        </div>
+                      )}
+                      <form
+                        className="mt-2 flex gap-2"
+                        onSubmit={(event) => {
+                          event.preventDefault();
+                          void answerPrompt(prompt.id, answer);
+                        }}
+                      >
+                        <Input
+                          type={prompt.secret ? 'password' : 'text'}
+                          value={answer}
+                          onChange={(event) => setPromptAnswers((current) => ({ ...current, [prompt.id]: event.target.value }))}
+                          placeholder={prompt.secret ? 'Enter secret…' : 'Type an answer…'}
+                          autoComplete="off"
+                          disabled={busy}
+                          className="h-8 min-w-0 flex-1 text-sm"
+                        />
+                        <Button type="submit" size="sm" disabled={busy}>
+                          {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Answer'}
+                        </Button>
+                      </form>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
 

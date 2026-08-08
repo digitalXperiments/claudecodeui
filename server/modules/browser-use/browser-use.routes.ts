@@ -58,6 +58,38 @@ router.post('/runtime/install', async (_req, res) => {
   }
 });
 
+// Human-in-the-loop browser prompts are intentionally kept in memory. The
+// browser panel polls this route and posts an answer while the MCP tool call
+// remains blocked on the server-side prompt promise.
+router.get('/prompts', (_req, res) => {
+  try {
+    res.json({ success: true, data: { prompts: browserUseService.listPendingPrompts() } });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Failed to load browser prompts.',
+    });
+  }
+});
+
+router.post('/prompts/:promptId/answer', (req, res) => {
+  try {
+    const body = req.body && typeof req.body === 'object' ? req.body as Record<string, unknown> : {};
+    const answer = typeof body.answer === 'string'
+      ? body.answer
+      : typeof body.value === 'string'
+        ? body.value
+        : '';
+    const result = browserUseService.answerPrompt(readParam(req.params.promptId), answer);
+    res.json({ success: true, data: result });
+  } catch (error) {
+    res.status(400).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Failed to answer browser prompt.',
+    });
+  }
+});
+
 router.get('/sessions', async (_req, res) => {
   try {
     res.json({ success: true, data: { sessions: await browserUseService.listSessions() } });

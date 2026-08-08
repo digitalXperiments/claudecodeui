@@ -98,6 +98,14 @@ Everything from upstream still works as-is — this only adds on top.
 - **TaskMaster AI Integration** *(Optional)* - Advanced project management with AI-powered task planning, PRD parsing, and workflow automation
 - **Model Compatibility** - Works with Claude and GPT model families (the full list of supported models is available at runtime via `GET /api/providers/:provider/models`)
 
+### Browser MCP tools
+
+The `cloudcli-browser` MCP server exposes session/page control, JavaScript
+evaluation, console buffering, navigation history, dialog handling, viewport
+and device emulation, file download/upload, human-in-the-loop prompts, and the
+network/HAR analysis tools. See the complete tool schemas and human-input
+security notes in [`server/modules/browser-use/README.md`](server/modules/browser-use/README.md).
+
 
 ## Quick Start
 
