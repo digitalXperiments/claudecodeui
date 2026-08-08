@@ -7,7 +7,7 @@ import { parse as parseYaml } from 'yaml';
 import { interruptsService } from '@/modules/interrupt-queue/index.js';
 import { runService } from '@/modules/runs/index.js';
 import { secretsService } from '@/modules/secrets/index.js';
-import { workspaceService } from '@/modules/workspaces/index.js';
+import { workspaceService, runGit, remoteRepoSlug } from '@/modules/workspaces/index.js';
 import { CloudError } from '@/shared/run-events.js';
 import type { AgentWorkspace } from '@/modules/workspaces/index.js';
 import type {
@@ -246,9 +246,18 @@ export function createShipService(options: { runCommand?: CommandRunner } = {}):
     }
     const testStatus = testReport.passed ? '✅ passed' : '❌ failed';
     const body = `${input.body?.trim() ? `${input.body.trim()}\n\n` : ''}## CloudCLI Ship Loop\n\n- Test command: \`${testReport.command}\`\n- Test status: ${testStatus}\n- Exit code: ${testReport.exit_code ?? 'spawn error'}\n- Duration: ${testReport.duration_ms}ms\n\n${testReport.stderr ? `### Test output\n\n\`\`\`\n${testReport.stderr.slice(-8000)}\n\`\`\`` : ''}`;
+    // The branch must exist on the remote before a change request can point at
+    // it, and the CLI must be pinned to that same remote — on a fork it would
+    // otherwise target the upstream parent, where the branch does not exist.
+    const push = await runGit(workspace.root_path, ['push', '-u', 'origin', workspace.feature_branch]);
+    if (push.code !== 0) {
+      throw new CloudError('SHIP_PR_FAILED', `Could not push ${workspace.feature_branch}: ${trimOutput(push.stderr || push.stdout).slice(-500)}`);
+    }
+    const repoSlug = await remoteRepoSlug(workspace.root_path);
+    const repoArgs = repoSlug ? ['--repo', repoSlug] : [];
     const args = provider === 'gitlab'
-      ? ['mr', 'create', '--source-branch', workspace.feature_branch, '--target-branch', baseBranch, '--title', title, '--description', body]
-      : ['pr', 'create', '--head', workspace.feature_branch, '--base', baseBranch, '--title', title, '--body', body];
+      ? ['mr', 'create', ...repoArgs, '--source-branch', workspace.feature_branch, '--target-branch', baseBranch, '--title', title, '--description', body]
+      : ['pr', 'create', ...repoArgs, '--head', workspace.feature_branch, '--base', baseBranch, '--title', title, '--body', body];
     if (draft) args.push('--draft');
     for (const reviewer of reviewers) {
       if (reviewer.trim()) args.push('--reviewer', reviewer.trim());
@@ -263,7 +272,7 @@ export function createShipService(options: { runCommand?: CommandRunner } = {}):
     const warnings: string[] = [];
     const number = Number(url.match(/(?:pull|merge_requests)\/(\d+)/)?.[1] ?? '') || null;
     if (provider === 'github') {
-      const comment = await runCommand('gh', ['pr', 'comment', url, '--body', `CloudCLI test status: ${testStatus} (${testReport.command})`], { cwd: workspace.root_path, env, timeoutMs: 60_000 });
+      const comment = await runCommand('gh', ['pr', 'comment', url, ...repoArgs, '--body', `CloudCLI test status: ${testStatus} (${testReport.command})`], { cwd: workspace.root_path, env, timeoutMs: 60_000 });
       if (comment.code !== 0) warnings.push('Pull request was created, but the test status comment could not be posted.');
     }
     const result: PullRequest = {
@@ -292,9 +301,11 @@ export function createShipService(options: { runCommand?: CommandRunner } = {}):
     const env = { ...process.env };
     if (config.pr?.tokenRef) env.GH_TOKEN = secretsService.resolve(config.pr.tokenRef, { projectId: workspace.project_id });
     const command = provider === 'gitlab' ? 'glab' : 'gh';
+    const ciRepoSlug = await remoteRepoSlug(workspace.root_path);
+    const ciRepoArgs = ciRepoSlug ? ['--repo', ciRepoSlug] : [];
     const args = provider === 'gitlab'
-      ? ['mr', 'view', ref, '--output', 'json']
-      : ['pr', 'checks', ref, '--json', 'name,state,bucket,link'];
+      ? ['mr', 'view', ref, ...ciRepoArgs, '--output', 'json']
+      : ['pr', 'checks', ref, ...ciRepoArgs, '--json', 'name,state,bucket,link'];
     const checked = await runCommand(command, args, { cwd: workspace.root_path, env, timeoutMs: 60_000 });
     if (checked.code !== 0) {
       return { provider, pull_request_url: saved?.url ?? (ref.startsWith('http') ? ref : null), state: 'unknown', checks: [], fetched_at: nowIso(), message: trimOutput(checked.stderr || checked.stdout).slice(-1000) || 'CI status unavailable' };

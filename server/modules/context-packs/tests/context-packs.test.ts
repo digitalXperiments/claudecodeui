@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, mkdir, writeFile } from 'node:fs/promises';
+import { rm, mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
 
-import { closeConnection, initializeDatabase, projectsDb } from '@/modules/database/index.js';
+import { makeScratchDir } from '@/shared/scratch.js';
+import { closeConnection, initializeDatabase, projectsDb, sessionsDb  } from '@/modules/database/index.js';
 import { kanbanDb } from '@/modules/kanban/index.js';
 import { runService } from '@/modules/runs/index.js';
-import { sessionsDb } from '@/modules/database/index.js';
 import {
   attachPackToSession,
   attachPackToRun,
@@ -16,7 +16,7 @@ import {
 
 async function withDatabase(callback: (root: string) => Promise<void>): Promise<void> {
   const previousDatabasePath = process.env.DATABASE_PATH;
-  const root = await mkdtemp(path.resolve('tmp/cloudcli/context-pack-'));
+  const root = await makeScratchDir('context-pack-');
   closeConnection();
   process.env.DATABASE_PATH = path.join(root, 'auth.db');
   await initializeDatabase();

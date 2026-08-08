@@ -371,6 +371,13 @@ app.use('/api', validateApiKey);
 // Authentication routes (public)
 app.use('/api/auth', authRoutes);
 
+// Browser MCP bridge API (local token protected). Must be mounted before any
+// `app.use('/api', authenticateToken, ...)` router below: a path-prefix mount at
+// `/api` runs its JWT middleware for every `/api/*` request, so registering this
+// bridge later would let authenticateToken reject the MCP client's bearer token
+// with a 403 before this router's own token guard ever runs.
+app.use('/api/browser-use-mcp', browserUseMcpRoutes);
+
 // PRD platform primitives (protected). Project-scoped workspace routes are
 // mounted before the general projects router so they cannot be swallowed by a
 // legacy project handler.
@@ -417,9 +424,6 @@ app.use('/api/user', authenticateToken, userRoutes);
 
 // Plugins API Routes (protected)
 app.use('/api/plugins', authenticateToken, pluginsRoutes);
-
-// Browser MCP bridge API (local token protected)
-app.use('/api/browser-use-mcp', browserUseMcpRoutes);
 
 // Browser API Routes (protected)
 app.use('/api/browser-use', authenticateToken, browserUseRoutes);

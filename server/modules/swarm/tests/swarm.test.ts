@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtemp, rm, mkdir, writeFile } from 'node:fs/promises';
+import { rm, mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
 
+import { makeScratchDir } from '@/shared/scratch.js';
 import { closeConnection, initializeDatabase, projectsDb } from '@/modules/database/index.js';
 import {
   parseMemberFindings,
@@ -37,7 +38,7 @@ async function initGitRepo(dir: string): Promise<void> {
 
 async function withDatabase(callback: (root: string) => Promise<void>): Promise<void> {
   const previousDatabasePath = process.env.DATABASE_PATH;
-  const root = await mkdtemp(path.resolve('tmp/cloudcli/swarm-'));
+  const root = await makeScratchDir('swarm-');
   closeConnection();
   process.env.DATABASE_PATH = path.join(root, 'auth.db');
   await initializeDatabase();

@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { rm } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
 
+import { makeScratchDir } from '@/shared/scratch.js';
 import { closeConnection, initializeDatabase } from '@/modules/database/index.js';
 import { webhooksDb } from '@/modules/webhooks/webhooks.repository.js';
 import {
@@ -14,7 +15,7 @@ import type { WebhookSource } from '@/modules/webhooks/webhooks.types.js';
 test('webhook source retry columns persist with defaults', async () => {
   const previousDatabasePath = process.env.DATABASE_PATH;
   const previousSecretsKey = process.env.CLOUDCLI_SECRETS_KEY;
-  const tempDirectory = await mkdtemp(path.resolve('tmp/cloudcli/webhooks-retry-'));
+  const tempDirectory = await makeScratchDir('webhooks-retry-');
   closeConnection();
   process.env.DATABASE_PATH = path.join(tempDirectory, 'webhooks.db');
   process.env.CLOUDCLI_SECRETS_KEY = Buffer.alloc(32, 7).toString('base64');
@@ -62,7 +63,7 @@ test('webhook source retry columns persist with defaults', async () => {
 
 test('delivery attempt lifecycle: create, fail, reset, retry scheduling', async () => {
   const previousDatabasePath = process.env.DATABASE_PATH;
-  const tempDirectory = await mkdtemp(path.resolve('tmp/cloudcli/webhooks-attempt-'));
+  const tempDirectory = await makeScratchDir('webhooks-attempt-');
   closeConnection();
   process.env.DATABASE_PATH = path.join(tempDirectory, 'webhooks.db');
   await initializeDatabase();
@@ -128,7 +129,7 @@ test('delivery attempt lifecycle: create, fail, reset, retry scheduling', async 
 
 test('handleDeliveryFailed does not schedule when retry_max is 0', async () => {
   const previousDatabasePath = process.env.DATABASE_PATH;
-  const tempDirectory = await mkdtemp(path.resolve('tmp/cloudcli/webhooks-noretry-'));
+  const tempDirectory = await makeScratchDir('webhooks-noretry-');
   closeConnection();
   process.env.DATABASE_PATH = path.join(tempDirectory, 'webhooks.db');
   await initializeDatabase();
@@ -160,7 +161,7 @@ test('handleDeliveryFailed does not schedule when retry_max is 0', async () => {
 
 test('listRetryableDeliveries returns only due, eligible failures', async () => {
   const previousDatabasePath = process.env.DATABASE_PATH;
-  const tempDirectory = await mkdtemp(path.resolve('tmp/cloudcli/webhooks-list-'));
+  const tempDirectory = await makeScratchDir('webhooks-list-');
   closeConnection();
   process.env.DATABASE_PATH = path.join(tempDirectory, 'webhooks.db');
   await initializeDatabase();
@@ -239,7 +240,7 @@ test('listRetryableDeliveries returns only due, eligible failures', async () => 
 
 test('reconstructPayloadFromDelivery rebuilds an ingest payload', async () => {
   const previousDatabasePath = process.env.DATABASE_PATH;
-  const tempDirectory = await mkdtemp(path.resolve('tmp/cloudcli/webhooks-reconstruct-'));
+  const tempDirectory = await makeScratchDir('webhooks-reconstruct-');
   closeConnection();
   process.env.DATABASE_PATH = path.join(tempDirectory, 'webhooks.db');
   await initializeDatabase();

@@ -33,7 +33,7 @@ import type {
   SwarmRoleConfig,
   SwarmRun,
 } from '@/modules/swarm/swarm.types.js';
-import { runGit } from '@/modules/workspaces/index.js';
+import { runGit, remoteRepoSlug } from '@/modules/workspaces/index.js';
 import { workspaceService } from '@/modules/workspaces/index.js';
 import type { AgentWorkspace } from '@/modules/workspaces/index.js';
 import type { LLMProvider } from '@/shared/types.js';
@@ -873,11 +873,15 @@ export const swarmService = {
       .join('\n');
 
     const baseBranch = workspace.base_branch || 'main';
+    // Pin the target repo to the remote we pushed to; see remoteRepoSlug.
+    const repoSlug = await remoteRepoSlug(cwd);
+    const repoArgs = repoSlug ? ['--repo', repoSlug] : [];
     const created = await runCli(
       'gh',
       [
         'pr',
         'create',
+        ...repoArgs,
         '--head',
         branch,
         '--base',
@@ -895,7 +899,16 @@ export const swarmService = {
       // Already-open PR is success-ish — try to recover URL.
       const existing = await runCli(
         'gh',
-        ['pr', 'view', branch, '--json', 'url,number', '--jq', '.url + " " + (.number|tostring)'],
+        [
+          'pr',
+          'view',
+          branch,
+          ...repoArgs,
+          '--json',
+          'url,number',
+          '--jq',
+          '.url + " " + (.number|tostring)',
+        ],
         cwd,
       );
       const existingUrl = existing.stdout.trim().split(/\s+/)[0];
@@ -911,9 +924,12 @@ export const swarmService = {
         });
         return { ...base, prUrl: existingUrl, prNumber: number, prError: null };
       }
+      const target = `${repoSlug ?? '(unresolved repo)'} ${branch} → ${baseBranch}`;
       return {
         ...base,
-        prError: `Could not create PR: ${output.slice(-1000) || 'gh pr create failed'}`,
+        prError: `Could not create PR [${target}]: ${
+          output.slice(-1000) || 'gh pr create failed'
+        }`,
       };
     }
 

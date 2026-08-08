@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, rm } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
 
+import { makeScratchDir } from '@/shared/scratch.js';
 import { closeConnection, initializeDatabase, projectsDb } from '@/modules/database/index.js';
 import { failoverService } from '@/modules/failover/failover.service.js';
 import { runService } from '@/modules/runs/index.js';
@@ -10,7 +11,7 @@ import { CloudError } from '@/shared/run-events.js';
 
 async function withDatabase(callback: (root: string) => Promise<void>): Promise<void> {
   const previousDatabasePath = process.env.DATABASE_PATH;
-  const root = await mkdtemp(path.resolve('tmp/cloudcli/failover-'));
+  const root = await makeScratchDir('failover-');
   closeConnection();
   process.env.DATABASE_PATH = path.join(root, 'auth.db');
   await initializeDatabase();

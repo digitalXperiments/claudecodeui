@@ -1,17 +1,17 @@
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, readFile, rm } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
 
+import { makeScratchDir } from '@/shared/scratch.js';
 import { closeConnection, initializeDatabase, projectsDb } from '@/modules/database/index.js';
-import { secretsService } from '@/modules/secrets/index.js';
-import { configureSecretsKeyDir } from '@/modules/secrets/index.js';
+import { secretsService, configureSecretsKeyDir  } from '@/modules/secrets/index.js';
 import { stackService } from '@/modules/stack/stack.service.js';
 
 async function withDatabase(callback: (root: string) => Promise<void>): Promise<void> {
   const previousDatabasePath = process.env.DATABASE_PATH;
-  const root = await mkdtemp(path.resolve('tmp/cloudcli/stack-'));
+  const root = await makeScratchDir('stack-');
   closeConnection();
   process.env.DATABASE_PATH = path.join(root, 'auth.db');
   const previousKey = process.env.CLOUDCLI_SECRETS_KEY;

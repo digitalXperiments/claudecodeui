@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, mkdir } from 'node:fs/promises';
+import { rm, mkdir } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import path from 'node:path';
 import test from 'node:test';
 
+import { makeScratchDir } from '@/shared/scratch.js';
 import { closeConnection, initializeDatabase, projectsDb } from '@/modules/database/index.js';
 import { automationService } from '@/modules/automation/automation.service.js';
 import { CloudError } from '@/shared/run-events.js';
@@ -11,7 +12,7 @@ import { runService } from '@/modules/runs/index.js';
 
 async function withDatabase(callback: (root: string) => Promise<void>): Promise<void> {
   const previousDatabasePath = process.env.DATABASE_PATH;
-  const root = await mkdtemp(path.resolve('tmp/cloudcli/automation-'));
+  const root = await makeScratchDir('automation-');
   closeConnection();
   process.env.DATABASE_PATH = path.join(root, 'auth.db');
   await initializeDatabase();

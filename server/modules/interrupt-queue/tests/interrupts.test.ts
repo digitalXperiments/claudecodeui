@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { rm } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
 
+import { makeScratchDir } from '@/shared/scratch.js';
 import { closeConnection, initializeDatabase } from '@/modules/database/index.js';
 import { interruptsDb, interruptsService } from '@/modules/interrupt-queue/index.js';
 import { applyItemAction, missionControlDb } from '@/modules/mission-control/index.js';
@@ -10,7 +11,7 @@ import { runService } from '@/modules/runs/index.js';
 
 async function withDatabase(fn: () => void | Promise<void>): Promise<void> {
   const previousDatabasePath = process.env.DATABASE_PATH;
-  const directory = await mkdtemp(path.resolve('tmp/cloudcli/interrupts-'));
+  const directory = await makeScratchDir('interrupts-');
   closeConnection();
   process.env.DATABASE_PATH = path.join(directory, 'interrupts.db');
   await initializeDatabase();

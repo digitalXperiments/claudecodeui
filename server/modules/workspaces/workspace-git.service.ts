@@ -100,6 +100,36 @@ export async function revParse(projectPath: string, ref: string): Promise<string
   return result.code === 0 ? result.stdout.trim() || null : null;
 }
 
+/**
+ * `owner/name` for a remote URL, or null when it is not a recognisable
+ * GitHub/GitLab-style remote. Handles `https://host/owner/name(.git)`,
+ * `git@host:owner/name(.git)` and `ssh://git@host/owner/name(.git)`.
+ */
+export function parseRemoteSlug(remoteUrl: string): string | null {
+  const url = remoteUrl.trim().replace(/\.git$/, '');
+  if (!url) return null;
+  const scp = url.match(/^[^@/]+@[^:]+:([^/]+)\/(.+)$/);
+  if (scp) return `${scp[1]}/${scp[2]}`;
+  const full = url.match(/^[a-z][a-z0-9+.-]*:\/\/[^/]+\/([^/]+)\/(.+)$/i);
+  if (full) return `${full[1]}/${full[2]}`;
+  return null;
+}
+
+/**
+ * Repo slug that `gh`/`glab` must be pinned to for this checkout.
+ *
+ * These CLIs resolve the base repo to the *upstream parent* on a fork, so on a
+ * fork-based checkout `gh pr create` without `--repo` opens the PR against
+ * upstream — where the just-pushed branch does not exist, which surfaces as
+ * "Head ref must be a branch" / "No commits between ...". Feature branches are
+ * pushed to `origin`, so the change request must target `origin` too.
+ */
+export async function remoteRepoSlug(cwd: string, remote = 'origin'): Promise<string | null> {
+  const result = await runGit(cwd, ['remote', 'get-url', remote]);
+  if (result.code !== 0) return null;
+  return parseRemoteSlug(result.stdout);
+}
+
 /** `git worktree add -b <branch> <rootPath> <base>` — creates branch + worktree. */
 export async function worktreeAdd(
   projectPath: string,

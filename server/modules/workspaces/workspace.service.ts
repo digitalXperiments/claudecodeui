@@ -22,6 +22,7 @@ import {
   realpath,
   rm,
   stat,
+  symlink,
   writeFile,
 } from 'node:fs/promises';
 import path from 'node:path';
@@ -49,9 +50,19 @@ import type {
   WorkspaceStatus,
 } from '@/modules/workspaces/workspace.types.js';
 
-const GITIGNORE_ENTRY = '.cloudcli/worktrees/';
+/**
+ * Worktrees live at `<project>/.worktrees/<workspace_id>` — inside the project
+ * root (so branches, merges and `gh` all resolve against the same repo) but
+ * gitignored. Workspaces created before this layout still resolve from the
+ * legacy `<project>/.cloudcli/worktrees/` root, which stays allowed for reads.
+ */
+const WORKTREES_DIRNAME = '.worktrees';
+const GITIGNORE_ENTRY = `${WORKTREES_DIRNAME}/`;
 const WORKSPACE_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
-const WORKTREES_MARKER = `${path.sep}.cloudcli${path.sep}worktrees${path.sep}`;
+const WORKTREES_MARKER = `${path.sep}${WORKTREES_DIRNAME}${path.sep}`;
+const LEGACY_WORKTREES_MARKER = `${path.sep}.cloudcli${path.sep}worktrees${path.sep}`;
+/** Scratch dir every workspace gets, per the strict `tmp/cloudcli/` temp rule. */
+const SCRATCH_SUBPATH = ['tmp', 'cloudcli'];
 
 /** In-process per-project mutex (promise chain) for worktree add/remove/merge. */
 const projectLocks = new Map<string, Promise<void>>();
@@ -172,9 +183,11 @@ export function createWorkspaceService(options: WorkspaceServiceOptions = {}): W
     if (registered) {
       return path.resolve(registered);
     }
-    const markerIndex = workspace.root_path.indexOf(WORKTREES_MARKER);
-    if (markerIndex > 0) {
-      return workspace.root_path.slice(0, markerIndex);
+    for (const marker of [WORKTREES_MARKER, LEGACY_WORKTREES_MARKER]) {
+      const markerIndex = workspace.root_path.indexOf(marker);
+      if (markerIndex > 0) {
+        return workspace.root_path.slice(0, markerIndex);
+      }
     }
     throw new CloudError(
       'WORKSPACE_NOT_FOUND',
@@ -198,7 +211,7 @@ export function createWorkspaceService(options: WorkspaceServiceOptions = {}): W
         `Refusing workspace path for unsafe id segment (project=${projectId}, workspace=${workspaceId})`,
       );
     }
-    const preferred = path.resolve(projectPath, '.cloudcli', 'worktrees', workspaceId);
+    const preferred = path.resolve(projectPath, WORKTREES_DIRNAME, workspaceId);
     const fallback = path.resolve(tmpRoot, 'worktrees', projectId, workspaceId);
 
     const preferredParent = path.dirname(preferred);
@@ -224,10 +237,15 @@ export function createWorkspaceService(options: WorkspaceServiceOptions = {}): W
 
   /** Final traversal guard: the chosen root must stay inside an allowed root. */
   const assertRootAllowed = (rootPath: string, projectPath: string, projectId: string): void => {
-    const preferredRoot = path.resolve(projectPath, '.cloudcli', 'worktrees') + path.sep;
+    const preferredRoot = path.resolve(projectPath, WORKTREES_DIRNAME) + path.sep;
+    const legacyRoot = path.resolve(projectPath, '.cloudcli', 'worktrees') + path.sep;
     const fallbackRoot = path.resolve(tmpRoot, 'worktrees', projectId) + path.sep;
     const resolved = path.resolve(rootPath) + path.sep;
-    if (!resolved.startsWith(preferredRoot) && !resolved.startsWith(fallbackRoot)) {
+    if (
+      !resolved.startsWith(preferredRoot) &&
+      !resolved.startsWith(legacyRoot) &&
+      !resolved.startsWith(fallbackRoot)
+    ) {
       throw new CloudError(
         'WORKSPACE_CREATE_FAILED',
         `Workspace root escapes allowed roots: ${rootPath}`,
@@ -248,10 +266,7 @@ export function createWorkspaceService(options: WorkspaceServiceOptions = {}): W
       const covered = existing
         .split('\n')
         .map((line) => line.trim())
-        .some(
-          (line) =>
-            line === GITIGNORE_ENTRY || line === '.cloudcli/worktrees' || line === '.cloudcli/',
-        );
+        .some((line) => line === GITIGNORE_ENTRY || line === WORKTREES_DIRNAME);
       if (covered) {
         return;
       }
@@ -267,13 +282,63 @@ export function createWorkspaceService(options: WorkspaceServiceOptions = {}): W
     }
   };
 
+  /**
+   * Make a freshly-created workspace immediately usable:
+   *
+   * - `tmp/cloudcli/` exists, because it is gitignored and therefore never
+   *   materialises in a new worktree — tests that `mkdtemp` into it otherwise
+   *   fail en masse with ENOENT (see [[tmp-cloudcli-temp-rule]]).
+   * - `node_modules` is symlinked to the primary checkout so agents can run
+   *   typecheck/tests/build without a multi-minute install. Skipped when the
+   *   workspace already has its own (a real install wins over the link).
+   *
+   * Best-effort throughout: a workspace that cannot be pre-warmed is still a
+   * valid workspace, so failures are logged and swallowed.
+   */
+  const prepareWorkspaceScratch = async (
+    projectPath: string,
+    rootPath: string,
+  ): Promise<void> => {
+    try {
+      await mkdir(path.join(rootPath, ...SCRATCH_SUBPATH), { recursive: true });
+    } catch (error) {
+      console.warn('[Workspaces] could not create tmp/cloudcli scratch dir; continuing', {
+        rootPath,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    const linkPath = path.join(rootPath, 'node_modules');
+    const targetPath = path.join(projectPath, 'node_modules');
+    try {
+      if (path.resolve(linkPath) === path.resolve(targetPath)) {
+        return; // Workspace is the primary checkout; nothing to link.
+      }
+      if (!(await pathExists(targetPath))) {
+        return; // Primary has no install to share.
+      }
+      if (await pathExists(linkPath)) {
+        return; // Already present (real dir or prior link).
+      }
+      await symlink(targetPath, linkPath, 'dir');
+    } catch (error) {
+      console.warn('[Workspaces] could not link node_modules into workspace; continuing', {
+        rootPath,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
   /** Copy the project tree into the sandbox root, excluding heavy/nested dirs. */
   const copySandboxTree = async (projectPath: string, rootPath: string): Promise<void> => {
     // The destination is intentionally allowed to live inside the project by
     // the path policy. Node's recursive cp rejects a source→descendant copy
     // before its filter runs, so copy entries explicitly and skip the target
     // subtree before descending into it.
-    const worktreesRoot = path.resolve(projectPath, '.cloudcli', 'worktrees') + path.sep;
+    const worktreeRoots = [
+      path.resolve(projectPath, WORKTREES_DIRNAME) + path.sep,
+      path.resolve(projectPath, '.cloudcli', 'worktrees') + path.sep,
+    ];
     const destinationRoot = path.resolve(rootPath);
 
     const shouldSkip = (source: string): boolean => {
@@ -281,7 +346,7 @@ export function createWorkspaceService(options: WorkspaceServiceOptions = {}): W
       if (resolved === destinationRoot || resolved.startsWith(`${destinationRoot}${path.sep}`)) {
         return true;
       }
-      if (resolved.startsWith(worktreesRoot)) {
+      if (worktreeRoots.some((root) => resolved.startsWith(root))) {
         return true;
       }
       const base = path.basename(resolved);
@@ -362,6 +427,7 @@ export function createWorkspaceService(options: WorkspaceServiceOptions = {}): W
 
       if (mode === 'sandbox_copy') {
         await copySandboxTree(projectPath, rootPath);
+        await prepareWorkspaceScratch(projectPath, rootPath);
         const workspace = workspaceDb.insert({
           workspace_id: workspaceId,
           project_id: input.projectId,
@@ -404,6 +470,7 @@ export function createWorkspaceService(options: WorkspaceServiceOptions = {}): W
         );
       }
       await ensureWorktreesGitignored(projectPath);
+      await prepareWorkspaceScratch(projectPath, rootPath);
 
       const workspace = workspaceDb.insert({
         workspace_id: workspaceId,

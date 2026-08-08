@@ -6,16 +6,16 @@
  */
 
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { rm } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
-
-import express from 'express';
 import type { AddressInfo } from 'node:net';
 
+import express from 'express';
+
+import { makeScratchDir } from '@/shared/scratch.js';
 import { closeConnection, initializeDatabase } from '@/modules/database/index.js';
 import { redactPayload, runService } from '@/modules/runs/runs.service.js';
-import { runsDb } from '@/modules/runs/runs.repository.js';
 import runsRoutes from '@/modules/runs/runs.routes.js';
 import { ORPHAN_ERROR_SUMMARY } from '@/modules/runs/runs.types.js';
 import { CloudError } from '@/shared/run-events.js';
@@ -24,7 +24,7 @@ type TempDb = { directory: string; restore: () => Promise<void> };
 
 async function useTempDatabase(): Promise<TempDb> {
   const previousDatabasePath = process.env.DATABASE_PATH;
-  const directory = await mkdtemp(path.resolve('tmp/cloudcli/runs-'));
+  const directory = await makeScratchDir('runs-');
   closeConnection();
   process.env.DATABASE_PATH = path.join(directory, 'auth.db');
   await initializeDatabase();

@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { rm } from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import test from 'node:test';
 
+import { makeScratchDir } from '@/shared/scratch.js';
 import { closeConnection, initializeDatabase } from '@/modules/database/index.js';
 import { configureSecretsKeyDir } from '@/modules/secrets/secrets-key.service.js';
 import { secretsService } from '@/modules/secrets/secrets.service.js';
@@ -11,7 +12,7 @@ import { secretsService } from '@/modules/secrets/secrets.service.js';
 async function withDatabase(fn: () => void): Promise<void> {
   const previousDatabasePath = process.env.DATABASE_PATH;
   const previousKey = process.env.CLOUDCLI_SECRETS_KEY;
-  const directory = await mkdtemp(path.resolve('tmp/cloudcli/secrets-'));
+  const directory = await makeScratchDir('secrets-');
   closeConnection();
   process.env.DATABASE_PATH = path.join(directory, 'secrets.db');
   process.env.CLOUDCLI_SECRETS_KEY = randomBytes(32).toString('base64');
