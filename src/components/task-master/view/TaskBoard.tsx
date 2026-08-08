@@ -10,6 +10,7 @@ import TaskEmptyState from './TaskEmptyState';
 import CreateTaskModal from './modals/CreateTaskModal';
 import TaskHelpModal from './modals/TaskHelpModal';
 import TaskMasterSetupModal from './modals/TaskMasterSetupModal';
+import TaskMasterImportModal from './modals/TaskMasterImportModal';
 
 type TaskBoardProps = {
   tasks?: TaskMasterTask[];
@@ -41,6 +42,7 @@ export default function TaskBoard({
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showHelpModal, setShowHelpModal] = useState(false);
   const [showSetupModal, setShowSetupModal] = useState(false);
+  const [showImportModal, setShowImportModal] = useState(false);
 
   const {
     searchTerm,
@@ -164,6 +166,7 @@ export default function TaskBoard({
         }}
         onOpenHelp={() => setShowHelpModal(true)}
         onOpenCreateTask={() => setShowCreateModal(true)}
+        onImportToKanban={() => setShowImportModal(true)}
       />
 
       <TaskBoardContent
@@ -194,6 +197,12 @@ export default function TaskBoard({
         project={currentProject}
         onClose={() => setShowSetupModal(false)}
         onAfterClose={refreshAfterSetup}
+      />
+
+      <TaskMasterImportModal
+        isOpen={showImportModal}
+        projectId={currentProject?.projectId}
+        onClose={() => setShowImportModal(false)}
       />
     </div>
   );

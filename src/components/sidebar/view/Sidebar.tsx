@@ -13,6 +13,7 @@ import type { MCPServerStatus, SidebarProps } from '../types/types';
 import MissionControlPanel from '../../mission-control/view/MissionControlPanel';
 import { missionControlApi } from '../../mission-control/api/missionControlApi';
 import KanbanPanel from '../../kanban/view/KanbanPanel';
+import AgentSwarmPanel from '../../swarm/view/AgentSwarmPanel';
 
 import SidebarContent from './subcomponents/SidebarContent';
 import SidebarModals from './subcomponents/SidebarModals';
@@ -59,9 +60,11 @@ function Sidebar({
   const paletteOps = usePaletteOps();
   const [showNotifications, setShowNotifications] = useState(false);
   const [unreadNotificationCount, setUnreadNotificationCount] = useState(0);
+  const [interruptCount, setInterruptCount] = useState(0);
   const [showMissionControl, setShowMissionControl] = useState(false);
   const [missionControlPendingCount, setMissionControlPendingCount] = useState(0);
   const [showKanban, setShowKanban] = useState(false);
+  const [showAgentSwarm, setShowAgentSwarm] = useState(false);
   const handleUnreadChange = useCallback((count: number) => {
     setUnreadNotificationCount(count);
   }, []);
@@ -376,10 +379,11 @@ function Sidebar({
         onShowVersionModal={() => setShowVersionModal(true)}
         onShowSettings={onShowSettings}
         onShowNotifications={() => setShowNotifications(true)}
-        unreadNotificationCount={unreadNotificationCount}
+        unreadNotificationCount={unreadNotificationCount + interruptCount}
         onShowMissionControl={() => setShowMissionControl(true)}
         missionControlPendingCount={missionControlPendingCount}
         onShowKanban={() => setShowKanban(true)}
+        onShowAgentSwarm={() => setShowAgentSwarm(true)}
         projectListProps={projectListProps}
         projectsPanelWidth={projectsPanelWidth}
         t={t}
@@ -389,6 +393,7 @@ function Sidebar({
         open={showNotifications}
         onClose={() => setShowNotifications(false)}
         onUnreadChange={handleUnreadChange}
+        onInterruptCountChange={setInterruptCount}
       />
 
       <MissionControlPanel
@@ -401,6 +406,13 @@ function Sidebar({
       <KanbanPanel
         isOpen={showKanban}
         onClose={() => setShowKanban(false)}
+        selectedProject={selectedProject}
+        projects={projects}
+      />
+
+      <AgentSwarmPanel
+        isOpen={showAgentSwarm}
+        onClose={() => setShowAgentSwarm(false)}
         selectedProject={selectedProject}
         projects={projects}
       />

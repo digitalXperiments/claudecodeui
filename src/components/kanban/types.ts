@@ -66,6 +66,10 @@ export type KanbanTask = {
   due_date: string | null;
   /** Git branch auto-created when an implementation run starts. */
   feature_branch: string | null;
+  /** Isolated agent workspace bound to this task (P1). */
+  workspace_id?: string | null;
+  /** ISO timestamp when the task was archived; null while active. */
+  archived_at: string | null;
   status: KanbanTaskStatus;
   app_session_id: string | null;
   last_run_at: string | null;

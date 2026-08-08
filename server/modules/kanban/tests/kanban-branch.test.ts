@@ -14,6 +14,7 @@ import {
   kanbanRunner,
   stopKanbanAutomation,
 } from '@/modules/kanban/index.js';
+import { workspaceService } from '@/modules/workspaces/index.js';
 import type { AnyRecord } from '@/shared/types.js';
 
 function runGit(repoPath: string, args: string[]): { status: number | null; stdout: string; stderr: string } {
@@ -105,9 +106,14 @@ test('an implementation run creates and persists a feature branch in a git repo'
     assert.equal(updated?.feature_branch, expected);
     assert.equal(updated?.status, 'done');
 
-    // The repo is genuinely on the branch.
-    assert.equal(runGit(repoDir, ['branch', '--show-current']).stdout, expected);
-    assert.equal(runGit(repoDir, ['rev-parse', '--abbrev-ref', 'HEAD']).stdout, expected);
+    // P1 keeps the primary checkout untouched; the feature branch lives in
+    // the isolated workspace and can be merged/discarded explicitly.
+    assert.equal(runGit(repoDir, ['branch', '--show-current']).stdout, 'main');
+    const workspace = workspaceService.get(updated!.workspace_id!);
+    assert.ok(workspace);
+    assert.equal(workspace.feature_branch, expected);
+    assert.equal(runGit(workspace.root_path, ['branch', '--show-current']).stdout, expected);
+    await workspaceService.discard(workspace.workspace_id, { deleteBranch: true });
   });
 });
 

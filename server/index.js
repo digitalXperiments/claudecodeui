@@ -22,6 +22,7 @@ import {
     configureMemoryCurationRuntimes,
 } from '@/modules/providers/index.js';
 import { createWebSocketServer } from '@/modules/websocket/index.js';
+import { interruptsRoutes, interruptsService } from '@/modules/interrupt-queue/index.js';
 
 import { getConnectableHost } from '../shared/networkHosts.js';
 
@@ -100,6 +101,7 @@ import {
 } from './modules/kanban/index.js';
 import missionControlRoutes from './modules/mission-control/mission-control.routes.js';
 import {
+    applyItemAction,
     configureMissionControlRuntimes,
     ensureArticleStudioSections,
     ensureMissionControlSeedSections,
@@ -107,6 +109,26 @@ import {
     stopMissionControlScheduler,
 } from './modules/mission-control/index.js';
 import agentProfilesRoutes from './modules/agent-profiles/agent-profiles.routes.js';
+import workspacesRoutes from './modules/workspaces/workspaces.routes.js';
+import runsRoutes from './modules/runs/runs.routes.js';
+import secretsRoutes from './modules/secrets/secrets.routes.js';
+import deliveryGraphRoutes from './modules/delivery-graph/delivery-graph.routes.js';
+import shipRoutes from './modules/ship/ship.routes.js';
+import contextPacksRoutes from './modules/context-packs/context-packs.routes.js';
+import automationRoutes, { startAutomationKernel, stopAutomationKernel } from './modules/automation/index.js';
+import swarmRoutes, {
+    configureSwarmRuntimes,
+    configureSwarmAbortFns,
+} from './modules/swarm/index.js';
+import failoverRoutes from './modules/failover/failover.routes.js';
+import {
+    configureFailoverApprovalResolver,
+    configureFailoverRuntimes,
+} from './modules/failover/index.js';
+import stackRoutes from './modules/stack/stack.routes.js';
+import { workspaceService } from './modules/workspaces/workspace.service.js';
+import { runService } from './modules/runs/runs.service.js';
+import { startRunMaintenance, stopRunMaintenance } from './modules/runs/runs-maintenance.service.js';
 import {
     authHealthRoutes,
     startAuthHealthWatchdog,
@@ -185,8 +207,25 @@ configureKanbanRuntimes(providerSpawnFns);
 initKanbanAutomation();
 initKanbanQueue({ concurrency: 3 });
 
+// Failover uses the same provider runtime map as chat, Kanban, and webhooks.
+configureFailoverRuntimes(providerSpawnFns);
+configureFailoverApprovalResolver();
+
 // Mission Control reuses the same provider runtimes for produce/resolve runs.
 configureMissionControlRuntimes(providerSpawnFns);
+
+// Review swarm: multi-role headless agent runs on the same runtime map.
+configureSwarmRuntimes(providerSpawnFns);
+configureSwarmAbortFns({
+    claude: abortClaudeSDKSession,
+    cursor: abortCursorSession,
+    codex: abortCodexSession,
+    opencode: abortOpenCodeSession,
+    grok: abortGrokSession,
+    kimi: abortKimiSession,
+    agy: abortAgySession,
+    pi: abortPiSession,
+});
 
 // Webhooks: source-routed headless agent runs (dictation, external tools, …).
 configureWebhookRuntimes(providerSpawnFns);
@@ -227,6 +266,12 @@ function waitForChatbarRunIdle(appSessionId) {
 }
 
 // Single WebSocket server that handles chat, shell, and plugin proxy paths.
+interruptsService.configurePermissionResolver(resolveToolApproval);
+interruptsService.configureMcItemResolver((itemId, decision) => {
+  void applyItemAction(itemId, decision === 'approve' ? 'approve' : 'deny').catch((error) => {
+    console.warn('[Interrupts] MC item action failed', error?.message || error);
+  });
+});
 const wss = createWebSocketServer(server, {
     verifyClient: {
         isPlatform: IS_PLATFORM,
@@ -325,6 +370,21 @@ app.use('/api', validateApiKey);
 
 // Authentication routes (public)
 app.use('/api/auth', authRoutes);
+
+// PRD platform primitives (protected). Project-scoped workspace routes are
+// mounted before the general projects router so they cannot be swallowed by a
+// legacy project handler.
+app.use('/api', authenticateToken, workspacesRoutes);
+app.use('/api/runs', authenticateToken, runsRoutes);
+app.use('/api/secrets', authenticateToken, secretsRoutes);
+app.use('/api/interrupts', authenticateToken, interruptsRoutes);
+app.use('/api', authenticateToken, deliveryGraphRoutes);
+app.use('/api', authenticateToken, shipRoutes);
+app.use('/api', authenticateToken, contextPacksRoutes);
+app.use('/api', authenticateToken, automationRoutes);
+app.use('/api', authenticateToken, swarmRoutes);
+app.use('/api', authenticateToken, failoverRoutes);
+app.use('/api', authenticateToken, stackRoutes);
 
 // Projects API Routes (protected)
 app.use('/api/projects', authenticateToken, projectModuleRoutes);
@@ -1781,12 +1841,26 @@ async function startServer() {
         // Initialize authentication database
         await initializeDatabase();
 
+        try {
+            const reconciledRuns = runService.reconcileOrphans();
+            const orphanedWorkspaces = await workspaceService.reconcileOrphanedWorkspaces();
+            if (reconciledRuns || orphanedWorkspaces.length) {
+                console.log(
+                    `[CloudCLI] reconciled ${reconciledRuns} run(s) and ${orphanedWorkspaces.length} workspace(s) on boot`,
+                );
+            }
+        } catch (error) {
+            console.error('[CloudCLI] run/workspace reconciliation failed:', error.message);
+        }
+
         // Fail any kanban runs left "running" by a previous process (crash/restart),
         // re-enqueue anything persisted as "queued", and start the cron scheduler.
         try {
             reconcileKanbanOnBoot();
             requeuePersisted();
             startKanbanScheduler();
+            startAutomationKernel();
+            startRunMaintenance();
         } catch (error) {
             console.error('[Kanban] boot reconcile failed:', error.message);
         }
@@ -1881,6 +1955,8 @@ async function startServer() {
         const shutdownRuntimeServices = async () => {
             try {
                 stopKanbanScheduler();
+                stopAutomationKernel();
+                stopRunMaintenance();
             } catch (err) {
                 console.error('[Kanban] Error stopping scheduler during shutdown:', err?.message || err);
             }

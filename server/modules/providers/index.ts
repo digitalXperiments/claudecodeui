@@ -10,6 +10,9 @@ export type {
 export { providerSkillsService } from './services/skills.service.js';
 export { providerMcpService } from './services/mcp.service.js';
 export { mcpCatalogService } from './services/mcp-catalog.service.js';
+export { obsidianSettingsService } from './services/obsidian-settings.service.js';
+export { projectSkillsService } from './services/project-skills.service.js';
+export { globalSkillsService } from './services/global-skills.service.js';
 export { projectMemoryService, getMemoryPreamble, configureMemoryCurationRuntimes } from './services/project-memory.service.js';
 export { providerCapabilitiesService } from './services/provider-capabilities.service.js';
 export { providerAuthService } from './services/provider-auth.service.js';

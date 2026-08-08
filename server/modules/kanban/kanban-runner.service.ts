@@ -4,6 +4,9 @@ import { sessionsService } from '@/modules/providers/index.js';
 import { DETACHED_CONNECTION, startProviderRun, type ProviderSpawnFn } from '@/modules/websocket/index.js';
 import { kanbanDb } from '@/modules/kanban/kanban.repository.js';
 import { ensureFeatureBranch } from '@/modules/kanban/git-branch.service.js';
+import { runService } from '@/modules/runs/index.js';
+import { workspaceService } from '@/modules/workspaces/index.js';
+import type { AgentWorkspace } from '@/modules/workspaces/index.js';
 import {
   COLUMN_REVIEW,
   isKanbanProvider,
@@ -21,6 +24,23 @@ import { AppError } from '@/shared/utils.js';
  * the websocket server uses. The runner stays decoupled from index.js wiring.
  */
 let runtimeSpawnFns: Partial<Record<LLMProvider, ProviderSpawnFn>> = {};
+
+/** P1 defaults on, with an explicit escape hatch for legacy installations. */
+export function areKanbanWorkspacesEnabled(): boolean {
+  return process.env.CLOUDCLI_WORKSPACES !== '0' && process.env.FEATURE_WORKSPACES !== '0';
+}
+
+function slugifyTitle(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/(^-|-$)/g, '')
+    .slice(0, 40);
+}
+
+function defaultTaskBranch(task: KanbanTask): string {
+  return `feat/${task.task_id}-${slugifyTitle(task.title)}`;
+}
 
 export function configureKanbanRuntimes(spawnFns: Partial<Record<LLMProvider, ProviderSpawnFn>>): void {
   runtimeSpawnFns = spawnFns;
@@ -349,22 +369,79 @@ export const kanbanRunner = {
       });
     }
 
-    // Implementation runs work on a dedicated feature branch. Create (or switch
-    // to) one when the task doesn't reference a branch yet. Best-effort — a
-    // non-git project or a failed checkout never fails the run.
-    if (role === 'implement' && !task.feature_branch) {
-      const branch = ensureFeatureBranch(projectPath, task);
-      if (branch) {
-        try {
-          kanbanDb.updateTask(task.task_id, { featureBranch: branch });
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          console.warn('[Kanban] failed to persist feature branch', {
+    // Create the durable run before allocating a workspace so the workspace
+    // can point at the canonical run id from its first database row.
+    const spineRun = runService.create({
+      source: 'kanban',
+      projectId: task.project_id,
+      sourceRef: task.task_id,
+      provider,
+      model: profile?.model ?? null,
+      effort: profile?.effort ?? null,
+      permissionMode: profile?.permission_mode ?? task.permission_mode,
+      profileId: profile?.profile_id ?? null,
+      title: task.title,
+      trigger,
+    });
+
+    let workspace: AgentWorkspace | null = null;
+    try {
+      if (areKanbanWorkspacesEnabled()) {
+        // Reviews reuse the implementation workspace so they see the exact
+        // files the implementer produced. Retries also reuse an active
+        // workspace, preserving uncommitted work for the next attempt.
+        // Stale workspace_id rows (deleted dir, wiped DB in tests) fall
+        // through to create() rather than failing the whole run.
+        const existing = task.workspace_id ? workspaceService.get(task.workspace_id) : null;
+        if (existing && (existing.status === 'active' || existing.status === 'error')) {
+          try {
+            const refreshed = await workspaceService.refreshStatus(existing.workspace_id);
+            if (refreshed.status === 'active' || refreshed.status === 'error') {
+              workspace = workspaceService.bindRun(existing.workspace_id, spineRun.run_id);
+            }
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            console.warn('[Kanban] failed to reuse workspace; creating a new one', {
+              taskId: task.task_id,
+              workspaceId: existing.workspace_id,
+              error: message,
+            });
+            workspace = null;
+          }
+        }
+
+        if (!workspace) {
+          workspace = await workspaceService.create({
+            projectId: task.project_id,
+            projectPath,
+            runId: spineRun.run_id,
             taskId: task.task_id,
-            error: message,
+            branchName: task.feature_branch ?? defaultTaskBranch(task),
           });
+          kanbanDb.setTaskWorkspace(task.task_id, workspace.workspace_id);
+          if (role === 'implement' && workspace.feature_branch && !task.feature_branch) {
+            kanbanDb.updateTask(task.task_id, { featureBranch: workspace.feature_branch });
+          }
+        } else {
+          kanbanDb.setTaskWorkspace(task.task_id, workspace.workspace_id);
+        }
+        runService.linkWorkspace(spineRun.run_id, workspace.workspace_id);
+      } else if (role === 'implement' && !task.feature_branch) {
+        // Explicit legacy mode retains the pre-P1 branch behavior for
+        // installations that need to opt out while migrating.
+        const branch = ensureFeatureBranch(projectPath, task);
+        if (branch) {
+          kanbanDb.updateTask(task.task_id, { featureBranch: branch });
         }
       }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      try {
+        runService.markTerminal(spineRun.run_id, { status: 'failed', errorSummary: message });
+      } catch {
+        // Preserve the original workspace error for the caller.
+      }
+      throw error;
     }
 
     // Reuse the task's existing session only when it belongs to the same
@@ -380,23 +457,33 @@ export const kanbanRunner = {
     }
 
     const resolvedSessionId = appSessionId as string;
+    runService.linkSession(spineRun.run_id, resolvedSessionId);
     const run = kanbanDb.createRun({
       taskId: task.task_id,
       appSessionId: resolvedSessionId,
       provider,
       trigger,
       role,
+      runId: spineRun.run_id,
+      agentRunId: spineRun.run_id,
     });
     kanbanDb.setTaskStatus(task.task_id, 'running');
+
+    const runtimeOptions = buildRuntimeOptions(task, provider, profile);
+    if (workspace) {
+      runtimeOptions.cwd = workspace.root_path;
+      runtimeOptions.projectPath = workspace.root_path;
+    }
+    runService.updateStatus(spineRun.run_id, 'running');
 
     const result = await startProviderRun({
       appSessionId: resolvedSessionId,
       provider,
       providerSessionId: session?.provider_session_id ?? null,
-      projectPath,
+      projectPath: workspace?.root_path ?? projectPath,
       spawnFn,
       content: buildRunPrompt(task, role, role === 'review' ? context?.implementOutput : null),
-      options: buildRuntimeOptions(task, provider, profile),
+      options: runtimeOptions,
       connection: DETACHED_CONNECTION,
       userId: null,
     });
@@ -405,6 +492,10 @@ export const kanbanRunner = {
       // Another run already holds this session; roll back our bookkeeping.
       kanbanDb.finishRun(run.run_id, 'failed', null);
       kanbanDb.setTaskStatus(task.task_id, task.status);
+      runService.markTerminal(spineRun.run_id, {
+        status: 'failed',
+        errorSummary: 'A run is already in progress for this task session',
+      });
       throw new AppError('A run is already in progress for this task session', {
         code: 'KANBAN_RUN_IN_PROGRESS',
         statusCode: 409,

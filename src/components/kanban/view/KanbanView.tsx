@@ -9,7 +9,7 @@ import {
   type DragEndEvent,
   type DragStartEvent,
 } from '@dnd-kit/core';
-import { AlertTriangle, Loader2, Plus, RefreshCw, SquareKanban, Table2 } from 'lucide-react';
+import { AlertTriangle, Archive, Check, Loader2, Plus, RefreshCw, SquareKanban, Table2, Trash2, X } from 'lucide-react';
 
 import { Button } from '../../../shared/view/ui';
 import type { Project } from '../../../types/app';
@@ -65,6 +65,10 @@ export default function KanbanView({ selectedProject, isVisible, projects: proje
   const [draftColumnId, setDraftColumnId] = useState<string | null>(null);
   const [activeTask, setActiveTask] = useState<KanbanTask | null>(null);
   const [view, setView] = useState<'board' | 'matrix'>('board');
+  const [selectedTaskIds, setSelectedTaskIds] = useState<Set<string>>(new Set());
+  const [archivedOpen, setArchivedOpen] = useState(false);
+  const [archivedTasks, setArchivedTasks] = useState<KanbanTask[]>([]);
+  const [bulkBusy, setBulkBusy] = useState(false);
 
   const boardTasks = useMemo(() => board.tasks ?? [], [board.tasks]);
   // Derive the edited task from live board state so run status/output refresh.
@@ -72,6 +76,7 @@ export default function KanbanView({ selectedProject, isVisible, projects: proje
     ? boardTasks.find((t) => t.task_id === editingTaskId) ?? null
     : null;
   const anyActive = boardTasks.some((t) => t.status === 'running' || t.status === 'queued');
+  const selectedTasks = boardTasks.filter((task) => selectedTaskIds.has(task.task_id));
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
@@ -148,6 +153,37 @@ export default function KanbanView({ selectedProject, isVisible, projects: proje
     setEditorOpen(true);
   };
 
+  const toggleSelected = (taskId: string) => {
+    setSelectedTaskIds((previous) => {
+      const next = new Set(previous);
+      if (next.has(taskId)) next.delete(taskId); else next.add(taskId);
+      return next;
+    });
+  };
+
+  const runBulk = async (action: 'delete' | 'archive' | 'move', columnId?: string) => {
+    if (!selectedTasks.length) return;
+    if (action === 'delete' && !window.confirm(`Delete ${selectedTasks.length} task${selectedTasks.length === 1 ? '' : 's'}?`)) return;
+    const targets = action === 'archive' ? selectedTasks.filter((task) => task.status === 'done') : selectedTasks;
+    if (!targets.length) return;
+    setBulkBusy(true);
+    try {
+      await Promise.all(targets.map((task) => action === 'delete'
+        ? board.deleteTask(task.task_id)
+        : action === 'archive'
+          ? board.archiveTask(task.task_id)
+          : board.updateTask(task.task_id, { columnId })));
+      setSelectedTaskIds(new Set());
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
+  const loadArchived = async () => {
+    setArchivedTasks(await kanbanApi.listArchivedTasks());
+    setArchivedOpen(true);
+  };
+
   const openEditTask = (task: KanbanTask) => {
     setEditingTaskId(task.task_id);
     setDraftColumnId(null);
@@ -215,6 +251,9 @@ export default function KanbanView({ selectedProject, isVisible, projects: proje
         </div>
 
         <div className="flex shrink-0 items-center gap-1.5 md:gap-2">
+          <Button variant="ghost" size="sm" className="h-10 gap-1 md:h-8" onClick={() => void loadArchived()}>
+            <Archive className="h-4 w-4" /> <span className="hidden sm:inline">Archived</span>
+          </Button>
           <Button
             variant={view === 'matrix' ? 'secondary' : 'ghost'}
             size="icon"
@@ -244,6 +283,34 @@ export default function KanbanView({ selectedProject, isVisible, projects: proje
           </Button>
         </div>
       </div>
+
+      {selectedTasks.length > 0 ? (
+        <div
+          className="flex flex-shrink-0 flex-wrap items-center gap-2 border-b border-primary/20 bg-primary/5 px-3 py-2.5 md:px-4"
+          role="toolbar"
+          aria-label="Bulk task actions"
+        >
+          <span className="mr-1 inline-flex h-8 items-center rounded-md bg-primary/10 px-2.5 text-sm font-medium text-primary">
+            {selectedTasks.length} selected
+          </span>
+          <select
+            className="h-8 rounded-md border border-border bg-background px-2.5 text-sm shadow-sm outline-none transition-colors focus:border-primary focus:ring-2 focus:ring-primary/20"
+            value=""
+            disabled={bulkBusy}
+            onChange={(event) => { if (event.target.value) void runBulk('move', event.target.value); }}
+          >
+            <option value="">Change list…</option>
+            {columns.map((column) => <option key={column.id} value={column.id}>{column.name}</option>)}
+          </select>
+          <Button size="sm" variant="secondary" className="h-8 gap-1 shadow-sm" disabled={bulkBusy || !selectedTasks.some((task) => task.status === 'done')} onClick={() => void runBulk('archive')}>
+            <Archive className="h-4 w-4" /> Archive done
+          </Button>
+          <Button size="sm" variant="destructive" className="h-8 gap-1 shadow-sm" disabled={bulkBusy} onClick={() => void runBulk('delete')}>
+            <Trash2 className="h-4 w-4" /> Delete
+          </Button>
+          <Button size="sm" variant="ghost" className="h-8" disabled={bulkBusy} onClick={() => setSelectedTaskIds(new Set())}>Clear</Button>
+        </div>
+      ) : null}
 
       <div className="hidden flex-shrink-0 border-b border-border bg-muted/30 px-4 py-1.5 text-[11px] text-muted-foreground md:block">
         Cross-project board. Each task belongs to a project you pick. Link tasks with{' '}
@@ -286,6 +353,8 @@ export default function KanbanView({ selectedProject, isVisible, projects: proje
                 onSetColumnWipLimit={board.setColumnWipLimit}
                 projectNameById={projectNameById}
                 taskById={taskById}
+                selectedTaskIds={selectedTaskIds}
+                onToggleSelect={toggleSelected}
               />
             ))}
           </div>
@@ -296,6 +365,26 @@ export default function KanbanView({ selectedProject, isVisible, projects: proje
           </DragOverlay>
         </DndContext>
       )}
+
+      {archivedOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4" role="dialog" aria-modal="true" aria-label="Archived tasks">
+          <div className="flex max-h-[80vh] w-full max-w-2xl flex-col rounded-lg border border-border bg-background shadow-xl">
+            <div className="flex items-center justify-between border-b border-border px-4 py-3">
+              <div><h2 className="font-semibold">Archived tasks</h2><p className="text-xs text-muted-foreground">Done tasks hidden from the board.</p></div>
+              <Button variant="ghost" size="icon" onClick={() => setArchivedOpen(false)} aria-label="Close archived tasks"><X className="h-4 w-4" /></Button>
+            </div>
+            <div className="min-h-0 space-y-2 overflow-y-auto p-4">
+              {archivedTasks.length === 0 ? <p className="py-8 text-center text-sm text-muted-foreground">No archived tasks.</p> : archivedTasks.map((task) => (
+                <div key={task.task_id} className="flex items-center gap-3 rounded-md border border-border p-3">
+                  <Check className="h-4 w-4 shrink-0 text-green-600" />
+                  <button className="min-w-0 flex-1 truncate text-left text-sm font-medium hover:underline" onClick={() => { setArchivedOpen(false); openEditTask(task); }}>{task.title}</button>
+                  <Button size="sm" variant="outline" onClick={async () => { await board.restoreTask(task.task_id); setArchivedTasks((items) => items.filter((item) => item.task_id !== task.task_id)); }}>Restore</Button>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       <TaskEditor
         open={editorOpen}

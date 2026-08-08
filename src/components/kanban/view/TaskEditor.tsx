@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { GitBranch, Loader2, Play, Search, Sparkles, Trash2 } from 'lucide-react';
+import { FolderGit2, GitBranch, Loader2, Play, Search, Sparkles, Trash2 } from 'lucide-react';
 
 import { Badge, Button, Dialog, DialogContent, DialogTitle, Input } from '../../../shared/view/ui';
 import { cn } from '../../../lib/utils';
@@ -37,6 +37,7 @@ function readStoredGenerateProvider(): LLMProvider {
 
 import TaskRunOutput from './TaskRunOutput';
 import TaskComments from './TaskComments';
+import ContextPackPanel from '../../context-packs/ContextPackPanel';
 
 type TaskDraft = {
   columnId?: string;
@@ -1248,6 +1249,21 @@ export default function TaskEditor(props: TaskEditorProps) {
             {isEdit && task ? (
               <div className="flex flex-col gap-1 border-t border-border pt-3">
                 <span className={labelClass}>Run</span>
+                <div className="rounded-md border border-border/60 bg-muted/20 px-2.5 py-2 text-[11px] text-muted-foreground">
+                  <p className="flex items-start gap-1.5">
+                    <FolderGit2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-sky-600 dark:text-sky-400" />
+                    <span>
+                      Each agent run gets its own <strong className="font-medium text-foreground">git worktree</strong> and feature branch so the main project folder stays clean. Worktrees appear under Source Control → Workspaces after a run starts.
+                    </span>
+                  </p>
+                  {task.workspace_id ? (
+                    <p className="mt-1.5 truncate font-mono text-[10px] text-sky-700 dark:text-sky-300" title={task.workspace_id}>
+                      Active workspace: {task.workspace_id}
+                    </p>
+                  ) : (
+                    <p className="mt-1.5 text-[10px]">No worktree yet — created automatically on the next agent run.</p>
+                  )}
+                </div>
                 {task.feature_branch ? (
                   <p className="flex items-center gap-1 text-xs text-muted-foreground">
                     <GitBranch className="h-3 w-3 shrink-0" />
@@ -1281,6 +1297,15 @@ export default function TaskEditor(props: TaskEditorProps) {
               <TaskComments
                 taskId={task.task_id}
                 refreshSignal={`${task.status}:${task.updated_at}`}
+              />
+            ) : null}
+
+            {isEdit && task?.project_id ? (
+              <ContextPackPanel
+                projectId={task.project_id}
+                taskId={task.task_id}
+                title={task.title}
+                sessionId={task.app_session_id}
               />
             ) : null}
 

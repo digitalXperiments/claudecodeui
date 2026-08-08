@@ -1,4 +1,4 @@
-import { Bell, Bot, BrainCircuit, FileCode2, GitBranch, Info, Key, ListChecks, Mic, MonitorPlay, Palette, Puzzle, Server, ShieldCheck, UserCog, Webhook } from 'lucide-react';
+import { Bell, Bot, BrainCircuit, FileCode2, GitBranch, Info, Key, KeyRound, ListChecks, Mic, MonitorPlay, Palette, Puzzle, Server, ShieldCheck, UserCog, Webhook } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import { cn } from '../../../lib/utils';
@@ -33,6 +33,7 @@ const NAV_ITEMS: NavItem[] = [
   { id: 'appearance', labelKey: 'mainTabs.appearance', fallbackLabel: 'Appearance', icon: Palette },
   { id: 'git', labelKey: 'mainTabs.git', fallbackLabel: 'Git', icon: GitBranch },
   { id: 'api', labelKey: 'mainTabs.apiTokens', fallbackLabel: 'API Tokens', icon: Key },
+  { id: 'secrets', labelKey: 'mainTabs.secrets', fallbackLabel: 'Secrets', icon: KeyRound },
   { id: 'webhooks', labelKey: 'mainTabs.webhooks', fallbackLabel: 'Webhooks', icon: Webhook },
   { id: 'voice', labelKey: 'mainTabs.voice', fallbackLabel: 'Voice', icon: Mic },
   { id: 'tasks', labelKey: 'mainTabs.tasks', fallbackLabel: 'Tasks', icon: ListChecks },

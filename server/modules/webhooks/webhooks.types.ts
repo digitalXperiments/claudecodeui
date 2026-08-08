@@ -39,6 +39,8 @@ export type WebhookSource = {
   retryMax: number;
   retryBackoffSeconds: number;
   secret: string | null;
+  /** Internal vault reference; never serialize this through config routes. */
+  secret_id?: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -49,6 +51,7 @@ export type WebhookDelivery = {
   status: WebhookDeliveryStatus;
   request: Record<string, unknown>;
   app_session_id: string | null;
+  agent_run_id: string | null;
   error_message: string | null;
   result_preview: string | null;
   attempt: number;

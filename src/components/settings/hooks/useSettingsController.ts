@@ -80,6 +80,7 @@ const KNOWN_MAIN_TABS: SettingsMainTab[] = [
   'appearance',
   'git',
   'api',
+  'secrets',
   'tasks',
   'browser',
   'notifications',

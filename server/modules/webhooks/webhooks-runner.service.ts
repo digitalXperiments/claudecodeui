@@ -13,6 +13,8 @@ import { expandMcpSelectionsToTools, mergeToolAllowLists } from '@/shared/mcp-to
 import type { AnyRecord, LLMProvider } from '@/shared/types.js';
 import { AppError } from '@/shared/utils.js';
 import { webhooksDb } from '@/modules/webhooks/webhooks.repository.js';
+import { recordNormalizedRunEvent, redactPayload, runService } from '@/modules/runs/index.js';
+import { automationService } from '@/modules/automation/index.js';
 import type {
   WebhookDelivery,
   WebhookIngestPayload,
@@ -330,19 +332,66 @@ export async function startWebhookDelivery(params: {
   const prompt = buildWebhookPrompt(source, payload, delivery.delivery_id);
   const options = buildRuntimeOptions(source, profile);
 
-  const result = await startProviderRun({
+  const previousRunId = delivery.agent_run_id;
+  const canonicalRun = runService.create({
+    source: 'webhook',
+    projectId: source.project_id,
+    sourceRef: delivery.delivery_id,
     appSessionId,
     provider,
-    providerSessionId: null,
-    projectPath,
-    spawnFn,
-    content: prompt,
-    options,
-    connection: DETACHED_CONNECTION,
-    userId: null,
+    model: profile?.model || source.model,
+    permissionMode: profile?.permission_mode || source.permission_mode,
+    profileId: source.profile_id,
+    title: payload.title?.trim() || `Webhook: ${source.name}`,
+    trigger: params.deliveryId ? 'replay' : 'webhook',
+    parentRunId: previousRunId,
+  });
+  webhooksDb.setAgentRunId(delivery.delivery_id, canonicalRun.run_id);
+
+  // Shared automation adapter: the legacy webhook runner still owns its
+  // provider behavior, while recipes can observe the same inbound delivery.
+  void automationService.fire({
+    type: 'webhook_inbound',
+    projectId: source.project_id,
+    payload: redactPayload({
+      deliveryId: delivery.delivery_id,
+      sourceId: source.source_id,
+      source: source.source,
+      title: payload.title,
+      text: payload.text.slice(0, 4000),
+      payload: payload.payload,
+      meta: payload.meta,
+    }) as Record<string, unknown>,
   });
 
+  let result: Awaited<ReturnType<typeof startProviderRun>>;
+  try {
+    runService.updateStatus(canonicalRun.run_id, 'starting');
+    result = await startProviderRun({
+      appSessionId,
+      provider,
+      providerSessionId: null,
+      projectPath,
+      spawnFn,
+      content: prompt,
+      options,
+      connection: DETACHED_CONNECTION,
+      userId: null,
+      onEvent: (message) => recordNormalizedRunEvent(canonicalRun.run_id, message, 'webhook'),
+    });
+  } catch (error) {
+    runService.markTerminal(canonicalRun.run_id, {
+      status: 'failed',
+      errorSummary: error instanceof Error ? error.message : String(error),
+    });
+    throw error;
+  }
+
   if (!result.ok) {
+    runService.markTerminal(canonicalRun.run_id, {
+      status: 'failed',
+      errorSummary: 'A run is already in progress for this session',
+    });
     handleDeliveryFailed(delivery, source, {
       errorMessage: 'A run is already in progress for this session',
     });
@@ -350,6 +399,11 @@ export async function startWebhookDelivery(params: {
       code: 'WEBHOOK_RUN_IN_PROGRESS',
       statusCode: 409,
     });
+  }
+
+  runService.linkSession(canonicalRun.run_id, appSessionId);
+  if (runService.get(canonicalRun.run_id)?.status === 'starting') {
+    runService.updateStatus(canonicalRun.run_id, 'running');
   }
 
   webhooksDb.markDeliveryRunning(delivery.delivery_id, appSessionId);

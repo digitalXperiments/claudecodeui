@@ -8,6 +8,7 @@ import PrdEditorHeader from './PrdEditorHeader';
 
 type PrdEditorWorkspaceProps = {
   content: string;
+  projectId?: string;
   onContentChange: (nextContent: string) => void;
   fileName: string;
   onFileNameChange: (nextFileName: string) => void;
@@ -22,6 +23,7 @@ type PrdEditorWorkspaceProps = {
 
 export default function PrdEditorWorkspace({
   content,
+  projectId,
   onContentChange,
   fileName,
   onFileNameChange,
@@ -107,6 +109,7 @@ export default function PrdEditorWorkspace({
       <GenerateTasksModal
         isOpen={showGenerateModal}
         fileName={ensurePrdExtension(fileName || 'prd')}
+        projectId={projectId}
         onClose={() => setShowGenerateModal(false)}
       />
     </div>

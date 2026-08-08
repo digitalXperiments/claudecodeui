@@ -3,7 +3,12 @@ import path from 'node:path';
 
 import { getConnection } from '@/modules/database/connection.js';
 import type { CreateProjectPathResult, ProjectRepositoryRow } from '@/shared/types.js';
-import { normalizeProjectPath } from '@/shared/utils.js';
+import {
+    getTemporaryProjectPathRoot,
+    isTemporaryProjectPath,
+    isTemporaryProjectPathRoot,
+    normalizeProjectPath,
+} from '@/shared/utils.js';
 
 function normalizeProjectDisplayName(projectPath: string, customProjectName: string | null): string {
     const trimmedCustomName = typeof customProjectName === 'string' ? customProjectName.trim() : '';
@@ -56,6 +61,94 @@ export const projectsDb = {
         return row ?? null;
     },
 
+    /**
+     * Resolves a CloudCLI agent workspace root to its logical parent project.
+     * Runtime providers execute inside the workspace, but sessions should be
+     * grouped under the project that owns the workspace.
+     */
+    resolveProjectPathForWorkspaceRoot(workspacePath: string): string | null {
+        const db = getConnection();
+        const normalizedWorkspacePath = normalizeProjectPath(workspacePath);
+        if (!normalizedWorkspacePath) {
+            return null;
+        }
+
+        const row = db.prepare(`
+            SELECT parent.project_path
+            FROM agent_workspaces AS workspace
+            INNER JOIN projects AS parent ON parent.project_id = workspace.project_id
+            WHERE workspace.root_path = ?
+              AND workspace.root_path <> parent.project_path
+            ORDER BY workspace.created_at DESC
+            LIMIT 1
+        `).get(normalizedWorkspacePath) as { project_path?: string | null } | undefined;
+
+        return row?.project_path ?? null;
+    },
+
+    /**
+     * Resolves a temporary runtime directory to its logical parent. Prefer
+     * the nearest already-registered non-temporary project; otherwise use the
+     * operating-system temp root so all `/tmp/*` sessions share `/tmp`.
+     */
+    resolveProjectPathForTemporaryPath(runtimePath: string): string | null {
+        const db = getConnection();
+        const normalizedRuntimePath = normalizeProjectPath(runtimePath);
+        if (!normalizedRuntimePath || !isTemporaryProjectPath(normalizedRuntimePath)) {
+            return null;
+        }
+
+        const temporaryRoot = getTemporaryProjectPathRoot(normalizedRuntimePath);
+        if (temporaryRoot) {
+            return temporaryRoot;
+        }
+
+        const projectPaths = db
+            .prepare(`
+                SELECT project_path
+                FROM projects
+                WHERE project_path IS NOT NULL AND trim(project_path) <> ''
+            `)
+            .all() as Array<{ project_path?: string | null }>;
+
+        const projectAncestor = projectPaths
+            .map((row) => normalizeProjectPath(row.project_path ?? ''))
+            .filter(
+                (candidate) =>
+                    candidate &&
+                    candidate !== normalizedRuntimePath &&
+                    !isTemporaryProjectPath(candidate) &&
+                    normalizedRuntimePath.startsWith(`${candidate}${path.sep}`),
+            )
+            .sort((left, right) => right.length - left.length)[0];
+
+        if (projectAncestor) {
+            return projectAncestor;
+        }
+
+        const reservedScratchMarker = `${path.sep}tmp${path.sep}cloudcli${path.sep}`;
+        const markerIndex = normalizedRuntimePath.indexOf(reservedScratchMarker);
+        if (markerIndex > 0) {
+            const projectPrefix = normalizeProjectPath(normalizedRuntimePath.slice(0, markerIndex));
+            if (projectPrefix && !isTemporaryProjectPath(projectPrefix)) {
+                return projectPrefix;
+            }
+        }
+
+        const parentPath = normalizeProjectPath(path.dirname(normalizedRuntimePath));
+        return parentPath || normalizedRuntimePath;
+    },
+
+    /** Resolves either an agent worktree or a temporary runtime path. */
+    resolveProjectPathForRuntimePath(runtimePath: string): string {
+        const normalizedRuntimePath = normalizeProjectPath(runtimePath);
+        return (
+            projectsDb.resolveProjectPathForWorkspaceRoot(normalizedRuntimePath) ??
+            projectsDb.resolveProjectPathForTemporaryPath(normalizedRuntimePath) ??
+            normalizedRuntimePath
+        );
+    },
+
     getProjectById(projectId: string): ProjectRepositoryRow | null {
         const db = getConnection();
         const row = db.prepare(`
@@ -86,26 +179,46 @@ export const projectsDb = {
         return row?.project_path ?? null;
     },
 
+    /** Active logical projects; agent workspace roots are runtime directories. */
     getProjectPaths(): ProjectRepositoryRow[] {
         const db = getConnection();
-        return db.prepare(`
+        const projects = db.prepare(`
             SELECT project_id, project_path, custom_project_name, isStarred, isArchived, category_id
             FROM projects
             WHERE isArchived = 0
+              AND NOT EXISTS (
+                SELECT 1
+                FROM agent_workspaces AS workspace
+                WHERE workspace.root_path = projects.project_path
+              )
         `).all() as ProjectRepositoryRow[];
+
+        return projects.filter(
+            (project) =>
+                !isTemporaryProjectPath(project.project_path) ||
+                isTemporaryProjectPathRoot(project.project_path),
+        );
     },
 
-    /**
-     * Archived rows are queried separately so archive-focused UIs can present
-     * hidden workspaces without reintroducing them into the active sidebar list.
-     */
+    /** Archived logical projects, excluding runtime-only agent workspace roots. */
     getArchivedProjectPaths(): ProjectRepositoryRow[] {
         const db = getConnection();
-        return db.prepare(`
+        const projects = db.prepare(`
             SELECT project_id, project_path, custom_project_name, isStarred, isArchived, category_id
             FROM projects
             WHERE isArchived = 1
+              AND NOT EXISTS (
+                SELECT 1
+                FROM agent_workspaces AS workspace
+                WHERE workspace.root_path = projects.project_path
+              )
         `).all() as ProjectRepositoryRow[];
+
+        return projects.filter(
+            (project) =>
+                !isTemporaryProjectPath(project.project_path) ||
+                isTemporaryProjectPathRoot(project.project_path),
+        );
     },
 
     getCustomProjectName(projectPath: string): string | null {

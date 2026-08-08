@@ -17,6 +17,39 @@ import {
 } from '@/modules/kanban/index.js';
 import type { AnyRecord } from '@/shared/types.js';
 
+/**
+ * Workspaces make kanban run starts async (worktree/sandbox allocation).
+ * `runTask` resolves when the run *starts*, and follow-up review runs are
+ * enqueued after the implement complete event — so tests must poll for the
+ * terminal task state instead of asserting immediately.
+ */
+async function waitFor(predicate: () => boolean, timeoutMs = 5000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() > deadline) {
+      throw new Error('waitFor timed out');
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+async function waitForTaskStatus(
+  taskId: string,
+  status: string,
+  options: { minRuns?: number } = {},
+): Promise<void> {
+  await waitFor(() => {
+    const task = kanbanDb.getTask(taskId);
+    if (task?.status !== status) {
+      return false;
+    }
+    if (options.minRuns !== undefined) {
+      return kanbanDb.listRunsByTask(taskId).length >= options.minRuns;
+    }
+    return true;
+  });
+}
+
 async function withFlow(
   runTest: (projectId: string) => void | Promise<void>,
 ): Promise<void> {
@@ -83,6 +116,7 @@ test('implement success without review agent moves task to Done', async () => {
     });
 
     await kanbanRunner.runTask(task.task_id, 'manual');
+    await waitForTaskStatus(task.task_id, 'done');
 
     const updated = kanbanDb.getTask(task.task_id);
     assert.equal(updated?.status, 'done');
@@ -109,8 +143,9 @@ test('implement success with review agent moves to Review and runs review', asyn
     });
 
     await kanbanRunner.runTask(task.task_id, 'manual');
+    // Implement + queued review both need to settle (workspace allocation is async).
+    await waitForTaskStatus(task.task_id, 'done', { minRuns: 2 });
 
-    // Both implement and review complete synchronously via stubs + queue.
     const updated = kanbanDb.getTask(task.task_id);
     assert.equal(updated?.status, 'done');
     assert.equal(updated?.column_id, 'done');
@@ -162,6 +197,7 @@ test('failed implement stays failed and does not enter review', async () => {
     });
 
     await kanbanRunner.runTask(task.task_id, 'manual');
+    await waitForTaskStatus(task.task_id, 'failed');
 
     const updated = kanbanDb.getTask(task.task_id);
     assert.equal(updated?.status, 'failed');
@@ -217,6 +253,8 @@ test('review brief carries the implementation output tail', async () => {
     });
 
     await kanbanRunner.runTask(task.task_id, 'manual');
+    await waitFor(() => reviewPrompt.includes('Implemented the widget in src/widget.ts'));
+    await waitForTaskStatus(task.task_id, 'done', { minRuns: 2 });
 
     assert.ok(reviewPrompt.includes('Original implementation instructions'));
     assert.ok(reviewPrompt.includes('build the widget'));
@@ -246,6 +284,7 @@ test('board without review/done columns still runs review and finishes in place'
     });
 
     await kanbanRunner.runTask(task.task_id, 'manual');
+    await waitForTaskStatus(task.task_id, 'done', { minRuns: 2 });
 
     const updated = kanbanDb.getTask(task.task_id);
     // No review/done columns on this board: the card never leaves 'doing',
@@ -282,6 +321,7 @@ test('exitCode 0 without success flag still counts as success', async () => {
     });
 
     await kanbanRunner.runTask(task.task_id, 'manual');
+    await waitForTaskStatus(task.task_id, 'done');
     assert.equal(kanbanDb.getTask(task.task_id)?.status, 'done');
     assert.equal(kanbanDb.getTask(task.task_id)?.column_id, 'done');
   });

@@ -10,6 +10,8 @@ import GitPanelHeader from '../view/GitPanelHeader';
 import GitRepositoryErrorState from '../view/GitRepositoryErrorState';
 import GitViewTabs from '../view/GitViewTabs';
 import ConfirmActionModal from '../view/modals/ConfirmActionModal';
+import WorkspacesView from '../../workspaces/view/WorkspacesView';
+import RunsView from '../../runs/view/RunsView';
 
 export default function GitPanel({ selectedProject, isMobile = false, onFileOpen }: GitPanelProps) {
   const [activeView, setActiveView] = useState<GitPanelView>('changes');
@@ -175,6 +177,9 @@ export default function GitPanel({ selectedProject, isMobile = false, onFileOpen
               onRequestConfirmation={setConfirmAction}
             />
           )}
+
+          {activeView === 'workspaces' && <WorkspacesView selectedProject={selectedProject} />}
+          {activeView === 'runs' && <RunsView selectedProject={selectedProject} />}
         </>
       )}
 

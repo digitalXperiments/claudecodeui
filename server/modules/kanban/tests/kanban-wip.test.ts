@@ -84,10 +84,14 @@ async function withQueue(
 const completeSuccess: Behavior = (writer) =>
   writer.send({ kind: 'complete', provider: 'claude', exitCode: 0, success: true });
 
-const neverComplete: Behavior = () => undefined;
+/** Hang forever so the run stays `running` (must not resolve — that triggers the safety-net complete). */
+const neverComplete: Behavior = () =>
+  new Promise(() => {
+    /* intentionally never settles */
+  });
 
 test('enqueue is blocked when the column is at its WIP limit', async () => {
-  await withQueue(neverComplete, { concurrency: 1 }, (projectId) => {
+  await withQueue(neverComplete, { concurrency: 1 }, async (projectId) => {
     const board = boardWithWipLimit(1);
     const a = kanbanDb.createTask({
       boardId: board.board_id,
@@ -105,6 +109,8 @@ test('enqueue is blocked when the column is at its WIP limit', async () => {
     });
 
     enqueueTask(a.task_id, 'column_move'); // starts running (never completes)
+    // Workspace allocation is async; wait until A is truly running.
+    await waitFor(() => kanbanDb.getTask(a.task_id)?.status === 'running');
     assert.equal(kanbanDb.getTask(a.task_id)?.status, 'running');
 
     // In Progress is full (limit 1, A running) → B is parked at todo.
@@ -159,7 +165,7 @@ test('a freed WIP slot auto-starts the waiting task', async () => {
 });
 
 test('excludeTaskId lets a task re-enter its own column without self-blocking', async () => {
-  await withQueue(neverComplete, { concurrency: 2 }, (projectId) => {
+  await withQueue(neverComplete, { concurrency: 2 }, async (projectId) => {
     const board = boardWithWipLimit(1);
     const a = kanbanDb.createTask({
       boardId: board.board_id,
@@ -169,6 +175,7 @@ test('excludeTaskId lets a task re-enter its own column without self-blocking', 
       assigneeProvider: 'claude',
     });
     enqueueTask(a.task_id, 'column_move'); // A is now running
+    await waitFor(() => kanbanDb.getTask(a.task_id)?.status === 'running');
     assert.equal(kanbanDb.getTask(a.task_id)?.status, 'running');
     assert.equal(kanbanDb.listTasksByColumn('in_progress').length, 1);
 
@@ -180,7 +187,7 @@ test('excludeTaskId lets a task re-enter its own column without self-blocking', 
 });
 
 test('no WIP limit means no blocking', async () => {
-  await withQueue(neverComplete, { concurrency: 2 }, (projectId) => {
+  await withQueue(neverComplete, { concurrency: 2 }, async (projectId) => {
     const board = kanbanDb.createBoard({ name: 'No Limit' });
     const a = kanbanDb.createTask({
       boardId: board.board_id,
@@ -198,6 +205,11 @@ test('no WIP limit means no blocking', async () => {
     });
     enqueueTask(a.task_id, 'column_move');
     enqueueTask(b.task_id, 'column_move');
+    await waitFor(
+      () =>
+        kanbanDb.getTask(a.task_id)?.status === 'running' &&
+        kanbanDb.getTask(b.task_id)?.status === 'running',
+    );
     assert.equal(kanbanDb.getTask(a.task_id)?.status, 'running');
     assert.equal(kanbanDb.getTask(b.task_id)?.status, 'running');
   });

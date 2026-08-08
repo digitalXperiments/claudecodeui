@@ -45,3 +45,5 @@ export const newPackId = (): string => `pack_${ulid()}`;
 export const newRecipeId = (): string => `rec_${ulid()}`;
 export const newPlaybookId = (): string => `pb_${ulid()}`;
 export const newAutomationRunId = (): string => `arun_${ulid()}`;
+export const newSwarmId = (): string => `swarm_${ulid()}`;
+export const newSwarmMemberId = (): string => `smem_${ulid()}`;

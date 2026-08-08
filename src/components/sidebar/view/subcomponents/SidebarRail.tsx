@@ -11,6 +11,7 @@ import {
   Radar,
   Search,
   Settings,
+  Network,
   Sparkles,
   SquareKanban,
 } from 'lucide-react';
@@ -38,6 +39,7 @@ type SidebarRailProps = {
   onToggleCollapse: () => void;
   runningSessionsCount: number;
   onShowKanban: () => void;
+  onShowAgentSwarm: () => void;
   onShowMissionControl: () => void;
   missionControlPendingCount: number;
   onShowNotifications: () => void;
@@ -102,6 +104,7 @@ export default function SidebarRail({
   onToggleCollapse,
   runningSessionsCount,
   onShowKanban,
+  onShowAgentSwarm,
   onShowMissionControl,
   missionControlPendingCount,
   onShowNotifications,
@@ -172,6 +175,13 @@ export default function SidebarRail({
 
       <RailButton title={t('actions.kanban', { defaultValue: 'Kanban' })} onClick={onShowKanban}>
         <SquareKanban className="h-[18px] w-[18px]" />
+      </RailButton>
+
+      <RailButton
+        title={t('actions.agentSwarm', { defaultValue: 'Agent Swarm' })}
+        onClick={onShowAgentSwarm}
+      >
+        <Network className="h-[18px] w-[18px]" />
       </RailButton>
 
       <RailButton

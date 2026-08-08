@@ -1082,6 +1082,10 @@ export async function searchConversations(
     return { results: [], totalMatches: 0, query: safeQuery };
   }
 
+  // Search can be opened independently of the projects sidebar. Rehome
+  // legacy workspace/temp rows here too so search buckets use the same
+  // logical project ownership as the rest of the session UI.
+  sessionsDb.rehomeAgentWorkspaceSessions();
   const searchableSessions = normalizeSearchableSessions(sessionsDb.getAllSessions());
   if (searchableSessions.length === 0) {
     return { results: [], totalMatches: 0, query: safeQuery };

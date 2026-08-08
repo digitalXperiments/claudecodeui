@@ -36,6 +36,7 @@ type ChatRun = {
   writer: ChatSessionWriter;
   startedAt: number;
   completedAt: number | null;
+  onEvent?: (message: NormalizedMessage) => void;
 };
 
 /**
@@ -211,6 +212,16 @@ function decorateAndRecordEvent(run: ChatRun, message: NormalizedMessage): Norma
     run.events.splice(0, run.events.length - MAX_BUFFERED_EVENTS_PER_RUN);
   }
 
+  try {
+    run.onEvent?.(outbound);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error('[ChatRunRegistry] canonical run event listener threw', {
+      appSessionId: run.appSessionId,
+      error: message,
+    });
+  }
+
   return outbound;
 }
 
@@ -269,6 +280,7 @@ export const chatRunRegistry = {
     providerSessionId: string | null;
     connection: RealtimeClientConnection;
     userId: string | number | null;
+    onEvent?: (message: NormalizedMessage) => void;
   }): ChatRun | null {
     const existing = runs.get(input.appSessionId);
     if (existing && existing.status === 'running') {
@@ -285,6 +297,7 @@ export const chatRunRegistry = {
       writer: null as unknown as ChatSessionWriter,
       startedAt: Date.now(),
       completedAt: null,
+      onEvent: input.onEvent,
     };
 
     run.writer = new ChatSessionWriter({

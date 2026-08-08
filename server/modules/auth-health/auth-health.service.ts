@@ -346,9 +346,22 @@ function broadcastNotificationCreated(): void {
 }
 
 /**
+ * Whether auth/MCP health probes should push inbox notifications and
+ * interrupt-queue items. Disabled by default: the Checks tab / stack doctor
+ * still surface health, but the Notifications drawer was drowning in
+ * provider + MCP noise. Set CLOUDCLI_AUTH_HEALTH_INBOX=1 to re-enable.
+ */
+export function shouldSurfaceAuthHealthInInbox(): boolean {
+  return process.env.CLOUDCLI_AUTH_HEALTH_INBOX === '1';
+}
+
+/**
  * Executes the notify/recover plan for a report against the inbox. Every DB/WS
  * side effect is wrapped in try/catch — a notification failure must never
  * break the check loop.
+ *
+ * When inbox surfacing is off we still dismiss recovered alerts so stale
+ * items from older builds clear themselves.
  */
 export async function applyAuthHealthOutcomes(report: AuthHealthReport): Promise<void> {
   let openNotifications: AuthHealthOpenNotification[];
@@ -360,17 +373,40 @@ export async function applyAuthHealthOutcomes(report: AuthHealthReport): Promise
     return;
   }
 
+  const surface = shouldSurfaceAuthHealthInInbox();
   const now = Date.now();
   const actions = planAuthHealthNotifications(report, openNotifications, lastNotifiedAt, now, getDisabledProviders());
 
   for (const action of actions) {
     if (action.type === 'create') {
+      if (!surface) {
+        continue;
+      }
       try {
         systemNotificationsDb.create(action.input);
         lastNotifiedAt.set(action.provider, now);
       } catch (error) {
         console.warn(`[auth-health] failed to create alert for ${action.provider}:`, error);
         continue;
+      }
+      try {
+        // Also surface in the Interrupt Queue (PRD §7.4).
+        const { interruptsService } = await import('@/modules/interrupt-queue/index.js');
+        interruptsService.create({
+          kind: 'auth_unhealthy',
+          severity: 'error',
+          title: action.input.title,
+          body: action.input.body ?? '',
+          href: action.input.href ?? 'settings:agents',
+          actions: [
+            { id: 'open_href', label: 'Open settings', style: 'primary' },
+            { id: 'dismiss', label: 'Dismiss', style: 'secondary' },
+          ],
+          meta: { ...(action.input.meta ?? {}), provider: action.provider },
+          dedupeKey: action.input.dedupeKey ?? `auth-unhealthy:${action.provider}`,
+        });
+      } catch {
+        // interrupt is best-effort
       }
       broadcastNotificationCreated();
     } else {
@@ -388,6 +424,9 @@ export async function applyAuthHealthOutcomes(report: AuthHealthReport): Promise
     const mcpActions = planMcpHealthNotifications(report.mcpServers, openNotifications, lastMcpNotifiedAt, now);
     for (const action of mcpActions) {
       if (action.type === 'create') {
+        if (!surface) {
+          continue;
+        }
         const dedupeKey = action.input.dedupeKey ?? `${MCP_HEALTH_DEDUPE_PREFIX}${action.provider}`;
         try {
           systemNotificationsDb.create(action.input);
@@ -395,6 +434,24 @@ export async function applyAuthHealthOutcomes(report: AuthHealthReport): Promise
         } catch (error) {
           console.warn(`[auth-health] failed to create MCP alert for ${dedupeKey}:`, error);
           continue;
+        }
+        try {
+          const { interruptsService } = await import('@/modules/interrupt-queue/index.js');
+          interruptsService.create({
+            kind: 'mcp_unhealthy',
+            severity: 'warning',
+            title: action.input.title,
+            body: action.input.body ?? '',
+            href: action.input.href ?? 'settings:mcp',
+            actions: [
+              { id: 'open_href', label: 'Open settings', style: 'primary' },
+              { id: 'dismiss', label: 'Dismiss', style: 'secondary' },
+            ],
+            meta: { ...(action.input.meta ?? {}) },
+            dedupeKey,
+          });
+        } catch {
+          // best-effort
         }
         broadcastNotificationCreated();
       } else {

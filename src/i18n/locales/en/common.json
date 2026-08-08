@@ -22,6 +22,7 @@
     "shell": "Shell",
     "files": "Files",
     "git": "Source Control",
+    "operations": "Automate",
     "tasks": "Tasks",
     "browser": "Browser",
     "kanban": "Kanban",

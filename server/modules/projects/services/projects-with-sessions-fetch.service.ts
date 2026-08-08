@@ -181,6 +181,8 @@ function broadcastProgress(progress: ProgressUpdate) {
 export async function getProjectsWithSessions(
   options: GetProjectsWithSessionsOptions = {}
 ): Promise<ProjectListItem[]> {
+  sessionsDb.rehomeAgentWorkspaceSessions();
+
   if (!options.skipSynchronization) {
     await sessionSynchronizerService.synchronizeSessions();
   }
@@ -251,6 +253,8 @@ export async function getProjectsWithSessions(
 export async function getArchivedProjectsWithSessions(
   options: Pick<GetProjectsWithSessionsOptions, 'skipSynchronization'> = {},
 ): Promise<ArchivedProjectListItem[]> {
+  sessionsDb.rehomeAgentWorkspaceSessions();
+
   if (!options.skipSynchronization) {
     await sessionSynchronizerService.synchronizeSessions();
   }

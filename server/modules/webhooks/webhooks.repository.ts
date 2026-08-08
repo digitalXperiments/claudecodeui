@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import { getConnection } from '@/modules/database/index.js';
+import { secretsService } from '@/modules/secrets/index.js';
 import type {
   CreateWebhookSourceInput,
   UpdateWebhookSourceInput,
@@ -29,6 +30,7 @@ type SourceRow = {
   retry_max: number | null;
   retry_backoff_seconds: number | null;
   secret: string | null;
+  secret_id: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -39,6 +41,7 @@ type DeliveryRow = {
   status: string;
   request_json: string | null;
   app_session_id: string | null;
+  agent_run_id: string | null;
   error_message: string | null;
   result_preview: string | null;
   attempt: number | null;
@@ -77,6 +80,14 @@ function parseJsonObject(raw: string | null | undefined): Record<string, unknown
 }
 
 function mapSource(row: SourceRow): WebhookSource {
+  let secret = row.secret || null;
+  if (row.secret_id) {
+    try {
+      secret = secretsService.resolve(row.secret_id, { provider: 'webhook' });
+    } catch {
+      secret = null;
+    }
+  }
   return {
     source_id: row.source_id,
     source: row.source,
@@ -94,7 +105,8 @@ function mapSource(row: SourceRow): WebhookSource {
     project_id: row.project_id || null,
     retryMax: row.retry_max ?? 0,
     retryBackoffSeconds: row.retry_backoff_seconds ?? 60,
-    secret: row.secret || null,
+    secret,
+    secret_id: row.secret_id || null,
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
@@ -107,6 +119,7 @@ function mapDelivery(row: DeliveryRow): WebhookDelivery {
     status: (row.status || 'accepted') as WebhookDeliveryStatus,
     request: parseJsonObject(row.request_json),
     app_session_id: row.app_session_id,
+    agent_run_id: row.agent_run_id,
     error_message: row.error_message,
     result_preview: row.result_preview,
     attempt: row.attempt ?? 0,
@@ -154,14 +167,23 @@ export const webhooksDb = {
     const slug = normalizeSourceSlug(input.source);
     const name = (input.name || slug).trim();
     const scope: WebhookScope = input.scope === 'project' ? 'project' : 'global';
+    const secretMeta = input.secret
+      ? secretsService.put({
+          name: `webhook_hmac_${sourceId}`,
+          value: input.secret,
+          scope: 'user',
+          scopeRef: 'webhook',
+          contentType: 'token',
+        })
+      : null;
 
     db.prepare(
       `INSERT INTO webhook_sources (
         source_id, source, name, description, enabled, provider, model, prompt,
         permission_mode, mcp_tools_json, skills_json, profile_id, scope, project_id,
-        retry_max, retry_backoff_seconds, secret,
+        retry_max, retry_backoff_seconds, secret, secret_id,
         created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       sourceId,
       slug,
@@ -179,7 +201,8 @@ export const webhooksDb = {
       scope === 'project' ? input.project_id ?? null : null,
       input.retryMax ?? 0,
       input.retryBackoffSeconds ?? 60,
-      input.secret || null,
+      null,
+      secretMeta?.secret_id ?? null,
       now,
       now,
     );
@@ -224,13 +247,31 @@ export const webhooksDb = {
       next.project_id = null;
     }
 
+    let secretId = existing.secret_id ?? null;
+    if (input.secret !== undefined) {
+      if (input.secret === null || !input.secret.trim()) {
+        if (secretId) secretsService.delete(secretId);
+        secretId = null;
+      } else {
+        const previous = secretId ? secretsService.getMeta(secretId) : null;
+        const rotated = secretsService.put({
+          name: previous?.name ?? `webhook_hmac_${sourceId}`,
+          value: input.secret,
+          scope: previous?.scope ?? 'user',
+          scopeRef: previous?.scope_ref ?? 'webhook',
+          contentType: 'token',
+        });
+        secretId = rotated.secret_id;
+      }
+    }
+
     const db = getConnection();
     db.prepare(
       `UPDATE webhook_sources SET
         source = ?, name = ?, description = ?, enabled = ?, provider = ?, model = ?,
         prompt = ?, permission_mode = ?, mcp_tools_json = ?, skills_json = ?,
         profile_id = ?, scope = ?, project_id = ?, retry_max = ?, retry_backoff_seconds = ?,
-        secret = ?, updated_at = ?
+        secret = ?, secret_id = ?, updated_at = ?
       WHERE source_id = ?`,
     ).run(
       next.source,
@@ -248,7 +289,8 @@ export const webhooksDb = {
       next.project_id,
       next.retryMax,
       next.retryBackoffSeconds,
-      next.secret || null,
+      null,
+      secretId,
       next.updated_at,
       sourceId,
     );
@@ -258,7 +300,11 @@ export const webhooksDb = {
 
   deleteSource(sourceId: string): boolean {
     const db = getConnection();
+    const existing = db
+      .prepare(`SELECT secret_id FROM webhook_sources WHERE source_id = ?`)
+      .get(sourceId) as { secret_id: string | null } | undefined;
     const result = db.prepare(`DELETE FROM webhook_sources WHERE source_id = ?`).run(sourceId);
+    if (result.changes > 0 && existing?.secret_id) secretsService.delete(existing.secret_id);
     return result.changes > 0;
   },
 
@@ -267,20 +313,22 @@ export const webhooksDb = {
     request: Record<string, unknown>;
     status?: WebhookDeliveryStatus;
     appSessionId?: string | null;
+    agentRunId?: string | null;
   }): WebhookDelivery {
     const db = getConnection();
     const deliveryId = randomUUID();
     const now = nowIso();
     db.prepare(
       `INSERT INTO webhook_deliveries (
-        delivery_id, source_id, status, request_json, app_session_id, attempt, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        delivery_id, source_id, status, request_json, app_session_id, agent_run_id, attempt, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       deliveryId,
       params.sourceId,
       params.status || 'accepted',
       JSON.stringify(params.request ?? {}),
       params.appSessionId ?? null,
+      params.agentRunId ?? null,
       1,
       now,
     );
@@ -332,6 +380,14 @@ export const webhooksDb = {
        SET status = 'running', app_session_id = ?
        WHERE delivery_id = ?`,
     ).run(appSessionId, deliveryId);
+  },
+
+  setAgentRunId(deliveryId: string, agentRunId: string | null): void {
+    const db = getConnection();
+    db.prepare(`UPDATE webhook_deliveries SET agent_run_id = ? WHERE delivery_id = ?`).run(
+      agentRunId,
+      deliveryId,
+    );
   },
 
   finishDelivery(

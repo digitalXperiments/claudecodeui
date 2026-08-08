@@ -4,6 +4,7 @@ import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 
 import { Button, Input } from '../../../../shared/view/ui';
+import SecretRefPicker from '../../../secrets/view/SecretRefPicker';
 import {
   MCP_PROVIDER_NAMES,
   MCP_SUPPORTED_SCOPES,
@@ -20,6 +21,16 @@ import type {
   McpTransport,
   ProviderMcpServer,
 } from '../../types';
+
+/** Append `KEY=${secret:NAME}` (or prompt for key) into a KEY=value multiline field. */
+function appendSecretLine(current: string, ref: string, suggestedKey: string): string {
+  const key = window.prompt('Environment / header key for this secret', suggestedKey)?.trim();
+  if (!key) {
+    return current;
+  }
+  const line = `${key}=${ref}`;
+  return current.trim() ? `${current.trimEnd()}\n${line}` : line;
+}
 
 type McpServerFormModalProps = {
   provider: McpProvider;
@@ -362,30 +373,56 @@ export default function McpServerFormModal({
 
           {formData.importMode === 'form' && (
             <div>
-              <label className="mb-2 block text-sm font-medium text-foreground">
-                {t('mcpForm.fields.envVars')}
-              </label>
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <label className="block text-sm font-medium text-foreground">
+                  {t('mcpForm.fields.envVars')}
+                </label>
+                <SecretRefPicker
+                  label="Use secret"
+                  onPick={(ref, secret) => {
+                    updateMultilineText(
+                      'env',
+                      appendSecretLine(multilineText.env, ref, secret.name.toUpperCase().replace(/[^A-Z0-9_]/g, '_')),
+                    );
+                  }}
+                />
+              </div>
               <textarea
                 value={multilineText.env}
                 onChange={(event) => updateMultilineText('env', event.target.value)}
                 className="w-full rounded-lg border border-gray-300 bg-gray-50 px-3 py-2 text-gray-900 focus:border-blue-500 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
                 rows={3}
-                placeholder="API_KEY=your-key&#10;DEBUG=true"
+                placeholder={'API_KEY=${secret:GITHUB_TOKEN}\nDEBUG=true'}
               />
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                Prefer vault refs like <code className="text-[11px]">{'${secret:NAME}'}</code> so values never sit in config files.
+              </p>
             </div>
           )}
 
           {formData.importMode === 'form' && supportsHttpHeaders && (
             <div>
-              <label className="mb-2 block text-sm font-medium text-foreground">
-                {t('mcpForm.fields.headers')}
-              </label>
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <label className="block text-sm font-medium text-foreground">
+                  {t('mcpForm.fields.headers')}
+                </label>
+                <SecretRefPicker
+                  label="Use secret"
+                  onPick={(ref, secret) => {
+                    updateMultilineText(
+                      'headers',
+                      appendSecretLine(multilineText.headers, ref, 'Authorization'),
+                    );
+                    void secret;
+                  }}
+                />
+              </div>
               <textarea
                 value={multilineText.headers}
                 onChange={(event) => updateMultilineText('headers', event.target.value)}
                 className="w-full rounded-lg border border-gray-300 bg-gray-50 px-3 py-2 text-gray-900 focus:border-blue-500 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
                 rows={3}
-                placeholder="Authorization=Bearer token&#10;X-API-Key=your-key"
+                placeholder={'Authorization=Bearer ${secret:API_TOKEN}\nX-API-Key=${secret:API_KEY}'}
               />
             </div>
           )}

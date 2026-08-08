@@ -1,6 +1,6 @@
 import { getConnection } from '@/modules/database/connection.js';
 import { projectsDb } from '@/modules/database/repositories/projects.db.js';
-import { normalizeProjectPath } from '@/shared/utils.js';
+import { isTemporaryProjectPath, normalizeProjectPath } from '@/shared/utils.js';
 
 type SessionRow = {
   session_id: string;
@@ -8,6 +8,7 @@ type SessionRow = {
   provider_session_id: string | null;
   continued_from_session_id: string | null;
   project_path: string | null;
+  runtime_project_path: string | null;
   jsonl_path: string | null;
   custom_name: string | null;
   isArchived: number;
@@ -16,7 +17,7 @@ type SessionRow = {
 };
 
 const SESSION_ROW_COLUMNS =
-  'session_id, provider, provider_session_id, continued_from_session_id, project_path, jsonl_path, custom_name, isArchived, created_at, updated_at';
+  'session_id, provider, provider_session_id, continued_from_session_id, project_path, runtime_project_path, jsonl_path, custom_name, isArchived, created_at, updated_at';
 
 const SQLITE_UTC_TIMESTAMP_REGEX = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
 
@@ -54,9 +55,16 @@ function normalizeSessionRows(rows: SessionRow[]): SessionRow[] {
   return rows.map((row) => normalizeSessionRow(row) as SessionRow);
 }
 
-function normalizeProjectPathForProvider(provider: string, projectPath: string): string {
+function resolveSessionPaths(
+  provider: string,
+  projectPath: string,
+): { logicalProjectPath: string; runtimeProjectPath: string } {
   void provider;
-  return normalizeProjectPath(projectPath);
+  const runtimeProjectPath = normalizeProjectPath(projectPath);
+  return {
+    runtimeProjectPath,
+    logicalProjectPath: projectsDb.resolveProjectPathForRuntimePath(runtimeProjectPath),
+  };
 }
 
 export const sessionsDb = {
@@ -80,11 +88,11 @@ export const sessionsDb = {
     const db = getConnection();
     const createdAtValue = normalizeTimestamp(createdAt);
     const updatedAtValue = normalizeTimestamp(updatedAt);
-    const normalizedProjectPath = normalizeProjectPathForProvider(provider, projectPath);
+    const { logicalProjectPath, runtimeProjectPath } = resolveSessionPaths(provider, projectPath);
 
     // First, ensure the project path is recorded in the projects table,
     // since it's a foreign key in the sessions table.
-    projectsDb.createProjectPath(normalizedProjectPath);
+    projectsDb.createProjectPath(logicalProjectPath);
 
     const existing = db
       .prepare(
@@ -100,6 +108,7 @@ export const sessionsDb = {
            provider = ?,
            updated_at = COALESCE(?, CURRENT_TIMESTAMP),
            project_path = ?,
+           runtime_project_path = ?,
            jsonl_path = ?,
            isArchived = 0,
            custom_name = COALESCE(?, custom_name)
@@ -107,7 +116,8 @@ export const sessionsDb = {
       ).run(
         provider,
         updatedAtValue,
-        normalizedProjectPath,
+        logicalProjectPath,
+        runtimeProjectPath,
         jsonlPath ?? null,
         customName ?? null,
         existing.session_id
@@ -120,13 +130,14 @@ export const sessionsDb = {
     // keyed by the provider-native id for both columns. The ON CONFLICT path
     // covers legacy rows that predate the provider_session_id mapping.
     db.prepare(
-      `INSERT INTO sessions (session_id, provider, provider_session_id, custom_name, project_path, jsonl_path, isArchived, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, 0, COALESCE(?, CURRENT_TIMESTAMP), COALESCE(?, CURRENT_TIMESTAMP))
+      `INSERT INTO sessions (session_id, provider, provider_session_id, custom_name, project_path, runtime_project_path, jsonl_path, isArchived, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 0, COALESCE(?, CURRENT_TIMESTAMP), COALESCE(?, CURRENT_TIMESTAMP))
        ON CONFLICT(session_id) DO UPDATE SET
          provider = excluded.provider,
          provider_session_id = excluded.provider_session_id,
          updated_at = excluded.updated_at,
          project_path = excluded.project_path,
+         runtime_project_path = excluded.runtime_project_path,
          jsonl_path = excluded.jsonl_path,
          isArchived = 0,
          custom_name = COALESCE(excluded.custom_name, sessions.custom_name)`
@@ -135,7 +146,8 @@ export const sessionsDb = {
       provider,
       providerSessionId,
       customName ?? null,
-      normalizedProjectPath,
+      logicalProjectPath,
+      runtimeProjectPath,
       jsonlPath ?? null,
       createdAtValue,
       updatedAtValue
@@ -154,16 +166,91 @@ export const sessionsDb = {
    */
   createAppSession(sessionId: string, provider: string, projectPath: string): string {
     const db = getConnection();
-    const normalizedProjectPath = normalizeProjectPathForProvider(provider, projectPath);
+    const { logicalProjectPath, runtimeProjectPath } = resolveSessionPaths(provider, projectPath);
 
-    projectsDb.createProjectPath(normalizedProjectPath);
+    projectsDb.createProjectPath(logicalProjectPath);
 
     db.prepare(
-      `INSERT INTO sessions (session_id, provider, provider_session_id, custom_name, project_path, jsonl_path, isArchived, created_at, updated_at)
-       VALUES (?, ?, NULL, NULL, ?, NULL, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`
-    ).run(sessionId, provider, normalizedProjectPath);
+      `INSERT INTO sessions (session_id, provider, provider_session_id, custom_name, project_path, runtime_project_path, jsonl_path, isArchived, created_at, updated_at)
+       VALUES (?, ?, NULL, NULL, ?, ?, NULL, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`
+    ).run(sessionId, provider, logicalProjectPath, runtimeProjectPath);
 
     return sessionId;
+  },
+
+  /**
+   * Rehomes rows written before workspace and temporary paths were treated as
+   * runtime-only directories. The runtime project rows are archived after
+   * their sessions move to a logical parent, without destructive data loss.
+   */
+  rehomeAgentWorkspaceSessions(): number {
+    const db = getConnection();
+    const workspaceMappings = db.prepare(`
+      SELECT DISTINCT
+        workspace.root_path AS workspace_path,
+        parent.project_path AS parent_path
+      FROM agent_workspaces AS workspace
+      INNER JOIN projects AS parent ON parent.project_id = workspace.project_id
+      WHERE workspace.root_path <> parent.project_path
+    `).all() as Array<{ workspace_path: string; parent_path: string }>;
+
+    const workspacePaths = new Set(
+      workspaceMappings.map((mapping) => normalizeProjectPath(mapping.workspace_path)),
+    );
+    const temporaryMappings = (db.prepare(`
+      SELECT DISTINCT project_path AS workspace_path
+      FROM sessions
+      WHERE project_path IS NOT NULL
+        AND (runtime_project_path = project_path OR runtime_project_path IS NULL)
+    `).all() as Array<{ workspace_path: string }>).flatMap((row) => {
+      const workspacePath = normalizeProjectPath(row.workspace_path);
+      if (!workspacePath || workspacePaths.has(workspacePath) || !isTemporaryProjectPath(workspacePath)) {
+        return [];
+      }
+
+      const parentPath = projectsDb.resolveProjectPathForTemporaryPath(workspacePath);
+      return parentPath && parentPath !== workspacePath
+        ? [{ workspace_path: workspacePath, parent_path: parentPath }]
+        : [];
+    });
+
+    const mappings = [...workspaceMappings, ...temporaryMappings];
+
+    if (mappings.length === 0) {
+      return 0;
+    }
+
+    return db.transaction(() => {
+      const updateSessions = db.prepare(`
+        UPDATE sessions
+        SET project_path = ?,
+            runtime_project_path = ?
+        WHERE project_path = ?
+      `);
+      const archiveWorkspaceProject = db.prepare(`
+        UPDATE projects
+        SET isArchived = 1
+        WHERE project_path = ? AND isArchived = 0
+      `);
+      let rehomedSessions = 0;
+
+      for (const mapping of mappings) {
+        const workspacePath = normalizeProjectPath(mapping.workspace_path);
+        const parentPath = normalizeProjectPath(mapping.parent_path);
+        if (!workspacePath || !parentPath || workspacePath === parentPath) {
+          continue;
+        }
+
+        // Temporary paths do not necessarily have a pre-registered parent
+        // project (for example, `/tmp/session-123`), so establish the FK
+        // target before moving the session row.
+        projectsDb.createProjectPath(parentPath);
+        rehomedSessions += Number(updateSessions.run(parentPath, workspacePath, workspacePath).changes);
+        archiveWorkspaceProject.run(workspacePath);
+      }
+
+      return rehomedSessions;
+    })();
   },
 
   /**
@@ -212,11 +299,18 @@ export const sessionsDb = {
         db.prepare(
           `UPDATE sessions SET
              provider_session_id = ?,
+             runtime_project_path = COALESCE(?, runtime_project_path),
              jsonl_path = COALESCE(jsonl_path, ?),
              custom_name = COALESCE(custom_name, ?),
              updated_at = CURRENT_TIMESTAMP
            WHERE session_id = ?`
-        ).run(providerSessionId, duplicate.jsonl_path, duplicate.custom_name, sessionId);
+        ).run(
+          providerSessionId,
+          duplicate.runtime_project_path,
+          duplicate.jsonl_path,
+          duplicate.custom_name,
+          sessionId,
+        );
         return;
       }
 
@@ -238,6 +332,17 @@ export const sessionsDb = {
        SET custom_name = ?
        WHERE session_id = ?`
     ).run(customName, sessionId);
+  },
+
+  /** Updates the provider cwd when an existing chat is assigned an isolated worktree. */
+  updateSessionRuntimeProjectPath(sessionId: string, runtimeProjectPath: string | null): void {
+    const db = getConnection();
+    const normalizedPath = runtimeProjectPath ? normalizeProjectPath(runtimeProjectPath) : null;
+    db.prepare(
+      `UPDATE sessions
+       SET runtime_project_path = ?
+       WHERE session_id = ?`
+    ).run(normalizedPath || null, sessionId);
   },
 
   /**
@@ -313,19 +418,22 @@ export const sessionsDb = {
    */
   findLatestPendingAppSession(provider: string, projectPath: string): SessionRow | null {
     const db = getConnection();
-    const normalizedProjectPath = normalizeProjectPathForProvider(provider, projectPath);
+    const { logicalProjectPath, runtimeProjectPath } = resolveSessionPaths(provider, projectPath);
     const row = db
       .prepare(
         `SELECT ${SESSION_ROW_COLUMNS}
          FROM sessions
-         WHERE provider = ?
+           WHERE provider = ?
            AND project_path = ?
            AND provider_session_id IS NULL
            AND isArchived = 0
-         ORDER BY datetime(COALESCE(updated_at, created_at)) DESC, session_id DESC
+         ORDER BY
+           CASE WHEN runtime_project_path = ? THEN 0 ELSE 1 END,
+           datetime(COALESCE(updated_at, created_at)) DESC,
+           session_id DESC
          LIMIT 1`
       )
-      .get(provider, normalizedProjectPath) as SessionRow | undefined;
+      .get(provider, logicalProjectPath, runtimeProjectPath) as SessionRow | undefined;
 
     return normalizeSessionRow(row) ?? null;
   },

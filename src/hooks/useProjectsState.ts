@@ -333,7 +333,7 @@ const removeSessionFromProject = (project: Project, sessionIdToDelete: string): 
   return updatedProject;
 };
 
-const VALID_TABS: Set<string> = new Set(['chat', 'files', 'shell', 'git', 'tasks', 'browser']);
+const VALID_TABS: Set<string> = new Set(['chat', 'files', 'shell', 'git', 'operations', 'tasks', 'browser']);
 
 const isValidTab = (tab: string): tab is AppTab => {
   return VALID_TABS.has(tab) || tab.startsWith('plugin:');
@@ -940,6 +940,52 @@ export function useProjectsState({
     [clearSessionAttention, navigate, selectedSession?.id],
   );
 
+  const handleSessionArchive = useCallback(
+    async (session: ProjectSession) => {
+      try {
+        const response = await api.deleteSession(session.id);
+        if (!response.ok) {
+          const errorText = await response.text();
+          console.error('[ProjectsState] Failed to archive session:', {
+            status: response.status,
+            error: errorText,
+          });
+          window.alert('Failed to archive this session. Please try again.');
+          return;
+        }
+
+        handleSessionDelete(session.id);
+      } catch (error) {
+        console.error('[ProjectsState] Error archiving session:', error);
+        window.alert('Error archiving this session. Please try again.');
+      }
+    },
+    [handleSessionDelete],
+  );
+
+  const handleSessionPermanentDelete = useCallback(
+    async (session: ProjectSession) => {
+      try {
+        const response = await api.deleteSession(session.id, true);
+        if (!response.ok) {
+          const errorText = await response.text();
+          console.error('[ProjectsState] Failed to permanently delete session:', {
+            status: response.status,
+            error: errorText,
+          });
+          window.alert('Failed to delete this session. Please try again.');
+          return;
+        }
+
+        handleSessionDelete(session.id);
+      } catch (error) {
+        console.error('[ProjectsState] Error permanently deleting session:', error);
+        window.alert('Error deleting this session. Please try again.');
+      }
+    },
+    [handleSessionDelete],
+  );
+
   const handleSidebarRefresh = useCallback(async () => {
     try {
       const response = await api.projects();
@@ -1117,6 +1163,8 @@ export function useProjectsState({
     refreshProjectsSilently,
     registerOptimisticSession,
     sidebarSharedProps,
+    handleSessionArchive,
+    handleSessionPermanentDelete,
     handleProjectSelect,
     handleSessionSelect,
     handleNewSession,

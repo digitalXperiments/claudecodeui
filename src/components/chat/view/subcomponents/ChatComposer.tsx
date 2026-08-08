@@ -11,7 +11,7 @@ import type {
   RefObject,
   TouchEvent,
 } from 'react';
-import { Paperclip, MessageSquareIcon, XIcon, Loader2, ChevronDown, Check, ArrowUpIcon, Cpu, Sparkles, Gauge, Zap } from 'lucide-react';
+import { Paperclip, MessageSquareIcon, XIcon, Loader2, ChevronDown, Check, ArrowUpIcon, Cpu, Sparkles, Gauge, Zap, GitFork } from 'lucide-react';
 
 import { useVoiceInput } from '../../hooks/useVoiceInput';
 import { useVoiceAvailable } from '../../hooks/useVoiceAvailable';
@@ -44,6 +44,63 @@ import MicDevicePicker from './MicDevicePicker';
 import PermissionRequestsBanner from './PermissionRequestsBanner';
 import TokenUsageSummary from './TokenUsageSummary';
 import QueuedMessageCard from './QueuedMessageCard';
+
+const ISOLATED_WORKSPACE_KEY = 'cloudcli.chat.isolatedWorkspace';
+
+/** Sticky composer toggle for PRD §5.7 chat worktree isolation. */
+function IsolatedWorkspaceToggle() {
+  const { t } = useTranslation('chat');
+  const [enabled, setEnabled] = useState(() => {
+    try {
+      return window.localStorage.getItem(ISOLATED_WORKSPACE_KEY) === '1';
+    } catch {
+      return false;
+    }
+  });
+
+  const toggle = () => {
+    setEnabled((prev) => {
+      const next = !prev;
+      try {
+        window.localStorage.setItem(ISOLATED_WORKSPACE_KEY, next ? '1' : '0');
+      } catch {
+        // ignore
+      }
+      return next;
+    });
+  };
+
+  return (
+    <Tooltip
+      content={
+        enabled
+          ? t('input.isolatedWorkspaceOn', {
+              defaultValue: 'Isolated workspace on · agent runs in a git worktree',
+            })
+          : t('input.isolatedWorkspaceOff', {
+              defaultValue: 'Isolated workspace · run this chat in a separate worktree',
+            })
+      }
+      position="top"
+      delay={250}
+    >
+      <button
+        type="button"
+        onClick={toggle}
+        aria-pressed={enabled}
+        aria-label={t('input.isolatedWorkspace', { defaultValue: 'Toggle isolated workspace' })}
+        className={`flex h-8 shrink-0 items-center gap-1.5 rounded-lg border px-2 text-xs font-medium transition-all duration-200 sm:px-2.5 ${
+          enabled
+            ? 'border-sky-300/70 bg-sky-50 text-sky-700 hover:bg-sky-100 dark:border-sky-500/40 dark:bg-sky-900/20 dark:text-sky-300'
+            : 'border-border/60 bg-muted/40 text-muted-foreground hover:bg-muted'
+        }`}
+      >
+        <GitFork className="h-3.5 w-3.5 shrink-0" />
+        <span className="hidden sm:inline">Isolate</span>
+      </button>
+    </Tooltip>
+  );
+}
 
 interface MentionableFile {
   name: string;
@@ -319,7 +376,7 @@ export default function ChatComposer({
       : t('input.send');
 
   return (
-    <div className="chat-composer-shell relative flex-shrink-0 px-2 pb-2 pt-0 sm:px-4 sm:pb-4 md:px-4 md:pb-6">
+    <div className="chat-composer-shell relative flex-shrink-0 px-2 pb-[max(0.5rem,env(safe-area-inset-bottom,0px))] pt-0 sm:px-4 sm:pb-4 md:px-4 md:pb-6">
       {!hasPendingPermissions && (
         <div className="pointer-events-none absolute bottom-full left-1/2 z-10 w-[calc(100%-1rem)] max-w-[54.25rem] -translate-x-1/2 translate-y-px bg-transparent sm:w-[calc(100%-2rem)]">
           <ActivityIndicator activity={activity} onAbort={onAbortSession} isInputFocused={isInputFocused} />
@@ -517,7 +574,7 @@ export default function ChatComposer({
                   <button
                     type="button"
                     onClick={onModeSwitch}
-                    className={`inline-flex h-8 items-center rounded-lg border px-2 text-xs font-medium transition-all duration-200 sm:px-2.5 ${
+                    className={`inline-flex h-8 shrink-0 items-center rounded-lg border px-2 text-xs font-medium transition-all duration-200 sm:px-2.5 ${
                       permissionMode === 'default'
                         ? 'border-border/60 bg-muted/50 text-muted-foreground hover:bg-muted'
                         : permissionMode === 'acceptEdits'
@@ -532,7 +589,7 @@ export default function ChatComposer({
                   >
                     <div className="flex items-center gap-1.5">
                       <div
-                        className={`h-2.5 w-2.5 rounded-full sm:h-1.5 sm:w-1.5 ${
+                        className={`h-2.5 w-2.5 shrink-0 rounded-full sm:h-1.5 sm:w-1.5 ${
                           permissionMode === 'default'
                             ? 'bg-muted-foreground'
                             : permissionMode === 'acceptEdits'
@@ -544,7 +601,10 @@ export default function ChatComposer({
                                   : 'bg-primary'
                         }`}
                       />
-                      <span className="hidden whitespace-nowrap sm:inline">{modeLabel}</span>
+                      {/* Compact mode name on mobile (was icon-only / invisible) */}
+                      <span className="max-w-[4.5rem] truncate whitespace-nowrap sm:max-w-none">
+                        {modeLabel}
+                      </span>
                     </div>
                   </button>
                 </Tooltip>
@@ -554,12 +614,13 @@ export default function ChatComposer({
             <button
               type="button"
               onClick={onOpenModelSelector}
-              className="flex h-8 max-w-36 items-center gap-1.5 rounded-lg border border-border/60 bg-muted/40 px-2 text-xs font-medium text-foreground transition-all duration-200 hover:bg-muted sm:px-2.5"
+              className="flex h-8 max-w-[9.5rem] shrink-0 items-center gap-1.5 rounded-lg border border-border/60 bg-muted/40 px-2 text-xs font-medium text-foreground transition-all duration-200 hover:bg-muted sm:max-w-36 sm:px-2.5"
               aria-label={t('input.changeModel', { defaultValue: 'Change model' })}
-              title={t('input.changeModel', { defaultValue: 'Change model' })}
+              title={modelLabel || t('input.changeModel', { defaultValue: 'Change model' })}
             >
               <Cpu className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-              <span className="hidden truncate sm:inline">{modelLabel}</span>
+              {/* Show a short model label on mobile so users know what they're on */}
+              <span className="max-w-[5.5rem] truncate sm:max-w-none">{modelLabel}</span>
             </button>
 
             {availableEffortOptions.length > 0 && (
@@ -571,16 +632,16 @@ export default function ChatComposer({
                     updateEffortDropdownPosition();
                     setIsEffortDropdownOpen((current) => !current);
                   }}
-                  className="flex h-8 items-center gap-1.5 rounded-lg border border-border/60 bg-muted/40 px-2 text-xs font-medium text-foreground transition-all duration-200 hover:bg-muted"
+                  className="flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-border/60 bg-muted/40 px-2 text-xs font-medium text-foreground transition-all duration-200 hover:bg-muted"
                   aria-haspopup="menu"
                   aria-expanded={isEffortDropdownOpen}
                   aria-label="Select reasoning effort"
                   title="Select reasoning effort"
                 >
-                  <Gauge className="h-3.5 w-3.5 text-muted-foreground sm:hidden" />
+                  <Gauge className="h-3.5 w-3.5 shrink-0 text-muted-foreground sm:hidden" />
                   <span className="hidden text-[11px] text-muted-foreground sm:inline">Effort</span>
-                  <span className="hidden max-w-16 truncate capitalize sm:inline sm:max-w-20">{selectedEffortLabel}</span>
-                  <ChevronDown className={`h-3 w-3 text-muted-foreground transition-transform ${isEffortDropdownOpen ? 'rotate-180' : ''}`} />
+                  <span className="max-w-12 truncate capitalize sm:max-w-20">{selectedEffortLabel}</span>
+                  <ChevronDown className={`h-3 w-3 shrink-0 text-muted-foreground transition-transform ${isEffortDropdownOpen ? 'rotate-180' : ''}`} />
                 </button>
 
                 {isEffortDropdownOpen && effortDropdownPosition && createPortal(
@@ -650,7 +711,7 @@ export default function ChatComposer({
                   aria-pressed={fastMode}
                   aria-label={t('input.fastMode', { defaultValue: 'Toggle Fast mode' })}
                   title={t('input.fastMode', { defaultValue: 'Toggle Fast mode' })}
-                  className={`flex h-8 items-center gap-1.5 rounded-lg border px-2 text-xs font-medium transition-all duration-200 sm:px-2.5 ${
+                  className={`flex h-8 shrink-0 items-center gap-1.5 rounded-lg border px-2 text-xs font-medium transition-all duration-200 sm:px-2.5 ${
                     fastMode
                       ? 'border-amber-300/70 bg-amber-50 text-amber-700 hover:bg-amber-100 dark:border-amber-500/40 dark:bg-amber-900/20 dark:text-amber-300 dark:hover:bg-amber-900/30'
                       : supportsFastMode
@@ -663,6 +724,8 @@ export default function ChatComposer({
                 </button>
               </Tooltip>
             )}
+
+            <IsolatedWorkspaceToggle />
 
             <TokenUsageSummary usage={tokenBudget} onClick={onShowTokenUsage} />
 
@@ -703,7 +766,7 @@ export default function ChatComposer({
 
           </PromptInputTools>
 
-          <div className="flex items-center gap-2">
+          <div className="flex shrink-0 items-center gap-2">
             {/* Keyboard shortcuts live on the send button tooltip only — a
                 long non-interactive hint next to send was crowding the footer. */}
             <PromptInputSubmit
@@ -725,7 +788,7 @@ export default function ChatComposer({
               disabled={isLoading ? false : isRecording ? false : isTranscribing ? true : !input.trim()}
               aria-label={submitAriaLabel}
               title={`${submitAriaLabel} — ${submitHint}`}
-              className="h-10 w-10 sm:h-10 sm:w-10"
+              className="h-10 w-10 shrink-0"
             >
               {isTranscribing ? (
                 <Loader2 className="h-4 w-4 animate-spin" />

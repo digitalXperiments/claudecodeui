@@ -112,6 +112,7 @@ export default function PRDEditor({
     <>
       <PrdEditorWorkspace
         content={content}
+        projectId={project?.projectId}
         onContentChange={setContent}
         fileName={fileName}
         onFileNameChange={setFileName}

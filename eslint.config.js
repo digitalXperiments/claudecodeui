@@ -165,6 +165,8 @@ export default tseslint.config(
             "server/shared/provider-auth-failure.ts",
             "server/shared/grok-home.js",
             "server/shared/mcp-tool-expand.ts",
+            "server/shared/ids.ts",
+            "server/shared/run-events.ts",
             "server/constants/config.js",
           ], // classify shared utility files so modules can depend on them explicitly
           mode: "file",

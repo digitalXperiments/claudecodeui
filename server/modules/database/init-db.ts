@@ -1,6 +1,7 @@
 import { getConnection } from "@/modules/database/connection.js";
 import { runMigrations } from "@/modules/database/migrations.js";
 import { INIT_SCHEMA_SQL } from "@/modules/database/schema.js";
+import { credentialsDb } from "@/modules/database/repositories/credentials.js";
 
 // Initialize database with schema
 export const initializeDatabase = async () => {
@@ -9,6 +10,7 @@ export const initializeDatabase = async () => {
         db.exec(INIT_SCHEMA_SQL);
         console.log('Database schema applied');
         runMigrations(db);
+        credentialsDb.migratePlaintextCredentials();
     } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         console.log('Database initialization failed', { error: message });

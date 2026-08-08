@@ -3,6 +3,7 @@ import path from 'node:path';
 import { mkdir, readdir } from 'node:fs/promises';
 
 import { projectsDb } from '@/modules/database/index.js';
+import { secretsService } from '@/modules/secrets/index.js';
 import { providerRegistry } from '@/modules/providers/provider.registry.js';
 import { providerMcpService } from '@/modules/providers/services/mcp.service.js';
 import {
@@ -102,20 +103,49 @@ const writeCatalog = async (catalog: CatalogFile): Promise<void> => {
   await writeJsonConfig(getCatalogPath(), catalog);
 };
 
-const toUpsertInput = (def: McpCatalogDefinition): UpsertProviderMcpServerInput => ({
+/**
+ * Resolve `${secret:…}` refs in env/headers before writing provider-native
+ * configs. Missing secrets keep the original ref so fan-out does not fail;
+ * CloudCLI runtime resolve (resolveForProvider) will still surface the error
+ * when a session actually needs the value.
+ */
+const resolveSecretsForFanout = <T extends Record<string, string> | undefined>(
+  values: T,
+  provider: LLMProvider,
+): T => {
+  if (!values || Object.keys(values).length === 0) {
+    return values;
+  }
+  try {
+    return secretsService.resolveInObject(values, { provider });
+  } catch (error) {
+    console.warn(
+      `[mcp-catalog] secret resolve skipped during fan-out for ${provider}:`,
+      error instanceof Error ? error.message : error,
+    );
+    return values;
+  }
+};
+
+const toUpsertInput = (
+  def: McpCatalogDefinition,
+  provider?: LLMProvider,
+): UpsertProviderMcpServerInput => ({
   name: def.name,
   transport: def.transport,
   scope: def.scope,
   workspacePath: def.workspacePath,
   command: def.command,
   args: def.args,
-  env: def.env,
+  env: provider ? resolveSecretsForFanout(def.env, provider) : def.env,
   cwd: def.cwd,
   url: def.url,
-  headers: def.headers,
+  headers: provider ? resolveSecretsForFanout(def.headers, provider) : def.headers,
   envVars: def.envVars,
   bearerTokenEnvVar: def.bearerTokenEnvVar,
-  envHttpHeaders: def.envHttpHeaders,
+  envHttpHeaders: provider
+    ? resolveSecretsForFanout(def.envHttpHeaders, provider)
+    : def.envHttpHeaders,
 });
 
 const enabledProviders = (def: McpCatalogDefinition): LLMProvider[] => (
@@ -148,7 +178,6 @@ const syncBindings = async (
   const desired = new Set(enabledProviders(def));
   const previous = new Set(previousEnabled);
   const results: McpCatalogSyncResult[] = [];
-  const upsert = toUpsertInput(def);
 
   for (const provider of ALL_MCP_PROVIDERS) {
     const want = desired.has(provider);
@@ -159,7 +188,8 @@ const syncBindings = async (
 
     try {
       if (want) {
-        await providerMcpService.upsertProviderMcpServer(provider, upsert);
+        // Per-provider resolve so provider-scoped vault secrets can apply.
+        await providerMcpService.upsertProviderMcpServer(provider, toUpsertInput(def, provider));
         results.push({ provider, ok: true });
       } else if (had) {
         await providerMcpService.removeProviderMcpServer(provider, {
@@ -507,7 +537,7 @@ export const mcpCatalogService = {
           transport: 'stdio',
           command: def.command,
           args: def.args ?? [],
-          env: def.env ?? {},
+          env: secretsService.resolveInObject(def.env ?? {}, { provider }),
           cwd: def.cwd,
         });
       } else {
@@ -516,7 +546,7 @@ export const mcpCatalogService = {
           name: def.name,
           transport: def.transport,
           url: def.url,
-          headers: def.headers ?? {},
+          headers: secretsService.resolveInObject(def.headers ?? {}, { provider }),
         });
       }
     }

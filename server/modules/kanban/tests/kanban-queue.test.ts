@@ -18,7 +18,18 @@ import {
 } from '@/modules/kanban/index.js';
 import type { AnyRecord } from '@/shared/types.js';
 
-type Behavior = (writer: { send: (m: AnyRecord) => void }) => void;
+type Behavior = (writer: { send: (m: AnyRecord) => void }) => void | Promise<void>;
+
+/** Workspace allocation is async; poll until the cascade settles. */
+async function waitFor(predicate: () => boolean, timeoutMs = 5000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() > deadline) {
+      throw new Error('waitFor timed out');
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
 
 async function withQueue(
   behavior: Behavior,
@@ -36,7 +47,8 @@ async function withQueue(
 
   configureKanbanRuntimes({
     claude: async (_content: string, _options: AnyRecord, writer: unknown) => {
-      behavior(writer as { send: (m: AnyRecord) => void });
+      // Await so a hanging neverComplete keeps the run alive (fire-and-forget would settle immediately).
+      await behavior(writer as { send: (m: AnyRecord) => void });
     },
   });
   initKanbanAutomation();
@@ -61,10 +73,14 @@ async function withQueue(
 const completeSuccess: Behavior = (writer) =>
   writer.send({ kind: 'complete', provider: 'claude', exitCode: 0, success: true });
 
-const neverComplete: Behavior = () => undefined;
+/** Hang forever so the run stays `running` (must not resolve — that triggers the safety-net complete). */
+const neverComplete: Behavior = () =>
+  new Promise(() => {
+    /* intentionally never settles */
+  });
 
 test('dependency cascade: finishing A enqueues and runs dependent B', async () => {
-  await withQueue(completeSuccess, {}, (projectId) => {
+  await withQueue(completeSuccess, {}, async (projectId) => {
     const board = kanbanDb.createBoard({ name: 'Board' });
     const a = kanbanDb.createTask({ boardId: board.board_id, projectId, title: 'A', assigneeProvider: 'claude' });
     const b = kanbanDb.createTask({ boardId: board.board_id, projectId, title: 'B', assigneeProvider: 'claude' });
@@ -72,14 +88,18 @@ test('dependency cascade: finishing A enqueues and runs dependent B', async () =
 
     enqueueTask(a.task_id, 'manual');
 
-    // Stub completes synchronously, so the whole cascade has already resolved.
+    await waitFor(
+      () =>
+        kanbanDb.getTask(a.task_id)?.status === 'done' &&
+        kanbanDb.getTask(b.task_id)?.status === 'done',
+    );
     assert.equal(kanbanDb.getTask(a.task_id)?.status, 'done');
     assert.equal(kanbanDb.getTask(b.task_id)?.status, 'done');
   });
 });
 
 test('dependency cascade does not fire until every dependency is done', async () => {
-  await withQueue(completeSuccess, {}, (projectId) => {
+  await withQueue(completeSuccess, {}, async (projectId) => {
     const board = kanbanDb.createBoard({ name: 'Board' });
     const a = kanbanDb.createTask({ boardId: board.board_id, projectId, title: 'A', assigneeProvider: 'claude' });
     const b = kanbanDb.createTask({ boardId: board.board_id, projectId, title: 'B', assigneeProvider: 'claude' });
@@ -88,18 +108,20 @@ test('dependency cascade does not fire until every dependency is done', async ()
     kanbanDb.addDependency(c.task_id, b.task_id);
 
     enqueueTask(a.task_id, 'manual');
+    await waitFor(() => kanbanDb.getTask(a.task_id)?.status === 'done');
     // A done, but B not yet → C must still be waiting.
     assert.equal(kanbanDb.getTask(a.task_id)?.status, 'done');
     assert.equal(kanbanDb.getTask(c.task_id)?.status, 'todo');
 
     enqueueTask(b.task_id, 'manual');
+    await waitFor(() => kanbanDb.getTask(c.task_id)?.status === 'done');
     // Now both deps are done → C ran.
     assert.equal(kanbanDb.getTask(c.task_id)?.status, 'done');
   });
 });
 
 test('concurrency cap bounds simultaneously running tasks', async () => {
-  await withQueue(neverComplete, { concurrency: 2 }, (projectId) => {
+  await withQueue(neverComplete, { concurrency: 2 }, async (projectId) => {
     const board = kanbanDb.createBoard({ name: 'Board' });
     const ids = [1, 2, 3, 4].map(
       (n) =>
@@ -112,23 +134,28 @@ test('concurrency cap bounds simultaneously running tasks', async () => {
     );
     ids.forEach((id) => enqueueTask(id, 'schedule'));
 
+    // Workspace allocation is async; wait until the cap is actually running.
+    await waitFor(() => {
+      const running = ids.filter((id) => kanbanDb.getTask(id)?.status === 'running');
+      return running.length === 2 && getQueueStatus().pending === 2;
+    });
     const status = getQueueStatus();
     assert.equal(status.inFlight, 2);
     assert.equal(status.pending, 2);
-    // Exactly the cap number are actually running.
     const running = ids.filter((id) => kanbanDb.getTask(id)?.status === 'running');
     assert.equal(running.length, 2);
   });
 });
 
 test('enqueue dedupes an already-queued task', async () => {
-  await withQueue(neverComplete, { concurrency: 1 }, (projectId) => {
+  await withQueue(neverComplete, { concurrency: 1 }, async (projectId) => {
     const board = kanbanDb.createBoard({ name: 'Board' });
     const a = kanbanDb.createTask({ boardId: board.board_id, projectId, title: 'A', assigneeProvider: 'claude' });
     const b = kanbanDb.createTask({ boardId: board.board_id, projectId, title: 'B', assigneeProvider: 'claude' });
     enqueueTask(a.task_id, 'schedule'); // starts running (cap 1)
     enqueueTask(b.task_id, 'schedule'); // queued
     enqueueTask(b.task_id, 'schedule'); // duplicate → ignored
+    await waitFor(() => kanbanDb.getTask(a.task_id)?.status === 'running');
     assert.equal(getQueueStatus().pending, 1);
   });
 });

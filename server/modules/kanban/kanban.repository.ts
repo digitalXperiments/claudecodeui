@@ -54,7 +54,9 @@ function mapTask(row: KanbanTaskRow, dependsOn: string[]): KanbanTask {
     review_profile_id: rest.review_profile_id ?? null,
     due_date: rest.due_date ?? null,
     feature_branch: rest.feature_branch ?? null,
+    workspace_id: rest.workspace_id ?? null,
     escalated_at: rest.escalated_at ?? null,
+    archived_at: rest.archived_at ?? null,
     tools: parseTools(tools_json),
     dependsOn,
   };
@@ -64,6 +66,7 @@ function mapRun(row: KanbanRunRow): KanbanRunRow {
   return {
     ...row,
     role: row.role === 'review' ? 'review' : 'implement',
+    agent_run_id: row.agent_run_id ?? null,
   };
 }
 
@@ -212,10 +215,10 @@ export const kanbanDb = {
     return null;
   },
 
-  listTasksByBoard(boardId: string): KanbanTask[] {
+  listTasksByBoard(boardId: string, includeArchived = false): KanbanTask[] {
     const db = getConnection();
     const rows = db
-      .prepare(`SELECT * FROM kanban_tasks WHERE board_id = ? ORDER BY column_id, position ASC`)
+      .prepare(`SELECT * FROM kanban_tasks WHERE board_id = ? ${includeArchived ? '' : 'AND archived_at IS NULL'} ORDER BY column_id, position ASC`)
       .all(boardId) as KanbanTaskRow[];
     const depsByTask = kanbanDb.listDependenciesForBoard(boardId);
     return rows.map((row) => mapTask(row, depsByTask.get(row.task_id) ?? []));
@@ -259,6 +262,7 @@ export const kanbanDb = {
       feature_branch:
         patch.featureBranch !== undefined ? patch.featureBranch : existing.feature_branch,
       escalated_at: patch.escalatedAt !== undefined ? patch.escalatedAt : existing.escalated_at,
+      archived_at: patch.archivedAt !== undefined ? patch.archivedAt : existing.archived_at,
       status: patch.status ?? existing.status,
     };
 
@@ -267,7 +271,7 @@ export const kanbanDb = {
          title = ?, description = ?, prompt = ?, project_id = ?, column_id = ?, position = ?,
          assignee_provider = ?, review_provider = ?, implement_profile_id = ?, review_profile_id = ?,
          permission_mode = ?, tools_json = ?,
-         schedule_cron = ?, due_date = ?, feature_branch = ?, escalated_at = ?,
+         schedule_cron = ?, due_date = ?, feature_branch = ?, escalated_at = ?, archived_at = ?,
          status = ?, updated_at = CURRENT_TIMESTAMP
        WHERE task_id = ?`,
     ).run(
@@ -287,6 +291,7 @@ export const kanbanDb = {
       next.due_date,
       next.feature_branch,
       next.escalated_at,
+      next.archived_at,
       next.status,
       taskId,
     );
@@ -305,6 +310,13 @@ export const kanbanDb = {
     db.prepare(
       `UPDATE kanban_tasks SET app_session_id = ?, updated_at = CURRENT_TIMESTAMP WHERE task_id = ?`,
     ).run(appSessionId, taskId);
+  },
+
+  setTaskWorkspace(taskId: string, workspaceId: string | null): void {
+    const db = getConnection();
+    db.prepare(
+      `UPDATE kanban_tasks SET workspace_id = ?, updated_at = CURRENT_TIMESTAMP WHERE task_id = ?`,
+    ).run(workspaceId, taskId);
   },
 
   /**
@@ -345,6 +357,14 @@ export const kanbanDb = {
     const db = getConnection();
     const result = db.prepare(`DELETE FROM kanban_tasks WHERE task_id = ?`).run(taskId);
     return result.changes > 0;
+  },
+
+  archiveTask(taskId: string): KanbanTask | null {
+    return kanbanDb.updateTask(taskId, { archivedAt: new Date().toISOString() });
+  },
+
+  restoreTask(taskId: string): KanbanTask | null {
+    return kanbanDb.updateTask(taskId, { archivedAt: null });
   },
 
   /** All tasks with a non-empty cron expression (across every board). */
@@ -501,14 +521,26 @@ export const kanbanDb = {
     provider: string | null;
     trigger: KanbanRunTrigger;
     role?: KanbanRunRole;
+    runId?: string;
+    agentRunId?: string | null;
   }): KanbanRunRow {
     const db = getConnection();
-    const runId = randomUUID();
+    const runId = input.runId ?? randomUUID();
+    const agentRunId = input.agentRunId ?? null;
     const role: KanbanRunRole = input.role ?? 'implement';
     db.prepare(
-      `INSERT INTO kanban_runs (run_id, task_id, app_session_id, provider, trigger, role, status)
-       VALUES (?, ?, ?, ?, ?, ?, 'running')`,
-    ).run(runId, input.taskId, input.appSessionId, input.provider, input.trigger, role);
+      `INSERT INTO kanban_runs (
+         run_id, task_id, app_session_id, provider, trigger, role, status, agent_run_id
+       ) VALUES (?, ?, ?, ?, ?, ?, 'running', ?)`,
+    ).run(
+      runId,
+      input.taskId,
+      input.appSessionId,
+      input.provider,
+      input.trigger,
+      role,
+      agentRunId,
+    );
     return kanbanDb.getRun(runId)!;
   },
 

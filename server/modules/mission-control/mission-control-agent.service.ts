@@ -3,6 +3,7 @@ import os from 'node:os';
 import { jsonrepair } from 'jsonrepair';
 
 import { projectsDb } from '@/modules/database/index.js';
+import { recordNormalizedRunEvent, runService } from '@/modules/runs/index.js';
 import { sessionsService } from '@/modules/providers/index.js';
 import {
   chatRunRegistry,
@@ -413,6 +414,7 @@ function buildRuntimeOptions(section: McSection, tools: string[]): AnyRecord {
 
 export type McAgentRunResult = {
   appSessionId: string;
+  runId: string;
   text: string;
   /** False when the provider run itself failed (non-zero exit), e.g. API errors. */
   success: boolean;
@@ -431,6 +433,8 @@ export async function runMissionControlAgent(params: {
   section: McSection;
   prompt: string;
   tools: string[];
+  sourceRef?: string;
+  trigger?: string;
 }): Promise<McAgentRunResult> {
   const { section, prompt, tools } = params;
   const provider = section.provider as LLMProvider;
@@ -446,28 +450,60 @@ export async function runMissionControlAgent(params: {
   const created = sessionsService.createAppSession(provider, projectPath);
   const appSessionId = created.sessionId;
 
-  const result = await startProviderRun({
+  const canonicalRun = runService.create({
+    source: 'mission_control',
+    projectId: section.project_id,
+    sourceRef: params.sourceRef ?? section.section_id,
     appSessionId,
     provider,
-    providerSessionId: null,
-    projectPath,
-    spawnFn,
-    content: prompt,
-    options: buildRuntimeOptions(section, tools),
-    connection: DETACHED_CONNECTION,
-    userId: null,
+    model: section.model,
+    permissionMode: section.permission_mode,
+    title: section.title,
+    trigger: params.trigger ?? 'manual',
   });
 
+  let result: Awaited<ReturnType<typeof startProviderRun>>;
+  try {
+    runService.updateStatus(canonicalRun.run_id, 'starting');
+    result = await startProviderRun({
+      appSessionId,
+      provider,
+      providerSessionId: null,
+      projectPath,
+      spawnFn,
+      content: prompt,
+      options: buildRuntimeOptions(section, tools),
+      connection: DETACHED_CONNECTION,
+      userId: null,
+      onEvent: (message) => recordNormalizedRunEvent(canonicalRun.run_id, message, 'mission_control'),
+    });
+  } catch (error) {
+    runService.markTerminal(canonicalRun.run_id, {
+      status: 'failed',
+      errorSummary: error instanceof Error ? error.message : String(error),
+    });
+    throw error;
+  }
+
   if (!result.ok) {
+    runService.markTerminal(canonicalRun.run_id, {
+      status: 'failed',
+      errorSummary: 'A run is already in progress for this session',
+    });
     throw new AppError('A run is already in progress for this session', {
       code: 'MC_RUN_IN_PROGRESS',
       statusCode: 409,
     });
   }
 
+  runService.linkSession(canonicalRun.run_id, appSessionId);
+  if (runService.get(canonicalRun.run_id)?.status === 'starting') {
+    runService.updateStatus(canonicalRun.run_id, 'running');
+  }
+
   await result.completion;
   const { text, failed, errorMessage } = extractRunOutcome(appSessionId);
-  return { appSessionId, text, success: !failed, errorMessage };
+  return { appSessionId, runId: canonicalRun.run_id, text, success: !failed, errorMessage };
 }
 
 export function buildProducePrompt(section: McSection): string {

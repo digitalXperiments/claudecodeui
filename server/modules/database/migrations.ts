@@ -4,6 +4,10 @@ import {
   AGENT_RUN_PROFILES_TABLE_SCHEMA_SQL,
   APP_CONFIG_TABLE_SCHEMA_SQL,
   CATEGORIES_TABLE_SCHEMA_SQL,
+  CONTEXT_PACKS_TABLE_SCHEMA_SQL,
+  AUTOMATION_TABLE_SCHEMA_SQL,
+  FAILOVER_PLAYBOOKS_TABLE_SCHEMA_SQL,
+  SWARM_TABLE_SCHEMA_SQL,
   KANBAN_SCHEMA_SQL,
   LAST_SCANNED_AT_SQL,
   MISSION_CONTROL_SCHEMA_SQL,
@@ -15,6 +19,7 @@ import {
   PUSH_SUBSCRIPTIONS_TABLE_SCHEMA_SQL,
   SESSIONS_TABLE_SCHEMA_SQL,
   SYSTEM_NOTIFICATIONS_TABLE_SCHEMA_SQL,
+  INTERRUPTS_TABLE_SCHEMA_SQL,
   USER_NOTIFICATION_PREFERENCES_TABLE_SCHEMA_SQL,
   VAPID_KEYS_TABLE_SCHEMA_SQL,
 } from '@/modules/database/schema.js';
@@ -266,6 +271,7 @@ const rebuildSessionsTableWithProjectSchema = (db: Database): void => {
 
   if (!shouldRebuild) {
     addColumnToTableIfNotExists(db, 'sessions', columnNames, 'jsonl_path', 'TEXT');
+    addColumnToTableIfNotExists(db, 'sessions', columnNames, 'runtime_project_path', 'TEXT');
     addColumnToTableIfNotExists(db, 'sessions', columnNames, 'isArchived', 'BOOLEAN DEFAULT 0');
     addColumnToTableIfNotExists(db, 'sessions', columnNames, 'created_at', 'DATETIME');
     addColumnToTableIfNotExists(db, 'sessions', columnNames, 'updated_at', 'DATETIME');
@@ -295,6 +301,10 @@ const rebuildSessionsTableWithProjectSchema = (db: Database): void => {
     ? 'jsonl_path'
     : 'NULL';
 
+  const runtimeProjectPathExpression = columnNames.includes('runtime_project_path')
+    ? `COALESCE(runtime_project_path, ${projectPathExpression})`
+    : projectPathExpression;
+
   const isArchivedExpression = columnNames.includes('isArchived')
     ? 'COALESCE(isArchived, 0)'
     : '0';
@@ -317,6 +327,7 @@ const rebuildSessionsTableWithProjectSchema = (db: Database): void => {
         provider TEXT NOT NULL DEFAULT 'claude',
         custom_name TEXT,
         project_path TEXT,
+        runtime_project_path TEXT,
         jsonl_path TEXT,
         isArchived BOOLEAN DEFAULT 0,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -334,6 +345,7 @@ const rebuildSessionsTableWithProjectSchema = (db: Database): void => {
           ${providerExpression} AS provider,
           ${customNameExpression} AS custom_name,
           ${projectPathExpression} AS project_path,
+          ${runtimeProjectPathExpression} AS runtime_project_path,
           ${jsonlPathExpression} AS jsonl_path,
           ${isArchivedExpression} AS isArchived,
           ${createdAtExpression} AS created_at,
@@ -348,6 +360,7 @@ const rebuildSessionsTableWithProjectSchema = (db: Database): void => {
           provider,
           custom_name,
           project_path,
+          runtime_project_path,
           jsonl_path,
           isArchived,
           created_at,
@@ -363,6 +376,7 @@ const rebuildSessionsTableWithProjectSchema = (db: Database): void => {
         provider,
         custom_name,
         project_path,
+        runtime_project_path,
         jsonl_path,
         isArchived,
         created_at,
@@ -373,6 +387,7 @@ const rebuildSessionsTableWithProjectSchema = (db: Database): void => {
         provider,
         custom_name,
         project_path,
+        runtime_project_path,
         jsonl_path,
         isArchived,
         created_at,
@@ -423,6 +438,25 @@ const addContinuedFromSessionId = (db: Database): void => {
   const columnNames = sessionsTableInfo.map((column) => column.name);
 
   addColumnToTableIfNotExists(db, 'sessions', columnNames, 'continued_from_session_id', 'TEXT');
+};
+
+/**
+ * Keeps the provider's actual working directory after the logical project
+ * path was introduced. Existing rows initially use the same path for both;
+ * workspace-aware session rehoming can then replace only the logical path.
+ */
+const ensureSessionsRuntimeProjectPath = (db: Database): void => {
+  if (!tableExists(db, 'sessions')) {
+    return;
+  }
+
+  const columnNames = getTableInfo(db, 'sessions').map((column) => column.name);
+  addColumnToTableIfNotExists(db, 'sessions', columnNames, 'runtime_project_path', 'TEXT');
+  db.exec(`
+    UPDATE sessions
+    SET runtime_project_path = project_path
+    WHERE runtime_project_path IS NULL
+  `);
 };
 
 /**
@@ -618,6 +652,8 @@ const ensureKanbanDueDateAndBranchSchema = (db: Database): void => {
   addColumnToTableIfNotExists(db, 'kanban_tasks', columns, 'feature_branch', 'TEXT');
   columns = getTableInfo(db, 'kanban_tasks').map((column) => column.name);
   addColumnToTableIfNotExists(db, 'kanban_tasks', columns, 'escalated_at', 'DATETIME');
+  columns = getTableInfo(db, 'kanban_tasks').map((column) => column.name);
+  addColumnToTableIfNotExists(db, 'kanban_tasks', columns, 'archived_at', 'DATETIME');
 };
 
 /**
@@ -632,6 +668,8 @@ const ensureWebhookRetrySchema = (db: Database): void => {
     addColumnToTableIfNotExists(db, 'webhook_sources', columns, 'retry_backoff_seconds', 'INTEGER DEFAULT 60');
     columns = getTableInfo(db, 'webhook_sources').map((column) => column.name);
     addColumnToTableIfNotExists(db, 'webhook_sources', columns, 'secret', 'TEXT');
+    columns = getTableInfo(db, 'webhook_sources').map((column) => column.name);
+    addColumnToTableIfNotExists(db, 'webhook_sources', columns, 'secret_id', 'TEXT');
   }
   if (tableExists(db, 'webhook_deliveries')) {
     let columns = getTableInfo(db, 'webhook_deliveries').map((column) => column.name);
@@ -666,6 +704,18 @@ const ensureRunSpineBridgeSchema = (db: Database): void => {
   if (tableExists(db, 'user_credentials')) {
     const columns = getTableInfo(db, 'user_credentials').map((column) => column.name);
     addColumnToTableIfNotExists(db, 'user_credentials', columns, 'secret_id', 'TEXT');
+  }
+};
+
+/** Additive graph_json / step_states_json for workflow graphs on existing DBs. */
+const ensureAutomationGraphSchema = (db: Database): void => {
+  if (tableExists(db, 'automation_recipes')) {
+    const columns = getTableInfo(db, 'automation_recipes').map((column) => column.name);
+    addColumnToTableIfNotExists(db, 'automation_recipes', columns, 'graph_json', 'TEXT');
+  }
+  if (tableExists(db, 'automation_runs')) {
+    const columns = getTableInfo(db, 'automation_runs').map((column) => column.name);
+    addColumnToTableIfNotExists(db, 'automation_runs', columns, 'step_states_json', "TEXT DEFAULT '{}'");
   }
 };
 
@@ -708,6 +758,7 @@ export const runMigrations = (db: Database) => {
     ensureCategoriesSchema(db);
     rebuildSessionsTableWithProjectSchema(db);
     migrateLegacySessionNames(db);
+    ensureSessionsRuntimeProjectPath(db);
     addProviderSessionIdMapping(db);
     addContinuedFromSessionId(db);
     ensureProjectsForSessionPaths(db);
@@ -737,6 +788,7 @@ export const runMigrations = (db: Database) => {
     // Named agent run profiles + in-app notification inbox (additive).
     db.exec(AGENT_RUN_PROFILES_TABLE_SCHEMA_SQL);
     db.exec(SYSTEM_NOTIFICATIONS_TABLE_SCHEMA_SQL);
+    db.exec(INTERRUPTS_TABLE_SCHEMA_SQL);
 
     // Kanban orchestration tables (additive; safe to re-exec via IF NOT EXISTS).
     db.exec(KANBAN_SCHEMA_SQL);
@@ -754,7 +806,13 @@ export const runMigrations = (db: Database) => {
 
     // Run spine: agent_workspaces, agent_runs, agent_run_events, secrets (P0–P4).
     db.exec(RUN_SPINE_SCHEMA_SQL);
+    db.exec(CONTEXT_PACKS_TABLE_SCHEMA_SQL);
+    db.exec(AUTOMATION_TABLE_SCHEMA_SQL);
+    db.exec(FAILOVER_PLAYBOOKS_TABLE_SCHEMA_SQL);
+    db.exec(SWARM_TABLE_SCHEMA_SQL);
+    ensureSwarmAgentSchema(db);
     ensureRunSpineBridgeSchema(db);
+    ensureAutomationGraphSchema(db);
 
     console.log('Database migrations completed successfully');
   } catch (error: any) {
@@ -762,3 +820,31 @@ export const runMigrations = (db: Database) => {
     throw error;
   }
 };
+
+/** Additive columns for Agent Swarm orchestration (plan, blackboard, per-agent config). */
+function ensureSwarmAgentSchema(db: Database): void {
+  if (!tableExists(db, 'swarm_runs')) return;
+  const runCols = getTableInfo(db, 'swarm_runs').map((c) => c.name);
+  addColumnToTableIfNotExists(db, 'swarm_runs', runCols, 'plan_json', 'TEXT');
+  addColumnToTableIfNotExists(db, 'swarm_runs', runCols, 'blackboard_json', "TEXT DEFAULT '[]'");
+  addColumnToTableIfNotExists(db, 'swarm_runs', runCols, 'skills_json', "TEXT DEFAULT '[]'");
+  addColumnToTableIfNotExists(db, 'swarm_runs', runCols, 'config_json', 'TEXT');
+  addColumnToTableIfNotExists(db, 'swarm_runs', runCols, 'workspace_id', 'TEXT');
+  addColumnToTableIfNotExists(db, 'swarm_runs', runCols, 'pr_url', 'TEXT');
+  addColumnToTableIfNotExists(db, 'swarm_runs', runCols, 'feature_branch', 'TEXT');
+  addColumnToTableIfNotExists(db, 'swarm_runs', runCols, 'archived_at', 'DATETIME');
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_swarm_runs_created ON swarm_runs(created_at DESC)`,
+  );
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_swarm_runs_archived ON swarm_runs(archived_at)`,
+  );
+
+  if (!tableExists(db, 'swarm_members')) return;
+  const memberCols = getTableInfo(db, 'swarm_members').map((c) => c.name);
+  addColumnToTableIfNotExists(db, 'swarm_members', memberCols, 'kind', 'TEXT');
+  addColumnToTableIfNotExists(db, 'swarm_members', memberCols, 'effort', 'TEXT');
+  addColumnToTableIfNotExists(db, 'swarm_members', memberCols, 'permission_mode', 'TEXT');
+  addColumnToTableIfNotExists(db, 'swarm_members', memberCols, 'skills_json', 'TEXT');
+  addColumnToTableIfNotExists(db, 'swarm_members', memberCols, 'step_id', 'TEXT');
+}

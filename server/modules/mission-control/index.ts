@@ -1,6 +1,10 @@
 export { default as missionControlRoutes } from '@/modules/mission-control/mission-control.routes.js';
 export { missionControlDb } from '@/modules/mission-control/mission-control.repository.js';
-export { configureMissionControlRuntimes } from '@/modules/mission-control/mission-control-agent.service.js';
+export {
+  configureMissionControlRuntimes,
+  extractRunOutcome,
+  parseJsonFromAgentText,
+} from '@/modules/mission-control/mission-control-agent.service.js';
 export {
   runSectionProduce,
   applyItemAction,

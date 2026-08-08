@@ -130,12 +130,13 @@ export const sessionsService = {
     }
 
     const sessionId = randomUUID();
+    const logicalProjectPath = projectsDb.resolveProjectPathForRuntimePath(normalizedProjectPath);
     sessionsDb.createAppSession(sessionId, provider, normalizedProjectPath);
 
     return {
       sessionId,
       provider,
-      projectPath: normalizedProjectPath,
+      projectPath: logicalProjectPath,
     };
   },
 
@@ -176,7 +177,9 @@ export const sessionsService = {
     const result = await providerRegistry.resolveProvider(provider).sessions.fetchHistory(sessionId, {
       limit: options.limit ?? null,
       offset: options.offset ?? 0,
-      projectPath: session.project_path ?? '',
+      // project_path is the logical owner shown in the UI; provider history
+      // may live inside the isolated worktree recorded separately here.
+      projectPath: session.runtime_project_path ?? session.project_path ?? '',
       providerSessionId: session.provider_session_id,
     });
 
@@ -194,6 +197,8 @@ export const sessionsService = {
    * group, filter, open, and restore them without a per-row follow-up query.
    */
   listArchivedSessions(): ArchivedSessionListItem[] {
+    sessionsDb.rehomeAgentWorkspaceSessions();
+
     const archivedSessions = sessionsDb.getArchivedSessions();
     const projectCache = new Map<string, ReturnType<typeof projectsDb.getProjectPath>>();
 

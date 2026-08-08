@@ -58,6 +58,8 @@ export type MainContentProps = {
   externalMessageUpdate: number;
   newSessionTrigger: number;
   onSessionSelect: (session: ProjectSession) => void;
+  onArchiveSession?: (session: ProjectSession) => void | Promise<void>;
+  onDeleteSession?: (session: ProjectSession) => void | Promise<void>;
   onNewSession: (project: Project) => void;
   onLoadMoreSessions?: (projectId: string) => void | Promise<void>;
   isLoadingMoreSessions?: boolean;
@@ -73,6 +75,8 @@ export type MainContentHeaderProps = {
   isMobile: boolean;
   onMenuClick: () => void;
   onSessionSelect: (session: ProjectSession) => void;
+  onArchiveSession?: (session: ProjectSession) => void | Promise<void>;
+  onDeleteSession?: (session: ProjectSession) => void | Promise<void>;
   onNewSession: (project: Project) => void;
   onLoadMoreSessions?: (projectId: string) => void | Promise<void>;
   isLoadingMoreSessions?: boolean;

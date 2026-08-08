@@ -138,11 +138,17 @@ function readNumber(value: unknown, fallback: number): number {
   return fallback;
 }
 
+/** Webhook HMAC values never cross the HTTP boundary. */
+function publicSource(source: import('@/modules/webhooks/webhooks.types.js').WebhookSource) {
+  const { secret: _secret, secret_id: _secretId, ...safe } = source;
+  return { ...safe, secretConfigured: Boolean(source.secret) };
+}
+
 router.get(
   '/',
   asyncHandler(async (_req, res) => {
     const sources = webhooksDb.listSources();
-    res.json({ success: true, sources });
+    res.json({ success: true, sources: sources.map(publicSource) });
   }),
 );
 
@@ -154,7 +160,7 @@ router.post(
 
     try {
       const source = webhooksDb.createSource(input);
-      res.status(201).json({ success: true, source });
+      res.status(201).json({ success: true, source: publicSource(source) });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (message.includes('UNIQUE') || message.toLowerCase().includes('unique')) {
@@ -179,7 +185,7 @@ router.get(
         statusCode: 404,
       });
     }
-    res.json({ success: true, source });
+    res.json({ success: true, source: publicSource(source) });
   }),
 );
 
@@ -198,7 +204,7 @@ router.put(
           statusCode: 404,
         });
       }
-      res.json({ success: true, source });
+      res.json({ success: true, source: publicSource(source) });
     } catch (error) {
       if (error instanceof AppError) throw error;
       const message = error instanceof Error ? error.message : String(error);

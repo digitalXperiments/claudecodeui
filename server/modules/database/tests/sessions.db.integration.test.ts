@@ -4,8 +4,9 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { closeConnection } from '@/modules/database/connection.js';
+import { closeConnection, getConnection } from '@/modules/database/connection.js';
 import { initializeDatabase } from '@/modules/database/init-db.js';
+import { projectsDb } from '@/modules/database/repositories/projects.db.js';
 import { sessionsDb } from '@/modules/database/repositories/sessions.db.js';
 
 async function withIsolatedDatabase(runTest: () => void | Promise<void>): Promise<void> {
@@ -80,5 +81,141 @@ test('repository reads normalize SQLite UTC timestamps to ISO strings', async ()
     assert.ok(row?.updated_at.endsWith('Z'));
     assert.match(row?.created_at ?? '', /^\d{4}-\d{2}-\d{2}T/);
     assert.match(row?.updated_at ?? '', /^\d{4}-\d{2}-\d{2}T/);
+  });
+});
+
+test('sessions from CloudCLI worktrees stay under their parent project', async () => {
+  await withIsolatedDatabase(() => {
+    const parentProject = projectsDb.createProjectPath('/workspace/demo-project').project;
+    assert.ok(parentProject);
+    const workspacePath = '/workspace/demo-project/.cloudcli/worktrees/ws_test';
+    const db = getConnection();
+
+    db.prepare(`
+      INSERT INTO agent_workspaces (
+        workspace_id, project_id, run_id, task_id, mode, root_path,
+        base_branch, base_sha, feature_branch, head_sha, status
+      ) VALUES (?, ?, NULL, NULL, 'git_worktree', ?, 'main', NULL, 'chat/test', NULL, 'active')
+    `).run('ws_test', parentProject.project_id, workspacePath);
+
+    sessionsDb.createSession('workspace-session', 'claude', workspacePath, 'Workspace session');
+
+    assert.equal(sessionsDb.getSessionById('workspace-session')?.project_path, parentProject.project_path);
+    assert.equal(sessionsDb.getSessionById('workspace-session')?.runtime_project_path, workspacePath);
+    assert.equal(projectsDb.getProjectPath(workspacePath), null);
+  });
+});
+
+test('app sessions preserve the workspace cwd while using the parent project as owner', async () => {
+  await withIsolatedDatabase(() => {
+    const parentProject = projectsDb.createProjectPath('/workspace/demo-project').project;
+    assert.ok(parentProject);
+    const workspacePath = '/workspace/demo-project/.cloudcli/worktrees/ws_app';
+    const db = getConnection();
+
+    db.prepare(`
+      INSERT INTO agent_workspaces (
+        workspace_id, project_id, run_id, task_id, mode, root_path,
+        base_branch, base_sha, feature_branch, head_sha, status
+      ) VALUES (?, ?, NULL, NULL, 'git_worktree', ?, 'main', NULL, 'chat/app', NULL, 'active')
+    `).run('ws_app', parentProject.project_id, workspacePath);
+
+    sessionsDb.createAppSession('app-workspace-session', 'cursor', workspacePath);
+
+    const row = sessionsDb.getSessionById('app-workspace-session');
+    assert.equal(row?.project_path, parentProject.project_path);
+    assert.equal(row?.runtime_project_path, workspacePath);
+  });
+});
+
+test('sessions from temporary directories stay under the parent directory', async () => {
+  await withIsolatedDatabase(() => {
+    const runtimePath = '/tmp/cloudcli-session-test';
+
+    sessionsDb.createSession('temporary-session', 'claude', runtimePath, 'Temporary session');
+
+    const row = sessionsDb.getSessionById('temporary-session');
+    assert.equal(row?.project_path, '/tmp');
+    assert.equal(row?.runtime_project_path, runtimePath);
+    assert.equal(projectsDb.getProjectPath(runtimePath), null);
+    assert.ok(projectsDb.getProjectPath('/tmp'));
+  });
+});
+
+test('pending temporary app sessions match their exact runtime directory', async () => {
+  await withIsolatedDatabase(() => {
+    sessionsDb.createAppSession('temporary-app-session-a', 'claude', '/tmp/cloudcli-session-a');
+    sessionsDb.createAppSession('temporary-app-session-b', 'claude', '/tmp/cloudcli-session-b');
+
+    assert.equal(
+      sessionsDb.findLatestPendingAppSession('claude', '/tmp/cloudcli-session-a')?.session_id,
+      'temporary-app-session-a',
+    );
+    assert.equal(
+      sessionsDb.findLatestPendingAppSession('claude', '/tmp/cloudcli-session-b')?.session_id,
+      'temporary-app-session-b',
+    );
+  });
+});
+
+test('legacy workspace project rows are rehomed and archived', async () => {
+  await withIsolatedDatabase(() => {
+    const parentProject = projectsDb.createProjectPath('/workspace/demo-project').project;
+    assert.ok(parentProject);
+    const workspacePath = '/workspace/demo-project/.cloudcli/worktrees/ws_legacy';
+    projectsDb.createProjectPath(workspacePath);
+
+    const db = getConnection();
+    db.prepare(`
+      INSERT INTO agent_workspaces (
+        workspace_id, project_id, run_id, task_id, mode, root_path,
+        base_branch, base_sha, feature_branch, head_sha, status
+      ) VALUES (?, ?, NULL, NULL, 'git_worktree', ?, 'main', NULL, 'chat/legacy', NULL, 'active')
+    `).run('ws_legacy', parentProject.project_id, workspacePath);
+    db.prepare(`
+      INSERT INTO sessions (
+        session_id, provider, provider_session_id, project_path, isArchived
+      ) VALUES (?, ?, ?, ?, 0)
+    `).run('legacy-workspace-session', 'claude', 'legacy-workspace-session', workspacePath);
+
+    assert.equal(sessionsDb.rehomeAgentWorkspaceSessions(), 1);
+    assert.equal(
+      sessionsDb.getSessionById('legacy-workspace-session')?.project_path,
+      parentProject.project_path,
+    );
+    assert.equal(
+      sessionsDb.getSessionById('legacy-workspace-session')?.runtime_project_path,
+      workspacePath,
+    );
+    assert.equal(projectsDb.getProjectPath(workspacePath)?.isArchived, 1);
+    assert.equal(projectsDb.getProjectPaths().some((project) => project.project_path === workspacePath), false);
+    assert.equal(projectsDb.getArchivedProjectPaths().some((project) => project.project_path === workspacePath), false);
+  });
+});
+
+test('legacy temporary project rows are rehomed and archived', async () => {
+  await withIsolatedDatabase(() => {
+    const runtimePath = '/tmp/legacy-session-dir';
+    projectsDb.createProjectPath(runtimePath);
+
+    const db = getConnection();
+    db.prepare(`
+      INSERT INTO sessions (
+        session_id, provider, provider_session_id, project_path, isArchived
+      ) VALUES (?, ?, ?, ?, 0)
+    `).run('legacy-temporary-session', 'claude', 'legacy-temporary-session', runtimePath);
+
+    assert.equal(sessionsDb.rehomeAgentWorkspaceSessions(), 1);
+    assert.equal(
+      sessionsDb.getSessionById('legacy-temporary-session')?.project_path,
+      '/tmp',
+    );
+    assert.equal(
+      sessionsDb.getSessionById('legacy-temporary-session')?.runtime_project_path,
+      runtimePath,
+    );
+    assert.equal(projectsDb.getProjectPath(runtimePath)?.isArchived, 1);
+    assert.equal(projectsDb.getProjectPaths().some((project) => project.project_path === runtimePath), false);
+    assert.equal(projectsDb.getArchivedProjectPaths().some((project) => project.project_path === runtimePath), false);
   });
 });

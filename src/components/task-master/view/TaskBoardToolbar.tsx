@@ -43,6 +43,7 @@ type TaskBoardToolbarProps = {
   onOpenPrd: (prd: PrdFile) => void;
   onOpenHelp: () => void;
   onOpenCreateTask: () => void;
+  onImportToKanban?: () => void;
 };
 
 export default function TaskBoardToolbar({
@@ -72,6 +73,7 @@ export default function TaskBoardToolbar({
   onOpenPrd,
   onOpenHelp,
   onOpenCreateTask,
+  onImportToKanban,
 }: TaskBoardToolbarProps) {
   const { t } = useTranslation('tasks');
   const [isPrdDropdownOpen, setIsPrdDropdownOpen] = useState(false);
@@ -237,6 +239,16 @@ export default function TaskBoardToolbar({
                 >
                   <Plus className="h-4 w-4" />
                   <span className="hidden sm:inline">{t('buttons.addTask')}</span>
+                </button>
+              )}
+              {hasTaskMasterConfigured && onImportToKanban && (
+                <button
+                  onClick={onImportToKanban}
+                  className="flex items-center gap-2 rounded-lg border border-blue-300 bg-white px-3 py-2 font-medium text-blue-700 hover:bg-blue-50 dark:border-blue-700 dark:bg-gray-800 dark:text-blue-300 dark:hover:bg-blue-900/20"
+                  title="Import TaskMaster tasks into Kanban"
+                >
+                  <span className="hidden sm:inline">Import to Kanban</span>
+                  <span className="sm:hidden">Import</span>
                 </button>
               )}
             </>

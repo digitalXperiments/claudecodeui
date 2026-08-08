@@ -4,6 +4,7 @@ import ChatInterface from '../../chat/view/ChatInterface';
 import FileTree from '../../file-tree/view/FileTree';
 import StandaloneShell from '../../standalone-shell/view/StandaloneShell';
 import GitPanel from '../../git-panel/view/GitPanel';
+import OperationsView from '../../operations/view/OperationsView';
 import PluginTabContent from '../../plugins/view/PluginTabContent';
 import { BrowserUsePanel } from '../../browser-use';
 import type { MainContentProps } from '../types/types';
@@ -53,6 +54,8 @@ function MainContent({
   externalMessageUpdate,
   newSessionTrigger,
   onSessionSelect,
+  onArchiveSession,
+  onDeleteSession,
   onNewSession,
   onLoadMoreSessions,
   isLoadingMoreSessions = false,
@@ -159,6 +162,8 @@ function MainContent({
         isMobile={isMobile}
         onMenuClick={onMenuClick}
         onSessionSelect={onSessionSelect}
+        onArchiveSession={onArchiveSession}
+        onDeleteSession={onDeleteSession}
         onNewSession={onNewSession}
         onLoadMoreSessions={onLoadMoreSessions}
         isLoadingMoreSessions={isLoadingMoreSessions}
@@ -213,6 +218,12 @@ function MainContent({
           {activeTab === 'git' && (
             <div className="h-full overflow-hidden">
               <GitPanel selectedProject={selectedProject} isMobile={isMobile} onFileOpen={handleFileOpen} />
+            </div>
+          )}
+
+          {activeTab === 'operations' && (
+            <div className="h-full overflow-hidden">
+              <OperationsView selectedProject={selectedProject} />
             </div>
           )}
 

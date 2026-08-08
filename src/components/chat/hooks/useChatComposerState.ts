@@ -707,6 +707,13 @@ export function useChatComposerState({
   // it is later dispatched outside this composer (app-level auto-send).
   const buildSendOptions = useCallback((currentInput: string): QueuedSendOptions => {
     const toolsSettings = readProviderToolsSettings(provider);
+    // Sticky opt-in for PRD §5.7 isolated worktrees (per browser).
+    let isolatedWorkspace = false;
+    try {
+      isolatedWorkspace = window.localStorage.getItem('cloudcli.chat.isolatedWorkspace') === '1';
+    } catch {
+      // ignore
+    }
 
     return {
       model: currentProviderModel,
@@ -715,6 +722,7 @@ export function useChatComposerState({
       toolsSettings,
       skipPermissions: toolsSettings?.skipPermissions || false,
       sessionSummary: getNotificationSessionSummary(selectedSession, currentInput),
+      isolatedWorkspace,
       ...(provider === 'codex' ? { serviceTier: fastMode ? 'priority' : null } : {}),
     };
   }, [

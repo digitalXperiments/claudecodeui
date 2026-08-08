@@ -207,6 +207,48 @@ export function normalizeProjectPath(inputPath: string): string {
 }
 
 /**
+ * Returns whether a path is a runtime-only temporary directory rather than a
+ * durable user project. This covers the conventional OS temp roots requested
+ * by the application as well as CloudCLI's reserved `tmp/cloudcli` scratch
+ * tree.
+ */
+export function isTemporaryProjectPath(inputPath: string): boolean {
+  const normalizedPath = normalizeProjectPath(inputPath);
+  if (!normalizedPath) {
+    return false;
+  }
+
+  return Boolean(getTemporaryProjectPathRoot(normalizedPath))
+    || /(^|[\\/])tmp[\\/]cloudcli(?:[\\/]|$)/.test(normalizedPath);
+}
+
+/** Returns the matching operating-system temp root for a temporary path. */
+export function getTemporaryProjectPathRoot(inputPath: string): string | null {
+  const normalizedPath = normalizeProjectPath(inputPath);
+  if (!normalizedPath) {
+    return null;
+  }
+
+  return getTemporaryProjectPathRoots()
+    .filter((root) => normalizedPath === root || normalizedPath.startsWith(`${root}${path.sep}`))
+    .sort((left, right) => right.length - left.length)[0] ?? null;
+}
+
+/** Returns whether a path is itself an OS temporary root such as `/tmp`. */
+export function isTemporaryProjectPathRoot(inputPath: string): boolean {
+  const normalizedPath = normalizeProjectPath(inputPath);
+  return Boolean(normalizedPath) && getTemporaryProjectPathRoot(normalizedPath) === normalizedPath;
+}
+
+function getTemporaryProjectPathRoots(): string[] {
+  return [
+    '/tmp',
+    '/private/tmp',
+    '/var/tmp',
+  ].filter(Boolean);
+}
+
+/**
  * Validates that a user-supplied workspace path is safe to use.
  *
  * Call this before any filesystem mutation that creates or registers projects.
@@ -1376,4 +1418,3 @@ export function flattenPromptForWindowsShell(prompt: string): string {
   }
   return prompt.replace(/\s*\r?\n\s*/g, ' ').trim();
 }
-

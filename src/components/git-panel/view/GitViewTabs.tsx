@@ -1,4 +1,4 @@
-import { FileText, GitBranch, History } from 'lucide-react';
+import { Activity, FileText, GitBranch, GitFork, History } from 'lucide-react';
 import type { GitPanelView } from '../types/types';
 
 type GitViewTabsProps = {
@@ -12,6 +12,8 @@ const TABS: { id: GitPanelView; label: string; Icon: typeof FileText }[] = [
   { id: 'changes', label: 'Changes', Icon: FileText },
   { id: 'history', label: 'Commits', Icon: History },
   { id: 'branches', label: 'Branches', Icon: GitBranch },
+  { id: 'workspaces', label: 'Workspaces', Icon: GitFork },
+  { id: 'runs', label: 'Observatory', Icon: Activity },
 ];
 
 export default function GitViewTabs({ activeView, isHidden, changeCount, onChange }: GitViewTabsProps) {

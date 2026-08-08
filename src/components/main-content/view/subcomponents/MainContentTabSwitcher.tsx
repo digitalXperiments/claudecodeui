@@ -1,4 +1,4 @@
-import { MessageSquare, Terminal, Folder, GitBranch, ClipboardCheck, MonitorPlay, type LucideIcon } from 'lucide-react';
+import { MessageSquare, Terminal, Folder, GitBranch, ClipboardCheck, MonitorPlay, Gauge, type LucideIcon } from 'lucide-react';
 import type { Dispatch, SetStateAction } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -36,6 +36,7 @@ const BASE_TABS: BuiltInTab[] = [
   { kind: 'builtin', id: 'shell',  labelKey: 'tabs.shell',  icon: Terminal },
   { kind: 'builtin', id: 'files',  labelKey: 'tabs.files',  icon: Folder },
   { kind: 'builtin', id: 'git',    labelKey: 'tabs.git',    icon: GitBranch },
+  { kind: 'builtin', id: 'operations', labelKey: 'tabs.operations', icon: Gauge },
 ];
 
 const BROWSER_TAB: BuiltInTab = {
@@ -90,7 +91,7 @@ export default function MainContentTabSwitcher({
             <Pill
               isActive={isActive}
               onClick={() => setActiveTab(tab.id)}
-              className="px-2.5 py-[5px]"
+              className="min-h-9 shrink-0 px-2.5 py-[5px] sm:min-h-0"
             >
               {tab.kind === 'builtin' ? (
                 <tab.icon className="h-3.5 w-3.5" strokeWidth={isActive ? 2.2 : 1.8} />

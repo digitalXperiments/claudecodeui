@@ -79,6 +79,8 @@ function AppContentInner() {
     refreshProjectsSilently,
     registerOptimisticSession,
     sidebarSharedProps,
+    handleSessionArchive,
+    handleSessionPermanentDelete,
     handleNewSession,
     handleSessionSelect,
     loadMoreProjectSessions,
@@ -307,6 +309,8 @@ function AppContentInner() {
           externalMessageUpdate={externalMessageUpdate}
           newSessionTrigger={newSessionTrigger}
           onSessionSelect={handleSessionSelect}
+          onArchiveSession={handleSessionArchive}
+          onDeleteSession={handleSessionPermanentDelete}
           onNewSession={handleNewSession}
           onLoadMoreSessions={loadMoreProjectSessions}
         />

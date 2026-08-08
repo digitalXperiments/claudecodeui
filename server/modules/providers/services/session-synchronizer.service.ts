@@ -1,4 +1,4 @@
-import { scanStateDb } from '@/modules/database/index.js';
+import { scanStateDb, sessionsDb } from '@/modules/database/index.js';
 import { providerRegistry } from '@/modules/providers/provider.registry.js';
 import type { LLMProvider } from '@/shared/types.js';
 
@@ -34,6 +34,11 @@ export const sessionSynchronizerService = {
    * Providers the user turned off in Settings → Agents are skipped.
    */
   async synchronizeSessions(): Promise<SessionSynchronizeResult> {
+    // Provider transcripts for isolated runs contain the workspace cwd. Keep
+    // those sessions under the registered parent project before scanning new
+    // provider artifacts, including rows from older CloudCLI versions.
+    sessionsDb.rehomeAgentWorkspaceSessions();
+
     const lastScanAt = scanStateDb.getLastScannedAt();
     const scanBoundary = new Date();
     const disabledProviders = await getDisabledProviderIds();

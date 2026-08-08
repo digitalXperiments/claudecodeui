@@ -2,7 +2,7 @@ import path from 'node:path';
 
 import { chatRunRegistry } from '@/modules/websocket/services/chat-run-registry.service.js';
 import { getGlobalImageAssetsDir, normalizeImageDescriptors } from '@/shared/image-attachments.js';
-import type { AnyRecord, LLMProvider, RealtimeClientConnection } from '@/shared/types.js';
+import type { AnyRecord, LLMProvider, NormalizedMessage, RealtimeClientConnection } from '@/shared/types.js';
 
 /**
  * One provider runtime entry point. All provider runtimes share this signature,
@@ -74,6 +74,8 @@ export type StartProviderRunParams = {
    */
   connection: RealtimeClientConnection;
   userId: string | number | null;
+  /** Optional durable run-spine hook for every normalized runtime event. */
+  onEvent?: (message: NormalizedMessage) => void;
 };
 
 export type StartProviderRunResult =
@@ -134,6 +136,7 @@ export async function startProviderRun(params: StartProviderRunParams): Promise<
     providerSessionId: params.providerSessionId,
     connection: params.connection,
     userId: params.userId,
+    onEvent: params.onEvent,
   });
 
   if (!run) {

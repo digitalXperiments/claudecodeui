@@ -210,6 +210,15 @@ router.get(
   }),
 );
 
+router.get(
+  '/global/archived',
+  asyncHandler(async (_req, res) => {
+    const board = kanbanDb.getOrCreateGlobalBoard();
+    const tasks = kanbanDb.listTasksByBoard(board.board_id, true).filter((task) => task.archived_at);
+    res.json({ success: true, tasks });
+  }),
+);
+
 // --- Boards ---------------------------------------------------------------
 // Boards are global-only. The single board is fetched via GET /global; the
 // only board mutation is editing its columns.
@@ -425,6 +434,17 @@ router.put(
     }
 
     res.json({ success: true, task: task ? kanbanDb.getTask(task.task_id) : task });
+  }),
+);
+
+router.post(
+  '/tasks/:taskId/archive',
+  asyncHandler(async (req, res) => {
+    const task = requireTask(readString(req.params.taskId));
+    const archived = req.body?.restore === true
+      ? kanbanDb.restoreTask(task.task_id)
+      : kanbanDb.archiveTask(task.task_id);
+    res.json({ success: true, task: archived });
   }),
 );
 

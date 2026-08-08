@@ -2,6 +2,8 @@ import { systemNotificationsDb, userDb } from '@/modules/database/index.js';
 import { notifyRunFailed, notifyRunStopped } from '@/modules/notifications/index.js';
 import { chatRunRegistry, type RunCompletionEvent } from '@/modules/websocket/index.js';
 import { kanbanDb } from '@/modules/kanban/kanban.repository.js';
+import { runService } from '@/modules/runs/index.js';
+import { TERMINAL_RUN_STATUSES } from '@/shared/run-events.js';
 import {
   COLUMN_DONE,
   COLUMN_REVIEW,
@@ -233,6 +235,16 @@ export function handleRunCompletion(event: RunCompletionEvent): void {
   const success = isSuccessfulOutcome(event);
   const runStatus: KanbanRunStatus = event.aborted ? 'aborted' : success ? 'done' : 'failed';
   kanbanDb.finishRun(run.run_id, runStatus, event.exitCode);
+  if (run.agent_run_id) {
+    const spineRun = runService.get(run.agent_run_id);
+    if (spineRun && !TERMINAL_RUN_STATUSES.has(spineRun.status)) {
+      runService.markTerminal(run.agent_run_id, {
+        status: event.aborted ? 'aborted' : success ? 'succeeded' : 'failed',
+        exitCode: event.exitCode ?? null,
+        errorSummary: event.aborted ? 'aborted by provider' : success ? null : 'provider run failed',
+      });
+    }
+  }
   kanbanDb.recordTaskRunResult(run.task_id, event.exitCode);
 
   const task = kanbanDb.getTask(run.task_id);
@@ -353,6 +365,15 @@ export function reconcileKanbanOnBoot(): void {
     kanbanDb.finishRun(run.run_id, 'failed', null);
     kanbanDb.setTaskStatus(run.task_id, 'failed');
     kanbanDb.recordTaskRunResult(run.task_id, null);
+    if (run.agent_run_id) {
+      const spineRun = runService.get(run.agent_run_id);
+      if (spineRun && !TERMINAL_RUN_STATUSES.has(spineRun.status)) {
+        runService.markTerminal(run.agent_run_id, {
+          status: 'failed',
+          errorSummary: 'orphaned by server restart',
+        });
+      }
+    }
   }
   if (stale.length > 0) {
     console.log(`[Kanban] reconciled ${stale.length} stale run(s) on boot`);

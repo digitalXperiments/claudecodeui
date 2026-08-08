@@ -1,6 +1,7 @@
 import { Cron } from 'croner';
 
 import { systemNotificationsDb } from '@/modules/database/index.js';
+import { interruptsService } from '@/modules/interrupt-queue/index.js';
 import { kanbanDb } from '@/modules/kanban/kanban.repository.js';
 import { enqueueTask } from '@/modules/kanban/kanban-queue.service.js';
 
@@ -54,6 +55,25 @@ export function sweepOverdueTasks(): void {
           meta: { taskId: task.task_id },
           dedupeKey: `kanban-overdue-${task.task_id}`,
         });
+        try {
+          interruptsService.create({
+            projectId: task.project_id,
+            kind: 'task_overdue',
+            severity: 'warning',
+            title: `Overdue: ${task.title}`,
+            body: `Task is overdue (due ${dueLabel}).`,
+            taskId: task.task_id,
+            href: '/kanban',
+            actions: [
+              { id: 'open_href', label: 'Open board', style: 'primary' },
+              { id: 'dismiss', label: 'Dismiss', style: 'secondary' },
+            ],
+            meta: { taskId: task.task_id, dueDate: task.due_date },
+            dedupeKey: `task_overdue:${task.task_id}`,
+          });
+        } catch {
+          // interrupt is best-effort
+        }
         kanbanDb.addComment({
           taskId: task.task_id,
           authorType: 'agent',

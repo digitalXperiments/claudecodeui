@@ -109,6 +109,18 @@ export function useKanbanBoard() {
     setState((prev) => ({ ...prev, tasks: prev.tasks.filter((t) => t.task_id !== taskId) }));
   }, []);
 
+  const archiveTask = useCallback(async (taskId: string) => {
+    const task = await kanbanApi.archiveTask(taskId);
+    setState((prev) => ({ ...prev, tasks: prev.tasks.filter((t) => t.task_id !== taskId) }));
+    return task;
+  }, []);
+
+  const restoreTask = useCallback(async (taskId: string) => {
+    const task = await kanbanApi.archiveTask(taskId, true);
+    upsertTask(task);
+    return task;
+  }, [upsertTask]);
+
   /**
    * Optimistically move a task to a column/position, then persist. On failure,
    * restore the previous task list.
@@ -277,6 +289,8 @@ export function useKanbanBoard() {
     createTask,
     updateTask,
     deleteTask,
+    archiveTask,
+    restoreTask,
     moveTask,
     reorderColumn,
     addDependency,

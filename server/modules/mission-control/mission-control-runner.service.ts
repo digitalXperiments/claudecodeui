@@ -83,14 +83,30 @@ function coerceDrafts(raw: unknown): McDraftItem[] {
   return drafts;
 }
 
-function notifyPendingItems(section: McSection, count: number): void {
-  if (count <= 0) return;
+async function resolveMissionControlInterrupts(itemId: string, resolution: string): Promise<void> {
+  try {
+    const { interruptsService } = await import('@/modules/interrupt-queue/index.js');
+    interruptsService.resolveMissionControlItem(itemId, 'mission-control', resolution);
+  } catch (error) {
+    // The item action has already succeeded; do not turn a notification cleanup
+    // failure into a failed approval/deny operation.
+    console.warn('[MissionControl] failed to resolve linked interrupt', error);
+  }
+}
+
+function notifyPendingItems(section: McSection, count: number, itemIds: string[] = []): void {
+  const actionableItemIds = [...new Set(itemIds)].filter((itemId) => {
+    const item = missionControlDb.getItem(itemId);
+    return item?.status === 'pending' || item?.status === 'failed';
+  });
+  const actionableCount = itemIds.length > 0 ? actionableItemIds.length : count;
+  if (actionableCount <= 0) return;
   try {
     systemNotificationsDb.create({
       kind: 'action_required',
       severity: 'info',
-      title: `${section.title}: ${count} item${count === 1 ? '' : 's'} need review`,
-      body: `Mission Control produced ${count} new draft${count === 1 ? '' : 's'}.`,
+      title: `${section.title}: ${actionableCount} item${actionableCount === 1 ? '' : 's'} need review`,
+      body: `Mission Control produced ${actionableCount} new draft${actionableCount === 1 ? '' : 's'}.`,
       source: 'mission-control',
       href: null,
       meta: { sectionId: section.section_id },
@@ -99,6 +115,30 @@ function notifyPendingItems(section: McSection, count: number): void {
   } catch (error) {
     console.warn('[MissionControl] failed to create notification', error);
   }
+  // One interrupt per new item (deduped) so the queue can approve/deny.
+  void import('@/modules/interrupt-queue/index.js')
+    .then(({ interruptsService }) => {
+      for (const itemId of actionableItemIds) {
+        interruptsService.create({
+          projectId: section.project_id ?? null,
+          kind: 'approval_pending',
+          severity: 'warning',
+          title: `${section.title}: review needed`,
+          body: 'A Mission Control draft is waiting for approval.',
+          href: '/mission-control',
+          actions: [
+            { id: 'approve_mc_item', label: 'Approve', style: 'primary' },
+            { id: 'deny_mc_item', label: 'Deny', style: 'destructive' },
+            { id: 'dismiss', label: 'Dismiss', style: 'secondary' },
+          ],
+          meta: { sectionId: section.section_id, itemId },
+          dedupeKey: `mc_item:${itemId}`,
+        });
+      }
+    })
+    .catch((error) => {
+      console.warn('[MissionControl] failed to create interrupt(s)', error);
+    });
 }
 
 /**
@@ -137,6 +177,8 @@ export async function runSectionProduce(sectionId: string): Promise<ProduceRunRe
       section,
       prompt,
       tools: section.produce_tools,
+      sourceRef: section.section_id,
+      trigger: 'manual',
     });
 
     // Provider/runtime failure (API unreachable, CLI crash, …): the output is
@@ -310,7 +352,11 @@ export async function runSectionProduce(sectionId: string): Promise<ProduceRunRe
     }
 
     missionControlDb.markSectionRun(sectionId, { error: null });
-    notifyPendingItems(section, section.auto_approve ? 0 : createdItems.length);
+    notifyPendingItems(
+      section,
+      section.auto_approve ? 0 : createdItems.length,
+      section.auto_approve ? [] : createdItems.map((item) => item.item_id),
+    );
 
     const parts: string[] = [];
     if (createdItems.length) parts.push(`${createdItems.length} new`);
@@ -778,6 +824,7 @@ export async function applyItemAction(
         statusCode: 404,
       });
     }
+    await resolveMissionControlInterrupts(itemId, actionId);
     return null;
   }
 
@@ -789,9 +836,11 @@ export async function applyItemAction(
   }
 
   if (action.kind === 'dismiss') {
-    return missionControlDb.setItemStatus(itemId, 'dismissed', {
+    const dismissed = missionControlDb.setItemStatus(itemId, 'dismissed', {
       resolvedAt: new Date().toISOString(),
     });
+    await resolveMissionControlInterrupts(itemId, actionId);
+    return dismissed;
   }
 
   const section = missionControlDb.getSection(item.section_id);
@@ -811,7 +860,9 @@ export async function applyItemAction(
       resolvedAt: new Date().toISOString(),
       error: null,
     });
-    return maybeBridgeToKanban(section, action, resolved);
+    const bridged = maybeBridgeToKanban(section, action, resolved);
+    await resolveMissionControlInterrupts(itemId, actionId);
+    return bridged;
   }
 
   if (!section.resolve_prompt.trim()) {
@@ -821,7 +872,9 @@ export async function applyItemAction(
       resolvedAt: new Date().toISOString(),
       error: null,
     });
-    return maybeBridgeToKanban(section, action, resolved);
+    const bridged = maybeBridgeToKanban(section, action, resolved);
+    await resolveMissionControlInterrupts(itemId, actionId);
+    return bridged;
   }
 
   try {
@@ -830,6 +883,8 @@ export async function applyItemAction(
       section,
       prompt,
       tools: section.resolve_tools,
+      sourceRef: itemId,
+      trigger: 'manual',
     });
 
     // Provider/runtime failure: mark the item failed (retryable) instead of
@@ -884,7 +939,9 @@ export async function applyItemAction(
       resolvedAt: new Date().toISOString(),
       error: null,
     });
-    return maybeBridgeToKanban(section, action, resolved);
+    const bridged = maybeBridgeToKanban(section, action, resolved);
+    await resolveMissionControlInterrupts(itemId, actionId);
+    return bridged;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return missionControlDb.setItemStatus(itemId, 'failed', {
@@ -937,6 +994,8 @@ export async function retryItem(itemId: string): Promise<RetryItemResult> {
       section,
       prompt: buildProducePrompt(section),
       tools: section.produce_tools,
+      sourceRef: itemId,
+      trigger: 'replay',
     });
     text = run.text;
     success = run.success;
@@ -1078,6 +1137,8 @@ export async function previewItemResolution(
       section,
       prompt,
       tools: section.resolve_tools,
+      sourceRef: itemId,
+      trigger: 'preview',
     });
     text = run.text;
     success = run.success;

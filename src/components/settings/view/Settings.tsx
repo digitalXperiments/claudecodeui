@@ -12,6 +12,7 @@ import McpSettingsTab from '../view/tabs/McpSettingsTab';
 import MemorySettingsTab from '../view/tabs/MemorySettingsTab';
 import AppearanceSettingsTab from '../view/tabs/AppearanceSettingsTab';
 import CredentialsSettingsTab from '../view/tabs/api-settings/CredentialsSettingsTab';
+import SecretsSettingsTab from '../view/tabs/SecretsSettingsTab';
 import WebhooksSettingsTab from '../view/tabs/webhooks/WebhooksSettingsTab';
 import VoiceSettingsTab from '../view/tabs/VoiceSettingsTab';
 import GitSettingsTab from '../view/tabs/git-settings/GitSettingsTab';
@@ -149,7 +150,7 @@ function Settings({ isOpen, onClose, projects = [], initialTab = 'agents' }: Set
 
   return (
     <div
-      className="modal-backdrop fixed inset-0 z-[9999] flex items-stretch justify-center bg-background md:items-center md:bg-background/80 md:p-4 md:backdrop-blur-sm"
+      className="modal-backdrop fixed inset-0 z-[10050] flex items-stretch justify-center bg-background md:items-center md:bg-background/80 md:p-4 md:backdrop-blur-sm"
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
@@ -250,6 +251,8 @@ function Settings({ isOpen, onClose, projects = [], initialTab = 'agents' }: Set
               )}
 
               {activeTab === 'api' && <CredentialsSettingsTab />}
+
+              {activeTab === 'secrets' && <SecretsSettingsTab />}
 
               {activeTab === 'webhooks' && <WebhooksSettingsTab />}
 

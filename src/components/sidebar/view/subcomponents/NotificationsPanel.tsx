@@ -8,11 +8,13 @@ import {
   inboxNotificationsApi,
   type InboxNotification,
 } from '../../../settings/api/inboxNotificationsApi';
+import InterruptQueueSection from '../../../interrupts/view/InterruptQueueSection';
 
 type NotificationsPanelProps = {
   open: boolean;
   onClose: () => void;
   onUnreadChange?: (count: number) => void;
+  onInterruptCountChange?: (count: number) => void;
 };
 
 function severityClass(severity: string): string {
@@ -35,6 +37,7 @@ export default function NotificationsPanel({
   open,
   onClose,
   onUnreadChange,
+  onInterruptCountChange,
 }: NotificationsPanelProps) {
   const [items, setItems] = useState<InboxNotification[]>([]);
   const [loading, setLoading] = useState(false);
@@ -127,6 +130,7 @@ export default function NotificationsPanel({
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto">
+          <InterruptQueueSection onCountChange={onInterruptCountChange} onNavigateAway={onClose} />
           {loading && items.length === 0 ? (
             <div className="flex items-center justify-center gap-2 p-6 text-sm text-muted-foreground">
               <Loader2 className="h-4 w-4 animate-spin" />
@@ -181,11 +185,13 @@ export default function NotificationsPanel({
                           href.startsWith('settings:') ? (
                             // Deep-link into the Settings modal; the listener
                             // lives in useProjectsState where the modal's open
-                            // state is owned.
+                            // state is owned. Close this panel first — it sits
+                            // above Settings (z-index) and would hide the modal.
                             <button
                               type="button"
                               className="text-[11px] text-primary hover:underline"
                               onClick={() => {
+                                onClose();
                                 window.dispatchEvent(
                                   new CustomEvent('cloudcli:open-settings', {
                                     detail: { tab: href.slice('settings:'.length) },
@@ -206,6 +212,7 @@ export default function NotificationsPanel({
                               href={href}
                               target="_blank"
                               rel="noreferrer"
+                              onClick={() => onClose()}
                             >
                               View
                             </a>

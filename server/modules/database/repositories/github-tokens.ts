@@ -72,9 +72,13 @@ export const githubTokensDb = {
 
     if (!row) return null;
 
+    const token = credentialsDb.getCredentialValueById(userId, tokenId);
+    if (!token) return null;
+
     return {
       ...row,
-      github_token: row.credential_value,
+      credential_value: token,
+      github_token: token,
     };
   },
 
@@ -97,4 +101,3 @@ export const githubTokensDb = {
     return githubTokensDb.updateGithubToken(userId, tokenId, isActive);
   },
 };
-

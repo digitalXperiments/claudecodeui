@@ -18,6 +18,8 @@ type KanbanColumnProps = {
   projectNameById: Map<string, string> | null;
   /** Lookup for dependency titles on cards. */
   taskById?: Map<string, KanbanTask>;
+  selectedTaskIds?: Set<string>;
+  onToggleSelect?: (taskId: string) => void;
 };
 
 /** Cycling through these on the WIP badge toggles the column's limit. */
@@ -37,6 +39,8 @@ export default function KanbanColumn({
   onSetColumnWipLimit,
   projectNameById,
   taskById,
+  selectedTaskIds,
+  onToggleSelect,
 }: KanbanColumnProps) {
   const { setNodeRef, isOver } = useDroppable({
     id: `column:${column.id}`,
@@ -131,6 +135,8 @@ export default function KanbanColumn({
               onOpen={onOpenTask}
               projectName={projectNameById ? projectNameById.get(task.project_id) ?? null : null}
               taskById={taskById}
+              selected={selectedTaskIds?.has(task.task_id)}
+              onToggleSelect={onToggleSelect}
             />
           ))}
         </SortableContext>

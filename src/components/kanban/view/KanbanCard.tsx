@@ -1,6 +1,6 @@
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import { Ban, Calendar, Clock, FolderGit2, GitBranch, Loader2 } from 'lucide-react';
+import { Ban, Calendar, Check, Clock, FolderGit2, GitBranch, GitFork, Loader2 } from 'lucide-react';
 
 import { Badge } from '../../../shared/view/ui';
 import { cn } from '../../../lib/utils';
@@ -29,6 +29,8 @@ type KanbanCardProps = {
   projectName?: string | null;
   /** Board task map for resolving dependency titles. */
   taskById?: Map<string, KanbanTask>;
+  selected?: boolean;
+  onToggleSelect?: (taskId: string) => void;
 };
 
 export default function KanbanCard({
@@ -36,6 +38,8 @@ export default function KanbanCard({
   onOpen,
   projectName = null,
   taskById,
+  selected = false,
+  onToggleSelect,
 }: KanbanCardProps) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: task.task_id,
@@ -75,13 +79,36 @@ export default function KanbanCard({
       {...listeners}
       onClick={() => onOpen(task)}
       className={cn(
-        'group cursor-grab touch-manipulation select-none rounded-md border border-border bg-card p-3 text-left shadow-sm transition-colors hover:border-primary/50 active:border-primary/40',
+        'group relative cursor-grab touch-manipulation select-none rounded-md border border-border bg-card p-3 text-left shadow-sm transition-colors hover:border-primary/50 active:border-primary/40',
         isDragging && 'opacity-50',
         task.status === 'blocked' && 'border-amber-500/40',
+        selected && 'border-primary ring-1 ring-primary/40',
       )}
     >
       <div className="flex items-start justify-between gap-2">
-        <span className="text-sm font-medium leading-snug text-card-foreground">{task.title}</span>
+        <div className="flex min-w-0 items-start gap-2">
+          {onToggleSelect ? (
+            <button
+              type="button"
+              aria-label={`${selected ? 'Deselect' : 'Select'} ${task.title}`}
+              aria-pressed={selected}
+              onClick={(event) => {
+                event.stopPropagation();
+                onToggleSelect(task.task_id);
+              }}
+              onPointerDown={(event) => event.stopPropagation()}
+              className={cn(
+                'mt-0.5 flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded border transition-colors',
+                selected
+                  ? 'border-primary bg-primary text-primary-foreground'
+                  : 'border-input bg-background text-transparent hover:border-primary/70',
+              )}
+            >
+              <Check className="h-3 w-3" strokeWidth={3} />
+            </button>
+          ) : null}
+          <span className="min-w-0 text-sm font-medium leading-snug text-card-foreground">{task.title}</span>
+        </div>
         <Badge className={cn('shrink-0 gap-1', STATUS_STYLES[task.status])} variant="secondary">
           {task.status === 'running' && <Loader2 className="h-3 w-3 animate-spin" />}
           {task.status === 'blocked' && <Ban className="h-3 w-3" />}
@@ -145,9 +172,26 @@ export default function KanbanCard({
           </span>
         ) : null}
         {task.feature_branch ? (
-          <span className="inline-flex max-w-28 items-center gap-0.5 truncate" title={task.feature_branch}>
+          <span className="inline-flex max-w-36 items-center gap-0.5 truncate" title={task.feature_branch}>
             <GitBranch className="h-3 w-3" />
             <span className="truncate">{task.feature_branch}</span>
+          </span>
+        ) : null}
+        {task.workspace_id ? (
+          <span
+            className="inline-flex max-w-36 items-center gap-0.5 truncate rounded bg-sky-500/10 px-1 text-sky-700 dark:text-sky-300"
+            title={`Isolated git worktree for this task (${task.workspace_id}). Agents run inside this workspace so the main project stays clean.`}
+          >
+            <GitFork className="h-3 w-3" />
+            <span className="truncate">Worktree</span>
+          </span>
+        ) : task.status === 'running' || task.status === 'queued' ? (
+          <span
+            className="inline-flex max-w-36 items-center gap-0.5 truncate text-muted-foreground"
+            title="A dedicated git worktree is created automatically when the agent starts this task."
+          >
+            <FolderGit2 className="h-3 w-3" />
+            <span className="truncate">Worktree soon</span>
           </span>
         ) : null}
       </div>

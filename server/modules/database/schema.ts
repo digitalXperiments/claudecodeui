@@ -137,6 +137,9 @@ CREATE TABLE IF NOT EXISTS sessions (
     continued_from_session_id TEXT,
     custom_name TEXT,
     project_path TEXT,
+    -- The logical project owns the session; this keeps the actual provider cwd
+    -- separate when the run executes inside an isolated agent worktree.
+    runtime_project_path TEXT,
     jsonl_path TEXT,
     isArchived BOOLEAN DEFAULT 0,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -199,6 +202,7 @@ CREATE TABLE IF NOT EXISTS kanban_tasks (
     due_date          TEXT,              -- ISO deadline; overdue cards can be escalated
     feature_branch    TEXT,              -- git branch auto-created when a run starts
     escalated_at      DATETIME,          -- last escalation sweep timestamp
+    archived_at       DATETIME,          -- archived cards are hidden from the active board
     status            TEXT DEFAULT 'todo', -- todo|queued|running|done|failed|blocked
     app_session_id    TEXT,              -- links to sessions(session_id) once run
     last_run_at       DATETIME,
@@ -245,6 +249,34 @@ CREATE TABLE IF NOT EXISTS system_notifications (
 );
 CREATE INDEX IF NOT EXISTS idx_system_notifications_created ON system_notifications(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_system_notifications_unread ON system_notifications(read_at, dismissed_at);
+`;
+
+export const INTERRUPTS_TABLE_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS interrupts (
+    interrupt_id TEXT PRIMARY KEY NOT NULL,
+    project_id TEXT,
+    kind TEXT NOT NULL,
+    severity TEXT NOT NULL DEFAULT 'warning',
+    title TEXT NOT NULL,
+    body TEXT DEFAULT '',
+    run_id TEXT,
+    task_id TEXT,
+    workspace_id TEXT,
+    href TEXT,
+    actions_json TEXT NOT NULL DEFAULT '[]',
+    status TEXT NOT NULL DEFAULT 'open',
+    snooze_until DATETIME,
+    resolved_at DATETIME,
+    resolved_by TEXT,
+    resolution TEXT,
+    priority INTEGER NOT NULL DEFAULT 50,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    meta_json TEXT DEFAULT '{}',
+    FOREIGN KEY (project_id) REFERENCES projects(project_id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_interrupts_open ON interrupts(status, priority, created_at);
+CREATE INDEX IF NOT EXISTS idx_interrupts_project ON interrupts(project_id, status);
 `;
 
 export const KANBAN_TASK_DEPS_TABLE_SCHEMA_SQL = `
@@ -398,7 +430,8 @@ CREATE TABLE IF NOT EXISTS webhook_sources (
     project_id       TEXT,
     retry_max            INTEGER DEFAULT 0,   -- max automatic retries after failure (0 = none)
     retry_backoff_seconds INTEGER DEFAULT 60, -- base backoff between retry attempts
-    secret               TEXT,                -- HMAC secret for inbound signature verification
+    secret               TEXT,                -- legacy HMAC secret; new values use secrets.secret_id
+    secret_id            TEXT,
     created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at       DATETIME DEFAULT CURRENT_TIMESTAMP
 );
@@ -457,6 +490,7 @@ CREATE TABLE IF NOT EXISTS agent_workspaces (
 CREATE INDEX IF NOT EXISTS idx_agent_workspaces_project ON agent_workspaces(project_id, status);
 CREATE INDEX IF NOT EXISTS idx_agent_workspaces_run ON agent_workspaces(run_id);
 CREATE INDEX IF NOT EXISTS idx_agent_workspaces_task ON agent_workspaces(task_id);
+CREATE INDEX IF NOT EXISTS idx_agent_workspaces_root ON agent_workspaces(root_path);
 `;
 
 /**
@@ -539,11 +573,166 @@ CREATE TABLE IF NOT EXISTS secrets (
 );
 `;
 
+/** Phase 7 — bounded, attachable context packs compiled for a project goal. */
+export const CONTEXT_PACKS_TABLE_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS context_packs (
+    pack_id          TEXT PRIMARY KEY NOT NULL,
+    project_id       TEXT NOT NULL,
+    goal             TEXT NOT NULL,
+    budget_tokens    INTEGER NOT NULL,
+    estimated_tokens INTEGER NOT NULL,
+    content_markdown TEXT NOT NULL,
+    items_json       TEXT NOT NULL DEFAULT '[]',
+    warnings_json    TEXT NOT NULL DEFAULT '[]',
+    created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (project_id) REFERENCES projects(project_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_context_packs_project_created ON context_packs(project_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS context_pack_attachments (
+    attachment_id TEXT PRIMARY KEY NOT NULL,
+    pack_id       TEXT NOT NULL,
+    run_id        TEXT,
+    session_id    TEXT,
+    created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (pack_id) REFERENCES context_packs(pack_id) ON DELETE CASCADE,
+    CHECK (run_id IS NOT NULL OR session_id IS NOT NULL),
+    UNIQUE(pack_id, run_id, session_id)
+);
+CREATE INDEX IF NOT EXISTS idx_context_pack_attachments_run ON context_pack_attachments(run_id);
+CREATE INDEX IF NOT EXISTS idx_context_pack_attachments_session ON context_pack_attachments(session_id);
+`;
+
+/** Phase 8 — versioned JSON recipes and their durable execution attempts. */
+export const AUTOMATION_TABLE_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS automation_recipes (
+    recipe_id       TEXT PRIMARY KEY NOT NULL,
+    name            TEXT NOT NULL,
+    enabled         INTEGER NOT NULL DEFAULT 1,
+    version         INTEGER NOT NULL DEFAULT 1,
+    project_id      TEXT,
+    trigger_json    TEXT NOT NULL,
+    conditions_json TEXT NOT NULL DEFAULT '[]',
+    actions_json    TEXT NOT NULL,
+    graph_json      TEXT,
+    retry_json      TEXT NOT NULL DEFAULT '{"max":0}',
+    timeout_ms      INTEGER,
+    created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (project_id) REFERENCES projects(project_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_automation_recipes_enabled ON automation_recipes(enabled, project_id);
+CREATE TABLE IF NOT EXISTS automation_runs (
+    automation_run_id      TEXT PRIMARY KEY NOT NULL,
+    recipe_id              TEXT NOT NULL,
+    agent_run_id           TEXT,
+    status                 TEXT,
+    attempt                INTEGER NOT NULL DEFAULT 1,
+    trigger_payload_json   TEXT NOT NULL DEFAULT '{}',
+    step_states_json       TEXT DEFAULT '{}',
+    error                  TEXT,
+    started_at             DATETIME,
+    finished_at            DATETIME,
+    FOREIGN KEY (recipe_id) REFERENCES automation_recipes(recipe_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_automation_runs_recipe ON automation_runs(recipe_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_automation_runs_agent ON automation_runs(agent_run_id);
+`;
+
+/** Agent Swarm — goal orchestration runs + roster members. */
+export const SWARM_TABLE_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS swarm_runs (
+    swarm_id         TEXT PRIMARY KEY NOT NULL,
+    project_id       TEXT NOT NULL,
+    parent_run_id    TEXT,
+    goal             TEXT NOT NULL,
+    status           TEXT NOT NULL,
+    roles_json       TEXT NOT NULL,
+    findings_json    TEXT DEFAULT '[]',
+    synthesis_json   TEXT,
+    plan_json        TEXT,
+    blackboard_json  TEXT DEFAULT '[]',
+    skills_json      TEXT DEFAULT '[]',
+    config_json      TEXT,
+    workspace_id     TEXT,
+    pr_url           TEXT,
+    feature_branch   TEXT,
+    approval_status  TEXT,
+    interrupt_id     TEXT,
+    archived_at      DATETIME,
+    created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
+    finished_at      DATETIME,
+    FOREIGN KEY (project_id) REFERENCES projects(project_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_swarm_runs_project ON swarm_runs(project_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_swarm_runs_created ON swarm_runs(created_at DESC);
+-- NOTE: The archived_at index is created in migrations (ensureSwarmAgentSchema) after the
+-- column is added. Creating it here fails on installs whose swarm_runs predates archived_at,
+-- because CREATE TABLE IF NOT EXISTS leaves the existing table untouched.
+CREATE TABLE IF NOT EXISTS swarm_members (
+    member_id         TEXT PRIMARY KEY NOT NULL,
+    swarm_id          TEXT NOT NULL,
+    role              TEXT NOT NULL,
+    kind              TEXT,
+    label             TEXT,
+    provider          TEXT,
+    model             TEXT,
+    effort            TEXT,
+    permission_mode   TEXT,
+    skills_json       TEXT,
+    step_id           TEXT,
+    run_id            TEXT,
+    status            TEXT NOT NULL,
+    findings_summary  TEXT,
+    error             TEXT,
+    created_at        DATETIME DEFAULT CURRENT_TIMESTAMP,
+    finished_at       DATETIME,
+    FOREIGN KEY (swarm_id) REFERENCES swarm_runs(swarm_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_swarm_members_swarm ON swarm_members(swarm_id);
+`;
+
+/** Phase 9 — declarative provider failover playbooks and ordered candidates. */
+export const FAILOVER_PLAYBOOKS_TABLE_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS failover_playbooks (
+    playbook_id    TEXT PRIMARY KEY NOT NULL,
+    name           TEXT NOT NULL,
+    project_id     TEXT,
+    enabled        INTEGER NOT NULL DEFAULT 1,
+    match_json     TEXT NOT NULL DEFAULT '{}',
+    strategy_json  TEXT NOT NULL,
+    approval       TEXT NOT NULL DEFAULT 'auto',
+    created_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (project_id) REFERENCES projects(project_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_failover_playbooks_project ON failover_playbooks(project_id, enabled);
+`;
+
+/**
+ * Per-project run observatory budgets and stuck threshold (Run Observatory).
+ */
+export const PROJECT_RUN_BUDGETS_TABLE_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS project_run_budgets (
+  project_id TEXT PRIMARY KEY NOT NULL,
+  monthly_token_budget INTEGER,
+  monthly_cost_usd_budget REAL,
+  stuck_minutes INTEGER NOT NULL DEFAULT 15,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+`;
+
 export const RUN_SPINE_SCHEMA_SQL = `
 ${AGENT_WORKSPACES_TABLE_SCHEMA_SQL}
 ${AGENT_RUNS_TABLE_SCHEMA_SQL}
 ${AGENT_RUN_EVENTS_TABLE_SCHEMA_SQL}
+${PROJECT_RUN_BUDGETS_TABLE_SCHEMA_SQL}
 ${SECRETS_TABLE_SCHEMA_SQL}
+${CONTEXT_PACKS_TABLE_SCHEMA_SQL}
+${AUTOMATION_TABLE_SCHEMA_SQL}
+${FAILOVER_PLAYBOOKS_TABLE_SCHEMA_SQL}
+${SWARM_TABLE_SCHEMA_SQL}
 `;
 
 export const INIT_SCHEMA_SQL = `
@@ -597,6 +786,7 @@ ${PROJECT_MEMORY_TABLE_SCHEMA_SQL}
 ${AGENT_RUN_PROFILES_TABLE_SCHEMA_SQL}
 
 ${SYSTEM_NOTIFICATIONS_TABLE_SCHEMA_SQL}
+${INTERRUPTS_TABLE_SCHEMA_SQL}
 
 ${KANBAN_SCHEMA_SQL}
 

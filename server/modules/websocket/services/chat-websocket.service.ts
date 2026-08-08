@@ -1,6 +1,10 @@
 import type { WebSocket } from 'ws';
 
-import { sessionsDb } from '@/modules/database/index.js';
+import { projectsDb, sessionsDb } from '@/modules/database/index.js';
+import { interruptsService } from '@/modules/interrupt-queue/index.js';
+import { recordNormalizedRunEvent, runService } from '@/modules/runs/index.js';
+import { workspaceService } from '@/modules/workspaces/index.js';
+import { TERMINAL_RUN_STATUSES } from '@/shared/run-events.js';
 import { chatRunRegistry } from '@/modules/websocket/services/chat-run-registry.service.js';
 import {
   filterImagesToUploadStore,
@@ -140,21 +144,135 @@ async function handleChatSend(
 
   const clientOptions = (data.options ?? {}) as AnyRecord;
   const command = typeof data.content === 'string' ? data.content : '';
+  const wantIsolatedWorkspace =
+    clientOptions.isolatedWorkspace === true ||
+    clientOptions.isolated_workspace === true ||
+    clientOptions.useWorkspace === true;
 
-  const result = await startProviderRun({
-    appSessionId: sessionId,
-    provider,
-    providerSessionId: session.provider_session_id,
-    projectPath: session.project_path,
-    spawnFn,
-    injectFn: dependencies.injectFns?.[provider],
-    content: command,
-    options: clientOptions,
-    connection: ws,
-    userId,
-  });
+  // Allocate the durable spine row before dispatching the provider. A live
+  // session can accept an injected follow-up message, which belongs to the
+  // existing run rather than creating a second canonical row.
+  const shouldCreateCanonicalRun = !chatRunRegistry.isProcessing(sessionId);
+  const project = session.project_path ? projectsDb.getProjectPath(session.project_path) : null;
+  const canonicalRun = shouldCreateCanonicalRun
+    ? runService.create({
+        source: 'chat',
+        projectId: project?.project_id ?? null,
+        sourceRef: sessionId,
+        appSessionId: sessionId,
+        provider,
+        model: typeof clientOptions.model === 'string' ? clientOptions.model : null,
+        effort: typeof clientOptions.effort === 'string' ? clientOptions.effort : null,
+        permissionMode:
+          typeof clientOptions.permissionMode === 'string' ? clientOptions.permissionMode : null,
+        title: command.trim().split(/\r?\n/, 1)[0]?.slice(0, 160) || 'Chat run',
+        trigger: 'user',
+      })
+    : null;
+
+  // PRD §5.7: optional isolated worktree for interactive chat.
+  let runtimeProjectPath = session.runtime_project_path ?? session.project_path;
+  const runtimeOptions: AnyRecord = { ...clientOptions };
+  if (wantIsolatedWorkspace && canonicalRun && project?.project_id && session.project_path) {
+    try {
+      const workspace = await workspaceService.create({
+        projectId: project.project_id,
+        projectPath: session.project_path,
+        runId: canonicalRun.run_id,
+        branchName: `chat/${sessionId.slice(0, 8)}`,
+      });
+      runtimeProjectPath = workspace.root_path;
+      runtimeOptions.cwd = workspace.root_path;
+      runtimeOptions.projectPath = workspace.root_path;
+      sessionsDb.updateSessionRuntimeProjectPath(sessionId, workspace.root_path);
+      runService.linkWorkspace(canonicalRun.run_id, workspace.workspace_id);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn('[Chat] isolated workspace create failed; falling back to project path', {
+        sessionId,
+        error: message,
+      });
+    }
+  }
+
+  const recordCanonicalEvent = canonicalRun
+    ? (message: import('@/shared/types.js').NormalizedMessage) => {
+        recordNormalizedRunEvent(canonicalRun.run_id, message, 'chat');
+        if (message.kind === 'permission_request') {
+          interruptsService.create({
+            projectId: project?.project_id ?? null,
+            kind: 'permission_pending',
+            severity: 'warning',
+            title: `Permission needed for ${message.toolName || 'tool use'}`,
+            body: 'The active chat run is waiting for your decision.',
+            runId: canonicalRun.run_id,
+            href: `/chat?sessionId=${encodeURIComponent(sessionId)}`,
+            actions: [
+              { id: 'approve_permission', label: 'Approve', style: 'primary' },
+              { id: 'deny_permission', label: 'Deny', style: 'destructive' },
+            ],
+            meta: { requestId: message.requestId ?? null, provider, toolName: message.toolName ?? null },
+            dedupeKey: `permission:${message.requestId || sessionId}`,
+          });
+        }
+        if (message.kind === 'complete' && message.success !== true && message.aborted !== true) {
+          interruptsService.create({
+            projectId: project?.project_id ?? null,
+            kind: 'run_failed',
+            severity: 'error',
+            title: 'Chat run failed',
+            body: message.content || 'The provider run finished unsuccessfully.',
+            runId: canonicalRun.run_id,
+            href: `/chat?sessionId=${encodeURIComponent(sessionId)}`,
+            actions: [
+              { id: 'retry_run', label: 'Retry', style: 'primary' },
+              { id: 'dismiss', label: 'Dismiss', style: 'secondary' },
+            ],
+            meta: { provider, sessionId },
+            dedupeKey: `run_failed:${canonicalRun.run_id}`,
+          });
+        }
+      }
+    : undefined;
+
+  let result: Awaited<ReturnType<typeof startProviderRun>>;
+  try {
+    if (canonicalRun) {
+      runService.updateStatus(canonicalRun.run_id, 'starting');
+    }
+    result = await startProviderRun({
+      appSessionId: sessionId,
+      provider,
+      providerSessionId: session.provider_session_id,
+      projectPath: runtimeProjectPath,
+      spawnFn,
+      injectFn: dependencies.injectFns?.[provider],
+      content: command,
+      options: runtimeOptions,
+      connection: ws,
+      userId,
+      onEvent: recordCanonicalEvent,
+    });
+  } catch (error) {
+    if (canonicalRun) {
+      const current = runService.get(canonicalRun.run_id);
+      if (current && !TERMINAL_RUN_STATUSES.has(current.status)) {
+        runService.markTerminal(canonicalRun.run_id, {
+          status: 'failed',
+          errorSummary: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    throw error;
+  }
 
   if (!result.ok) {
+    if (canonicalRun) {
+      runService.markTerminal(canonicalRun.run_id, {
+        status: 'failed',
+        errorSummary: 'A run is already in progress for this session',
+      });
+    }
     sendProtocolError(
       ws,
       'RUN_IN_PROGRESS',
@@ -162,6 +280,14 @@ async function handleChatSend(
       sessionId
     );
     return;
+  }
+
+  if (canonicalRun) {
+    runService.linkSession(canonicalRun.run_id, sessionId);
+    const current = runService.get(canonicalRun.run_id);
+    if (current && !TERMINAL_RUN_STATUSES.has(current.status)) {
+      runService.updateStatus(canonicalRun.run_id, 'running');
+    }
   }
 
   // Interactive send: await the run so this handler's promise mirrors the run

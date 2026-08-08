@@ -14,7 +14,8 @@ export type RunEventSource =
   | 'webhook'
   | 'system'
   | 'ship'
-  | 'automation';
+  | 'automation'
+  | 'swarm';
 
 export type RunEventSeverity = 'debug' | 'info' | 'warn' | 'error';
 
@@ -72,7 +73,10 @@ export type CloudErrorCode =
   | 'SHIP_PR_FAILED'
   | 'STACK_DOCTOR_FAILED'
   | 'AUTOMATION_CYCLE'
-  | 'AUTOMATION_TIMEOUT';
+  | 'AUTOMATION_TIMEOUT'
+  | 'SWARM_NOT_AWAITING_PLAN_APPROVAL'
+  | 'SWARM_STILL_RUNNING'
+  | 'SWARM_STEP_NOT_FOUND';
 
 export class CloudError extends Error {
   readonly code: CloudErrorCode;
@@ -112,12 +116,23 @@ export type AgentRunSummary = {
   app_session_id: string | null;
   provider: string | null;
   model: string | null;
+  effort: string | null;
   status: RunStatus;
   trigger: string | null;
   parent_run_id: string | null;
+  root_run_id: string | null;
   title: string | null;
   error_summary: string | null;
+  token_input: number | null;
+  token_output: number | null;
   token_total: number | null;
+  cost_usd_estimate: number | null;
+  /** Elapsed ms from started_at (or created_at) to finished_at (or now). */
+  duration_ms: number | null;
+  /** True when in-flight and last activity exceeds project stuck threshold. */
+  is_stuck?: boolean;
+  /** Optional count of tool.call events for this run. */
+  tool_call_count?: number | null;
   started_at: string | null;
   finished_at: string | null;
   created_at: string;

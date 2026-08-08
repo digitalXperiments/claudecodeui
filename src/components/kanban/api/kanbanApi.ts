@@ -32,6 +32,7 @@ function normalizeTask(task: KanbanTask): KanbanTask {
     review_profile_id: task?.review_profile_id ?? null,
     due_date: task?.due_date ?? null,
     feature_branch: task?.feature_branch ?? null,
+    archived_at: task?.archived_at ?? null,
   };
 }
 
@@ -85,6 +86,12 @@ export const kanbanApi = {
     const res = await authenticatedFetch(`${BASE}/global`);
     const data = await parse<{ board: KanbanBoard; tasks?: KanbanTask[] }>(res);
     return { board: normalizeBoard(data.board), tasks: normalizeTasks(data.tasks) };
+  },
+
+  async listArchivedTasks(): Promise<KanbanTask[]> {
+    const res = await authenticatedFetch(`${BASE}/global/archived`);
+    const data = await parse<{ tasks?: KanbanTask[] }>(res);
+    return normalizeTasks(data.tasks);
   },
 
   async listProjects(): Promise<ProjectRef[]> {
@@ -181,6 +188,15 @@ export const kanbanApi = {
   async deleteTask(taskId: string): Promise<void> {
     const res = await authenticatedFetch(`${BASE}/tasks/${taskId}`, { method: 'DELETE' });
     await parse(res);
+  },
+
+  async archiveTask(taskId: string, restore = false): Promise<KanbanTask> {
+    const res = await authenticatedFetch(`${BASE}/tasks/${taskId}/archive`, {
+      method: 'POST',
+      body: JSON.stringify({ restore }),
+    });
+    const data = await parse<{ task: KanbanTask }>(res);
+    return normalizeTask(data.task);
   },
 
   async addDependency(taskId: string, dependsOnTaskId: string): Promise<KanbanTask> {

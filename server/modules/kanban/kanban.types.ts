@@ -117,8 +117,12 @@ export type KanbanTaskRow = {
   due_date: string | null;
   /** Git branch auto-created when an implementation run starts. */
   feature_branch: string | null;
+  /** Latest isolated workspace used by this task, when workspaces are enabled. */
+  workspace_id?: string | null;
   /** ISO timestamp of the last overdue escalation for this task. */
   escalated_at: string | null;
+  /** ISO timestamp when the task was archived; null while active. */
+  archived_at?: string | null;
   status: KanbanTaskStatus;
   app_session_id: string | null;
   last_run_at: string | null;
@@ -141,6 +145,8 @@ export type KanbanRunRow = {
   trigger: KanbanRunTrigger | null;
   /** implement | review — which agent role this run was for. */
   role: KanbanRunRole;
+  /** Canonical run-spine id; null for legacy rows created before P2 wiring. */
+  agent_run_id?: string | null;
   status: KanbanRunStatus;
   exit_code: number | null;
   started_at: string;
@@ -211,6 +217,7 @@ export type UpdateTaskInput = {
   featureBranch?: string | null;
   /** Last escalation sweep timestamp (managed by the scheduler, not clients). */
   escalatedAt?: string | null;
+  archivedAt?: string | null;
   status?: KanbanTaskStatus;
 };
 
