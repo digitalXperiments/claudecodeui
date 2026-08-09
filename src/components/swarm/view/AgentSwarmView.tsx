@@ -132,6 +132,9 @@ export default function AgentSwarmView({
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
+  // The swarm record carries no workspace status, so remember which worktrees
+  // this session already removed and hide their cleanup action.
+  const [cleanedWorkspaces, setCleanedWorkspaces] = useState<string[]>([]);
   const [tab, setTab] = useState<'create' | 'history'>('history');
   const [historyFilter, setHistoryFilter] = useState<'active' | 'archived'>('active');
   const [search, setSearch] = useState('');
@@ -555,6 +558,47 @@ export default function AgentSwarmView({
       await refresh();
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Could not update archive state.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /**
+   * Remove the swarm's worktree once its PR has been dealt with on GitHub.
+   *
+   * The local branch is only deleted when the branch actually reached the
+   * remote (i.e. a PR exists). If the push failed, the branch is the only copy
+   * of the agent's work, so it is kept even though the worktree goes.
+   */
+  const cleanupWorkspace = async (
+    workspaceId: string,
+    branch: string | null,
+    pushed: boolean,
+  ) => {
+    const ok = window.confirm(
+      pushed
+        ? `Remove the worktree and local branch for this swarm?\n\n${branch ?? workspaceId}\n\n` +
+            `The branch is already on the remote, so the PR is unaffected. ` +
+            `Any uncommitted changes left in the worktree are lost.`
+        : `Remove the worktree for this swarm?\n\n${branch ?? workspaceId}\n\n` +
+            `This branch was never pushed, so the local branch will be KEPT — ` +
+            `it is the only copy of the work. Uncommitted changes in the worktree are lost.`,
+    );
+    if (!ok) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await requestJson(`/api/workspaces/${encodeURIComponent(workspaceId)}/discard`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ deleteBranch: pushed }),
+      });
+      setCleanedWorkspaces((previous) =>
+        previous.includes(workspaceId) ? previous : [...previous, workspaceId],
+      );
+      await refresh();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Could not clean up the workspace.');
     } finally {
       setBusy(false);
     }
@@ -1522,6 +1566,54 @@ export default function AgentSwarmView({
                                   </div>
                                 ) : null}
                               </dl>
+
+                              {/*
+                                Swarms stop at the PR and leave the worktree in
+                                place so it can be checked out and tested. Once
+                                the PR is merged on GitHub, this removes it —
+                                nothing else does.
+                              */}
+                              {(() => {
+                                const workspaceId =
+                                  swarm.workspace_id || swarm.synthesis?.workspaceId || null;
+                                if (!workspaceId || live) return null;
+                                if (cleanedWorkspaces.includes(workspaceId)) {
+                                  return (
+                                    <div className="mt-2.5 border-t border-border/50 pt-2.5 text-[11px] text-muted-foreground">
+                                      Worktree removed.
+                                    </div>
+                                  );
+                                }
+                                const branch =
+                                  swarm.feature_branch || swarm.synthesis?.featureBranch || null;
+                                const pushed = Boolean(swarm.pr_url || swarm.synthesis?.prUrl);
+                                return (
+                                  <div className="mt-2.5 flex items-center gap-2 border-t border-border/50 pt-2.5">
+                                    <button
+                                      type="button"
+                                      disabled={busy}
+                                      title={
+                                        pushed
+                                          ? 'Remove the worktree and local branch'
+                                          : 'Remove the worktree (unpushed branch is kept)'
+                                      }
+                                      className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-[11px] font-medium text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+                                      onClick={(event) => {
+                                        event.stopPropagation();
+                                        void cleanupWorkspace(workspaceId, branch, pushed);
+                                      }}
+                                    >
+                                      <Trash2 className="h-3 w-3" />
+                                      Clean up workspace
+                                    </button>
+                                    <span className="text-[10px] text-muted-foreground">
+                                      {pushed
+                                        ? 'Do this after the PR is merged.'
+                                        : 'Branch was never pushed — it will be kept.'}
+                                    </span>
+                                  </div>
+                                );
+                              })()}
                             </div>
                           )}
 
