@@ -483,6 +483,102 @@ test('swarm ensureSwarmWorkspace allocates git worktree and feature branch', asy
   });
 });
 
+test('swarm opens a real (non-draft) PR and stops without merging to base', async () => {
+  await withDatabase(async (root) => {
+    installFastPipeline({ requireApproval: false });
+    const projectPath = path.join(root, 'repo');
+    await mkdir(projectPath, { recursive: true });
+    await initGitRepo(projectPath);
+
+    // Fork checkout: fetch URL names the fork (what gh must target) while pushes
+    // go to a local bare repo, so the test needs no network.
+    const originPath = path.join(root, 'origin.git');
+    runGit(root, ['init', '--bare', originPath]);
+    runGit(projectPath, ['remote', 'add', 'origin', 'https://github.com/me/fork.git']);
+    runGit(projectPath, ['remote', 'set-url', '--push', 'origin', originPath]);
+
+    // Stub `gh` on PATH: records argv, returns a PR URL. This exercises the real
+    // runCli/spawn path rather than a seam, so the actual argv is asserted.
+    const binDir = path.join(root, 'bin');
+    await mkdir(binDir, { recursive: true });
+    const argvLog = path.join(root, 'gh-argv.txt');
+    await writeFile(
+      path.join(binDir, 'gh'),
+      `#!/bin/sh\nfor a in "$@"; do printf '%s\\n' "$a" >> ${JSON.stringify(argvLog)}; done\n` +
+        `printf 'https://github.com/me/fork/pull/42\\n'\n`,
+      { mode: 0o755 },
+    );
+    const previousPath = process.env.PATH;
+    process.env.PATH = `${binDir}:${previousPath ?? ''}`;
+
+    try {
+      const projectId = projectsDb.createProjectPath(projectPath).project!.project_id;
+      const started = swarmService.start({
+        projectId,
+        goal: 'Open a real PR from the swarm worktree',
+        agents: [{ kind: 'orchestrator', label: 'Lead', provider: 'claude' }],
+        requireApproval: false,
+      });
+
+      const { workspace, workPath } = await swarmService.ensureSwarmWorkspace(started.swarm_id, {
+        projectId,
+        projectPath,
+        goal: started.goal,
+        parentRunId: started.parent_run_id,
+      });
+
+      const baseSha = runGit(projectPath, ['rev-parse', 'HEAD']).stdout;
+      await writeFile(path.join(workPath, 'agent-change.txt'), 'work from the swarm\n');
+
+      const handoff = await swarmService.finalizeSwarmPullRequest(started.swarm_id, {
+        summary: 'Swarm finished its work.',
+        completed: ['did the thing'],
+        remaining: [],
+        recommendations: [],
+        risks: [],
+        memberCount: 1,
+        generatedAt: new Date().toISOString(),
+      });
+
+      assert.equal(handoff.prError, null);
+      assert.equal(handoff.prUrl, 'https://github.com/me/fork/pull/42');
+      assert.equal(handoff.prNumber, 42);
+
+      const argv = (await import('node:fs/promises'))
+        .readFile(argvLog, 'utf8')
+        .then((raw) => raw.split('\n').filter(Boolean));
+      const args = await argv;
+
+      // The whole point: a ready-for-review PR, never a draft.
+      assert.ok(!args.includes('--draft'), 'swarm PR must not be a draft');
+      assert.deepEqual(args.slice(0, 2), ['pr', 'create']);
+      // Pinned to the fork we pushed to; unpinned, gh resolves the upstream parent.
+      assert.equal(args[args.indexOf('--repo') + 1], 'me/fork');
+      assert.equal(args[args.indexOf('--base') + 1], 'main');
+      assert.equal(args[args.indexOf('--head') + 1], workspace.feature_branch);
+
+      // The branch really reached the remote — otherwise the PR has no head.
+      const remoteBranches = spawnSync('git', ['branch', '--list', workspace.feature_branch!], {
+        cwd: originPath,
+        encoding: 'utf8',
+      });
+      assert.match(String(remoteBranches.stdout), new RegExp(workspace.feature_branch!));
+
+      // The swarm stops at the PR: base branch is untouched and the worktree
+      // survives so a human can check it out and test.
+      assert.equal(runGit(projectPath, ['rev-parse', 'HEAD']).stdout, baseSha);
+      assert.equal(runGit(projectPath, ['rev-parse', '--abbrev-ref', 'HEAD']).stdout, 'main');
+      assert.equal(workspaceService.get(workspace.workspace_id)?.status, 'active');
+
+      await workspaceService.discard(workspace.workspace_id, { deleteBranch: true });
+      await waitFor(() => swarmDb.get(started.swarm_id)?.status === 'succeeded');
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+    }
+  });
+});
+
 test('complete-member updates findings', async () => {
   await withDatabase(async (root) => {
     installFastPipeline({ requireApproval: true });

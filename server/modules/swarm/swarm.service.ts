@@ -846,7 +846,9 @@ export const swarmService = {
       };
     }
 
-    // Open PR via GitHub CLI (draft by default).
+    // Open a real (ready-for-review) PR via GitHub CLI — deliberately not a
+    // draft. The swarm's job ends here: a human reviews the worktree, then
+    // merges the PR on GitHub. Nothing downstream merges to the base branch.
     const prTitle = `Agent Swarm: ${swarm.goal.slice(0, 100)}`;
     const prBody = [
       '## Agent Swarm handoff',
@@ -890,7 +892,6 @@ export const swarmService = {
         prTitle,
         '--body',
         prBody,
-        '--draft',
       ],
       cwd,
     );
