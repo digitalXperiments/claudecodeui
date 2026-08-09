@@ -28,6 +28,8 @@
   },
   "scripts": {
     "dev": "concurrently --kill-others \"npm run server:dev\" \"npm run client\"",
+    "predev:isolated": "node -e \"const f=require('node:fs');f.rmSync('tmp/cloudcli/dev-db',{recursive:true,force:true});f.mkdirSync('tmp/cloudcli/dev-db',{recursive:true})\"",
+    "dev:isolated": "cross-env DATABASE_PATH=tmp/cloudcli/dev-db/auth.db SERVER_PORT=3002 VITE_PORT=5174 concurrently --kill-others \"npm run server:dev\" \"npm run client\"",
     "server": "node dist-server/server/index.js",
     "server:dev": "tsx --tsconfig server/tsconfig.json server/index.js",
     "server:dev-watch": "tsx watch --tsconfig server/tsconfig.json server/index.js",
