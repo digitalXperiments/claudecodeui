@@ -12,6 +12,8 @@ import { runsDb } from '@/modules/runs/runs.repository.js';
 import type {
   AgentRun,
   CreateRunInput,
+  GlobalRunStats,
+  GlobalStatsFilter,
   ProjectRunBudget,
   ProjectRunBudgetInput,
   ProjectRunStats,
@@ -45,6 +47,7 @@ export interface RunService {
   /** Reconcile: running runs with dead processes → failed/aborted */
   reconcileOrphans(): number;
   projectStats(projectId: string): ProjectRunStats;
+  globalStats(filter: GlobalStatsFilter): GlobalRunStats;
   getBudget(projectId: string): ProjectRunBudget;
   putBudget(input: ProjectRunBudgetInput): ProjectRunBudget;
 }
@@ -299,6 +302,10 @@ export const runService: RunService = {
 
   projectStats(projectId: string): ProjectRunStats {
     return runsDb.projectStats(projectId);
+  },
+
+  globalStats(filter: GlobalStatsFilter = {}): GlobalRunStats {
+    return runsDb.globalStats(filter);
   },
 
   getBudget(projectId: string): ProjectRunBudget {

@@ -6,6 +6,7 @@
 import express from 'express';
 
 import { runService } from '@/modules/runs/runs.service.js';
+import type { GlobalStatsFilter } from '@/modules/runs/runs.types.js';
 import { AppError, asyncHandler } from '@/shared/utils.js';
 import {
   CloudError,
@@ -107,6 +108,35 @@ router.get(
       });
     }
     const stats = runService.projectStats(projectId);
+    res.json({ success: true, stats });
+  }),
+);
+
+/** Read an ISO-8601 date bound; 400 when present but unparseable. */
+function readDateBound(value: unknown, name: string): string | undefined {
+  const raw = readOptionalString(value);
+  if (!raw) return undefined;
+  if (!Number.isFinite(Date.parse(raw))) {
+    throw new AppError(`Invalid ${name} date: ${raw}`, {
+      code: 'RUN_INVALID_STATS_RANGE',
+      statusCode: 400,
+    });
+  }
+  return raw;
+}
+
+/**
+ * Global cross-project usage stats for the Stats dashboard.
+ * Registered before `/:runId`; from/to are inclusive ISO-8601 bounds.
+ */
+router.get(
+  '/stats/global',
+  asyncHandler(async (req, res) => {
+    const filter: GlobalStatsFilter = {
+      from: readDateBound(req.query.from, 'from'),
+      to: readDateBound(req.query.to, 'to'),
+    };
+    const stats = runService.globalStats(filter);
     res.json({ success: true, stats });
   }),
 );

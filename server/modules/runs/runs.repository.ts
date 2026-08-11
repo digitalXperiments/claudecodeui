@@ -8,14 +8,27 @@
 
 import { getConnection } from '@/modules/database/index.js';
 import { newEventId, newRunId } from '@/shared/ids.js';
-import type { RunEventEnvelope, RunEventSeverity, RunStatus } from '@/shared/run-events.js';
+import {
+  TERMINAL_RUN_STATUSES,
+  type RunEventEnvelope,
+  type RunEventSeverity,
+  type RunStatus,
+} from '@/shared/run-events.js';
 import type {
   AgentRun,
   CreateRunInput,
+  GlobalRunStats,
+  GlobalStatsFilter,
   ProjectRunBudget,
   ProjectRunBudgetInput,
   ProjectRunStats,
   RunListFilter,
+  StatsDayBucket,
+  StatsHourBucket,
+  StatsModelRow,
+  StatsProviderRow,
+  StatsSourceRow,
+  StatsStatusCount,
   TerminalResult,
   TokenUsage,
 } from '@/modules/runs/runs.types.js';
@@ -25,6 +38,15 @@ const DEFAULT_LIST_LIMIT = 50;
 const MAX_LIST_LIMIT = 200;
 const DEFAULT_EVENT_LIMIT = 200;
 const MAX_EVENT_LIMIT = 1000;
+
+/** Cap on model breakdown rows so the stats payload stays bounded. */
+const MAX_MODEL_ROWS = 100;
+
+/**
+ * Wall-clock duration of one run in ms: finished (or now for in-flight runs)
+ * minus started (or created). Clamped at 0 to absorb clock skew.
+ */
+const RUN_DURATION_MS_SQL = `MAX(0, (julianday(COALESCE(finished_at, CURRENT_TIMESTAMP)) - julianday(COALESCE(started_at, created_at))) * 86400000.0)`;
 
 type RunRow = {
   run_id: string;
@@ -641,6 +663,300 @@ export const runsDb = {
       stuckCount: Number(stuckRow.cnt) || 0,
       activeCount,
       avgDurationMs,
+    };
+  },
+
+  /**
+   * Global cross-project aggregates for the Stats dashboard. Runs a constant
+   * set of GROUP BY queries over agent_runs + sessions (no N+1); all date
+   * bucketing is UTC (SQLite date()/strftime() on ISO timestamps).
+   */
+  globalStats(filter: GlobalStatsFilter = {}): GlobalRunStats {
+    const db = getConnection();
+
+    const where: string[] = [];
+    const params: unknown[] = [];
+    if (filter.from) {
+      where.push(`created_at >= ?`);
+      params.push(filter.from);
+    }
+    if (filter.to) {
+      where.push(`created_at <= ?`);
+      params.push(filter.to);
+    }
+    const whereSql = where.length > 0 ? ` WHERE ${where.join(' AND ')}` : '';
+
+    const overviewRow = db
+      .prepare(
+        `SELECT
+           COUNT(*) AS runs,
+           COUNT(token_total) AS runs_with_tokens,
+           COALESCE(SUM(token_total), 0) AS tokens,
+           COALESCE(SUM(token_input), 0) AS input_tokens,
+           COALESCE(SUM(token_output), 0) AS output_tokens,
+           COUNT(cost_usd_estimate) AS runs_with_cost,
+           SUM(cost_usd_estimate) AS cost,
+           COALESCE(SUM(${RUN_DURATION_MS_SQL}), 0) AS duration_ms,
+           COUNT(DISTINCT app_session_id) AS active_conversations
+         FROM agent_runs${whereSql}`,
+      )
+      .get(...(params as never[])) as {
+      runs: number;
+      runs_with_tokens: number;
+      tokens: number;
+      input_tokens: number;
+      output_tokens: number;
+      runs_with_cost: number;
+      cost: number | null;
+      duration_ms: number;
+      active_conversations: number;
+    };
+
+    const byStatusRows = db
+      .prepare(`SELECT status, COUNT(*) AS cnt FROM agent_runs${whereSql} GROUP BY status`)
+      .all(...(params as never[])) as Array<{ status: string; cnt: number }>;
+    const byStatus: StatsStatusCount[] = byStatusRows.map((row) => ({
+      status: row.status,
+      count: Number(row.cnt) || 0,
+    }));
+
+    const dailyRows = db
+      .prepare(
+        `SELECT
+           date(created_at) AS day,
+           COUNT(*) AS runs,
+           COALESCE(SUM(token_total), 0) AS tokens,
+           COALESCE(SUM(token_input), 0) AS input_tokens,
+           COALESCE(SUM(token_output), 0) AS output_tokens,
+           COALESCE(SUM(cost_usd_estimate), 0) AS cost,
+           COALESCE(SUM(${RUN_DURATION_MS_SQL}), 0) AS duration_ms
+         FROM agent_runs${whereSql}
+         GROUP BY day
+         ORDER BY day ASC`,
+      )
+      .all(...(params as never[])) as Array<{
+      day: string;
+      runs: number;
+      tokens: number;
+      input_tokens: number;
+      output_tokens: number;
+      cost: number;
+      duration_ms: number;
+    }>;
+
+    const providerRows = db
+      .prepare(
+        `SELECT
+           provider,
+           COUNT(*) AS runs,
+           COALESCE(SUM(token_total), 0) AS tokens,
+           COALESCE(SUM(token_input), 0) AS input_tokens,
+           COALESCE(SUM(token_output), 0) AS output_tokens,
+           SUM(cost_usd_estimate) AS cost,
+           COALESCE(SUM(${RUN_DURATION_MS_SQL}), 0) AS duration_ms
+         FROM agent_runs${whereSql}
+         GROUP BY provider
+         ORDER BY tokens DESC, runs DESC`,
+      )
+      .all(...(params as never[])) as Array<{
+      provider: string | null;
+      runs: number;
+      tokens: number;
+      input_tokens: number;
+      output_tokens: number;
+      cost: number | null;
+      duration_ms: number;
+    }>;
+
+    const modelRows = db
+      .prepare(
+        `SELECT
+           provider,
+           model,
+           COUNT(*) AS runs,
+           COALESCE(SUM(token_total), 0) AS tokens,
+           COALESCE(SUM(token_input), 0) AS input_tokens,
+           COALESCE(SUM(token_output), 0) AS output_tokens,
+           SUM(cost_usd_estimate) AS cost,
+           COALESCE(SUM(${RUN_DURATION_MS_SQL}), 0) AS duration_ms
+         FROM agent_runs${whereSql}
+         GROUP BY provider, model
+         ORDER BY tokens DESC, runs DESC
+         LIMIT ${MAX_MODEL_ROWS}`,
+      )
+      .all(...(params as never[])) as Array<{
+      provider: string | null;
+      model: string | null;
+      runs: number;
+      tokens: number;
+      input_tokens: number;
+      output_tokens: number;
+      cost: number | null;
+      duration_ms: number;
+    }>;
+
+    const sourceRows = db
+      .prepare(
+        `SELECT
+           source,
+           COUNT(*) AS runs,
+           COALESCE(SUM(token_total), 0) AS tokens
+         FROM agent_runs${whereSql}
+         GROUP BY source
+         ORDER BY runs DESC`,
+      )
+      .all(...(params as never[])) as Array<{ source: string; runs: number; tokens: number }>;
+
+    const hourRows = db
+      .prepare(
+        `SELECT CAST(strftime('%H', created_at) AS INTEGER) AS hour, COUNT(*) AS runs
+         FROM agent_runs${whereSql}
+         GROUP BY hour`,
+      )
+      .all(...(params as never[])) as Array<{ hour: number; runs: number }>;
+
+    // Conversations come from the sessions table (same created_at range).
+    const sessionsWhereSql = whereSql;
+    const conversationOverviewRow = db
+      .prepare(`SELECT COUNT(*) AS cnt FROM sessions${sessionsWhereSql}`)
+      .get(...(params as never[])) as { cnt: number };
+
+    const conversationDailyRows = db
+      .prepare(
+        `SELECT date(created_at) AS day, COUNT(*) AS cnt
+         FROM sessions${sessionsWhereSql}
+         GROUP BY day`,
+      )
+      .all(...(params as never[])) as Array<{ day: string; cnt: number }>;
+
+    const conversationProviderRows = db
+      .prepare(
+        `SELECT provider, COUNT(*) AS cnt
+         FROM sessions${sessionsWhereSql}
+         GROUP BY provider`,
+      )
+      .all(...(params as never[])) as Array<{ provider: string | null; cnt: number }>;
+
+    const firstRunRow = db
+      .prepare(`SELECT MIN(created_at) AS first_run_at FROM agent_runs`)
+      .get() as { first_run_at: string | null };
+
+    // --- Assemble -----------------------------------------------------------
+
+    const totalRuns = Number(overviewRow.runs) || 0;
+    const totalTokens = Number(overviewRow.tokens) || 0;
+    const runsWithCost = Number(overviewRow.runs_with_cost) || 0;
+    const totalDurationMs = Math.round(Number(overviewRow.duration_ms) || 0);
+    const activeConversations = Number(overviewRow.active_conversations) || 0;
+    const conversationCount = Number(conversationOverviewRow.cnt) || 0;
+
+    const terminalCount = byStatus
+      .filter((row) => TERMINAL_RUN_STATUSES.has(row.status as RunStatus))
+      .reduce((sum, row) => sum + row.count, 0);
+    const succeededCount = byStatus.find((row) => row.status === 'succeeded')?.count ?? 0;
+
+    const conversationsByDay = new Map<string, number>();
+    for (const row of conversationDailyRows) {
+      if (row.day) conversationsByDay.set(row.day, Number(row.cnt) || 0);
+    }
+    const daily: StatsDayBucket[] = dailyRows
+      .filter((row) => row.day)
+      .map((row) => ({
+        day: row.day,
+        runs: Number(row.runs) || 0,
+        tokens: Number(row.tokens) || 0,
+        inputTokens: Number(row.input_tokens) || 0,
+        outputTokens: Number(row.output_tokens) || 0,
+        costUsd: Number(row.cost) || 0,
+        durationMs: Math.round(Number(row.duration_ms) || 0),
+        conversations: conversationsByDay.get(row.day) ?? 0,
+      }));
+    // Days with conversations but no runs still belong on the timeline.
+    const runDays = new Set(daily.map((row) => row.day));
+    for (const row of conversationDailyRows) {
+      if (row.day && !runDays.has(row.day)) {
+        daily.push({
+          day: row.day,
+          runs: 0,
+          tokens: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          costUsd: 0,
+          durationMs: 0,
+          conversations: Number(row.cnt) || 0,
+        });
+      }
+    }
+    daily.sort((a, b) => a.day.localeCompare(b.day));
+
+    const conversationsByProvider = new Map<string | null, number>();
+    for (const row of conversationProviderRows) {
+      conversationsByProvider.set(row.provider, Number(row.cnt) || 0);
+    }
+    const providers: StatsProviderRow[] = providerRows.map((row) => ({
+      provider: row.provider,
+      runs: Number(row.runs) || 0,
+      tokens: Number(row.tokens) || 0,
+      inputTokens: Number(row.input_tokens) || 0,
+      outputTokens: Number(row.output_tokens) || 0,
+      costUsd: row.cost == null ? null : Number(row.cost) || 0,
+      durationMs: Math.round(Number(row.duration_ms) || 0),
+      conversations: conversationsByProvider.get(row.provider) ?? 0,
+    }));
+
+    const models: StatsModelRow[] = modelRows.map((row) => ({
+      provider: row.provider,
+      model: row.model,
+      runs: Number(row.runs) || 0,
+      tokens: Number(row.tokens) || 0,
+      inputTokens: Number(row.input_tokens) || 0,
+      outputTokens: Number(row.output_tokens) || 0,
+      costUsd: row.cost == null ? null : Number(row.cost) || 0,
+      durationMs: Math.round(Number(row.duration_ms) || 0),
+    }));
+
+    const sources: StatsSourceRow[] = sourceRows.map((row) => ({
+      source: row.source,
+      runs: Number(row.runs) || 0,
+      tokens: Number(row.tokens) || 0,
+    }));
+
+    const runsByHour = new Map<number, number>();
+    for (const row of hourRows) {
+      runsByHour.set(Number(row.hour), Number(row.runs) || 0);
+    }
+    const byHourUtc: StatsHourBucket[] = Array.from({ length: 24 }, (_, hour) => ({
+      hour,
+      runs: runsByHour.get(hour) ?? 0,
+    }));
+
+    return {
+      range: { from: filter.from ?? null, to: filter.to ?? null },
+      generatedAt: nowIso(),
+      firstRunAt: firstRunRow.first_run_at ?? null,
+      overview: {
+        totalRuns,
+        runsWithTokens: Number(overviewRow.runs_with_tokens) || 0,
+        totalTokens,
+        inputTokens: Number(overviewRow.input_tokens) || 0,
+        outputTokens: Number(overviewRow.output_tokens) || 0,
+        totalCostUsd: overviewRow.cost == null ? null : Number(overviewRow.cost) || 0,
+        runsWithCost,
+        totalDurationMs,
+        avgDurationMs: totalRuns > 0 ? Math.round(totalDurationMs / totalRuns) : null,
+        conversationCount,
+        activeConversations,
+        avgTokensPerConversation:
+          activeConversations > 0 ? Math.round(totalTokens / activeConversations) : null,
+        avgTokensPerRun: totalRuns > 0 ? Math.round(totalTokens / totalRuns) : null,
+        successRate: terminalCount > 0 ? succeededCount / terminalCount : null,
+      },
+      byStatus,
+      daily,
+      providers,
+      models,
+      sources,
+      byHourUtc,
     };
   },
 };

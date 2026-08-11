@@ -165,6 +165,7 @@ type SidebarContentProps = {
   missionControlPendingCount?: number;
   onShowKanban?: () => void;
   onShowAgentSwarm?: () => void;
+  onShowStats?: () => void;
   projectListProps: SidebarProjectListProps;
   /** User-resizable desktop width for the Projects column. */
   projectsPanelWidth?: number;
@@ -216,6 +217,7 @@ export default function SidebarContent({
   missionControlPendingCount = 0,
   onShowKanban,
   onShowAgentSwarm,
+  onShowStats,
   projectListProps,
   projectsPanelWidth,
   t,
@@ -679,6 +681,7 @@ export default function SidebarContent({
       onShowAgentSwarm={onShowAgentSwarm ?? (() => {})}
       onShowMissionControl={onShowMissionControl ?? (() => {})}
       missionControlPendingCount={missionControlPendingCount}
+      onShowStats={onShowStats ?? (() => {})}
       onShowNotifications={onShowNotifications ?? (() => {})}
       unreadNotificationCount={unreadNotificationCount}
       onShowSettings={onShowSettings}

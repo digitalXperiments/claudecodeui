@@ -14,6 +14,7 @@ import MissionControlPanel from '../../mission-control/view/MissionControlPanel'
 import { missionControlApi } from '../../mission-control/api/missionControlApi';
 import KanbanPanel from '../../kanban/view/KanbanPanel';
 import AgentSwarmPanel from '../../swarm/view/AgentSwarmPanel';
+import StatsPanel from '../../stats/view/StatsPanel';
 
 import SidebarContent from './subcomponents/SidebarContent';
 import SidebarModals from './subcomponents/SidebarModals';
@@ -65,6 +66,7 @@ function Sidebar({
   const [missionControlPendingCount, setMissionControlPendingCount] = useState(0);
   const [showKanban, setShowKanban] = useState(false);
   const [showAgentSwarm, setShowAgentSwarm] = useState(false);
+  const [showStats, setShowStats] = useState(false);
   const handleUnreadChange = useCallback((count: number) => {
     setUnreadNotificationCount(count);
   }, []);
@@ -384,6 +386,7 @@ function Sidebar({
         missionControlPendingCount={missionControlPendingCount}
         onShowKanban={() => setShowKanban(true)}
         onShowAgentSwarm={() => setShowAgentSwarm(true)}
+        onShowStats={() => setShowStats(true)}
         projectListProps={projectListProps}
         projectsPanelWidth={projectsPanelWidth}
         t={t}
@@ -415,6 +418,11 @@ function Sidebar({
         onClose={() => setShowAgentSwarm(false)}
         selectedProject={selectedProject}
         projects={projects}
+      />
+
+      <StatsPanel
+        isOpen={showStats}
+        onClose={() => setShowStats(false)}
       />
 
     </>

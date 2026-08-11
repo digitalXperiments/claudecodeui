@@ -2,6 +2,7 @@ import {
   Activity,
   AlertTriangle,
   Archive,
+  BarChart3,
   Bell,
   Bug,
   Folder,
@@ -42,6 +43,7 @@ type SidebarRailProps = {
   onShowAgentSwarm: () => void;
   onShowMissionControl: () => void;
   missionControlPendingCount: number;
+  onShowStats: () => void;
   onShowNotifications: () => void;
   unreadNotificationCount: number;
   onShowSettings: () => void;
@@ -107,6 +109,7 @@ export default function SidebarRail({
   onShowAgentSwarm,
   onShowMissionControl,
   missionControlPendingCount,
+  onShowStats,
   onShowNotifications,
   unreadNotificationCount,
   onShowSettings,
@@ -190,6 +193,13 @@ export default function SidebarRail({
         badge={missionControlPendingCount > 0 ? missionControlPendingCount : false}
       >
         <Radar className="h-[18px] w-[18px]" />
+      </RailButton>
+
+      <RailButton
+        title={t('actions.stats', { defaultValue: 'Usage Stats' })}
+        onClick={onShowStats}
+      >
+        <BarChart3 className="h-[18px] w-[18px]" />
       </RailButton>
 
       <RailButton

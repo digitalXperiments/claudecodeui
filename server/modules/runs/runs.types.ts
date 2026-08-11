@@ -123,3 +123,117 @@ export type ProjectRunStats = {
   activeCount: number;
   avgDurationMs: number | null;
 };
+
+// ---------------------------------------------------------------------------
+// Global usage stats (Stats dashboard)
+// ---------------------------------------------------------------------------
+
+/**
+ * Filter for global stats aggregates. ISO-8601 bounds on created_at
+ * (inclusive), same semantics as RunListFilter. Missing bound = unbounded.
+ */
+export type GlobalStatsFilter = {
+  from?: string;
+  to?: string;
+};
+
+/** Headline KPIs for the Stats dashboard. */
+export type StatsOverview = {
+  totalRuns: number;
+  /** Runs with a non-null token_total (token coverage). */
+  runsWithTokens: number;
+  /** SUM(token_total). Provider totals may include cache reads; cache detail is not stored. */
+  totalTokens: number;
+  inputTokens: number;
+  outputTokens: number;
+  /** SUM(cost_usd_estimate); null when no run in range carries a cost estimate. */
+  totalCostUsd: number | null;
+  /** Runs with a non-null cost estimate (cost coverage). */
+  runsWithCost: number;
+  /**
+   * Wall-clock run time: SUM(COALESCE(finished_at, now) - COALESCE(started_at, created_at)).
+   * Concurrent runs accumulate independently.
+   */
+  totalDurationMs: number;
+  avgDurationMs: number | null;
+  /** Conversations (sessions rows) created in range, all providers. */
+  conversationCount: number;
+  /** Distinct conversations (app_session_id) with at least one run in range. */
+  activeConversations: number;
+  /** totalTokens / activeConversations; null when no conversation has runs in range. */
+  avgTokensPerConversation: number | null;
+  avgTokensPerRun: number | null;
+  /** succeeded / terminal runs; null when no run reached a terminal status. */
+  successRate: number | null;
+};
+
+export type StatsStatusCount = { status: string; count: number };
+
+/** One UTC day of usage. `day` is YYYY-MM-DD (UTC). */
+export type StatsDayBucket = {
+  day: string;
+  runs: number;
+  tokens: number;
+  inputTokens: number;
+  outputTokens: number;
+  /** Day-level cost sums default to 0 (no per-day coverage distinction). */
+  costUsd: number;
+  durationMs: number;
+  conversations: number;
+};
+
+export type StatsProviderRow = {
+  /** null = run rows without provider attribution (rendered as "Unknown"). */
+  provider: string | null;
+  runs: number;
+  tokens: number;
+  inputTokens: number;
+  outputTokens: number;
+  /** null when none of the provider's runs carry a cost estimate. */
+  costUsd: number | null;
+  durationMs: number;
+  /** Conversations (sessions rows) attributed to this provider in range. */
+  conversations: number;
+};
+
+export type StatsModelRow = {
+  provider: string | null;
+  /** null = run rows without model attribution (rendered as "Unknown"). */
+  model: string | null;
+  runs: number;
+  tokens: number;
+  inputTokens: number;
+  outputTokens: number;
+  costUsd: number | null;
+  durationMs: number;
+};
+
+export type StatsSourceRow = {
+  source: string;
+  runs: number;
+  tokens: number;
+};
+
+/** Runs started per hour of day (UTC), hours 0-23 with zero-fill. */
+export type StatsHourBucket = { hour: number; runs: number };
+
+/** Full payload for the global Stats dashboard (GET /api/runs/stats/global). */
+export type GlobalRunStats = {
+  /** Echo of the applied range; null bound = unbounded. */
+  range: { from: string | null; to: string | null };
+  /** When the payload was computed. */
+  generatedAt: string;
+  /** Oldest run created_at across all time (unbounded); null when no runs exist. */
+  firstRunAt: string | null;
+  overview: StatsOverview;
+  byStatus: StatsStatusCount[];
+  /** Sparse day buckets (only days with runs or conversations), ascending. */
+  daily: StatsDayBucket[];
+  /** Providers ordered by tokens desc. */
+  providers: StatsProviderRow[];
+  /** Models ordered by tokens desc (capped). */
+  models: StatsModelRow[];
+  /** Sources ordered by runs desc. */
+  sources: StatsSourceRow[];
+  byHourUtc: StatsHourBucket[];
+};
