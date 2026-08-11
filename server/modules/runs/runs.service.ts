@@ -9,6 +9,11 @@
  */
 
 import { runsDb } from '@/modules/runs/runs.repository.js';
+import {
+  mergeRunUsage,
+  readTokenBudgetUsage,
+  usageAccumulationMode,
+} from '@/modules/runs/runs-usage.js';
 import type {
   AgentRun,
   CreateRunInput,
@@ -471,6 +476,33 @@ export const runService: RunService = {
   },
 };
 
+/**
+ * Persist a provider `token_budget` snapshot onto the run's usage columns.
+ *
+ * This is the only production writer of agent_runs.token_* — every run creator
+ * funnels its provider stream through recordNormalizedRunEvent, so hooking it
+ * here covers chat, swarm, mission-control, webhooks and failover at once.
+ *
+ * Writes go straight to runsDb (not runService.attachUsage) on purpose:
+ * recordMessage has already appended a `run.status` event for this very
+ * message, and a chatty provider emits one snapshot per assistant message, so
+ * adding a second `token.usage` event per snapshot would double the timeline
+ * volume for no extra information.
+ */
+function recordProviderUsage(runId: string, message: NormalizedMessage): void {
+  if (message.kind !== 'status' || message.text !== 'token_budget') return;
+  const snapshot = readTokenBudgetUsage(message.tokenBudget);
+  if (!snapshot) return;
+  const run = runService.get(runId);
+  if (!run) return;
+  // Trust the run row's provider over the message's: the row is what the stats
+  // breakdowns group by.
+  const mode = usageAccumulationMode(run.provider ?? message.provider);
+  const merged = mergeRunUsage(run, snapshot, mode);
+  if (!merged) return;
+  runsDb.attachUsage(runId, merged);
+}
+
 /** Bridge one provider-normalized event into a durable run and close it once. */
 export function recordNormalizedRunEvent(
   runId: string,
@@ -478,6 +510,7 @@ export function recordNormalizedRunEvent(
   source: RunEventEnvelope['source'],
 ): void {
   runService.recordMessage(runId, message, source);
+  recordProviderUsage(runId, message);
 
   if (message.kind !== 'complete') {
     const current = runService.get(runId);

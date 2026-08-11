@@ -16,9 +16,14 @@ import express from 'express';
 
 import { makeScratchDir } from '@/shared/scratch.js';
 import { closeConnection, getConnection, initializeDatabase } from '@/modules/database/index.js';
-import { runService } from '@/modules/runs/runs.service.js';
+import { recordNormalizedRunEvent, runService } from '@/modules/runs/runs.service.js';
 import runsRoutes from '@/modules/runs/runs.routes.js';
 import type { GlobalRunStats } from '@/modules/runs/runs.types.js';
+import {
+  buildClaudeTokenBudgetFromUsage,
+  buildCodexTokenUsage,
+} from '@/modules/providers/index.js';
+import type { LLMProvider, NormalizedMessage } from '@/shared/types.js';
 
 type TempDb = { directory: string; restore: () => Promise<void> };
 
@@ -127,6 +132,311 @@ function seedSession(sessionId: string, provider: string, createdAt: string): vo
     createdAt,
   );
 }
+
+/**
+ * Insert a session the way sessions.db.ts does when the caller supplies no
+ * created_at: SQLite's CURRENT_TIMESTAMP shape ('YYYY-MM-DD HH:MM:SS'), which
+ * is what production rows actually look like.
+ */
+function seedSessionSqliteFormat(sessionId: string, provider: string, createdAt: string): void {
+  const db = getConnection();
+  assert.match(createdAt, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/, 'expected CURRENT_TIMESTAMP shape');
+  db.prepare(`INSERT INTO sessions (session_id, provider, created_at, updated_at) VALUES (?, ?, ?, ?)`).run(
+    sessionId,
+    provider,
+    createdAt,
+    createdAt,
+  );
+}
+
+/**
+ * Build the `token_budget` status message the provider adapters publish (see
+ * server/claude-sdk.js, server/openai-codex.js, server/opencode-cli.js).
+ */
+function tokenBudgetMessage(provider: LLMProvider, tokenBudget: unknown): NormalizedMessage {
+  return {
+    id: `msg-${Math.random().toString(36).slice(2)}`,
+    sessionId: 'session-x',
+    timestamp: '2026-07-02T10:00:00.000Z',
+    provider,
+    kind: 'status',
+    text: 'token_budget',
+    tokenBudget,
+  } as NormalizedMessage;
+}
+
+function completeMessage(provider: LLMProvider): NormalizedMessage {
+  return {
+    id: `msg-${Math.random().toString(36).slice(2)}`,
+    sessionId: 'session-x',
+    timestamp: '2026-07-02T10:00:00.000Z',
+    provider,
+    kind: 'complete',
+    success: true,
+    exitCode: 0,
+  } as NormalizedMessage;
+}
+
+function readUsageColumns(runId: string): {
+  token_input: number | null;
+  token_output: number | null;
+  token_total: number | null;
+} {
+  const db = getConnection();
+  return db
+    .prepare(`SELECT token_input, token_output, token_total FROM agent_runs WHERE run_id = ?`)
+    .get(runId) as { token_input: number | null; token_output: number | null; token_total: number | null };
+}
+
+/**
+ * End-to-end proof for the bug that made every token KPI read zero: nothing in
+ * production wrote agent_runs.token_*. This drives real provider usage payloads
+ * through their own builders and through recordNormalizedRunEvent (the path all
+ * run creators share), then asserts globalStats() sums them.
+ */
+test('provider token_budget events land in agent_runs and roll up into globalStats', async () => {
+  const db = await useTempDatabase();
+  try {
+    // --- Claude: live SDK stream, one snapshot per assistant message (deltas).
+    const claudeRun = runService.create({
+      source: 'chat',
+      provider: 'claude',
+      model: 'opus',
+      appSessionId: 'session-claude',
+    });
+    // Turn 1: 1000 fresh input + 5000 cache read = 6000 billed input, 200 out.
+    recordNormalizedRunEvent(
+      claudeRun.run_id,
+      tokenBudgetMessage(
+        'claude',
+        buildClaudeTokenBudgetFromUsage(
+          { input_tokens: 1000, cache_read_input_tokens: 5000, output_tokens: 200 },
+          'opus',
+        ),
+      ),
+      'chat',
+    );
+    assert.deepEqual(
+      readUsageColumns(claudeRun.run_id),
+      { token_input: 6000, token_output: 200, token_total: 6200 },
+      'first claude snapshot is persisted',
+    );
+    // Turn 2: 1200 + 7000 = 8200 billed input, 300 out. Deltas accumulate.
+    recordNormalizedRunEvent(
+      claudeRun.run_id,
+      tokenBudgetMessage(
+        'claude',
+        buildClaudeTokenBudgetFromUsage(
+          { input_tokens: 1200, cache_read_input_tokens: 7000, output_tokens: 300 },
+          'opus',
+        ),
+      ),
+      'chat',
+    );
+    assert.deepEqual(
+      readUsageColumns(claudeRun.run_id),
+      { token_input: 14_200, token_output: 500, token_total: 14_700 },
+      'claude per-turn snapshots accumulate rather than overwrite',
+    );
+
+    // --- Codex: cumulative session totals, re-reported every turn.
+    const codexRun = runService.create({
+      source: 'chat',
+      provider: 'codex',
+      model: 'gpt-5-codex',
+      appSessionId: 'session-codex',
+    });
+    recordNormalizedRunEvent(
+      codexRun.run_id,
+      tokenBudgetMessage(
+        'codex',
+        buildCodexTokenUsage({
+          total: { inputTokens: 3000, outputTokens: 400 },
+          last: { inputTokens: 3000, outputTokens: 400 },
+          modelContextWindow: 272_000,
+          model: 'gpt-5-codex',
+        }),
+      ),
+      'chat',
+    );
+    recordNormalizedRunEvent(
+      codexRun.run_id,
+      tokenBudgetMessage(
+        'codex',
+        buildCodexTokenUsage({
+          total: { inputTokens: 9000, outputTokens: 1100 },
+          last: { inputTokens: 6000, outputTokens: 700 },
+          modelContextWindow: 272_000,
+          model: 'gpt-5-codex',
+        }),
+      ),
+      'chat',
+    );
+    assert.deepEqual(
+      readUsageColumns(codexRun.run_id),
+      { token_input: 9000, token_output: 1100, token_total: 10_100 },
+      'cumulative snapshots supersede: 9000/1100, not the 12000/1500 a sum would give',
+    );
+    // A repeated (or stale) snapshot must not move the numbers.
+    recordNormalizedRunEvent(
+      codexRun.run_id,
+      tokenBudgetMessage(
+        'codex',
+        buildCodexTokenUsage({
+          total: { inputTokens: 9000, outputTokens: 1100 },
+          last: { inputTokens: 6000, outputTokens: 700 },
+          modelContextWindow: 272_000,
+          model: 'gpt-5-codex',
+        }),
+      ),
+      'chat',
+    );
+    assert.deepEqual(
+      readUsageColumns(codexRun.run_id),
+      { token_input: 9000, token_output: 1100, token_total: 10_100 },
+      'replaying a cumulative snapshot is idempotent',
+    );
+
+    // --- OpenCode: emits its snapshot *after* `complete`, and exposes only the
+    // generic inputTokens/outputTokens pair (no billed* fields).
+    const opencodeRun = runService.create({
+      source: 'chat',
+      provider: 'opencode',
+      model: 'grok-code',
+      appSessionId: 'session-opencode',
+    });
+    recordNormalizedRunEvent(opencodeRun.run_id, completeMessage('opencode'), 'chat');
+    assert.equal(runService.get(opencodeRun.run_id)?.status, 'succeeded');
+    recordNormalizedRunEvent(
+      opencodeRun.run_id,
+      tokenBudgetMessage('opencode', {
+        used: 3200,
+        inputTokens: 2500,
+        outputTokens: 700,
+        breakdown: { input: 2500, output: 700 },
+      }),
+      'chat',
+    );
+    assert.deepEqual(
+      readUsageColumns(opencodeRun.run_id),
+      { token_input: 2500, token_output: 700, token_total: 3200 },
+      'usage still lands when the snapshot arrives after the run went terminal',
+    );
+
+    // --- The dashboard aggregate is now non-zero.
+    const stats = runService.globalStats({});
+    assert.equal(stats.overview.totalTokens, 28_000);
+    assert.equal(stats.overview.inputTokens, 25_700);
+    assert.equal(stats.overview.outputTokens, 2_300);
+    assert.equal(stats.overview.runsWithTokens, 3);
+    assert.ok(stats.overview.totalTokens > 0, 'token KPIs are no longer zero');
+
+    // ...and attributed to the right providers.
+    assert.deepEqual(
+      stats.providers.map((row) => [row.provider, row.inputTokens, row.outputTokens]),
+      [
+        ['claude', 14_200, 500],
+        ['codex', 9000, 1100],
+        ['opencode', 2500, 700],
+      ],
+    );
+  } finally {
+    await db.restore();
+  }
+});
+
+test('token_budget messages without usable usage leave the run untouched', async () => {
+  const db = await useTempDatabase();
+  try {
+    const run = runService.create({ source: 'chat', provider: 'claude' });
+    // Context-occupancy-only payload: no billed/input/output token fields.
+    recordNormalizedRunEvent(
+      run.run_id,
+      tokenBudgetMessage('claude', { used: 1234, total: 200_000, contextPercent: 0.6 }),
+      'chat',
+    );
+    // Wrong shapes must not throw or write.
+    recordNormalizedRunEvent(run.run_id, tokenBudgetMessage('claude', null), 'chat');
+    recordNormalizedRunEvent(run.run_id, tokenBudgetMessage('claude', 'nonsense'), 'chat');
+    recordNormalizedRunEvent(run.run_id, tokenBudgetMessage('claude', [1, 2, 3]), 'chat');
+
+    assert.deepEqual(readUsageColumns(run.run_id), {
+      token_input: null,
+      token_output: null,
+      token_total: null,
+    });
+    const stats = runService.globalStats({});
+    assert.equal(stats.overview.runsWithTokens, 0, 'no usage reported → still counted as unreported');
+    assert.equal(stats.overview.totalTokens, 0);
+  } finally {
+    await db.restore();
+  }
+});
+
+/**
+ * Regression: agent_runs.created_at is JS ISO ('...T..Z') while
+ * sessions.created_at is usually SQLite CURRENT_TIMESTAMP ('... ...'), and
+ * globalStats reused the ISO predicate for both. Because ' ' < 'T', every
+ * space-formatted session on the `from` day was silently dropped.
+ */
+test('date bounds select the same window for ISO and CURRENT_TIMESTAMP sessions', async () => {
+  const db = await useTempDatabase();
+  try {
+    seedRun({
+      provider: 'claude',
+      tokens: { total: 100 },
+      appSessionId: 'in-sqlite-fmt',
+      createdAt: '2026-07-02T10:00:00.000Z',
+    });
+
+    // Both rows sit at the same instant on the `from` day — one stored in each
+    // format. Before the fix only the ISO row was counted.
+    seedSessionSqliteFormat('in-sqlite-fmt', 'claude', '2026-07-02 10:00:00');
+    seedSession('in-iso-fmt', 'claude', '2026-07-02T10:00:00.000Z');
+    // Same-instant pair on the inclusive `to` day.
+    seedSessionSqliteFormat('to-day-sqlite-fmt', 'claude', '2026-07-03 23:00:00');
+    seedSession('to-day-iso-fmt', 'claude', '2026-07-03T23:00:00.000Z');
+    // Same-instant pair just outside the window, in both formats.
+    seedSessionSqliteFormat('out-sqlite-fmt', 'claude', '2026-07-01 10:00:00');
+    seedSession('out-iso-fmt', 'claude', '2026-07-01T10:00:00.000Z');
+
+    const stats = runService.globalStats({
+      from: '2026-07-02T00:00:00.000Z',
+      to: '2026-07-03T23:59:59.999Z',
+    });
+
+    assert.equal(
+      stats.overview.conversationCount,
+      4,
+      'both storage formats are matched, and both out-of-range rows excluded',
+    );
+
+    // The two formats must also agree per day, not just in the total.
+    const byDay = Object.fromEntries(stats.daily.map((day) => [day.day, day.conversations]));
+    assert.equal(byDay['2026-07-02'], 2, 'from-day sessions in both formats are in the window');
+    assert.equal(byDay['2026-07-03'], 2, 'to-day sessions in both formats are in the window');
+
+    // Provider rollup counts conversations through the same predicate.
+    const claude = stats.providers.find((row) => row.provider === 'claude');
+    assert.equal(claude?.conversations, 4);
+
+    // An unbounded query sees every row regardless of format.
+    assert.equal(runService.globalStats({}).overview.conversationCount, 6);
+
+    // A `from`-only bound behaves the same way.
+    assert.equal(
+      runService.globalStats({ from: '2026-07-02T00:00:00.000Z' }).overview.conversationCount,
+      4,
+    );
+    // A `to`-only bound keeps the two 07-01 rows and drops nothing else.
+    assert.equal(
+      runService.globalStats({ to: '2026-07-02T23:59:59.999Z' }).overview.conversationCount,
+      4,
+    );
+  } finally {
+    await db.restore();
+  }
+});
 
 test('globalStats aggregates tokens, cost, durations, conversations, and breakdowns', async () => {
   const db = await useTempDatabase();

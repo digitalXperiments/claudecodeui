@@ -38,8 +38,14 @@ export function resolveStatsRange(
 ): ResolvedStatsRange {
   if (key === 'all') return {};
   if (key === 'custom') {
-    const fromDay = customFrom ? parseUtcDay(customFrom) : null;
-    const toDay = customTo ? parseUtcDay(customTo) : null;
+    let fromDay = customFrom ? parseUtcDay(customFrom) : null;
+    let toDay = customTo ? parseUtcDay(customTo) : null;
+    // Picking the two dates in the wrong order would otherwise send an
+    // impossible window to the API and render an unexplained "no activity"
+    // dashboard; treat it as the range the user meant.
+    if (fromDay && toDay && fromDay.getTime() > toDay.getTime()) {
+      [fromDay, toDay] = [toDay, fromDay];
+    }
     const range: ResolvedStatsRange = {};
     if (fromDay) range.from = startOfUtcDay(fromDay).toISOString();
     // End of the selected day (inclusive bound on created_at).

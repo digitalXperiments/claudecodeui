@@ -674,17 +674,32 @@ export const runsDb = {
   globalStats(filter: GlobalStatsFilter = {}): GlobalRunStats {
     const db = getConnection();
 
+    // agent_runs.created_at is always JS ISO-8601 (nowIso() in create()), so a
+    // plain string compare against the ISO bounds is both correct and
+    // millisecond-exact.
     const where: string[] = [];
     const params: unknown[] = [];
+    // sessions.created_at is NOT ISO: it defaults to SQLite CURRENT_TIMESTAMP
+    // ('YYYY-MM-DD HH:MM:SS') and can also hold a caller-supplied ISO value via
+    // COALESCE(?, CURRENT_TIMESTAMP) — so the column genuinely holds both
+    // shapes. Because ' ' sorts below 'T', reusing the ISO string predicate
+    // silently dropped every space-formatted session on the `from` day. Compare
+    // through julianday() instead: it parses both shapes, keeps sub-second
+    // precision, and so selects the same logical window as the runs predicate.
+    const sessionsWhere: string[] = [];
     if (filter.from) {
       where.push(`created_at >= ?`);
       params.push(filter.from);
+      sessionsWhere.push(`julianday(created_at) >= julianday(?)`);
     }
     if (filter.to) {
       where.push(`created_at <= ?`);
       params.push(filter.to);
+      sessionsWhere.push(`julianday(created_at) <= julianday(?)`);
     }
     const whereSql = where.length > 0 ? ` WHERE ${where.join(' AND ')}` : '';
+    const sessionsWhereSql =
+      sessionsWhere.length > 0 ? ` WHERE ${sessionsWhere.join(' AND ')}` : '';
 
     const overviewRow = db
       .prepare(
@@ -815,8 +830,8 @@ export const runsDb = {
       )
       .all(...(params as never[])) as Array<{ hour: number; runs: number }>;
 
-    // Conversations come from the sessions table (same created_at range).
-    const sessionsWhereSql = whereSql;
+    // Conversations come from the sessions table (same logical created_at
+    // range, matched through the format-tolerant predicate built above).
     const conversationOverviewRow = db
       .prepare(`SELECT COUNT(*) AS cnt FROM sessions${sessionsWhereSql}`)
       .get(...(params as never[])) as { cnt: number };

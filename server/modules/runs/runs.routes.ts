@@ -116,13 +116,17 @@ router.get(
 function readDateBound(value: unknown, name: string): string | undefined {
   const raw = readOptionalString(value);
   if (!raw) return undefined;
-  if (!Number.isFinite(Date.parse(raw))) {
+  const parsed = Date.parse(raw);
+  if (!Number.isFinite(parsed)) {
     throw new AppError(`Invalid ${name} date: ${raw}`, {
       code: 'RUN_INVALID_STATS_RANGE',
       statusCode: 400,
     });
   }
-  return raw;
+  // Canonicalize to full-precision ISO-8601. globalStats compares agent_runs
+  // bounds as strings, so an accepted-but-abbreviated input like "2026-08-05"
+  // would otherwise compare by prefix length and silently skew the window.
+  return new Date(parsed).toISOString();
 }
 
 /**

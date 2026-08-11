@@ -66,6 +66,16 @@ test('resolveStatsRange: custom range spans start-of-day to end-of-day UTC', () 
   assert.deepEqual(resolveStatsRange('custom', '', 'not-a-day', NOW), {});
 });
 
+test('resolveStatsRange: reversed custom dates are normalized, not left impossible', () => {
+  const reversed = resolveStatsRange('custom', '2026-07-02', '2026-07-01', NOW);
+  assert.equal(reversed.from, '2026-07-01T00:00:00.000Z');
+  assert.equal(reversed.to, '2026-07-02T23:59:59.999Z');
+  // Same day in both slots still yields that one whole day.
+  const sameDay = resolveStatsRange('custom', '2026-07-01', '2026-07-01', NOW);
+  assert.equal(sameDay.from, '2026-07-01T00:00:00.000Z');
+  assert.equal(sameDay.to, '2026-07-01T23:59:59.999Z');
+});
+
 test('describeStatsRange: all-time and bounded labels', () => {
   assert.equal(describeStatsRange('all', {}), 'All time');
   const label = describeStatsRange('7d', {
