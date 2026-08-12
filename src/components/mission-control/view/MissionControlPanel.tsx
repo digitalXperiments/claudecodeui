@@ -38,7 +38,7 @@ type MissionControlPanelProps = {
 
 type ModelOption = { value: string; label: string };
 
-const PROVIDERS = ['claude', 'grok', 'opencode', 'codex', 'cursor', 'kimi', 'agy', 'pi'] as const;
+const PROVIDERS = ['claude', 'grok', 'opencode', 'codex', 'cursor', 'kimi', 'pi'] as const;
 
 const emptyForm = (): McSectionInput => ({
   title: '',

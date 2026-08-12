@@ -111,7 +111,6 @@ export const KANBAN_PROVIDERS: { value: LLMProvider; label: string }[] = [
   { value: 'opencode', label: 'OpenCode' },
   { value: 'grok', label: 'Grok' },
   { value: 'kimi', label: 'Kimi' },
-  { value: 'agy', label: 'Agy' },
   { value: 'pi', label: 'Pi' },
 ];
 

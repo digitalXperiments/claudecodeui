@@ -6,7 +6,7 @@ import { cn } from '../../../lib/utils';
 import type { LLMProvider } from '../../../types/app';
 import { authenticatedFetch } from '../../../utils/api';
 import PermissionsContent from '../../settings/view/tabs/agents-settings/sections/content/PermissionsContent';
-import type { AgyPermissionMode, CodexPermissionMode, PiPermissionMode } from '../../settings/types/types';
+import type { CodexPermissionMode, PiPermissionMode } from '../../settings/types/types';
 import {
   agentProfilesApi,
   type AgentRunProfile,
@@ -100,7 +100,6 @@ const textareaClass =
   'w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring';
 
 const CODEX_MODES: CodexPermissionMode[] = ['default', 'acceptEdits', 'bypassPermissions'];
-const AGY_MODES: AgyPermissionMode[] = ['plan', 'acceptEdits', 'bypassPermissions'];
 const PI_MODES: PiPermissionMode[] = ['plan', 'bypassPermissions'];
 
 /** Providers with a dedicated allow/deny editor (share the settings UI). */
@@ -108,10 +107,6 @@ const ALLOW_DENY_PROVIDERS: LLMProvider[] = ['claude', 'cursor', 'grok'];
 
 function coerceCodexMode(mode: string): CodexPermissionMode {
   return CODEX_MODES.includes(mode as CodexPermissionMode) ? (mode as CodexPermissionMode) : 'default';
-}
-
-function coerceAgyMode(mode: string): AgyPermissionMode {
-  return AGY_MODES.includes(mode as AgyPermissionMode) ? (mode as AgyPermissionMode) : 'bypassPermissions';
 }
 
 function coercePiMode(mode: string): PiPermissionMode {
@@ -482,7 +477,7 @@ export default function TaskEditor(props: TaskEditorProps) {
     usesAllowDeny ? (skipPermissions ? 'bypassPermissions' : 'default') : permissionMode;
 
   // Provider-aware permission editor: reuses the settings PermissionsContent for
-  // claude/cursor/grok (allow+deny) and codex/agy (mode); falls back to a generic
+  // claude/cursor/grok (allow+deny) and codex (mode); falls back to a generic
   // mode select for kimi/opencode/unassigned (which take only a permission mode).
   const renderPermissions = () => {
     if (assignee === 'claude') {
@@ -516,15 +511,6 @@ export default function TaskEditor(props: TaskEditorProps) {
         <PermissionsContent
           agent="codex"
           permissionMode={coerceCodexMode(permissionMode)}
-          onPermissionModeChange={(value) => setPermissionMode(value)}
-        />
-      );
-    }
-    if (assignee === 'agy') {
-      return (
-        <PermissionsContent
-          agent="agy"
-          permissionMode={coerceAgyMode(permissionMode)}
           onPermissionModeChange={(value) => setPermissionMode(value)}
         />
       );
