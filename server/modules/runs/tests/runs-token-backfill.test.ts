@@ -25,6 +25,7 @@ import {
   mergeBackfillUsage,
   normalizeSessionTimestamp,
   resetHistoricalTokenBackfillLatch,
+  resolveUnresolvedModels,
   type BackfillSessionRow,
   type HistoricalUsageReader,
 } from '@/modules/runs/runs-token-backfill.js';
@@ -634,6 +635,108 @@ test('backfill does not overwrite higher live values with lower historical total
       token_total: 8900,
     });
     assert.equal(runService.globalStats({}).overview.totalTokens, 8900);
+  } finally {
+    await temp.restore();
+  }
+});
+
+test('a live token_budget event resolves a claude run off the "default" request-time sentinel', async () => {
+  const temp = await useTempDatabase();
+  try {
+    seedSession({
+      sessionId: 'sess-default-model',
+      provider: 'claude',
+      createdAt: '2026-07-01T00:00:00.000Z',
+    });
+    const run = runService.create({
+      source: 'chat',
+      provider: 'claude',
+      model: 'default',
+      appSessionId: 'sess-default-model',
+    });
+    assert.equal(runService.get(run.run_id)?.model, 'default');
+
+    recordNormalizedRunEvent(
+      run.run_id,
+      tokenBudgetMessage('claude', {
+        billedInputTokens: 500,
+        billedOutputTokens: 50,
+        model: 'claude-sonnet-5',
+      }),
+      'chat',
+    );
+
+    assert.equal(runService.get(run.run_id)?.model, 'claude-sonnet-5');
+    assert.deepEqual(readUsage(run.run_id), {
+      token_input: 500,
+      token_output: 50,
+      token_total: 550,
+    });
+
+    // A later event with no model field must not clobber the resolved value.
+    recordNormalizedRunEvent(
+      run.run_id,
+      tokenBudgetMessage('claude', { billedInputTokens: 700, billedOutputTokens: 60 }),
+      'chat',
+    );
+    assert.equal(runService.get(run.run_id)?.model, 'claude-sonnet-5');
+
+    // And a run whose model was explicitly chosen by the caller must never
+    // be overwritten by a differently-reported resolved model.
+    const explicit = runService.create({
+      source: 'chat',
+      provider: 'claude',
+      model: 'claude-opus-5',
+      appSessionId: 'sess-default-model',
+    });
+    recordNormalizedRunEvent(
+      explicit.run_id,
+      tokenBudgetMessage('claude', {
+        billedInputTokens: 10,
+        billedOutputTokens: 5,
+        model: 'claude-sonnet-5',
+      }),
+      'chat',
+    );
+    assert.equal(runService.get(explicit.run_id)?.model, 'claude-opus-5');
+  } finally {
+    await temp.restore();
+  }
+});
+
+test('resolveUnresolvedModels backfills the model for existing runs stuck on "default"', async () => {
+  const temp = await useTempDatabase();
+  try {
+    seedSession({
+      sessionId: 'sess-stuck-default',
+      provider: 'claude',
+      createdAt: '2026-07-05T00:00:00.000Z',
+    });
+    const run = runService.create({
+      source: 'chat',
+      provider: 'claude',
+      model: 'default',
+      appSessionId: 'sess-stuck-default',
+    });
+    // Live path already covered tokens — this run would never be selected by
+    // backfillHistoricalRunTokens's "missing tokens" candidate query.
+    runService.attachUsage(run.run_id, { input: 200, output: 30, total: 230 });
+    assert.equal(runService.get(run.run_id)?.model, 'default');
+
+    const reader: HistoricalUsageReader = (session) =>
+      session.session_id === 'sess-stuck-default'
+        ? { input: 200, output: 30, model: 'claude-sonnet-5' }
+        : null;
+
+    const result = await resolveUnresolvedModels({ readUsage: reader });
+    assert.equal(result.runsScanned, 1);
+    assert.equal(result.runsResolved, 1);
+    assert.equal(result.errors, 0);
+    assert.equal(runService.get(run.run_id)?.model, 'claude-sonnet-5');
+
+    // Idempotent: a second pass finds nothing left to resolve.
+    const second = await resolveUnresolvedModels({ readUsage: reader });
+    assert.equal(second.runsScanned, 0);
   } finally {
     await temp.restore();
   }

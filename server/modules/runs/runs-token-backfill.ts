@@ -423,7 +423,13 @@ export async function readHistoricalSessionUsage(
       }
       if (!jsonlPath || !fsSync.existsSync(jsonlPath)) return null;
       const { readClaudeSessionTokenUsage } = await import('@/modules/providers/index.js');
-      return readTokenBudgetUsage(readClaudeSessionTokenUsage(jsonlPath));
+      const claudeUsage = readClaudeSessionTokenUsage(jsonlPath);
+      const snapshot = readTokenBudgetUsage(claudeUsage);
+      if (!snapshot) return null;
+      // The JSONL's own resolved model — request-time sentinels like
+      // Claude's 'default' get resolved by the SDK, but the raw session
+      // record still has the concrete model id.
+      return { ...snapshot, model: claudeUsage.model };
     }
 
     if (provider === 'codex') {
@@ -507,6 +513,7 @@ export async function backfillHistoricalRunTokens(
           continue;
         }
         if (applyUsageToRun(existing, snapshot)) {
+          if (snapshot.model) runsDb.resolveModel(existing.run_id, snapshot.model);
           result.runsUpdated += 1;
         } else {
           result.sessionsSkipped += 1;
@@ -519,12 +526,75 @@ export async function backfillHistoricalRunTokens(
         continue;
       }
 
-      createSyntheticHistoryRun(session, snapshot);
+      const created = createSyntheticHistoryRun(session, snapshot);
+      if (snapshot.model) runsDb.resolveModel(created.run_id, snapshot.model);
       result.runsCreated += 1;
     } catch (error) {
       result.errors += 1;
       console.error(
         `[Runs] token backfill failed for session ${session.session_id}:`,
+        error instanceof Error ? error.message : error,
+      );
+    }
+  }
+
+  return result;
+}
+
+export type ResolveUnresolvedModelsResult = {
+  runsScanned: number;
+  runsResolved: number;
+  errors: number;
+};
+
+/**
+ * Patch `agent_runs.model` for runs still carrying a request-time sentinel
+ * (Claude's `'default'`) or no model at all, by reading the concrete
+ * resolved model back out of the session's own disk record. Separate from
+ * `backfillHistoricalRunTokens` on purpose: these runs already have
+ * `token_total` set (the live path wrote it fine) — only `model` is
+ * unresolved — so `listSessionsNeedingTokenBackfill`'s "missing tokens"
+ * candidate query never selects them.
+ */
+export async function resolveUnresolvedModels(
+  options: { limit?: number; readUsage?: HistoricalUsageReader } = {},
+): Promise<ResolveUnresolvedModelsResult> {
+  const limit = options.limit ?? DEFAULT_LIMIT;
+  const readUsage = options.readUsage ?? readHistoricalSessionUsage;
+  const result: ResolveUnresolvedModelsResult = { runsScanned: 0, runsResolved: 0, errors: 0 };
+
+  const db = getConnection();
+  const rows = db
+    .prepare(
+      `SELECT
+         r.run_id AS run_id,
+         s.session_id,
+         s.provider,
+         s.provider_session_id,
+         s.project_path,
+         s.runtime_project_path,
+         s.jsonl_path,
+         s.created_at
+       FROM agent_runs r
+       JOIN sessions s ON s.session_id = r.app_session_id
+       WHERE COALESCE(r.provider, '') IN ('claude', 'codex', 'kimi', 'grok', 'opencode')
+         AND (r.model IS NULL OR r.model = '' OR r.model = 'default')
+       LIMIT ?`,
+    )
+    .all(limit) as Array<BackfillSessionRow & { run_id: string }>;
+
+  for (const row of rows) {
+    result.runsScanned += 1;
+    try {
+      const snapshot = await readUsage(row);
+      if (snapshot?.model) {
+        runsDb.resolveModel(row.run_id, snapshot.model);
+        result.runsResolved += 1;
+      }
+    } catch (error) {
+      result.errors += 1;
+      console.error(
+        `[Runs] model resolution failed for run ${row.run_id}:`,
         error instanceof Error ? error.message : error,
       );
     }
@@ -544,9 +614,17 @@ export function scheduleHistoricalTokenBackfill(
 ): Promise<BackfillHistoricalTokensResult> {
   if (backfillInFlight) return backfillInFlight;
   backfillInFlight = backfillHistoricalRunTokens(options)
-    .then((result) => {
+    .then(async (result) => {
       if (result.runsUpdated > 0 || result.runsCreated > 0 || result.errors > 0) {
         console.log('[Runs] historical token backfill', result);
+      }
+      try {
+        const modelResult = await resolveUnresolvedModels({ limit: options.limit });
+        if (modelResult.runsResolved > 0 || modelResult.errors > 0) {
+          console.log('[Runs] model resolution', modelResult);
+        }
+      } catch (error) {
+        console.error('[Runs] model resolution failed', error);
       }
       return result;
     })

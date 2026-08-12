@@ -117,6 +117,8 @@ test('fillDailyGaps: unbounded range fills only between active days', () => {
 });
 
 test('formatting helpers handle compact, exact, and null shapes', () => {
+  assert.equal(formatTokens(1_371_758_310), '1.37B');
+  assert.equal(formatTokens(1_000_000_000), '1.00B');
   assert.equal(formatTokens(1_250_000), '1.3M');
   assert.equal(formatTokens(34_500), '35k');
   assert.equal(formatTokens(812), '812');

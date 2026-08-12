@@ -46,6 +46,8 @@ const DELTA_USAGE_PROVIDERS = new Set<string>(['claude']);
 export type ProviderUsageSnapshot = {
   input: number;
   output: number;
+  /** Concrete resolved model, when the disk record carries one (e.g. Claude's session JSONL). */
+  model?: string | null;
 };
 
 export function usageAccumulationMode(

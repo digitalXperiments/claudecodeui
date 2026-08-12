@@ -411,6 +411,20 @@ export const runsDb = {
     );
   },
 
+  /**
+   * Patch in the concrete model a provider resolved a request-time sentinel
+   * to (e.g. Claude's `'default'`, which the SDK itself picks a real model
+   * for). Only ever overwrites an unresolved value — never clobbers a model
+   * the caller explicitly picked.
+   */
+  resolveModel(runId: string, model: string): void {
+    const db = getConnection();
+    db.prepare(
+      `UPDATE agent_runs SET model = ?, updated_at = ?
+       WHERE run_id = ? AND (model IS NULL OR model = '' OR model = 'default')`,
+    ).run(model, nowIso(), runId);
+  },
+
   linkSession(runId: string, appSessionId: string): void {
     const db = getConnection();
     db.prepare(`UPDATE agent_runs SET app_session_id = ?, updated_at = ? WHERE run_id = ?`).run(

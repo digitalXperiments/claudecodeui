@@ -15,6 +15,7 @@ export {
   normalizeSessionTimestamp,
   readHistoricalSessionUsage,
   resetHistoricalTokenBackfillLatch,
+  resolveUnresolvedModels,
   scheduleHistoricalTokenBackfill,
   TOKEN_BACKFILL_META_KEY,
 } from '@/modules/runs/runs-token-backfill.js';
@@ -23,5 +24,6 @@ export type {
   BackfillHistoricalTokensResult,
   BackfillSessionRow,
   HistoricalUsageReader,
+  ResolveUnresolvedModelsResult,
 } from '@/modules/runs/runs-token-backfill.js';
 export * from '@/modules/runs/runs.types.js';
