@@ -755,12 +755,15 @@ export const runsDb = {
     // status='succeeded' and zero duration by construction (created_at ==
     // finished_at), which would otherwise inflate totalRuns, skew
     // successRate/avgDurationMs, and pollute the byStatus/byHour timelines.
-    // Token sums stay unconditional (COALESCE(SUM(token_total)...); every
-    // run/duration/cost count below is conditional on `source != 'history'`
-    // so a history row contributes its tokens but nothing else.
+    // Token and cost sums stay unconditional (COALESCE(SUM(token_total)...),
+    // COALESCE(SUM(cost_usd_estimate)...)) — a history row's tokens AND the
+    // dollars they actually cost are both real spend that happened, exactly
+    // what this feature exists to surface. Only run/duration counts are
+    // conditional on `source != 'history'`, since a history row is a
+    // bookkeeping artifact, not a real agent invocation, to grade a
+    // success-rate or average-duration against.
     const NOT_HISTORY_CASE = `CASE WHEN COALESCE(source, '') != 'history' THEN 1 ELSE 0 END`;
     const operationalDurationSql = `CASE WHEN COALESCE(source, '') != 'history' THEN (${RUN_DURATION_MS_SQL}) ELSE 0 END`;
-    const operationalCostSql = `CASE WHEN COALESCE(source, '') != 'history' THEN cost_usd_estimate ELSE NULL END`;
 
     const overviewRow = db
       .prepare(
@@ -770,8 +773,8 @@ export const runsDb = {
            COALESCE(SUM(token_total), 0) AS tokens,
            COALESCE(SUM(token_input), 0) AS input_tokens,
            COALESCE(SUM(token_output), 0) AS output_tokens,
-           COUNT(${operationalCostSql}) AS runs_with_cost,
-           SUM(${operationalCostSql}) AS cost,
+           COUNT(cost_usd_estimate) AS runs_with_cost,
+           SUM(cost_usd_estimate) AS cost,
            COALESCE(SUM(${operationalDurationSql}), 0) AS duration_ms,
            COUNT(DISTINCT app_session_id) AS active_conversations
          FROM agent_runs${whereSql}`,
@@ -808,7 +811,7 @@ export const runsDb = {
            COALESCE(SUM(token_total), 0) AS tokens,
            COALESCE(SUM(token_input), 0) AS input_tokens,
            COALESCE(SUM(token_output), 0) AS output_tokens,
-           COALESCE(SUM(${operationalCostSql}), 0) AS cost,
+           COALESCE(SUM(cost_usd_estimate), 0) AS cost,
            COALESCE(SUM(${operationalDurationSql}), 0) AS duration_ms
          FROM agent_runs${whereSql}
          GROUP BY day
@@ -832,7 +835,7 @@ export const runsDb = {
            COALESCE(SUM(token_total), 0) AS tokens,
            COALESCE(SUM(token_input), 0) AS input_tokens,
            COALESCE(SUM(token_output), 0) AS output_tokens,
-           SUM(${operationalCostSql}) AS cost,
+           SUM(cost_usd_estimate) AS cost,
            COALESCE(SUM(${operationalDurationSql}), 0) AS duration_ms
          FROM agent_runs${whereSql}
          GROUP BY provider
@@ -857,7 +860,7 @@ export const runsDb = {
            COALESCE(SUM(token_total), 0) AS tokens,
            COALESCE(SUM(token_input), 0) AS input_tokens,
            COALESCE(SUM(token_output), 0) AS output_tokens,
-           SUM(${operationalCostSql}) AS cost,
+           SUM(cost_usd_estimate) AS cost,
            COALESCE(SUM(${operationalDurationSql}), 0) AS duration_ms
          FROM agent_runs${whereSql}
          GROUP BY provider, model

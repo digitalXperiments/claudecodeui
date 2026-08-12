@@ -200,10 +200,20 @@ export function mergeBackfillUsage(
   return merged;
 }
 
-/** Prefer a provider's own reported cost (e.g. OpenCode's `session.cost`) over a $/token estimate. */
-function resolveSnapshotCost(provider: string | null, snapshot: ProviderUsageSnapshot): number | null {
+/**
+ * Prefer a provider's own reported cost (e.g. OpenCode's `session.cost`) over
+ * a $/token estimate. `atIso` must be the session's own timestamp, not now —
+ * this may run long after the session happened, and providers change prices
+ * without changing the model id, so pricing "as of today" would misprice an
+ * old session backfilled after a rate change.
+ */
+function resolveSnapshotCost(
+  provider: string | null,
+  snapshot: ProviderUsageSnapshot,
+  atIso: string,
+): number | null {
   if (snapshot.costUsdEstimate != null) return snapshot.costUsdEstimate;
-  return estimateCostUsd(provider, snapshot.model, snapshot.input, snapshot.output);
+  return estimateCostUsd(provider, snapshot.model, snapshot.input, snapshot.output, atIso);
 }
 
 function applyUsageToRun(run: AgentRun, snapshot: ProviderUsageSnapshot, costUsdEstimate: number | null): boolean {
@@ -574,7 +584,11 @@ export async function backfillHistoricalRunTokens(
         continue;
       }
       result.sessionsWithUsage += 1;
-      const cost = resolveSnapshotCost(session.provider, snapshot);
+      const cost = resolveSnapshotCost(
+        session.provider,
+        snapshot,
+        normalizeSessionTimestamp(session.created_at) ?? nowIso(),
+      );
 
       const existing = findLatestRunForSession(session.session_id);
       if (existing) {
@@ -679,12 +693,16 @@ export async function resolveUnresolvedModels(
       // patch cost in at the same time if it's still missing.
       const current = runsDb.getById(row.run_id);
       if (current && current.cost_usd_estimate == null && current.token_total != null) {
-        const cost = resolveSnapshotCost(row.provider, {
-          input: current.token_input ?? 0,
-          output: current.token_output ?? 0,
-          model: snapshot?.model ?? current.model,
-          costUsdEstimate: snapshot?.costUsdEstimate,
-        });
+        const cost = resolveSnapshotCost(
+          row.provider,
+          {
+            input: current.token_input ?? 0,
+            output: current.token_output ?? 0,
+            model: snapshot?.model ?? current.model,
+            costUsdEstimate: snapshot?.costUsdEstimate,
+          },
+          normalizeSessionTimestamp(row.created_at) ?? current.created_at,
+        );
         if (cost != null) {
           runsDb.attachUsage(row.run_id, {
             input: current.token_input,
@@ -726,7 +744,7 @@ export function backfillMissingCosts(
   const db = getConnection();
   const rows = db
     .prepare(
-      `SELECT run_id, provider, model, token_input, token_output, token_total
+      `SELECT run_id, provider, model, token_input, token_output, token_total, created_at
        FROM agent_runs
        WHERE token_total IS NOT NULL
          AND model IS NOT NULL AND model != ''
@@ -741,11 +759,15 @@ export function backfillMissingCosts(
     token_input: number | null;
     token_output: number | null;
     token_total: number | null;
+    created_at: string;
   }>;
 
   let runsUpdated = 0;
   for (const row of rows) {
-    const cost = estimateCostUsd(row.provider, row.model, row.token_input, row.token_output);
+    // Price at the rate in effect when the run actually happened, not today's
+    // rate — a provider price change must never retroactively reprice an old
+    // run just because it's only now getting its first cost estimate.
+    const cost = estimateCostUsd(row.provider, row.model, row.token_input, row.token_output, row.created_at);
     if (cost == null) continue;
     runsDb.attachUsage(row.run_id, {
       input: row.token_input,

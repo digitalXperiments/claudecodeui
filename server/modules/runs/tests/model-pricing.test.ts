@@ -4,7 +4,10 @@ import test from 'node:test';
 import { estimateCostUsd, resolveModelPriceRate } from '@/modules/runs/model-pricing.js';
 
 test('resolveModelPriceRate finds an exact match per provider', () => {
-  assert.deepEqual(resolveModelPriceRate('claude', 'claude-sonnet-5'), {
+  // claude-sonnet-5 is time-windowed (see below) — pin a date inside its
+  // introductory window so this assertion never flips on its own as time
+  // passes.
+  assert.deepEqual(resolveModelPriceRate('claude', 'claude-sonnet-5', '2026-08-01'), {
     inputPerMillion: 2.0,
     outputPerMillion: 10.0,
   });
@@ -27,8 +30,43 @@ test('resolveModelPriceRate strips a trailing context-window suffix', () => {
 
 test('resolveModelPriceRate is case-insensitive', () => {
   assert.deepEqual(
-    resolveModelPriceRate('Claude', 'Claude-Sonnet-5'),
-    resolveModelPriceRate('claude', 'claude-sonnet-5'),
+    resolveModelPriceRate('Claude', 'Claude-Sonnet-5', '2026-08-01'),
+    resolveModelPriceRate('claude', 'claude-sonnet-5', '2026-08-01'),
+  );
+});
+
+test('resolveModelPriceRate picks the rate that was in effect at the given date, not today\'s rate', () => {
+  // claude-sonnet-5: $2/$10 through 2026-08-31, $3/$15 from 2026-09-01.
+  assert.deepEqual(resolveModelPriceRate('claude', 'claude-sonnet-5', '2026-06-01'), {
+    inputPerMillion: 2.0,
+    outputPerMillion: 10.0,
+  });
+  assert.deepEqual(resolveModelPriceRate('claude', 'claude-sonnet-5', '2026-08-31'), {
+    inputPerMillion: 2.0,
+    outputPerMillion: 10.0,
+  });
+  assert.deepEqual(resolveModelPriceRate('claude', 'claude-sonnet-5', '2026-09-01'), {
+    inputPerMillion: 3.0,
+    outputPerMillion: 15.0,
+  });
+  assert.deepEqual(resolveModelPriceRate('claude', 'claude-sonnet-5', '2027-01-01'), {
+    inputPerMillion: 3.0,
+    outputPerMillion: 15.0,
+  });
+});
+
+test('estimateCostUsd prices an old run at the old rate even called after a rate change', () => {
+  // A run that happened in July must always cost the same, however long
+  // after the fact this gets computed — even once "today" has moved past
+  // the 2026-09-01 rate change for this same model.
+  const julyCost = estimateCostUsd('claude', 'claude-sonnet-5', 1_000_000, 500_000, '2026-07-15');
+  assert.equal(julyCost, 2 * 1 + 10 * 0.5);
+  const octoberCost = estimateCostUsd('claude', 'claude-sonnet-5', 1_000_000, 500_000, '2026-10-15');
+  assert.equal(octoberCost, 3 * 1 + 15 * 0.5);
+  // Re-pricing the SAME July usage later must still land on July's rate.
+  assert.equal(
+    estimateCostUsd('claude', 'claude-sonnet-5', 1_000_000, 500_000, '2026-07-15'),
+    julyCost,
   );
 });
 
@@ -46,8 +84,8 @@ test('resolveModelPriceRate returns null for an unknown model rather than guessi
 });
 
 test('estimateCostUsd computes input/output spend at the resolved rate', () => {
-  // claude-sonnet-5: $2/M in, $10/M out
-  const cost = estimateCostUsd('claude', 'claude-sonnet-5', 1_000_000, 500_000);
+  // claude-sonnet-5: $2/M in, $10/M out (introductory window)
+  const cost = estimateCostUsd('claude', 'claude-sonnet-5', 1_000_000, 500_000, '2026-08-01');
   assert.equal(cost, 2 + 5);
 });
 

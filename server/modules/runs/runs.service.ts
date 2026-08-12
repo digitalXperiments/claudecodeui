@@ -550,7 +550,10 @@ function recordProviderUsage(runId: string, message: NormalizedMessage): void {
   // Use whichever model is freshest: the one this very event just resolved,
   // or the run's already-resolved value from an earlier event.
   const effectiveModel = resolvedModel && !aliases.includes(resolvedModel) ? resolvedModel : run.model;
-  const cost = estimateCostUsd(provider, effectiveModel, merged.input, merged.output);
+  // Price at the run's own start time, not wall-clock now — a long-running
+  // run must keep the rate that was in effect when it started even if a
+  // price change lands mid-session.
+  const cost = estimateCostUsd(provider, effectiveModel, merged.input, merged.output, run.created_at);
   if (cost != null) merged.costUsdEstimate = cost;
   runsDb.attachUsage(runId, merged);
 }

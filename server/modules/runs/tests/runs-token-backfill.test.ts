@@ -283,6 +283,48 @@ test('a synthetic history run does not inflate byHour or the per-day/provider ru
   }
 });
 
+test('a synthetic history run\'s real cost DOES show up in overview/daily/provider/model totals', async () => {
+  const temp = await useTempDatabase();
+  try {
+    // claude-opus-5: $5/M in, $25/M out.
+    seedSession({
+      sessionId: 'sess-hist-cost',
+      provider: 'claude',
+      createdAt: '2026-06-21T09:00:00.000Z',
+    });
+    const reader: HistoricalUsageReader = (session) =>
+      session.session_id === 'sess-hist-cost'
+        ? { input: 1_000_000, output: 100_000, model: 'claude-opus-5' }
+        : null;
+    await backfillHistoricalRunTokens({ readUsage: reader });
+    const expectedCost = 1 * 5 + 0.1 * 25; // 7.5
+
+    const stats = runService.globalStats({
+      from: '2026-06-01T00:00:00.000Z',
+      to: '2026-06-30T23:59:59.999Z',
+    });
+    // Cost is real spend, exactly like tokens — a history row must NOT be
+    // excluded from it just because it is excluded from the *run* count.
+    assert.equal(stats.overview.totalCostUsd, expectedCost);
+    assert.equal(stats.overview.totalRuns, 0);
+
+    const day = stats.daily.find((d) => d.day === '2026-06-21');
+    assert.ok(day);
+    assert.equal(day!.costUsd, expectedCost);
+
+    const provider = stats.providers.find((p) => p.provider === 'claude');
+    assert.ok(provider);
+    assert.equal(provider!.costUsd, expectedCost);
+
+    const model = stats.models.find((m) => m.model === 'claude-opus-5');
+    assert.ok(model);
+    assert.equal(model!.costUsd, expectedCost);
+    assert.equal(model!.runs, 0, 'a history row never counts as a "run" even though its cost counts');
+  } finally {
+    await temp.restore();
+  }
+});
+
 test('retention never deletes a synthetic history run, however old its stamped timestamp', async () => {
   const temp = await useTempDatabase();
   try {
@@ -923,6 +965,49 @@ test('backfillMissingCosts retroactively prices runs that already had a resolved
     // Idempotent: already-priced rows are not re-scanned.
     const second = backfillMissingCosts();
     assert.equal(second.runsScanned, 0);
+  } finally {
+    await temp.restore();
+  }
+});
+
+test('backfillMissingCosts prices a run at the rate in effect when it happened, not the rate current when backfilled', async () => {
+  const temp = await useTempDatabase();
+  try {
+    // A July run — inside claude-sonnet-5's $2/$10 introductory window,
+    // which ends 2026-09-01 in the pricing table. Backfilling this run
+    // (however long after the fact, even after the table's rate has since
+    // changed) must never charge it the later $3/$15 rate.
+    seedSession({ sessionId: 'sess-old-era', provider: 'claude', createdAt: '2026-07-01T00:00:00.000Z' });
+    const julyRun = runService.create({
+      source: 'chat',
+      provider: 'claude',
+      model: 'claude-sonnet-5',
+      appSessionId: 'sess-old-era',
+    });
+    getConnection()
+      .prepare(`UPDATE agent_runs SET created_at = ? WHERE run_id = ?`)
+      .run('2026-07-01T00:00:00.000Z', julyRun.run_id);
+    runService.attachUsage(julyRun.run_id, { input: 1_000_000, output: 500_000, total: 1_500_000 });
+
+    // A run from after the rate change, same model.
+    seedSession({ sessionId: 'sess-new-era', provider: 'claude', createdAt: '2026-10-01T00:00:00.000Z' });
+    const octoberRun = runService.create({
+      source: 'chat',
+      provider: 'claude',
+      model: 'claude-sonnet-5',
+      appSessionId: 'sess-new-era',
+    });
+    getConnection()
+      .prepare(`UPDATE agent_runs SET created_at = ? WHERE run_id = ?`)
+      .run('2026-10-01T00:00:00.000Z', octoberRun.run_id);
+    runService.attachUsage(octoberRun.run_id, { input: 1_000_000, output: 500_000, total: 1_500_000 });
+
+    const result = backfillMissingCosts();
+    assert.equal(result.runsUpdated, 2);
+    // July: $2/M in, $10/M out -> 1*2 + 0.5*10 = 7
+    assert.equal(runService.get(julyRun.run_id)?.cost_usd_estimate, 7);
+    // October: $3/M in, $15/M out -> 1*3 + 0.5*15 = 10.5
+    assert.equal(runService.get(octoberRun.run_id)?.cost_usd_estimate, 10.5);
   } finally {
     await temp.restore();
   }
