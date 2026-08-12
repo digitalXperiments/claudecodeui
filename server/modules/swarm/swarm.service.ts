@@ -4743,6 +4743,7 @@ export const swarmService = {
           findings: input.findings,
         }),
         runId: handoffRun.run_id,
+        title: `Swarm handoff: ${input.goal.slice(0, 80)}`,
         signal: input.signal,
         permission: {
           swarmId,

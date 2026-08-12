@@ -1,5 +1,6 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { useAuth } from '../components/auth/context/AuthContext';
+import { IS_PLATFORM } from '../constants/config';
 import { api } from '../utils/api';
 
 const TasksSettingsContext = createContext({
@@ -21,7 +22,8 @@ export const useTasksSettings = () => {
 };
 
 export const TasksSettingsProvider = ({ children }) => {
-  const { user, token, isLoading: isAuthLoading } = useAuth();
+  const { user, token, isLoading: isAuthLoading, needsSetup } = useAuth();
+  const isAuthenticated = IS_PLATFORM || Boolean(user && token);
   const [tasksEnabled, setTasksEnabled] = useState(() => {
     // Load from localStorage on initialization
     const saved = localStorage.getItem('tasks-enabled');
@@ -45,25 +47,25 @@ export const TasksSettingsProvider = ({ children }) => {
       return;
     }
 
-    if (!user || !token) {
+    if (!isAuthenticated || needsSetup) {
       setInstallationStatus(null);
-      setIsTaskMasterInstalled(null);
-      setIsTaskMasterReady(null);
+      setIsTaskMasterInstalled(false);
+      setIsTaskMasterReady(false);
       setIsCheckingInstallation(false);
       return;
     }
 
     let cancelled = false;
-
     const checkInstallation = async () => {
       setIsCheckingInstallation(true);
       try {
         const response = await api.get('/taskmaster/installation-status');
-        if (cancelled) {
-          return;
-        }
+        if (cancelled) return;
+
         if (response.ok) {
           const data = await response.json();
+          if (cancelled) return;
+
           setInstallationStatus(data);
           setIsTaskMasterInstalled(data.installation?.isInstalled || false);
           setIsTaskMasterReady(data.isReady || false);
@@ -80,11 +82,11 @@ export const TasksSettingsProvider = ({ children }) => {
           setIsTaskMasterReady(false);
         }
       } catch (error) {
-        if (!cancelled) {
-          console.error('Error checking TaskMaster installation:', error);
-          setIsTaskMasterInstalled(false);
-          setIsTaskMasterReady(false);
-        }
+        if (cancelled) return;
+
+        console.error('Error checking TaskMaster installation:', error);
+        setIsTaskMasterInstalled(false);
+        setIsTaskMasterReady(false);
       } finally {
         if (!cancelled) {
           setIsCheckingInstallation(false);
@@ -92,11 +94,16 @@ export const TasksSettingsProvider = ({ children }) => {
       }
     };
 
-    void checkInstallation();
+    // Run check asynchronously without blocking initial render
+    const timeoutId = setTimeout(() => {
+      void checkInstallation();
+    }, 0);
+
     return () => {
       cancelled = true;
+      clearTimeout(timeoutId);
     };
-  }, [isAuthLoading, token, user]);
+  }, [isAuthLoading, isAuthenticated, needsSetup]);
 
   const toggleTasksEnabled = useCallback(() => {
     setTasksEnabled(prev => !prev);
