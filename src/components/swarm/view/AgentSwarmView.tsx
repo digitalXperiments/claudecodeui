@@ -26,13 +26,14 @@ import {
 import { authenticatedFetch } from '../../../utils/api';
 import { useWebSocket } from '../../../contexts/WebSocketContext';
 import { Button } from '../../../shared/view/ui';
-import type { Project } from '../../../types/app';
+import type { Project, ProviderModelOption } from '../../../types/app';
 import { agentProfilesApi } from '../../settings/api/agentProfilesApi';
 import {
+  clampEffort,
   clampPermissionMode,
   defaultRoster,
+  effortOptionsForProvider,
   permissionModesForProvider,
-  SWARM_EFFORTS,
   SWARM_KINDS,
   SWARM_PERMISSION_LABELS,
   SWARM_PROVIDERS,
@@ -281,7 +282,7 @@ function emptyAgent(kind: string = 'implementer'): SwarmAgentSpec {
 /** Worker kinds only — orchestrator is fixed at one seat. */
 const WORKER_KINDS = SWARM_KINDS.filter((k) => k.value !== 'orchestrator');
 
-type ModelOption = { value: string; label: string };
+type ModelOption = ProviderModelOption;
 type SkillOption = { directoryName: string; name: string; description: string };
 
 type AgentSwarmViewProps = {
@@ -584,7 +585,7 @@ export default function AgentSwarmView({
       void requestJson<{
         data?: {
           models?: {
-            OPTIONS?: Array<{ value: string; label?: string }>;
+            OPTIONS?: ProviderModelOption[];
             DEFAULT?: string;
           };
         };
@@ -593,10 +594,11 @@ export default function AgentSwarmView({
       })
         .then((body) => {
           if (controller.signal.aborted) return;
-          const options = Array.isArray(body.data?.models?.OPTIONS)
+          const options: ModelOption[] = Array.isArray(body.data?.models?.OPTIONS)
             ? body.data.models.OPTIONS.map((model) => ({
                 value: model.value,
                 label: model.label || model.value,
+                effort: model.effort?.values?.length ? model.effort : undefined,
               }))
             : [];
           modelCache.current[provider] = options;
@@ -606,17 +608,21 @@ export default function AgentSwarmView({
             configuredDefault && options.some((option) => option.value === configuredDefault)
               ? configuredDefault
               : options[0]?.value ?? null;
-          if (defaultModel) {
-            setRoster((prev) =>
-              prev.map((seat) => {
-                if ((seat.provider || 'claude') !== provider) return seat;
-                if (seat.model && options.some((option) => option.value === seat.model)) {
-                  return seat;
-                }
-                return { ...seat, model: defaultModel };
-              }),
-            );
-          }
+          setRoster((prev) =>
+            prev.map((seat) => {
+              if ((seat.provider || 'claude') !== provider) return seat;
+              const model =
+                seat.model && options.some((option) => option.value === seat.model)
+                  ? seat.model
+                  : defaultModel ?? seat.model;
+              // Model-specific effort metadata just arrived — re-clamp so a
+              // value that looked valid while options were still loading
+              // (or was valid for the old model) doesn't silently persist.
+              const effort = clampEffort(provider, model, seat.effort, options);
+              if (model === seat.model && effort === (seat.effort || 'default')) return seat;
+              return { ...seat, model, effort };
+            }),
+          );
         })
         .catch((caught) => {
           if (controller.signal.aborted || (caught instanceof DOMException && caught.name === 'AbortError')) {
@@ -721,7 +727,7 @@ export default function AgentSwarmView({
 
       let next = prev.map((a, i) => (i === index ? { ...a, ...patch } : a));
 
-      // Clear model + clamp permissions when provider changes.
+      // Clear model + clamp permissions/effort when provider changes.
       if (patch.provider && patch.provider !== current.provider) {
         next = next.map((a, i) => {
           if (i !== index) return a;
@@ -732,6 +738,21 @@ export default function AgentSwarmView({
               patch.provider!,
               a.permissionMode,
               permModesByProvider,
+            ),
+            effort: clampEffort(patch.provider!, null, a.effort, modelsByProvider[patch.provider!] ?? []),
+          };
+        });
+      } else if (patch.model !== undefined && patch.model !== current.model) {
+        // Model-specific effort options may be narrower than the provider default.
+        next = next.map((a, i) => {
+          if (i !== index) return a;
+          return {
+            ...a,
+            effort: clampEffort(
+              a.provider || 'claude',
+              patch.model,
+              a.effort,
+              modelsByProvider[a.provider || 'claude'] ?? [],
             ),
           };
         });
@@ -818,6 +839,12 @@ export default function AgentSwarmView({
           seat.provider || 'claude',
           seat.permissionMode,
           permModesByProvider,
+        ),
+        effort: clampEffort(
+          seat.provider || 'claude',
+          seat.model,
+          seat.effort,
+          modelsByProvider[seat.provider || 'claude'] ?? [],
         ),
       }));
       const fingerprint = JSON.stringify({
@@ -1542,6 +1569,8 @@ export default function AgentSwarmView({
                     seat.permissionMode,
                     permModesByProvider,
                   );
+                  const effortOptions = effortOptionsForProvider(provider, seat.model, modelOptions);
+                  const effortValue = clampEffort(provider, seat.model, seat.effort, modelOptions);
 
                   return (
                     <div
@@ -1668,12 +1697,13 @@ export default function AgentSwarmView({
                           Effort
                           <select
                             className={seatFieldClass}
-                            value={seat.effort || 'default'}
+                            value={effortValue}
                             onChange={(e) => updateSeat(index, { effort: e.target.value })}
                           >
-                            {SWARM_EFFORTS.map((e) => (
-                              <option key={e} value={e}>
-                                {e}
+                            <option value="default">default</option>
+                            {effortOptions.map((option) => (
+                              <option key={option.value} value={option.value}>
+                                {option.value}
                               </option>
                             ))}
                           </select>

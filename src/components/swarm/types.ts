@@ -357,7 +357,10 @@ export function defaultRoster(): SwarmAgentSpec[] {
       label: 'Orchestrator',
       provider: 'claude',
       effort: 'medium',
-      permissionMode: clampPermissionMode('claude', 'default'),
+      // Matches the server-side default (normalizeAgentSpec) — the
+      // orchestrator drives the whole swarm unattended and must never stall
+      // on a permission prompt.
+      permissionMode: clampPermissionMode('claude', 'bypassPermissions'),
       focus: 'Plan, assign, and hand off the goal cost-efficiently.',
     },
     {

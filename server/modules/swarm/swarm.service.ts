@@ -635,6 +635,16 @@ function normalizeAgentSpec(
   if (Array.isArray(raw.skills) && raw.skills.length > MAX_SKILLS) {
     throw new CloudError('RUN_NOT_FOUND', `An agent may use at most ${MAX_SKILLS} skills`);
   }
+  // Orchestrator seats default to bypassPermissions — they drive the whole
+  // swarm unattended and must never stall on a permission prompt. This is
+  // the *last* resort in the chain: an explicit per-seat permissionMode, or
+  // an explicit swarm-level default (`fallback.permissionMode`, e.g. a
+  // caller-supplied `input.permissionMode`), both still win. This must never
+  // be hardcoded onto the DEFAULT_ROSTER template itself — doing so would
+  // make it act like an explicit per-seat value and wrongly outrank a
+  // caller's swarm-level override whenever no custom agents are supplied.
+  const permissionMode =
+    raw.permissionMode ?? fallback.permissionMode ?? (kind === 'orchestrator' ? 'bypassPermissions' : null);
   return {
     id: raw.id || `${kind}-${label}`.toLowerCase().replace(/\s+/g, '-'),
     kind,
@@ -642,7 +652,7 @@ function normalizeAgentSpec(
     provider: raw.provider ?? fallback.provider ?? null,
     model: raw.model ?? fallback.model ?? null,
     effort: raw.effort ?? fallback.effort ?? null,
-    permissionMode: raw.permissionMode ?? fallback.permissionMode ?? null,
+    permissionMode,
     skills: Array.isArray(raw.skills)
       ? raw.skills.map((skill) => validateBoundedText('skill', skill, MAX_SKILL_CHARS, true))
       : [],
@@ -652,7 +662,7 @@ function normalizeAgentSpec(
   };
 }
 
-function resolveRoster(input: StartSwarmInput): {
+export function resolveRoster(input: StartSwarmInput): {
   roster: SwarmAgentSpec[];
   orchestrator: SwarmAgentSpec;
   config: SwarmConfig;
