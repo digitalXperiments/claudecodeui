@@ -572,9 +572,13 @@ export async function resolveUnresolvedModels(
   const result: ResolveUnresolvedModelsResult = { runsScanned: 0, runsResolved: 0, errors: 0 };
 
   const db = getConnection();
-  // Claude aliases ('sonnet', 'opus[1m]', ...) are unresolved too, not just
-  // null/''/'default' — otherwise a run that explicitly requested 'sonnet'
-  // never gets swept up here and stays fragmented from 'claude-sonnet-5'.
+  // Scoped to claude: it's the only reader that ever returns a resolved
+  // `model` (readClaudeSessionTokenUsage parses it straight out of the
+  // session JSONL) — codex/kimi/grok/opencode never will, so including them
+  // here would just re-scan the same never-resolvable rows every pass for
+  // nothing. Claude aliases ('sonnet', 'opus[1m]', ...) are unresolved too,
+  // not just null/''/'default' — otherwise a run that explicitly requested
+  // 'sonnet' never gets swept up and stays fragmented from 'claude-sonnet-5'.
   const claudeAliasPlaceholders = CLAUDE_MODEL_ALIASES.map(() => '?').join(', ');
   const rows = db
     .prepare(
@@ -589,11 +593,8 @@ export async function resolveUnresolvedModels(
          s.created_at
        FROM agent_runs r
        JOIN sessions s ON s.session_id = r.app_session_id
-       WHERE COALESCE(r.provider, '') IN ('claude', 'codex', 'kimi', 'grok', 'opencode')
-         AND (
-           r.model IS NULL OR r.model = ''
-           OR (r.provider = 'claude' AND r.model IN (${claudeAliasPlaceholders}))
-         )
+       WHERE r.provider = 'claude'
+         AND (r.model IS NULL OR r.model = '' OR r.model IN (${claudeAliasPlaceholders}))
        LIMIT ?`,
     )
     .all(...CLAUDE_MODEL_ALIASES, limit) as Array<BackfillSessionRow & { run_id: string }>;
