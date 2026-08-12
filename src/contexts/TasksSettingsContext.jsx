@@ -1,4 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
+import { useAuth } from '../components/auth/context/AuthContext';
+import { IS_PLATFORM } from '../constants/config';
 import { api } from '../utils/api';
 
 const TasksSettingsContext = createContext({
@@ -20,6 +22,8 @@ export const useTasksSettings = () => {
 };
 
 export const TasksSettingsProvider = ({ children }) => {
+  const { user, token, isLoading: isAuthLoading, needsSetup } = useAuth();
+  const isAuthenticated = IS_PLATFORM || Boolean(user && token);
   const [tasksEnabled, setTasksEnabled] = useState(() => {
     // Load from localStorage on initialization
     const saved = localStorage.getItem('tasks-enabled');
@@ -38,11 +42,28 @@ export const TasksSettingsProvider = ({ children }) => {
 
   // Check TaskMaster installation status asynchronously on component mount
   useEffect(() => {
+    if (isAuthLoading) {
+      return;
+    }
+
+    if (!isAuthenticated || needsSetup) {
+      setInstallationStatus(null);
+      setIsTaskMasterInstalled(false);
+      setIsTaskMasterReady(false);
+      setIsCheckingInstallation(false);
+      return;
+    }
+
+    let cancelled = false;
     const checkInstallation = async () => {
       try {
         const response = await api.get('/taskmaster/installation-status');
+        if (cancelled) return;
+
         if (response.ok) {
           const data = await response.json();
+          if (cancelled) return;
+
           setInstallationStatus(data);
           setIsTaskMasterInstalled(data.installation?.isInstalled || false);
           setIsTaskMasterReady(data.isReady || false);
@@ -59,17 +80,28 @@ export const TasksSettingsProvider = ({ children }) => {
           setIsTaskMasterReady(false);
         }
       } catch (error) {
+        if (cancelled) return;
+
         console.error('Error checking TaskMaster installation:', error);
         setIsTaskMasterInstalled(false);
         setIsTaskMasterReady(false);
       } finally {
-        setIsCheckingInstallation(false);
+        if (!cancelled) {
+          setIsCheckingInstallation(false);
+        }
       }
     };
 
     // Run check asynchronously without blocking initial render
-    setTimeout(checkInstallation, 0);
-  }, []);
+    const timeoutId = setTimeout(() => {
+      void checkInstallation();
+    }, 0);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timeoutId);
+    };
+  }, [isAuthLoading, isAuthenticated, needsSetup]);
 
   const toggleTasksEnabled = () => {
     setTasksEnabled(prev => !prev);

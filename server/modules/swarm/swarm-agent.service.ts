@@ -71,6 +71,7 @@ function buildHeadlessOptions(
     model?: string | null;
     effort?: string | null;
     permissionMode?: string | null;
+    sessionSummary?: string | null;
   },
 ): AnyRecord {
   // Default to bypass so unattended swarm agents do not hang on permission UI.
@@ -78,6 +79,7 @@ function buildHeadlessOptions(
   const options: AnyRecord = { permissionMode, unattended: true };
   if (opts?.model) options.model = opts.model;
   if (opts?.effort && opts.effort !== 'default') options.effort = opts.effort;
+  if (opts?.sessionSummary) options.sessionSummary = opts.sessionSummary;
 
   switch (provider) {
     case 'claude':
@@ -175,6 +177,10 @@ export async function runSwarmAgent(params: {
 
   const created = sessionsService.createAppSession(provider, projectPath);
   const appSessionId = created.sessionId;
+  const title = params.title?.trim() || null;
+  if (title) {
+    sessionsService.renameSessionById(appSessionId, title);
+  }
 
   try {
     runService.linkSession(runId, appSessionId);
@@ -196,6 +202,7 @@ export async function runSwarmAgent(params: {
         model: params.model,
         effort: params.effort,
         permissionMode: params.permissionMode,
+        sessionSummary: title,
       }),
       connection: DETACHED_CONNECTION,
       userId: null,

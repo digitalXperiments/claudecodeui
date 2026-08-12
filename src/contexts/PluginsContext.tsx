@@ -1,5 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
+import { useAuth } from '../components/auth/context/AuthContext';
+import { IS_PLATFORM } from '../constants/config';
 import { authenticatedFetch } from '../utils/api';
 
 export type Plugin = {
@@ -42,11 +44,20 @@ export function usePlugins() {
 }
 
 export function PluginsProvider({ children }: { children: ReactNode }) {
+  const { user, token, isLoading: isAuthLoading, needsSetup } = useAuth();
+  const isAuthenticated = IS_PLATFORM || Boolean(user && token);
   const [plugins, setPlugins] = useState<Plugin[]>([]);
   const [loading, setLoading] = useState(true);
   const [pluginsError, setPluginsError] = useState<string | null>(null);
 
   const refreshPlugins = useCallback(async () => {
+    if (!isAuthenticated || needsSetup) {
+      setPlugins([]);
+      setPluginsError(null);
+      setLoading(false);
+      return;
+    }
+
     try {
       const res = await authenticatedFetch('/api/plugins');
       if (res.ok) {
@@ -70,11 +81,15 @@ export function PluginsProvider({ children }: { children: ReactNode }) {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [isAuthenticated, needsSetup]);
 
   useEffect(() => {
+    if (isAuthLoading) {
+      return;
+    }
+
     void refreshPlugins();
-  }, [refreshPlugins]);
+  }, [isAuthLoading, refreshPlugins]);
 
   const installPlugin = useCallback(async (url: string) => {
     try {
