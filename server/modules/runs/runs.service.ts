@@ -8,6 +8,7 @@
  *  - maps run rows to the AgentRunSummary shape used by list + WS fan-out
  */
 
+import { CLAUDE_MODEL_ALIASES } from '@/modules/providers/index.js';
 import { runsDb } from '@/modules/runs/runs.repository.js';
 import {
   mergeRunUsage,
@@ -526,14 +527,18 @@ function recordProviderUsage(runId: string, message: NormalizedMessage): void {
   const snapshot = readTokenBudgetUsage(message.tokenBudget);
   const run = runService.get(runId);
   if (!run) return;
-  // A request-time sentinel like Claude's `'default'` model gets resolved by
-  // the provider to a concrete model id, reported in every token_budget
-  // event — patch it in once so the Stats "by model" breakdown groups these
-  // runs under their real model instead of an opaque 'default' bucket.
+  // A request-time alias — Claude's `'default'`, but also generation-agnostic
+  // aliases like `'sonnet'`/`'opus[1m]'` — gets resolved by the provider to a
+  // concrete model id, reported in every token_budget event. Patch it in once
+  // so the Stats "by model" breakdown groups these runs under their real
+  // model instead of fragmenting into alias buckets alongside resolved-id
+  // buckets for the same underlying model.
+  const provider = run.provider ?? message.provider;
+  const aliases = provider === 'claude' ? CLAUDE_MODEL_ALIASES : [];
   const tokenBudget = message.tokenBudget as { model?: unknown } | null | undefined;
   const resolvedModel = typeof tokenBudget?.model === 'string' ? tokenBudget.model.trim() : '';
-  if (resolvedModel && resolvedModel !== 'default') {
-    runsDb.resolveModel(runId, resolvedModel);
+  if (resolvedModel && !aliases.includes(resolvedModel) && resolvedModel !== 'default') {
+    runsDb.resolveModel(runId, resolvedModel, aliases);
   }
   if (!snapshot) return;
   // Trust the run row's provider over the message's: the row is what the stats

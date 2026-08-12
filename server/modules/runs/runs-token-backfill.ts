@@ -49,6 +49,7 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 
 import { getConnection } from '@/modules/database/index.js';
+import { CLAUDE_MODEL_ALIASES } from '@/modules/providers/index.js';
 import { readTokenBudgetUsage, type ProviderUsageSnapshot } from '@/modules/runs/runs-usage.js';
 import { runsDb } from '@/modules/runs/runs.repository.js';
 import { runService } from '@/modules/runs/runs.service.js';
@@ -253,6 +254,11 @@ function createSyntheticHistoryRun(
     throw new Error(`Failed to re-load synthetic run ${run.run_id}`);
   }
   return updated;
+}
+
+/** Request-time aliases worth superseding with a resolved model, per provider. */
+function aliasesFor(provider: string): readonly string[] {
+  return provider === 'claude' ? CLAUDE_MODEL_ALIASES : [];
 }
 
 /**
@@ -513,7 +519,9 @@ export async function backfillHistoricalRunTokens(
           continue;
         }
         if (applyUsageToRun(existing, snapshot)) {
-          if (snapshot.model) runsDb.resolveModel(existing.run_id, snapshot.model);
+          if (snapshot.model) {
+            runsDb.resolveModel(existing.run_id, snapshot.model, aliasesFor(session.provider));
+          }
           result.runsUpdated += 1;
         } else {
           result.sessionsSkipped += 1;
@@ -527,7 +535,7 @@ export async function backfillHistoricalRunTokens(
       }
 
       const created = createSyntheticHistoryRun(session, snapshot);
-      if (snapshot.model) runsDb.resolveModel(created.run_id, snapshot.model);
+      if (snapshot.model) runsDb.resolveModel(created.run_id, snapshot.model, aliasesFor(session.provider));
       result.runsCreated += 1;
     } catch (error) {
       result.errors += 1;
@@ -564,6 +572,10 @@ export async function resolveUnresolvedModels(
   const result: ResolveUnresolvedModelsResult = { runsScanned: 0, runsResolved: 0, errors: 0 };
 
   const db = getConnection();
+  // Claude aliases ('sonnet', 'opus[1m]', ...) are unresolved too, not just
+  // null/''/'default' — otherwise a run that explicitly requested 'sonnet'
+  // never gets swept up here and stays fragmented from 'claude-sonnet-5'.
+  const claudeAliasPlaceholders = CLAUDE_MODEL_ALIASES.map(() => '?').join(', ');
   const rows = db
     .prepare(
       `SELECT
@@ -578,17 +590,21 @@ export async function resolveUnresolvedModels(
        FROM agent_runs r
        JOIN sessions s ON s.session_id = r.app_session_id
        WHERE COALESCE(r.provider, '') IN ('claude', 'codex', 'kimi', 'grok', 'opencode')
-         AND (r.model IS NULL OR r.model = '' OR r.model = 'default')
+         AND (
+           r.model IS NULL OR r.model = ''
+           OR (r.provider = 'claude' AND r.model IN (${claudeAliasPlaceholders}))
+         )
        LIMIT ?`,
     )
-    .all(limit) as Array<BackfillSessionRow & { run_id: string }>;
+    .all(...CLAUDE_MODEL_ALIASES, limit) as Array<BackfillSessionRow & { run_id: string }>;
 
   for (const row of rows) {
     result.runsScanned += 1;
     try {
       const snapshot = await readUsage(row);
-      if (snapshot?.model) {
-        runsDb.resolveModel(row.run_id, snapshot.model);
+      const aliases = aliasesFor(row.provider);
+      if (snapshot?.model && !aliases.includes(snapshot.model)) {
+        runsDb.resolveModel(row.run_id, snapshot.model, aliases);
         result.runsResolved += 1;
       }
     } catch (error) {

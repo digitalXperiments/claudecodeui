@@ -3,9 +3,10 @@
  * Compact forms for cards and charts; exact forms for tooltips/titles.
  */
 
-/** Compact token count: 1.37B / 1.2M / 34.5k / 812. Em-dash for null. */
+/** Compact token count: 1.20T / 1.37B / 1.2M / 34.5k / 812. Em-dash for null. */
 export function formatTokens(n: number | null | undefined): string {
   if (n == null || !Number.isFinite(n)) return '—';
+  if (n >= 1_000_000_000_000) return `${(n / 1_000_000_000_000).toFixed(2)}T`;
   if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(2)}B`;
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 10_000) return `${Math.round(n / 1_000)}k`;

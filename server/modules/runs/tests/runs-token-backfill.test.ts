@@ -741,3 +741,66 @@ test('resolveUnresolvedModels backfills the model for existing runs stuck on "de
     await temp.restore();
   }
 });
+
+test('generation-agnostic claude aliases (not just "default") get normalized to their resolved model', async () => {
+  const temp = await useTempDatabase();
+  try {
+    seedSession({ sessionId: 'sess-alias-sonnet', provider: 'claude', createdAt: '2026-07-06T00:00:00.000Z' });
+    const sonnetRun = runService.create({
+      source: 'chat',
+      provider: 'claude',
+      model: 'sonnet',
+      appSessionId: 'sess-alias-sonnet',
+    });
+
+    // Live path: a token_budget event reporting the resolved model must
+    // supersede the 'sonnet' alias, not just the literal 'default' sentinel.
+    recordNormalizedRunEvent(
+      sonnetRun.run_id,
+      tokenBudgetMessage('claude', {
+        billedInputTokens: 300,
+        billedOutputTokens: 40,
+        model: 'claude-sonnet-5',
+      }),
+      'chat',
+    );
+    assert.equal(runService.get(sonnetRun.run_id)?.model, 'claude-sonnet-5');
+
+    // Historical path: an already-token-covered run stuck on an alias
+    // ('opus[1m]') gets swept up by resolveUnresolvedModels, not just 'default'.
+    seedSession({ sessionId: 'sess-alias-opus', provider: 'claude', createdAt: '2026-07-07T00:00:00.000Z' });
+    const opusRun = runService.create({
+      source: 'chat',
+      provider: 'claude',
+      model: 'opus[1m]',
+      appSessionId: 'sess-alias-opus',
+    });
+    runService.attachUsage(opusRun.run_id, { input: 900, output: 90, total: 990 });
+
+    const reader: HistoricalUsageReader = (session) =>
+      session.session_id === 'sess-alias-opus'
+        ? { input: 900, output: 90, model: 'claude-opus-5[1m]' }
+        : null;
+    const result = await resolveUnresolvedModels({ readUsage: reader });
+    assert.equal(result.runsResolved, 1);
+    assert.equal(runService.get(opusRun.run_id)?.model, 'claude-opus-5[1m]');
+
+    // A resolved model that happens to equal another alias must never be
+    // written back over a real value — only genuine resolved ids apply.
+    seedSession({ sessionId: 'sess-alias-noop', provider: 'claude', createdAt: '2026-07-08T00:00:00.000Z' });
+    const noopRun = runService.create({
+      source: 'chat',
+      provider: 'claude',
+      model: 'haiku',
+      appSessionId: 'sess-alias-noop',
+    });
+    recordNormalizedRunEvent(
+      noopRun.run_id,
+      tokenBudgetMessage('claude', { billedInputTokens: 5, billedOutputTokens: 1, model: 'sonnet' }),
+      'chat',
+    );
+    assert.equal(runService.get(noopRun.run_id)?.model, 'haiku', 'an alias-shaped "resolved" value must not overwrite');
+  } finally {
+    await temp.restore();
+  }
+});

@@ -107,6 +107,21 @@ export const findClaudeModelOptionIn = (
 
 export const findClaudeModelOption = (model: string | undefined | null): ProviderModelOption | null =>
   findClaudeModelOptionIn(CLAUDE_FALLBACK_MODELS, model);
+
+/**
+ * Every CLI alias a run's `model` column can carry at request time
+ * ('default', 'sonnet', 'opus[1m]', ...) — each one gets remapped by the CLI
+ * to a concrete generation ('claude-sonnet-5', 'claude-opus-5[1m]', ...),
+ * which is what every token_budget event actually reports. Used to decide
+ * when a run's stored model is a request-time alias worth superseding with
+ * the resolved id, rather than a value to leave alone (see
+ * runs.service.ts recordProviderUsage / runs-token-backfill.ts
+ * resolveUnresolvedModels) — without this, Stats fragments one real model
+ * into an alias bucket and a resolved-id bucket.
+ */
+export const CLAUDE_MODEL_ALIASES: readonly string[] = CLAUDE_FALLBACK_MODELS.OPTIONS.map(
+  (option) => option.value,
+);
 type ClaudeInitEvent = {
   sessionId?: string;
   session_id?: string;

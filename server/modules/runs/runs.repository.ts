@@ -412,17 +412,22 @@ export const runsDb = {
   },
 
   /**
-   * Patch in the concrete model a provider resolved a request-time sentinel
-   * to (e.g. Claude's `'default'`, which the SDK itself picks a real model
-   * for). Only ever overwrites an unresolved value — never clobbers a model
-   * the caller explicitly picked.
+   * Patch in the concrete model a provider resolved a request-time alias to
+   * (e.g. Claude's `'default'`/`'sonnet'`/`'opus[1m]'`, which the CLI itself
+   * remaps to a real generation like `'claude-sonnet-5'`). Only overwrites
+   * when the current value is empty or one of the known unresolved aliases
+   * (always includes `''`/null; callers pass provider-specific aliases, e.g.
+   * `CLAUDE_MODEL_ALIASES`, on top) — never clobbers a genuinely different,
+   * already-resolved model.
    */
-  resolveModel(runId: string, model: string): void {
+  resolveModel(runId: string, model: string, aliases: readonly string[] = []): void {
     const db = getConnection();
+    const placeholders = aliases.map(() => '?').join(', ');
+    const aliasClause = placeholders ? ` OR model IN (${placeholders})` : '';
     db.prepare(
       `UPDATE agent_runs SET model = ?, updated_at = ?
-       WHERE run_id = ? AND (model IS NULL OR model = '' OR model = 'default')`,
-    ).run(model, nowIso(), runId);
+       WHERE run_id = ? AND (model IS NULL OR model = ''${aliasClause})`,
+    ).run(model, nowIso(), runId, ...aliases);
   },
 
   linkSession(runId: string, appSessionId: string): void {
