@@ -47,18 +47,20 @@ import {
     abortKimiSession,
 } from './kimi-cli.js';
 import {
-    spawnAgy,
-    abortAgySession,
-} from './agy-cli.js';
-import {
     spawnPi,
     abortPiSession,
+    getPiSessionStats,
 } from './pi-cli.js';
 import {
     queryCodex,
     abortCodexSession,
 } from './openai-codex.js';
 import { buildCodexTokenUsage } from './modules/providers/list/codex/codex-token-usage.js';
+import {
+    buildPiTokenUsageFromStats,
+    readPiSessionTokenUsage,
+} from './modules/providers/list/pi/pi-token-usage.js';
+import { findPiSessionFile } from './modules/providers/list/pi/pi-sessions.provider.js';
 import {
     spawnOpenCode,
     abortOpenCodeSession,
@@ -119,6 +121,7 @@ import automationRoutes, { startAutomationKernel, stopAutomationKernel } from '.
 import swarmRoutes, {
     configureSwarmRuntimes,
     configureSwarmAbortFns,
+    recoverActiveSwarms,
 } from './modules/swarm/index.js';
 import failoverRoutes from './modules/failover/failover.routes.js';
 import {
@@ -196,7 +199,6 @@ const providerSpawnFns = {
     opencode: spawnOpenCode,
     grok: spawnGrok,
     kimi: spawnKimi,
-    agy: spawnAgy,
     pi: spawnPi,
 };
 
@@ -223,7 +225,6 @@ configureSwarmAbortFns({
     opencode: abortOpenCodeSession,
     grok: abortGrokSession,
     kimi: abortKimiSession,
-    agy: abortAgySession,
     pi: abortPiSession,
 });
 
@@ -291,7 +292,6 @@ const wss = createWebSocketServer(server, {
             opencode: abortOpenCodeSession,
             grok: abortGrokSession,
             kimi: abortKimiSession,
-            agy: abortAgySession,
             pi: abortPiSession,
         },
         resolveToolApproval,
@@ -1484,6 +1484,23 @@ app.get('/api/projects/:projectId/sessions/:sessionId/token-usage', authenticate
             });
         }
 
+        // Handle Pi sessions. Query the live RPC process when possible because
+        // Pi's get_session_stats includes the exact context window; fall back
+        // to the persisted JSONL transcript after the process is idle.
+        if (provider === 'pi') {
+            const liveStats = await getPiSessionStats(providerNativeSessionId).catch(() => null);
+            const liveUsage = buildPiTokenUsageFromStats(liveStats);
+            if (liveUsage) {
+                return res.json(liveUsage);
+            }
+
+            const piSessionFile = findPiSessionFile(providerNativeSessionId);
+            if (!piSessionFile) {
+                return res.status(404).json({ error: 'Pi session not found', sessionId: safeSessionId });
+            }
+            return res.json(readPiSessionTokenUsage(piSessionFile));
+        }
+
         // Handle Kimi sessions — context fill from latest usage.record turn,
         // session spend from the sum of all turns (see kimi-token-usage.ts).
         if (provider === 'kimi') {
@@ -1856,6 +1873,13 @@ async function startServer() {
         } catch (error) {
             console.error('[CloudCLI] run/workspace reconciliation failed:', error.message);
         }
+
+        // Swarms own durable plans, attempts, workspaces, and execution leases,
+        // so they can resume after a process restart. Do not block server boot
+        // on provider work that may run for minutes.
+        void recoverActiveSwarms().catch((error) => {
+            console.error('[Swarm] boot recovery failed:', error.message);
+        });
 
         // Fail any kanban runs left "running" by a previous process (crash/restart),
         // re-enqueue anything persisted as "queued", and start the cron scheduler.

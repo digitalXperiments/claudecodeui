@@ -3,7 +3,7 @@ import readline from 'node:readline';
 import crossSpawn from 'cross-spawn';
 
 import { appendImagesInputTag } from './shared/image-attachments.js';
-import { createRequestId, waitForToolApproval } from './claude-sdk.js';
+import { createRequestId, extractPermissionPaths, resolveApprovalTimeoutMs, waitForToolApproval } from './claude-sdk.js';
 import { notifyRunFailed, notifyRunStopped } from './services/notification-orchestrator.js';
 import { sessionsService } from './modules/providers/services/sessions.service.js';
 import { providerAuthService } from './modules/providers/services/provider-auth.service.js';
@@ -307,6 +307,8 @@ async function spawnKimi(command, options = {}, ws) {
     effort,
     sessionSummary,
     permissionMode = 'bypassPermissions',
+    unattended = false,
+    approvalTimeoutMs,
   } = options;
 
   const workingDir = cwd || projectPath || process.cwd();
@@ -424,12 +426,19 @@ async function spawnKimi(command, options = {}, ws) {
         input: toolInput,
         sessionId: finalSessionId,
         provider: 'kimi',
+        cwd: workingDir,
+        paths: extractPermissionPaths(toolInput),
+        unattended,
       }));
 
-      // Wait indefinitely for chatbar approval (same as Grok). The shared
-      // default timeout (~55s) was cancelling prompts before users could answer.
+      // Interactive chat waits indefinitely for chatbar approval (same as
+      // Grok; the shared default timeout ~55s used to cancel prompts before
+      // users could answer). Unattended (swarm) runs instead wait a bounded
+      // window for the permission broker to answer, then fall through to the
+      // reject option below — never an infinite headless hang.
+      const approvalWaitMs = resolveApprovalTimeoutMs({ unattended, approvalTimeoutMs });
       const decision = await waitForToolApproval(requestId, {
-        timeoutMs: 0,
+        timeoutMs: approvalWaitMs,
         metadata: {
           _sessionId: finalSessionId,
           _toolName: toolName,
@@ -440,6 +449,10 @@ async function spawnKimi(command, options = {}, ws) {
           ws.send(createNormalizedMessage({ kind: 'permission_cancelled', requestId, reason, sessionId: finalSessionId, provider: 'kimi' }));
         },
       });
+
+      if (unattended && !decision) {
+        console.warn(`[kimi-cli] session=${finalSessionId} unattended approval for "${toolName}" timed out after ${approvalWaitMs}ms — denying`);
+      }
 
       const options_ = message.params?.options || [];
       let optionId = options_.find((o) => o.kind === 'reject_once')?.optionId || 'reject';

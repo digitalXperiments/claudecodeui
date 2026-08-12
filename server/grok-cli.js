@@ -3,7 +3,7 @@ import readline from 'node:readline';
 
 import crossSpawn from 'cross-spawn';
 
-import { createRequestId, waitForToolApproval } from './claude-sdk.js';
+import { createRequestId, extractPermissionPaths, resolveApprovalTimeoutMs, waitForToolApproval } from './claude-sdk.js';
 import { notifyRunFailed, notifyRunStopped } from './services/notification-orchestrator.js';
 import { sessionsService } from './modules/providers/services/sessions.service.js';
 import { providerAuthService } from './modules/providers/services/provider-auth.service.js';
@@ -120,6 +120,73 @@ const buildSpawnArgs = ({ model, effort, alwaysApprove }) => {
   args.push('stdio');
   return args;
 };
+
+/**
+ * Preserve why Grok's ACP turn was denied. A rejected permission commonly
+ * makes `session/prompt` resolve with `stopReason: "cancelled"`; that is a
+ * provider-level failed turn, not proof that the user pressed CloudCLI's Abort
+ * button.
+ */
+function describeGrokPermissionDenial(toolName, decision, timedOut = false) {
+  const label = typeof toolName === 'string' && toolName.trim() ? toolName.trim() : 'Tool';
+  const supplied = typeof decision?.message === 'string' ? decision.message.trim() : '';
+  if (supplied) {
+    return `Grok tool permission was denied for "${label}": ${supplied}`;
+  }
+  if (timedOut) {
+    return `Grok tool permission was denied for "${label}" because no approval arrived before the unattended timeout.`;
+  }
+  if (decision?.cancelled) {
+    return `Grok tool permission was cancelled for "${label}".`;
+  }
+  return `Grok tool permission was denied for "${label}".`;
+}
+
+/**
+ * Translate ACP prompt completion into CloudCLI's terminal contract. Only an
+ * explicit abort routed through abortGrokSession is `aborted`; a provider
+ * `cancelled` stop reason is a failed run and carries the permission/error
+ * cause that triggered it when one was observed.
+ */
+function resolveGrokPromptCompletion({ explicitlyAborted, stopReason, permissionDenial }) {
+  if (explicitlyAborted) {
+    return { exitCode: 1, aborted: true, errorContent: null };
+  }
+  if (stopReason === 'cancelled') {
+    return {
+      exitCode: 1,
+      aborted: false,
+      errorContent:
+        permissionDenial
+        || 'Grok cancelled the provider turn without an explicit CloudCLI abort.',
+    };
+  }
+  return { exitCode: 0, aborted: false, errorContent: null };
+}
+
+/** Emit the actionable error before complete so detached run outcomes retain it. */
+function emitGrokPromptCompletion(ws, { sessionId, explicitlyAborted, stopReason, permissionDenial }) {
+  const completion = resolveGrokPromptCompletion({
+    explicitlyAborted,
+    stopReason,
+    permissionDenial,
+  });
+  if (completion.errorContent) {
+    ws.send(createNormalizedMessage({
+      kind: 'error',
+      content: completion.errorContent,
+      sessionId,
+      provider: 'grok',
+    }));
+  }
+  ws.send(createCompleteMessage({
+    provider: 'grok',
+    sessionId,
+    exitCode: completion.exitCode,
+    aborted: completion.aborted,
+  }));
+  return completion;
+}
 
 // One persistent `grok agent stdio` child per cloudcli session, reused across
 // every message in that session. Keyed by a temporary key until the real Grok
@@ -637,6 +704,7 @@ async function spawnGrok(command, options = {}, ws) {
     permissionMode = 'bypassPermissions',
     mcpServers: requestedMcpServerNames = [],
     unattended = false,
+    approvalTimeoutMs,
   } = options;
 
   const workingDir = cwd || projectPath || process.cwd();
@@ -783,6 +851,11 @@ async function spawnGrok(command, options = {}, ws) {
 
   const finalSessionId = capturedSessionId || handle.grokSessionId;
 
+  // Set when this turn rejects an ACP permission. If Grok then resolves the
+  // whole prompt as `cancelled`, this becomes the run's actionable error rather
+  // than the misleading generic "provider exited" fallback.
+  let lastPermissionDenial = null;
+
   const unsubscribe = handle.rpc.onMessage(async (message, isRequest) => {
     // Grok's ask_user_question tool does NOT use session/request_permission.
     // It sends a blocking extension request `_x.ai/ask_user_question` that the
@@ -808,15 +881,12 @@ async function spawnGrok(command, options = {}, ws) {
         })),
       };
 
-      // Headless runs (kanban/mission-control) have no human to answer — a
-      // `timeoutMs: 0` wait would hang the run until the 30-minute idle
-      // cleanup kills it. Skip the interview instead of blocking forever.
-      if (unattended) {
-        console.warn(`[grok-cli] session=${finalSessionId} unattended run: auto skip_interview for ask_user_question`);
-        handle.rpc.respond(message.id, { outcome: 'skip_interview' });
-        return;
-      }
-
+      // Headless runs (kanban/mission-control) have no human to answer, but a
+      // swarm does have a respondent: the permission broker routes the question
+      // to the orchestrator. So emit it and wait a BOUNDED time rather than
+      // pre-answering (which denied the orchestrator the chance) or waiting
+      // forever (which hangs until the 30-minute idle cleanup). No answer
+      // within the budget still falls back to skipping the interview.
       ws.send(createNormalizedMessage({
         kind: 'permission_request',
         requestId,
@@ -824,11 +894,15 @@ async function spawnGrok(command, options = {}, ws) {
         input: toolInput,
         sessionId: finalSessionId,
         provider: 'grok',
+        cwd: workingDir,
+        paths: extractPermissionPaths(toolInput),
+        unattended,
       }));
 
+      const questionWaitMs = resolveApprovalTimeoutMs({ unattended, approvalTimeoutMs });
       const decision = await waitForToolApproval(requestId, {
-        // Wait indefinitely — same as Claude's AskUserQuestion path.
-        timeoutMs: 0,
+        // Interactive chat waits indefinitely; unattended gets the bounded window.
+        timeoutMs: unattended ? questionWaitMs : 0,
         metadata: {
           _sessionId: finalSessionId,
           _toolName: toolName,
@@ -839,9 +913,15 @@ async function spawnGrok(command, options = {}, ws) {
           ws.send(createNormalizedMessage({ kind: 'permission_cancelled', requestId, reason, sessionId: finalSessionId, provider: 'grok' }));
         },
       });
+      if (unattended && !decision) {
+        console.warn(`[grok-cli] session=${finalSessionId} unattended ask_user_question unanswered after ${questionWaitMs}ms — skip_interview`);
+        handle.rpc.respond(message.id, { outcome: 'skip_interview' });
+        return;
+      }
 
       let response;
       if (!decision || decision.cancelled || decision.allow === false) {
+        lastPermissionDenial = describeGrokPermissionDenial(toolName, decision, !decision);
         response = { outcome: 'cancelled' };
       } else {
         const updated = decision.updatedInput && typeof decision.updatedInput === 'object'
@@ -876,14 +956,10 @@ async function spawnGrok(command, options = {}, ws) {
       const planFromDisk = readGrokSessionPlanMarkdown(workingDir, finalSessionId);
       const toolInput = ensureExitPlanModeToolInput(params, planFromDisk);
 
-      // Headless runs have no human to review the plan — reject rather than
-      // hang forever or silently let it proceed unreviewed.
-      if (unattended) {
-        console.warn(`[grok-cli] session=${finalSessionId} unattended run: auto-rejecting exit_plan_mode`);
-        handle.rpc.respond(message.id, { outcome: 'rejected' });
-        return;
-      }
-
+      // Headless runs have no human to review the plan, but a swarm's broker
+      // routes it to the orchestrator. Emit and wait a BOUNDED time instead of
+      // auto-rejecting; an unanswered request still falls back to rejected, so
+      // a plan is never silently allowed through unreviewed.
       ws.send(createNormalizedMessage({
         kind: 'permission_request',
         requestId,
@@ -891,10 +967,14 @@ async function spawnGrok(command, options = {}, ws) {
         input: toolInput,
         sessionId: finalSessionId,
         provider: 'grok',
+        cwd: workingDir,
+        paths: extractPermissionPaths(toolInput),
+        unattended,
       }));
 
+      const planWaitMs = resolveApprovalTimeoutMs({ unattended, approvalTimeoutMs });
       const decision = await waitForToolApproval(requestId, {
-        timeoutMs: 0,
+        timeoutMs: unattended ? planWaitMs : 0,
         metadata: {
           _sessionId: finalSessionId,
           _toolName: toolName,
@@ -905,12 +985,19 @@ async function spawnGrok(command, options = {}, ws) {
           ws.send(createNormalizedMessage({ kind: 'permission_cancelled', requestId, reason, sessionId: finalSessionId, provider: 'grok' }));
         },
       });
+      if (unattended && !decision) {
+        console.warn(`[grok-cli] session=${finalSessionId} unattended exit_plan_mode unanswered after ${planWaitMs}ms — rejecting`);
+      }
 
       // ExitPlanModeExtResponse is a 2-field shape; accepted/rejected via outcome.
       // Verified variant names from the binary match permission-style outcomes.
       const response = (decision && decision.allow && !decision.cancelled)
         ? { outcome: 'accepted' }
         : { outcome: 'rejected' };
+
+      if (response.outcome === 'rejected') {
+        lastPermissionDenial = describeGrokPermissionDenial(toolName, decision, !decision);
+      }
 
       handle.rpc.respond(message.id, response);
       return;
@@ -936,18 +1023,6 @@ async function spawnGrok(command, options = {}, ws) {
         toolInput = ensureExitPlanModeToolInput(toolInput, planFromDisk);
       }
 
-      // Headless runs (kanban/mission-control) have no websocket/human to
-      // answer this — waiting indefinitely (timeoutMs: 0 below) used to hang
-      // the run until the 30-minute idle cleanup killed it. Deny fast instead;
-      // tasks that need tools to run unattended should use bypassPermissions.
-      if (unattended) {
-        const options_ = message.params?.options || [];
-        const optionId = options_.find((o) => o.kind === 'reject_once')?.optionId || 'reject';
-        console.warn(`[grok-cli] session=${finalSessionId} unattended run: auto-denying "${uiToolName}" (non-bypass permission_mode has no approver headlessly)`);
-        handle.rpc.respond(message.id, { outcome: { outcome: 'selected', optionId } });
-        return;
-      }
-
       ws.send(createNormalizedMessage({
         kind: 'permission_request',
         requestId,
@@ -955,13 +1030,22 @@ async function spawnGrok(command, options = {}, ws) {
         input: toolInput,
         sessionId: finalSessionId,
         provider: 'grok',
+        cwd: workingDir,
+        paths: extractPermissionPaths(toolInput),
+        unattended,
       }));
 
-      // Wait indefinitely for a chatbar decision. The shared waitForToolApproval
-      // default used to be ~55s and auto-cancelled prompts before users could
-      // answer — every permission shown in the UI is interactive.
+      // Interactive chat waits indefinitely for a chatbar decision (the shared
+      // waitForToolApproval default used to be ~55s and auto-cancelled prompts
+      // before users could answer). Headless/unattended runs (kanban/
+      // mission-control/swarm) used to auto-deny before even emitting the
+      // event; now the permission_request above always goes out so the swarm
+      // permission broker can answer it, and the wait is bounded so nothing
+      // hangs until the 30-minute idle cleanup if nobody does. Expiry falls
+      // through to the reject option below — same deny as before, just later.
+      const approvalWaitMs = resolveApprovalTimeoutMs({ unattended, approvalTimeoutMs });
       const decision = await waitForToolApproval(requestId, {
-        timeoutMs: 0,
+        timeoutMs: approvalWaitMs,
         metadata: {
           _sessionId: finalSessionId,
           _toolName: uiToolName,
@@ -972,6 +1056,14 @@ async function spawnGrok(command, options = {}, ws) {
           ws.send(createNormalizedMessage({ kind: 'permission_cancelled', requestId, reason, sessionId: finalSessionId, provider: 'grok' }));
         },
       });
+
+      if (unattended && !decision) {
+        console.warn(`[grok-cli] session=${finalSessionId} unattended approval for "${uiToolName}" timed out after ${approvalWaitMs}ms — denying`);
+      }
+
+      if (!decision || decision.cancelled || decision.allow === false) {
+        lastPermissionDenial = describeGrokPermissionDenial(uiToolName, decision, !decision);
+      }
 
       const options_ = message.params?.options || [];
       let optionId = options_.find((o) => o.kind === 'reject_once')?.optionId || 'reject';
@@ -1048,13 +1140,12 @@ async function spawnGrok(command, options = {}, ws) {
     });
     handle.inFlightPrompt = false;
 
-    const aborted = handle.aborted || result?.stopReason === 'cancelled';
-    ws.send(createCompleteMessage({
-      provider: 'grok',
+    const completion = emitGrokPromptCompletion(ws, {
       sessionId: finalSessionId,
-      exitCode: aborted ? 1 : 0,
-      aborted,
-    }));
+      explicitlyAborted: handle.aborted,
+      stopReason: result?.stopReason,
+      permissionDenial: lastPermissionDenial,
+    });
 
     // Push live context occupancy (matches Grok /context) so the composer
     // badge does not keep showing stale or cumulative-only spend.
@@ -1081,15 +1172,25 @@ async function spawnGrok(command, options = {}, ws) {
     // never retroactively turn an already-sent successful `complete` into a
     // false failure below.
     try {
-      await notifyRunStopped({
-        userId: ws?.userId || null,
-        provider: 'grok',
-        sessionId: finalSessionId,
-        sessionName: sessionSummary,
-        stopReason: aborted ? 'cancelled' : 'completed',
-      });
+      if (completion.errorContent) {
+        await notifyRunFailed({
+          userId: ws?.userId || null,
+          provider: 'grok',
+          sessionId: finalSessionId,
+          sessionName: sessionSummary,
+          error: new Error(completion.errorContent),
+        });
+      } else {
+        await notifyRunStopped({
+          userId: ws?.userId || null,
+          provider: 'grok',
+          sessionId: finalSessionId,
+          sessionName: sessionSummary,
+          stopReason: completion.aborted ? 'cancelled' : 'completed',
+        });
+      }
     } catch (notifyError) {
-      console.error('Grok notifyRunStopped failed (non-fatal):', notifyError);
+      console.error('Grok completion notification failed (non-fatal):', notifyError);
     }
   } catch (error) {
     handle.inFlightPrompt = false;
@@ -1140,5 +1241,8 @@ export {
   spawnGrok,
   abortGrokSession,
   isGrokSessionActive,
-  getActiveGrokSessions
+  getActiveGrokSessions,
+  describeGrokPermissionDenial,
+  resolveGrokPromptCompletion,
+  emitGrokPromptCompletion,
 };

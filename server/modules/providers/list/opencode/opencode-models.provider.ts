@@ -54,7 +54,10 @@ export const OPENCODE_FALLBACK_MODELS: ProviderModelsDefinition = {
 };
 
 const OPEN_CODE_MODELS_TIMEOUT_MS = 20_000;
-const MODEL_ID_LINE = /^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._-]*$/i;
+// The provider is the first path segment; the model id after it is opaque and
+// may itself contain slashes (OpenRouter ids such as `openrouter/z-ai/glm-5.2`)
+// or punctuation such as `:free`.
+const MODEL_ID_LINE = /^[a-z0-9][a-z0-9._-]*\/[^\s/][^\s]*$/i;
 // cross-spawn resolves .cmd shims/PATHEXT on Windows and delegates to
 // child_process.spawn everywhere else.
 const spawnFunction = crossSpawn;
@@ -68,7 +71,13 @@ type OpenCodeVerboseModel = {
   id?: string;
   name?: string;
   providerID?: string;
+  status?: string;
   variants?: Record<string, unknown>;
+  capabilities?: {
+    toolcall?: boolean;
+    input?: { text?: boolean };
+    output?: { text?: boolean };
+  };
 };
 
 export const parseOpenCodeModelsStdout = (stdout: string): string[] => {
@@ -233,18 +242,34 @@ const isSupportedOpenCodeModelId = (id: string): boolean => (
   readOpenCodeModelParts(id).upstreamProvider.toLowerCase() !== 'google'
 );
 
+/** Models shown as coding agents must be able to take text, return text, and use tools. */
+const isAgentCompatibleOpenCodeModel = (model: OpenCodeVerboseModel): boolean => {
+  if (model.status && model.status !== 'active') {
+    return false;
+  }
+
+  const capabilities = model.capabilities;
+  return capabilities?.input?.text !== false
+    && capabilities?.output?.text !== false
+    && capabilities?.toolcall !== false;
+};
+
 const readOpenCodeVerboseModelId = (model: OpenCodeVerboseModel): string | null => {
   const id = readOptionalString(model.id);
   if (!id) {
     return null;
   }
 
-  if (id.includes('/')) {
+  const upstreamProvider = readOptionalString(model.providerID);
+  if (!upstreamProvider || id.startsWith(`${upstreamProvider}/`)) {
     return id;
   }
 
-  const upstreamProvider = readOptionalString(model.providerID);
-  return upstreamProvider ? `${upstreamProvider}/${id}` : id;
+  // `id` is provider-local even when it contains a slash. For example,
+  // OpenRouter reports `{ providerID: "openrouter", id: "z-ai/glm-5.2" }`.
+  // Returning the local id by itself silently selects a different provider (or
+  // collides with its native entry) when ACP applies the model option.
+  return `${upstreamProvider}/${id}`;
 };
 
 const labelForOpenCodeModelId = (id: string): string => {
@@ -290,7 +315,7 @@ const readOpenCodeEffortValues = (
 
 const mapOpenCodeVerboseModel = (model: OpenCodeVerboseModel): ProviderModelOption | null => {
   const value = readOpenCodeVerboseModelId(model);
-  if (!value || !isSupportedOpenCodeModelId(value)) {
+  if (!value || !isSupportedOpenCodeModelId(value) || !isAgentCompatibleOpenCodeModel(model)) {
     return null;
   }
 

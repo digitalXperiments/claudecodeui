@@ -198,14 +198,199 @@ const aggregateOpenCodeSessionTokenUsage = (
   });
 };
 
+type NormalizeOpenCodePartOptions = {
+  part: AnyRecord;
+  id: string;
+  sessionId: string | null;
+  timestamp: string;
+  role: 'user' | 'assistant';
+  /** Tool id used when the part carries no `callID` of its own. */
+  toolIdFallback: string;
+};
+
+/**
+ * Normalizes one OpenCode message *part* — the single shape both the live
+ * `run --format json` stream and the sqlite transcript speak. Live events wrap
+ * it (`{ type: 'text', part: { type: 'text', text } }`); history rows store it
+ * directly. Keeping one implementation is what stops the stream and the
+ * transcript from disagreeing about what the agent said.
+ */
+const normalizeOpenCodePart = (options: NormalizeOpenCodePartOptions): NormalizedMessage[] => {
+  const { part, id, sessionId, timestamp, role, toolIdFallback } = options;
+  const partType = readOptionalString(part.type);
+  if (!partType) {
+    return [];
+  }
+
+  if (partType === 'text') {
+    const rawContent = extractText(part);
+    // User prompts sent with attachments carry an <images_input> path list;
+    // strip it for display and surface the paths as images.
+    const { text: content, attachments } = role === 'user'
+      ? parseImagesInputTag(rawContent)
+      : { text: rawContent, attachments: [] };
+    if (!content.trim() && attachments.length === 0) {
+      return [];
+    }
+
+    return [createNormalizedMessage({
+      id,
+      sessionId,
+      timestamp,
+      provider: PROVIDER,
+      kind: 'text',
+      role,
+      content,
+      images: attachments.length > 0 ? attachments : undefined,
+    })];
+  }
+
+  if (partType === 'reasoning') {
+    const content = extractText(part);
+    if (!content.trim()) {
+      return [];
+    }
+
+    return [createNormalizedMessage({
+      id,
+      sessionId,
+      timestamp,
+      provider: PROVIDER,
+      kind: 'thinking',
+      content,
+    })];
+  }
+
+  if (partType === 'tool') {
+    const state = readObjectRecord(part.state) ?? {};
+    const status = readOptionalString(state.status);
+    const toolMessage = createNormalizedMessage({
+      id,
+      sessionId,
+      timestamp,
+      provider: PROVIDER,
+      kind: 'tool_use',
+      toolName: readOptionalString(part.tool) ?? 'Tool',
+      toolInput: state.input ?? part.input ?? {},
+      toolId: readOptionalString(part.callID) ?? toolIdFallback,
+    });
+
+    if (status === 'completed' || status === 'error') {
+      toolMessage.toolResult = {
+        content: formatToolContent(state.output ?? state.error),
+        isError: status === 'error',
+      };
+    }
+
+    return [toolMessage];
+  }
+
+  if (partType === 'step-finish') {
+    return [createNormalizedMessage({
+      id,
+      sessionId,
+      timestamp,
+      provider: PROVIDER,
+      kind: 'stream_end',
+    })];
+  }
+
+  if (partType === 'patch' || partType === 'agent') {
+    return [createNormalizedMessage({
+      id,
+      sessionId,
+      timestamp,
+      provider: PROVIDER,
+      kind: 'tool_use',
+      toolName: partType === 'patch' ? 'Patch' : 'Agent',
+      toolInput: part,
+      toolId: toolIdFallback,
+    })];
+  }
+
+  return [];
+};
+
+/**
+ * Normalizes one ACP `session/update` payload (live, via `opencode acp` — see
+ * opencode-cli.js). `sessionUpdate` is ACP's discriminant field; the shapes
+ * were captured from opencode 1.18.11.
+ */
+const normalizeAcpUpdate = (raw: AnyRecord, sessionId: string | null): NormalizedMessage[] => {
+  const kind = readOptionalString(raw.sessionUpdate);
+  // Chunk text must NOT go through readOptionalString: it trims, and a delta
+  // that is only a newline or indentation would vanish — which silently
+  // reflows every code block and JSON payload the agent streams.
+  const chunkText = (value: unknown): string => {
+    const text = readObjectRecord(value)?.text;
+    return typeof text === 'string' ? text : '';
+  };
+
+  if (kind === 'agent_thought_chunk') {
+    const text = chunkText(raw.content);
+    return text
+      ? [createNormalizedMessage({ kind: 'thinking', content: text, sessionId, provider: PROVIDER })]
+      : [];
+  }
+
+  if (kind === 'agent_message_chunk') {
+    const text = chunkText(raw.content);
+    return text
+      ? [createNormalizedMessage({ kind: 'stream_delta', content: text, sessionId, provider: PROVIDER })]
+      : [];
+  }
+
+  const status = readOptionalString(raw.status);
+  if (kind === 'tool_call_update' && (status === 'completed' || status === 'failed')) {
+    const content = Array.isArray(raw.content)
+      ? raw.content
+          .map((part) => chunkText(readObjectRecord(part)?.content))
+          .filter(Boolean)
+          .join('\n')
+      : '';
+    return [createNormalizedMessage({
+      kind: 'tool_result',
+      toolId: readOptionalString(raw.toolCallId) ?? '',
+      content: content || formatToolContent(raw.rawOutput),
+      isError: status === 'failed',
+      sessionId,
+      provider: PROVIDER,
+    })];
+  }
+
+  if (kind === 'tool_call_update' && raw.rawInput) {
+    return [createNormalizedMessage({
+      kind: 'tool_use',
+      // opencode-cli.js carries the real tool name ("bash") forward as
+      // `toolName`; `title` by this point is the command being run.
+      toolName: readOptionalString(raw.toolName) ?? readOptionalString(raw.title) ?? 'Tool',
+      toolInput: raw.rawInput,
+      toolId: readOptionalString(raw.toolCallId) ?? generateMessageId('opencode'),
+      sessionId,
+      provider: PROVIDER,
+    })];
+  }
+
+  // `tool_call` (the initial pending event, whose title opencode-cli.js keeps
+  // for the name above), `available_commands_update`, `usage_update` and
+  // `config_option_update` carry nothing the chat pane renders.
+  return [];
+};
+
 export class OpenCodeSessionsProvider implements IProviderSessions {
   /**
-   * Normalizes live `opencode run --format json` events into frontend messages.
+   * Normalizes live OpenCode events into frontend messages: ACP
+   * `session/update` payloads (`opencode acp`, the current runtime) and the
+   * part-wrapped events of the older one-shot `opencode run --format json`.
    */
   normalizeMessage(rawMessage: unknown, sessionId: string | null): NormalizedMessage[] {
     const raw = readObjectRecord(rawMessage);
     if (!raw) {
       return [];
+    }
+
+    if (typeof raw.sessionUpdate === 'string') {
+      return normalizeAcpUpdate(raw, sessionId);
     }
 
     const type = readOptionalString(raw.type) ?? readOptionalString(raw.event);
@@ -214,6 +399,50 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
     const baseId = readOptionalString(raw.id)
       ?? readOptionalString(raw.messageID)
       ?? generateMessageId('opencode');
+
+    if (type === 'error') {
+      // OpenCode reports structured errors (`{ error: { name, data } }`) as
+      // well as plain strings; formatting the object beats reporting the
+      // useless "Unknown OpenCode error" the string-only read fell back to.
+      const content = readOptionalString(raw.error)
+        ?? readOptionalString(raw.message)
+        ?? formatToolContent(raw.error ?? raw.message)
+        ?? '';
+      return [createNormalizedMessage({
+        id: baseId,
+        sessionId: eventSessionId,
+        timestamp,
+        provider: PROVIDER,
+        kind: 'error',
+        content: content.trim() || 'Unknown OpenCode error',
+      })];
+    }
+
+    // OpenCode (>= 1.x) wraps every streamed event's payload in `part`, where
+    // the text/tool fields live — the flat `raw.text` / `raw.tool` shape below
+    // is the older format. Without this branch the CLI's answer never becomes
+    // a text event at all: the chat pane still renders it (it re-reads the
+    // provider's sqlite transcript), but every consumer of the live run —
+    // agent swarm, Mission Control, Kanban — sees an empty transcript and
+    // treats a successful run as "no output from agent".
+    const part = readObjectRecord(raw.part);
+    if (part) {
+      // The client already renders an optimistic user bubble, so provider user
+      // echoes must not be streamed back as assistant text.
+      if (isUserTextEcho(raw)) {
+        return [];
+      }
+
+      const partId = readOptionalString(part.id) ?? baseId;
+      return normalizeOpenCodePart({
+        part,
+        id: partId,
+        sessionId: eventSessionId,
+        timestamp,
+        role: 'assistant',
+        toolIdFallback: partId,
+      });
+    }
 
     if (type === 'text') {
       // The client already renders an optimistic user bubble, so provider user
@@ -275,17 +504,6 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
       }
 
       return [toolMessage];
-    }
-
-    if (type === 'error') {
-      return [createNormalizedMessage({
-        id: baseId,
-        sessionId: eventSessionId,
-        timestamp,
-        provider: PROVIDER,
-        kind: 'error',
-        content: readOptionalString(raw.error) ?? readOptionalString(raw.message) ?? 'Unknown OpenCode error',
-      })];
     }
 
     if (type === 'step_finish') {
@@ -395,96 +613,14 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
       }
 
       const partData = readJsonRecord(row.part_data) ?? {};
-      const partType = readOptionalString(partData.type);
-      if (!partType) {
-        continue;
-      }
-
-      if (partType === 'text') {
-        const rawContent = extractText(partData);
-        // User prompts sent with attachments carry an <images_input> path
-        // list; strip it for display and surface the paths as images.
-        const { text: content, attachments } = messageRole === 'user'
-          ? parseImagesInputTag(rawContent)
-          : { text: rawContent, attachments: [] };
-        if (content.trim() || attachments.length > 0) {
-          normalized.push(createNormalizedMessage({
-            id: baseId,
-            sessionId,
-            timestamp,
-            provider: PROVIDER,
-            kind: 'text',
-            role: messageRole === 'user' ? 'user' : 'assistant',
-            content,
-            images: attachments.length > 0 ? attachments : undefined,
-          }));
-        }
-        continue;
-      }
-
-      if (partType === 'reasoning') {
-        const content = extractText(partData);
-        if (content.trim()) {
-          normalized.push(createNormalizedMessage({
-            id: baseId,
-            sessionId,
-            timestamp,
-            provider: PROVIDER,
-            kind: 'thinking',
-            content,
-          }));
-        }
-        continue;
-      }
-
-      if (partType === 'tool') {
-        const state = readObjectRecord(partData.state) ?? {};
-        const status = readOptionalString(state.status);
-        const toolMessage = createNormalizedMessage({
-          id: baseId,
-          sessionId,
-          timestamp,
-          provider: PROVIDER,
-          kind: 'tool_use',
-          toolName: readOptionalString(partData.tool) ?? 'Tool',
-          toolInput: state.input ?? partData.input ?? {},
-          toolId: readOptionalString(partData.callID) ?? row.part_id,
-        });
-
-        if (status === 'completed' || status === 'error') {
-          toolMessage.toolResult = {
-            content: formatToolContent(state.output ?? state.error),
-            isError: status === 'error',
-          };
-        }
-
-        normalized.push(toolMessage);
-        continue;
-      }
-
-      if (partType === 'step-finish') {
-        normalized.push(createNormalizedMessage({
-          id: baseId,
-          sessionId,
-          timestamp,
-          provider: PROVIDER,
-          kind: 'stream_end',
-        }));
-        continue;
-      }
-
-      if (partType === 'patch' || partType === 'agent') {
-        normalized.push(createNormalizedMessage({
-          id: baseId,
-          sessionId,
-          timestamp,
-          provider: PROVIDER,
-          kind: 'tool_use',
-          toolName: partType === 'patch' ? 'Patch' : 'Agent',
-          toolInput: partData,
-          toolId: row.part_id,
-        }));
-      }
+      normalized.push(...normalizeOpenCodePart({
+        part: partData,
+        id: baseId,
+        sessionId,
+        timestamp,
+        role: messageRole === 'user' ? 'user' : 'assistant',
+        toolIdFallback: row.part_id,
+      }));
     }
 
     return normalized;

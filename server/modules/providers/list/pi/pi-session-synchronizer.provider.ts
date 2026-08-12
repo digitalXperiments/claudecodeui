@@ -19,6 +19,36 @@ type ParsedSession = {
   jsonlPath: string;
 };
 
+function extractTextContent(content: unknown): string {
+  if (typeof content === 'string') {
+    return content;
+  }
+  if (!Array.isArray(content)) {
+    return '';
+  }
+  return content
+    .map((part) => {
+      const record = readObjectRecord(part);
+      return typeof record?.text === 'string' ? record.text : '';
+    })
+    .filter(Boolean)
+    .join(' ');
+}
+
+function extractUserTitle(record: Record<string, unknown>): string | undefined {
+  const message = readObjectRecord(record.message) ?? record;
+  if (message.role !== 'user') {
+    return undefined;
+  }
+
+  const text = extractTextContent(message.content);
+  const firstLine = text
+    .replace(/<images_input>[\s\S]*?<\/images_input>/g, '')
+    .trim()
+    .split(/\r?\n/)[0];
+  return firstLine || undefined;
+}
+
 /**
  * Session indexer for Pi coding-agent JSONL transcripts.
  *
@@ -32,7 +62,11 @@ export class PiSessionSynchronizer implements IProviderSessionSynchronizer {
   private readonly piSessionsRoot = path.join(os.homedir(), '.pi', 'agent', 'sessions');
 
   async synchronize(since?: Date): Promise<number> {
-    const files = await findFilesRecursivelyCreatedAfter(this.piSessionsRoot, '.jsonl', since ?? null);
+    // Pi has no separate session metadata/title index. Re-scan transcript
+    // headers on startup so existing "Untitled Pi Session" rows get their
+    // first-prompt title populated after upgrading CloudCLI.
+    void since;
+    const files = await findFilesRecursivelyCreatedAfter(this.piSessionsRoot, '.jsonl', null);
 
     let processed = 0;
     for (const filePath of files) {
@@ -91,41 +125,55 @@ export class PiSessionSynchronizer implements IProviderSessionSynchronizer {
     let projectPath = decodePiSessionCwdDir(parentDir);
     let sessionName: string | undefined;
 
-    // Prefer header metadata inside the JSONL when present.
+    // The session header does not normally contain a display name. Read a
+    // bounded prefix and use the first user prompt as the Chatbar title,
+    // just like the other provider synchronizers do.
     try {
       const fd = await fsSync.promises.open(filePath, 'r');
       try {
-        const { buffer } = await fd.read({ buffer: Buffer.alloc(8 * 1024), position: 0 });
-        const head = buffer.toString('utf8').split(/\r?\n/)[0] || '';
-        if (head.trim()) {
-          const header = readObjectRecord(JSON.parse(head.trim()));
-          if (header) {
-            if (typeof header.cwd === 'string' && header.cwd.trim()) {
-              projectPath = header.cwd;
-            } else if (typeof header.workingDirectory === 'string' && header.workingDirectory.trim()) {
-              projectPath = header.workingDirectory;
+        const { buffer } = await fd.read({ buffer: Buffer.alloc(64 * 1024), position: 0 });
+        const lines = buffer.toString('utf8').split(/\r?\n/);
+        let canonicalSessionId: string | undefined;
+
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          const record = readObjectRecord(JSON.parse(line.trim()));
+          if (!record) continue;
+
+          if (record.type === 'session') {
+            if (typeof record.cwd === 'string' && record.cwd.trim()) {
+              projectPath = record.cwd;
+            } else if (typeof record.workingDirectory === 'string' && record.workingDirectory.trim()) {
+              projectPath = record.workingDirectory;
             }
-            if (typeof header.name === 'string' && header.name.trim()) {
-              sessionName = header.name;
-            } else if (typeof header.sessionName === 'string' && header.sessionName.trim()) {
-              sessionName = header.sessionName;
+            if (typeof record.name === 'string' && record.name.trim()) {
+              sessionName = record.name;
+            } else if (typeof record.sessionName === 'string' && record.sessionName.trim()) {
+              sessionName = record.sessionName;
             }
-            if (typeof header.id === 'string' && header.id.trim() && header.type === 'session') {
-              // Prefer canonical id from header when available.
-              return {
-                sessionId: header.id,
-                projectPath: projectPath || process.cwd(),
-                sessionName: normalizeSessionName(sessionName || '', 'Untitled Pi Session'),
-                jsonlPath: filePath,
-              };
+            if (typeof record.id === 'string' && record.id.trim()) {
+              canonicalSessionId = record.id;
             }
           }
+
+          if (!sessionName) {
+            sessionName = extractUserTitle(record);
+          }
+        }
+
+        if (canonicalSessionId) {
+          return {
+            sessionId: canonicalSessionId,
+            projectPath: projectPath || process.cwd(),
+            sessionName: normalizeSessionName(sessionName, 'Untitled Pi Session'),
+            jsonlPath: filePath,
+          };
         }
       } finally {
         await fd.close();
       }
     } catch {
-      // Header parse is best-effort.
+      // Header/title parse is best-effort.
     }
 
     if (!projectPath) {

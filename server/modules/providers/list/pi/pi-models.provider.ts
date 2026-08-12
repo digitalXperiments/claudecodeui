@@ -13,21 +13,57 @@ import {
   writeProviderSessionActiveModelChange,
 } from '@/shared/utils.js';
 
+// Pi's global `--thinking <level>` / RPC `set_thinking_level` scale (see
+// docs/rpc.md in @earendil-works/pi-coding-agent). Not every "thinking: yes"
+// model supports the full range (xhigh/max are gated per-model), but Pi
+// itself is the one that validates that at request time — CloudCLI has no
+// cheaper way to know the exact ceiling per model without an extra RPC round
+// trip per catalog entry.
+const THINKING_LEVEL_OPTIONS: NonNullable<ProviderModelOption['effort']>['values'] = [
+  { value: 'off' },
+  { value: 'minimal' },
+  { value: 'low' },
+  { value: 'medium' },
+  { value: 'high' },
+  { value: 'xhigh' },
+  { value: 'max' },
+];
+
 // Sensible catalog when `pi --list-models` is empty (no auth yet) or the CLI
 // is unavailable. Values use Pi's `provider/id` form so they round-trip to
-// `--model` / RPC `set_model`.
+// `--model` / RPC `set_model`. Kept intentionally current with what Pi
+// actually serves through the `openai-codex` provider group today — this is
+// a last-resort fallback, not a claim about the live catalog (see
+// `runPiListModels`, which is the real source of truth).
 export const PI_FALLBACK_MODELS: ProviderModelsDefinition = {
   OPTIONS: [
-    { value: 'anthropic/claude-sonnet-4-20250514', label: 'Claude Sonnet 4 (Anthropic)' },
-    { value: 'anthropic/claude-opus-4-20250514', label: 'Claude Opus 4 (Anthropic)' },
-    { value: 'openai/gpt-4o', label: 'GPT-4o (OpenAI)' },
-    { value: 'openai/gpt-4.1', label: 'GPT-4.1 (OpenAI)' },
-    { value: 'google/gemini-2.5-pro', label: 'Gemini 2.5 Pro (Google)' },
-    { value: 'google/gemini-2.5-flash', label: 'Gemini 2.5 Flash (Google)' },
-    { value: 'openrouter/auto', label: 'OpenRouter Auto' },
-    { value: 'xai/grok-3', label: 'Grok 3 (xAI)' },
+    {
+      value: 'openai-codex/gpt-5.6-luna',
+      label: 'GPT-5.6 Luna',
+      effort: { values: THINKING_LEVEL_OPTIONS },
+    },
+    {
+      value: 'openai-codex/gpt-5.6-sol',
+      label: 'GPT-5.6 Sol',
+      effort: { values: THINKING_LEVEL_OPTIONS },
+    },
+    {
+      value: 'openai-codex/gpt-5.6-terra',
+      label: 'GPT-5.6 Terra',
+      effort: { values: THINKING_LEVEL_OPTIONS },
+    },
+    {
+      value: 'openai-codex/gpt-5.5',
+      label: 'GPT-5.5',
+      effort: { values: THINKING_LEVEL_OPTIONS },
+    },
+    {
+      value: 'openai-codex/gpt-5.4',
+      label: 'GPT-5.4',
+      effort: { values: THINKING_LEVEL_OPTIONS },
+    },
   ],
-  DEFAULT: 'anthropic/claude-sonnet-4-20250514',
+  DEFAULT: 'openai-codex/gpt-5.6-luna',
 };
 
 const PI_MODELS_CACHE_TTL_MS = 60 * 60 * 1000;
@@ -38,8 +74,11 @@ let cachedAtMs = 0;
 let refreshInFlight: Promise<ProviderModelsDefinition | null> | null = null;
 
 /**
- * Parse `pi --list-models` output. Formats vary slightly by version; accept
- * lines that look like `provider/model-id` or `provider/model-id  Name`.
+ * Parse `pi --list-models` output: a padded text table with columns
+ * `provider  model  context  max-out  thinking  images` (see
+ * `dist/cli/list-models.js` in @earendil-works/pi-coding-agent — columns are
+ * joined with a 2-space separator and no field itself contains whitespace,
+ * so splitting each line on runs of 2+ spaces is safe).
  */
 function parseListModelsOutput(stdout: string): ProviderModelOption[] {
   const options: ProviderModelOption[] = [];
@@ -47,26 +86,28 @@ function parseListModelsOutput(stdout: string): ProviderModelOption[] {
 
   for (const rawLine of stdout.split(/\r?\n/)) {
     const line = rawLine.trim();
-    if (!line || line.startsWith('No models') || line.startsWith('Use /login')) {
+    if (!line || line.startsWith('No models') || line.startsWith('Use /login') || line.startsWith('Warning:')) {
       continue;
     }
 
-    // Prefer an explicit provider/id token at the start of the line.
-    const match = line.match(/^([a-zA-Z0-9._-]+\/[a-zA-Z0-9._:@+/-]+)/);
-    if (!match) {
+    const columns = line.split(/\s{2,}/);
+    const [provider, modelId, , , thinking] = columns;
+    if (!provider || !modelId || provider === 'provider') {
+      // Header row or malformed line.
       continue;
     }
 
-    const value = match[1];
+    const value = `${provider}/${modelId}`;
     if (seen.has(value)) {
       continue;
     }
     seen.add(value);
 
-    const rest = line.slice(match[0].length).trim().replace(/^[-–—:]\s*/, '');
     options.push({
       value,
-      label: rest || value,
+      label: modelId,
+      description: provider,
+      effort: thinking === 'yes' ? { values: THINKING_LEVEL_OPTIONS } : undefined,
     });
   }
 

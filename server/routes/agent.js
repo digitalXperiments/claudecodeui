@@ -10,6 +10,8 @@ import { queryClaudeSDK } from '../claude-sdk.js';
 import { spawnCursor } from '../cursor-cli.js';
 import { queryCodex } from '../openai-codex.js';
 import { spawnOpenCode } from '../opencode-cli.js';
+import { getPiSessionStats, spawnPi } from '../pi-cli.js';
+import { buildPiTokenUsageFromStats } from '../modules/providers/list/pi/pi-token-usage.js';
 import { Octokit } from '@octokit/rest';
 import { providerModelsService } from '../modules/providers/services/provider-models.service.js';
 import { IS_PLATFORM } from '../constants/config.js';
@@ -534,6 +536,8 @@ class ResponseCollector {
    */
   getAssistantMessages() {
     const assistantMessages = [];
+    let piText = '';
+    let piFirstMessage = null;
 
     for (const msg of this.messages) {
       // Skip initial status message
@@ -552,7 +556,26 @@ class ResponseCollector {
         } catch (e) {
           // Not JSON, skip
         }
+        continue;
       }
+
+      // Pi emits the provider-neutral normalized stream directly. Collapse its
+      // text deltas into the assistant-message shape used by this endpoint.
+      if (msg?.kind === 'stream_delta' && typeof msg.content === 'string') {
+        piText += msg.content;
+        piFirstMessage ||= msg;
+      } else if (msg?.kind === 'text' && msg.role === 'assistant' && typeof msg.content === 'string') {
+        piText += msg.content;
+        piFirstMessage ||= msg;
+      }
+    }
+
+    if (piText) {
+      assistantMessages.push({
+        type: 'assistant',
+        content: piText,
+        ...(piFirstMessage?.sessionId ? { sessionId: piFirstMessage.sessionId } : {}),
+      });
     }
 
     return assistantMessages;
@@ -636,7 +659,7 @@ class ResponseCollector {
  *                          - Source for auto-generated branch names (if createBranch=true and no branchName)
  *                          - Fallback for PR title if no commits are made
  *
- * @param {string} provider - (Optional) AI provider to use. Options: 'claude' | 'cursor' | 'codex' | 'opencode'
+ * @param {string} provider - (Optional) AI provider to use. Options: 'claude' | 'cursor' | 'codex' | 'opencode' | 'pi'
  *                           Default: 'claude'
  *
  * @param {boolean} stream - (Optional) Enable Server-Sent Events (SSE) streaming for real-time updates.
@@ -759,7 +782,7 @@ class ResponseCollector {
  * Input Validations (400 Bad Request):
  *   - Either githubUrl OR projectPath must be provided (not neither)
  *   - message must be non-empty string
- *   - provider must be 'claude', 'cursor', 'codex', or 'opencode'
+ *   - provider must be 'claude', 'cursor', 'codex', 'opencode', or 'pi'
  *   - createBranch/createPR requires githubUrl OR projectPath (not neither)
  *   - branchName must pass Git naming rules (if provided)
  *
@@ -852,6 +875,7 @@ router.post('/', validateExternalApiKey, async (req, res) => {
   const effort = typeof req.body.effort === 'string' && req.body.effort.trim()
     ? req.body.effort.trim()
     : undefined;
+  const images = Array.isArray(req.body.images) ? req.body.images : undefined;
 
   // Parse stream and cleanup as booleans (handle string "true"/"false" from curl)
   const stream = req.body.stream === undefined ? true : (req.body.stream === true || req.body.stream === 'true');
@@ -870,8 +894,8 @@ router.post('/', validateExternalApiKey, async (req, res) => {
     return res.status(400).json({ error: 'message is required' });
   }
 
-  if (!['claude', 'cursor', 'codex', 'opencode'].includes(provider)) {
-    return res.status(400).json({ error: 'provider must be "claude", "cursor", "codex", or "opencode"' });
+  if (!['claude', 'cursor', 'codex', 'opencode', 'pi'].includes(provider)) {
+    return res.status(400).json({ error: 'provider must be "claude", "cursor", "codex", "opencode", or "pi"' });
   }
 
   // Validate GitHub branch/PR creation requirements
@@ -996,6 +1020,18 @@ router.post('/', validateExternalApiKey, async (req, res) => {
         model: model || opencodeModels.DEFAULT,
         effort,
         permissionMode: 'bypassPermissions' // Agent runs are non-interactive, like the other providers above
+      }, writer);
+    } else if (provider === 'pi') {
+      console.log('Starting Pi RPC session');
+
+      await spawnPi(message.trim(), {
+        projectPath: finalProjectPath,
+        cwd: finalProjectPath,
+        sessionId: sessionId || null,
+        model: model || undefined,
+        effort,
+        images,
+        permissionMode: 'bypassPermissions'
       }, writer);
     }
 
@@ -1187,7 +1223,11 @@ router.post('/', validateExternalApiKey, async (req, res) => {
     } else {
       // Non-streaming mode: send filtered messages and token summary as JSON
       const assistantMessages = writer.getAssistantMessages();
-      const tokenSummary = writer.getTotalTokens();
+      let tokenSummary = writer.getTotalTokens();
+      if (provider === 'pi') {
+        const piStats = await getPiSessionStats(writer.getSessionId()).catch(() => null);
+        tokenSummary = buildPiTokenUsageFromStats(piStats) || tokenSummary;
+      }
 
       const response = {
         success: true,

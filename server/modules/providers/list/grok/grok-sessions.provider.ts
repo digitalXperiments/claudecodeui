@@ -14,7 +14,10 @@ import {
 } from '@/shared/utils.js';
 
 const PROVIDER = 'grok';
-const GROK_SESSIONS_ROOT = path.join(os.homedir(), '.grok', 'sessions');
+const grokSessionsRoot = (): string => path.join(
+  process.env.GROK_HOME || path.join(os.homedir(), '.grok'),
+  'sessions',
+);
 
 function isInternalGrokText(value: unknown): boolean {
   if (typeof value !== 'string') {
@@ -71,7 +74,7 @@ function extractGrokTextParts(content: unknown): string {
 
 export function resolveGrokSessionDir(projectPath: string, sessionId: string): string {
   const encodedProjectPath = encodeURIComponent(projectPath);
-  return path.join(GROK_SESSIONS_ROOT, encodedProjectPath, sessionId);
+  return path.join(grokSessionsRoot(), encodedProjectPath, sessionId);
 }
 
 /**

@@ -22,7 +22,7 @@ import {
   notifyRunFailed,
   notifyRunStopped,
 } from './services/notification-orchestrator.js';
-import { createRequestId, waitForToolApproval } from './claude-sdk.js';
+import { createRequestId, extractPermissionPaths, resolveApprovalTimeoutMs, waitForToolApproval } from './claude-sdk.js';
 import { sessionsService } from './modules/providers/services/sessions.service.js';
 import { providerAuthService } from './modules/providers/services/provider-auth.service.js';
 import { providerModelsService } from './modules/providers/services/provider-models.service.js';
@@ -265,6 +265,9 @@ async function waitForCodexApproval({
   toolName,
   input,
   providerRequest,
+  unattended = false,
+  approvalWaitMs = 0,
+  cwd = null,
 }) {
   const requestId = createRequestId();
   sendMessage(ws, createNormalizedMessage({
@@ -274,6 +277,9 @@ async function waitForCodexApproval({
     input,
     sessionId,
     provider: 'codex',
+    cwd,
+    paths: extractPermissionPaths(input),
+    unattended,
   }));
 
   notifyUserIfEnabled({
@@ -290,8 +296,10 @@ async function waitForCodexApproval({
     }),
   });
 
-  const decision = await waitForToolApproval(requestId, {
-    timeoutMs: 0,
+  // Interactive chat waits indefinitely (timeoutMs 0); unattended (swarm)
+  // runs wait a bounded window for the permission broker to answer.
+  let decision = await waitForToolApproval(requestId, {
+    timeoutMs: unattended ? approvalWaitMs : 0,
     signal: abortSignal,
     metadata: {
       _sessionId: sessionId,
@@ -309,6 +317,14 @@ async function waitForCodexApproval({
       }));
     },
   });
+
+  // A null decision (timeout) would map to 'cancel'/'abort' in the decision
+  // translators and kill the whole turn; an unattended expiry should instead
+  // take the normal deny path so the agent can continue without the tool.
+  if (unattended && !decision) {
+    console.warn(`[Codex] session=${sessionId} unattended approval for "${toolName}" timed out after ${approvalWaitMs}ms — denying`);
+    decision = { allow: false, message: 'Unattended permission request timed out' };
+  }
 
   await providerRequest(decision, request, rpc);
 }
@@ -330,7 +346,9 @@ export async function queryCodex(command, options = {}, ws) {
     serviceTier: requestedServiceTier,
     fastMode,
     images,
-    permissionMode = 'default'
+    permissionMode = 'default',
+    unattended = false,
+    approvalTimeoutMs,
   } = options;
 
   const resolvedModel = await providerModelsService.resolveResumeModel(
@@ -340,6 +358,8 @@ export async function queryCodex(command, options = {}, ws) {
   );
 
   const workingDirectory = cwd || projectPath || process.cwd();
+  // Bounded approval wait for unattended (swarm) runs; 0 = wait forever (chat).
+  const approvalWaitMs = resolveApprovalTimeoutMs({ unattended, approvalTimeoutMs });
   const { sandbox, approvalPolicy, approvalsReviewer } = mapPermissionModeToCodexOptions(permissionMode);
   const managedObsidianRuntime = loadManagedObsidianCodexRuntime();
   const catalog = (await providerModelsService.getProviderModels('codex')).models;
@@ -399,6 +419,9 @@ export async function queryCodex(command, options = {}, ws) {
         sessionId: requestSessionId,
         sessionSummary,
         abortSignal: abortController.signal,
+        unattended,
+        approvalWaitMs,
+        cwd: workingDirectory,
         toolName: 'Bash',
         input: {
           command: Array.isArray(params.command)
@@ -424,6 +447,9 @@ export async function queryCodex(command, options = {}, ws) {
         sessionId: requestSessionId,
         sessionSummary,
         abortSignal: abortController.signal,
+        unattended,
+        approvalWaitMs,
+        cwd: workingDirectory,
         toolName: 'FileChanges',
         input: {
           changes: params.fileChanges,
@@ -447,6 +473,9 @@ export async function queryCodex(command, options = {}, ws) {
         sessionId: requestSessionId,
         sessionSummary,
         abortSignal: abortController.signal,
+        unattended,
+        approvalWaitMs,
+        cwd: workingDirectory,
         toolName: 'Bash',
         input: {
           command: params.command || '',
@@ -469,6 +498,9 @@ export async function queryCodex(command, options = {}, ws) {
         sessionId: requestSessionId,
         sessionSummary,
         abortSignal: abortController.signal,
+        unattended,
+        approvalWaitMs,
+        cwd: workingDirectory,
         toolName: 'FileChanges',
         input: {
           reason: params.reason || undefined,
@@ -489,6 +521,9 @@ export async function queryCodex(command, options = {}, ws) {
         sessionId: requestSessionId,
         sessionSummary,
         abortSignal: abortController.signal,
+        unattended,
+        approvalWaitMs,
+        cwd: workingDirectory,
         toolName: 'CodexPermissions',
         input: {
           cwd: params.cwd || workingDirectory,
@@ -516,6 +551,9 @@ export async function queryCodex(command, options = {}, ws) {
         sessionId: requestSessionId,
         sessionSummary,
         abortSignal: abortController.signal,
+        unattended,
+        approvalWaitMs,
+        cwd: workingDirectory,
         toolName: 'AskUserQuestion',
         input: { questions },
         providerRequest: async (decision, approvalRequest, rpc) => {

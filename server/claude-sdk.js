@@ -69,6 +69,63 @@ const TOOL_APPROVAL_TIMEOUT_MS = (() => {
   return Number.isFinite(parsed) ? parsed : 0;
 })();
 
+// Unattended (headless/swarm) runs must never wait forever on an approval:
+// the swarm permission broker listens for the normalized `permission_request`
+// event and answers via resolveToolApproval, but if nothing answers within
+// this budget the wait expires and the request is denied (the provider's
+// normal deny path), instead of hanging until an outer step timeout.
+const DEFAULT_UNATTENDED_APPROVAL_TIMEOUT_MS = 10 * 60_000;
+
+// Approval wait budget for a run. Interactive chat keeps timeoutMs 0 (wait
+// indefinitely for the human); unattended runs get a bounded window resolved
+// from, in order: options.approvalTimeoutMs, the
+// CLOUDCLI_UNATTENDED_APPROVAL_TIMEOUT_MS env var, then the 10-minute default.
+// Non-positive/unparseable values fall through to the next source so a
+// misconfigured 0 can never reintroduce an infinite headless wait.
+function resolveApprovalTimeoutMs({ unattended = false, approvalTimeoutMs } = {}) {
+  if (!unattended) {
+    return 0;
+  }
+  const explicit = Number(approvalTimeoutMs);
+  if (Number.isFinite(explicit) && explicit > 0) {
+    return explicit;
+  }
+  const fromEnv = Number(process.env.CLOUDCLI_UNATTENDED_APPROVAL_TIMEOUT_MS);
+  if (Number.isFinite(fromEnv) && fromEnv > 0) {
+    return fromEnv;
+  }
+  return DEFAULT_UNATTENDED_APPROVAL_TIMEOUT_MS;
+}
+
+// Best-effort extraction of file paths from a tool input so the permission
+// broker's policy engine can classify a `permission_request` without
+// provider-specific knowledge of every input shape. Unknown shapes simply
+// yield an empty list.
+function extractPermissionPaths(input) {
+  if (!input || typeof input !== 'object') {
+    return [];
+  }
+  const paths = [];
+  const pushPath = (value) => {
+    if (typeof value === 'string' && value.trim()) {
+      paths.push(value);
+    }
+  };
+  for (const key of ['file_path', 'filePath', 'path', 'notebook_path']) {
+    pushPath(input[key]);
+  }
+  for (const key of ['paths', 'files', 'file_paths']) {
+    if (Array.isArray(input[key])) {
+      input[key].forEach(pushPath);
+    }
+  }
+  // Codex applyPatchApproval shape: { changes: { "/abs/path": {...}, ... } }
+  if (input.changes && typeof input.changes === 'object' && !Array.isArray(input.changes)) {
+    Object.keys(input.changes).forEach(pushPath);
+  }
+  return paths;
+}
+
 function resolveClaudeEffort(model, effort, modelsDefinition = CLAUDE_FALLBACK_MODELS) {
   const selectedModel = modelsDefinition?.OPTIONS?.find((option) => option.value === model) || null;
   const allowedEfforts = selectedModel?.effort?.values
@@ -787,6 +844,9 @@ async function queryClaudeSDK(command, options = {}, ws) {
           sessionId,
           sessionSummary,
           emitNotification,
+          unattended: Boolean(options.unattended),
+          approvalTimeoutMs: options.approvalTimeoutMs,
+          cwd: options.cwd || null,
         });
       };
 
@@ -935,6 +995,9 @@ async function queryClaudeSDK(command, options = {}, ws) {
         sessionId,
         sessionSummary,
         emitNotification,
+        unattended: Boolean(options.unattended),
+        approvalTimeoutMs: options.approvalTimeoutMs,
+        cwd: options.cwd || null,
       });
 
       const prevStreamTimeout = process.env.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT;
@@ -1069,6 +1132,9 @@ async function handleCanUseTool(toolName, input, context, ctx) {
     sessionId,
     sessionSummary,
     emitNotification,
+    unattended = false,
+    approvalTimeoutMs,
+    cwd = null,
   } = ctx;
   const capturedSessionId = capturedSessionIdRef();
   const requiresInteraction = TOOLS_REQUIRING_INTERACTION.has(toolName);
@@ -1094,7 +1160,17 @@ async function handleCanUseTool(toolName, input, context, ctx) {
   }
 
   const requestId = createRequestId();
-  ws.send(createNormalizedMessage({ kind: 'permission_request', requestId, toolName, input, sessionId: capturedSessionId || sessionId || null, provider: 'claude' }));
+  ws.send(createNormalizedMessage({
+    kind: 'permission_request',
+    requestId,
+    toolName,
+    input,
+    sessionId: capturedSessionId || sessionId || null,
+    provider: 'claude',
+    cwd,
+    paths: extractPermissionPaths(input),
+    unattended,
+  }));
   emitNotification(createNotificationEvent({
     provider: 'claude',
     sessionId: capturedSessionId || sessionId || null,
@@ -1106,10 +1182,17 @@ async function handleCanUseTool(toolName, input, context, ctx) {
     dedupeKey: `claude:permission:${capturedSessionId || sessionId || 'none'}:${requestId}`
   }));
 
+  // Unattended runs get a bounded wait for EVERY request — including the
+  // interactive tools (e.g. ExitPlanMode), which would otherwise wait
+  // forever with nobody attached. The permission broker answers within the
+  // budget or the request is denied. Interactive chat is unchanged.
+  const unattendedWaitMs = resolveApprovalTimeoutMs({ unattended, approvalTimeoutMs });
   const decision = await waitForToolApproval(requestId, {
-    timeoutMs: TOOL_APPROVAL_TIMEOUT_MS > 0 && !requiresInteraction
-      ? TOOL_APPROVAL_TIMEOUT_MS
-      : 0,
+    timeoutMs: unattended
+      ? unattendedWaitMs
+      : (TOOL_APPROVAL_TIMEOUT_MS > 0 && !requiresInteraction
+        ? TOOL_APPROVAL_TIMEOUT_MS
+        : 0),
     signal: context?.signal,
     metadata: {
       _sessionId: capturedSessionId || sessionId || null,
@@ -1122,6 +1205,9 @@ async function handleCanUseTool(toolName, input, context, ctx) {
     }
   });
   if (!decision) {
+    if (unattended) {
+      console.warn(`[claude-sdk] session=${capturedSessionId || sessionId || 'none'} unattended approval for "${toolName}" timed out after ${unattendedWaitMs}ms — denying`);
+    }
     return { behavior: 'deny', message: 'Permission request timed out' };
   }
 
@@ -1322,5 +1408,7 @@ export {
   getPendingApprovalsForSession,
   reconnectSessionWriter,
   waitForToolApproval,
+  resolveApprovalTimeoutMs,
+  extractPermissionPaths,
   createRequestId
 };

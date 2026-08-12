@@ -2,7 +2,7 @@ import { StringDecoder } from 'node:string_decoder';
 
 import crossSpawn from 'cross-spawn';
 
-import { appendImagesInputTag } from './shared/image-attachments.js';
+import { buildPiPromptPayload } from './shared/image-attachments.js';
 import { notifyRunFailed, notifyRunStopped } from './services/notification-orchestrator.js';
 import { sessionsService } from './modules/providers/services/sessions.service.js';
 import { providerAuthService } from './modules/providers/services/provider-auth.service.js';
@@ -27,10 +27,10 @@ const rpcSessions = new Map();
 const IDLE_TIMEOUT_MS = 30 * 60 * 1000;
 
 /**
- * Plan mode maps to Pi's read-only tool allowlist. Everything else keeps the
- * full default tool set (Pi has no built-in permission popups).
+ * Plan mode maps to Pi's read-only tool allowlist. Everything else explicitly
+ * enables every built-in coding tool (Pi has no built-in permission popups).
  */
-function buildPiSpawnArgs({ model, permissionMode, resumeSessionId }) {
+function buildPiSpawnArgs({ model, permissionMode, resumeSessionId, thinkingLevel }) {
   const args = ['--mode', 'rpc'];
 
   if (resumeSessionId) {
@@ -42,9 +42,16 @@ function buildPiSpawnArgs({ model, permissionMode, resumeSessionId }) {
     args.push('--model', model);
   }
 
-  if (permissionMode === 'plan') {
-    args.push('--tools', 'read,grep,find,ls');
+  if (thinkingLevel) {
+    args.push('--thinking', thinkingLevel);
   }
+
+  args.push(
+    '--tools',
+    permissionMode === 'plan'
+      ? 'read,grep,find,ls'
+      : 'read,bash,edit,write,grep,find,ls',
+  );
 
   // Headless / non-interactive: don't block on project-trust prompts.
   args.push('--approve');
@@ -191,8 +198,8 @@ function createPiRpcClient(child) {
   };
 }
 
-async function createPiRpcSession(workingDir, resumeSessionId, model, permissionMode) {
-  const args = buildPiSpawnArgs({ model, permissionMode, resumeSessionId });
+async function createPiRpcSession(workingDir, resumeSessionId, model, permissionMode, thinkingLevel) {
+  const args = buildPiSpawnArgs({ model, permissionMode, resumeSessionId, thinkingLevel });
   const child = spawnFunction('pi', args, {
     cwd: workingDir,
     stdio: ['pipe', 'pipe', 'pipe'],
@@ -241,6 +248,7 @@ async function createPiRpcSession(workingDir, resumeSessionId, model, permission
     piSessionId,
     sessionFile: state.sessionFile || null,
     currentModel: model || null,
+    currentEffort: thinkingLevel || undefined,
     idleTimer: null,
     inFlight: false,
   };
@@ -278,6 +286,7 @@ async function spawnPi(command, options = {}, ws) {
     projectPath,
     cwd,
     model,
+    effort,
     sessionSummary,
     permissionMode = 'bypassPermissions',
   } = options;
@@ -285,12 +294,23 @@ async function spawnPi(command, options = {}, ws) {
   const workingDir = cwd || projectPath || process.cwd();
   const resolvedModel = await providerModelsService.resolveResumeModel('pi', sessionId, model);
 
+  // Effort only makes sense when the selected model's catalog entry
+  // advertises thinking support (surfaced by pi-models.provider from
+  // `pi --list-models`'s "thinking" column); otherwise the CLI's own
+  // per-model default is used.
+  const catalog = (await providerModelsService.getProviderModels('pi')).models;
+  const selectedModel = catalog.OPTIONS.find((option) => option.value === resolvedModel) || null;
+  const allowedEfforts = selectedModel?.effort?.values?.map((value) => value.value) || [];
+  const resolvedEffort = typeof effort === 'string' && effort !== 'default' && allowedEfforts.includes(effort)
+    ? effort
+    : undefined;
+
   const processKey = sessionId || `new:${Date.now()}`;
   let handle = rpcSessions.get(processKey);
   let capturedSessionId = sessionId;
 
   if (!handle || handle.child.exitCode !== null || handle.child.killed) {
-    handle = await createPiRpcSession(workingDir, sessionId, resolvedModel, permissionMode);
+    handle = await createPiRpcSession(workingDir, sessionId, resolvedModel, permissionMode, resolvedEffort);
     rpcSessions.set(processKey, handle);
 
     if (!capturedSessionId && handle.piSessionId) {
@@ -354,9 +374,21 @@ async function spawnPi(command, options = {}, ws) {
         if (ref.provider) payload.provider = ref.provider;
         await handle.rpc.request('set_model', payload, 15000);
         handle.currentModel = resolvedModel;
+        // Switching models can change (or drop) thinking support, so any
+        // previously applied effort must be re-applied below.
+        handle.currentEffort = undefined;
       } catch (error) {
         console.error('Failed to set Pi model:', error?.message || error);
       }
+    }
+  }
+
+  if (resolvedEffort && handle.currentEffort !== resolvedEffort) {
+    try {
+      await handle.rpc.request('set_thinking_level', { level: resolvedEffort }, 15000);
+      handle.currentEffort = resolvedEffort;
+    } catch (error) {
+      console.error('Failed to set Pi thinking level:', error?.message || error);
     }
   }
 
@@ -370,6 +402,7 @@ async function spawnPi(command, options = {}, ws) {
     if (
       event.type === 'message_update'
       || event.type === 'tool_execution_start'
+      || event.type === 'tool_execution_update'
       || event.type === 'tool_execution_end'
     ) {
       if (event.type === 'tool_execution_start' && event.toolCallId) {
@@ -385,18 +418,19 @@ async function spawnPi(command, options = {}, ws) {
   });
 
   try {
-    const promptText = command && command.trim()
-      ? appendImagesInputTag(command, options.images)
-      : '';
+    const promptPayload = (command && command.trim()) || options.images
+      ? await buildPiPromptPayload(command || '', options.images, workingDir)
+      : { message: '' };
 
     handle.inFlight = true;
 
     // Prompt acceptance is quick; the actual agent run streams as events until
     // agent_settled. Wait for acceptance first, then wait for settled.
-    await handle.rpc.request('prompt', { message: promptText }, 60000);
+    await handle.rpc.request('prompt', promptPayload, 60000);
 
     await new Promise((resolve, reject) => {
       let settled = false;
+      let turnError = null;
       const finish = (fn, value) => {
         if (settled) return;
         settled = true;
@@ -405,16 +439,20 @@ async function spawnPi(command, options = {}, ws) {
       };
 
       const onEvent = (event) => {
-        if (event?.type === 'agent_settled') {
-          finish(resolve);
-        }
-        // Fatal streaming error inside assistant message.
+        // Pi reports provider failures as an assistant message_update error,
+        // not as a failed prompt response. Wait for the turn to settle so the
+        // persistent RPC session is reusable, then surface the failure.
         if (
           event?.type === 'message_update'
           && event.assistantMessageEvent?.type === 'error'
           && event.assistantMessageEvent?.reason === 'error'
         ) {
-          // Still wait for agent_settled — Pi recovers or ends the turn.
+          const errorMessage = event.assistantMessageEvent.error?.errorMessage
+            || 'Pi assistant request failed';
+          turnError = new Error(errorMessage);
+        }
+        if (event?.type === 'agent_settled') {
+          finish(turnError ? reject : resolve, turnError || undefined);
         }
       };
 
@@ -424,7 +462,7 @@ async function spawnPi(command, options = {}, ws) {
 
       // Safety net: if agent_settled never arrives, don't hang forever.
       const hangTimer = setTimeout(() => {
-        finish(resolve);
+        finish(reject, turnError || new Error('Pi agent did not settle before timeout'));
       }, 30 * 60 * 1000);
 
       function cleanup() {
@@ -499,9 +537,19 @@ function getActivePiSessions() {
   return Array.from(rpcSessions.keys());
 }
 
+async function getPiSessionStats(sessionId) {
+  const handle = rpcSessions.get(sessionId);
+  if (!handle || handle.child.exitCode !== null || handle.child.killed) {
+    return null;
+  }
+  const response = await handle.rpc.request('get_session_stats', {}, 10000);
+  return response.data || null;
+}
+
 export {
   spawnPi,
   abortPiSession,
   isPiSessionActive,
   getActivePiSessions,
+  getPiSessionStats,
 };

@@ -6,6 +6,7 @@ import { sessionsService } from './modules/providers/services/sessions.service.j
 import { providerAuthService } from './modules/providers/services/provider-auth.service.js';
 import { providerModelsService } from './modules/providers/services/provider-models.service.js';
 import { createCompleteMessage, createNormalizedMessage, flattenPromptForWindowsShell } from './shared/utils.js';
+import { stripAnsiSequences } from './utils/url-detection.js';
 
 // cross-spawn resolves .cmd shims/PATHEXT on Windows and delegates to
 // child_process.spawn everywhere else.
@@ -267,7 +268,8 @@ async function spawnCursor(command, options = {}, ws) {
           return;
         }
 
-        ws.send(createNormalizedMessage({ kind: 'error', content: stderrText, sessionId: capturedSessionId || sessionId || null, provider: 'cursor' }));
+        // Escape codes would otherwise render verbatim in the chat pane.
+        ws.send(createNormalizedMessage({ kind: 'error', content: stripAnsiSequences(stderrText), sessionId: capturedSessionId || sessionId || null, provider: 'cursor' }));
       });
 
       // Handle process completion
