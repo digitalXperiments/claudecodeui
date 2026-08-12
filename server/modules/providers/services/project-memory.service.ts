@@ -71,7 +71,6 @@ const MEMORY_MCP_PROVIDERS: LLMProvider[] = [
   'opencode',
   'grok',
   'kimi',
-  'agy',
 ];
 
 /**

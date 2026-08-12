@@ -5,7 +5,6 @@ import CursorLogo from './CursorLogo';
 import OpenCodeLogo from './OpenCodeLogo';
 import GrokLogo from './GrokLogo';
 import KimiLogo from './KimiLogo';
-import AgyLogo from './AgyLogo';
 import PiLogo from './PiLogo';
 
 type SessionProviderLogoProps = {
@@ -35,10 +34,6 @@ export default function SessionProviderLogo({
 
   if (provider === 'kimi') {
     return <KimiLogo className={className} />;
-  }
-
-  if (provider === 'agy') {
-    return <AgyLogo className={className} />;
   }
 
   if (provider === 'pi') {

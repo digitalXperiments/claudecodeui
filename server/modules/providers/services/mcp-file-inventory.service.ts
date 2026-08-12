@@ -33,9 +33,7 @@ export type McpConfigKind =
   | 'opencode_user'
   | 'opencode_project'
   | 'kimi_user'
-  | 'kimi_project'
-  | 'agy_user'
-  | 'agy_project';
+  | 'kimi_project';
 
 export type McpFileHit = {
   name: string;

@@ -379,6 +379,58 @@ test('OpenCode sessions provider normalizes quoted live text and skips user echo
   assert.deepEqual(userEcho, []);
 });
 
+test('OpenCode sessions provider normalizes part-wrapped live events', () => {
+  const provider = new OpenCodeSessionsProvider();
+
+  // Shape emitted by `opencode run --format json` (verified against 1.18.11):
+  // the payload lives under `part`, not on the event itself.
+  const text = provider.normalizeMessage({
+    type: 'text',
+    timestamp: 1786449272979,
+    sessionID: 'open-session-live',
+    part: {
+      id: 'prt_text',
+      messageID: 'msg_1',
+      sessionID: 'open-session-live',
+      type: 'text',
+      text: '{"summary":"done"}',
+    },
+  }, null);
+
+  assert.equal(text.length, 1);
+  assert.equal(text[0]?.kind, 'text');
+  assert.equal(text[0]?.role, 'assistant');
+  assert.equal(text[0]?.content, '{"summary":"done"}');
+
+  const tool = provider.normalizeMessage({
+    type: 'tool_use',
+    sessionID: 'open-session-live',
+    part: {
+      id: 'prt_tool',
+      type: 'tool',
+      tool: 'bash',
+      callID: 'call_1',
+      state: { status: 'completed', input: { command: 'ls' }, output: 'out.txt\n' },
+    },
+  }, null);
+
+  assert.equal(tool.length, 1);
+  assert.equal(tool[0]?.kind, 'tool_use');
+  assert.equal(tool[0]?.toolName, 'bash');
+  assert.deepEqual(tool[0]?.toolInput, { command: 'ls' });
+  assert.equal(tool[0]?.toolId, 'call_1');
+  assert.equal(tool[0]?.toolResult?.content, 'out.txt\n');
+  assert.equal(tool[0]?.toolResult?.isError, false);
+
+  const stepStart = provider.normalizeMessage({
+    type: 'step_start',
+    sessionID: 'open-session-live',
+    part: { id: 'prt_step', type: 'step-start' },
+  }, null);
+
+  assert.deepEqual(stepStart, []);
+});
+
 test('OpenCode sessions provider reads sqlite history and token usage', { concurrency: false }, async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'opencode-session-history-'));
   const workspacePath = path.join(tempRoot, 'workspace');

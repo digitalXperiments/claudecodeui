@@ -140,10 +140,6 @@ const ONE_SHOT_CONFIGS: Partial<Record<LLMProvider, OneShotSpawnConfig>> = {
     command: 'pi',
     buildArgs: (prompt) => ['--print', '--no-tools', '--no-session', prompt],
   },
-  agy: {
-    command: 'agy',
-    buildArgs: (prompt) => ['--print', prompt],
-  },
   codex: {
     command: 'codex',
     buildArgs: (prompt, projectPath, outputFile) => [

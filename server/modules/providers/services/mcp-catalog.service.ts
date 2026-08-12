@@ -69,7 +69,6 @@ const ALL_MCP_PROVIDERS: LLMProvider[] = [
   'opencode',
   'grok',
   'kimi',
-  'agy',
   'pi',
 ];
 

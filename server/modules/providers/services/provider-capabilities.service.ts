@@ -83,16 +83,21 @@ const PROVIDER_CAPABILITIES: Record<LLMProvider, ProviderCapabilities> = {
   },
   opencode: {
     provider: 'opencode',
-    // Mapped by the runtime onto OpenCode's controls: `--agent plan` (plan),
-    // `--auto` (auto) and the OPENCODE_PERMISSION env var (acceptEdits). See
-    // resolveOpenCodePermissionOptions in opencode-cli.js. OpenCode has no
-    // true bypass mode — `--auto` still enforces explicit deny rules.
+    // Rewritten onto OpenCode's Agent Client Protocol (`opencode acp`), not the
+    // one-shot `opencode run`: modes map to the session's `mode` config option
+    // (build|plan) plus an OPENCODE_PERMISSION policy that forces the permission
+    // types we want *relayed* to "ask". See resolveOpenCodePermissionPolicy in
+    // opencode-cli.js. `auto` leaves the user's own config in charge and
+    // approves locally, so it is still not a true deny-rule-skipping bypass.
     permissionModes: ['default', 'acceptEdits', 'auto', 'plan'],
     defaultPermissionMode: 'default',
     supportsImages: true,
     supportsFiles: true,
     supportsAbort: true,
-    supportsPermissionRequests: false,
+    // ACP delivers `session/request_permission` as a real request the client
+    // must answer — under `opencode run` there was no ask to answer, only a
+    // silent auto-reject. (Verified live 2026-08-11, scripts/probe-opencode-acp.mjs.)
+    supportsPermissionRequests: true,
     supportsTokenUsage: true,
     supportsEffort: true,
   },
@@ -116,28 +121,6 @@ const PROVIDER_CAPABILITIES: Record<LLMProvider, ProviderCapabilities> = {
     // (turn_completed events) and is summed by the /token-usage route.
     supportsTokenUsage: true,
     supportsEffort: true,
-  },
-  agy: {
-    provider: 'agy',
-    // Antigravity's headless `agy --print` mode maps these to real flags in
-    // agy-cli.js: plan -> --mode plan (read-only), acceptEdits -> --mode
-    // accept-edits (auto-accept edits; other tools may still prompt), and
-    // bypassPermissions -> --dangerously-skip-permissions (auto-approve all).
-    // bypassPermissions is the default because it is the only mode guaranteed
-    // never to stall waiting on an approval a spawned process cannot answer.
-    permissionModes: ['plan', 'acceptEdits', 'bypassPermissions'],
-    defaultPermissionMode: 'bypassPermissions',
-    // Path-referenced attachments via appendImagesInputTag in agy-cli.js.
-    supportsImages: true,
-    supportsFiles: true,
-    supportsAbort: true,
-    supportsPermissionRequests: false,
-    // Antigravity persists usage inside a protobuf conversation store with no
-    // public schema, so there is no readable per-session token usage to expose.
-    supportsTokenUsage: false,
-    // Reasoning effort is baked into the model label ("... (Medium/High/Low)")
-    // rather than passed as a separate flag, so there is no effort dimension.
-    supportsEffort: false,
   },
   kimi: {
     provider: 'kimi',
@@ -188,12 +171,14 @@ const PROVIDER_CAPABILITIES: Record<LLMProvider, ProviderCapabilities> = {
     supportsAbort: true,
     // Pi philosophy: no permission popups. Extensions can add them later.
     supportsPermissionRequests: false,
-    // Session stats are available via RPC get_session_stats but not yet
-    // wired to the /token-usage route.
-    supportsTokenUsage: false,
-    // Thinking level is a separate RPC control (set_thinking_level), not
-    // modeled as CloudCLI's effort picker yet.
-    supportsEffort: false,
+    // Live sessions use RPC get_session_stats; idle sessions are read from
+    // Pi's persisted JSONL usage records by the token-usage route.
+    supportsTokenUsage: true,
+    // Thinking level maps to Pi's real RPC control (`set_thinking_level` /
+    // `--thinking` at spawn) — pi-cli.js applies it per session, gated by
+    // the selected model's catalog entry (pi-models.provider surfaces the
+    // "thinking" column from `pi --list-models`).
+    supportsEffort: true,
   },
 };
 

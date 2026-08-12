@@ -8,7 +8,6 @@ const PROVIDER_LABELS: Record<LLMProvider, string> = {
   opencode: 'OpenCode',
   grok: 'Grok',
   kimi: 'Kimi',
-  agy: 'Antigravity',
   pi: 'Pi',
 };
 
@@ -19,7 +18,6 @@ export const FANOUT_PROVIDERS: LLMProvider[] = [
   'opencode',
   'grok',
   'kimi',
-  'agy',
 ];
 
 type ProviderBindingMatrixProps = {

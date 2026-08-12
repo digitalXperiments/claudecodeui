@@ -52,12 +52,6 @@ const getProviderCommand = ({
     return 'kimi login';
   }
 
-  if (provider === 'agy') {
-    // Antigravity has no dedicated login subcommand; launching the CLI
-    // interactively runs its OAuth sign-in flow.
-    return 'agy';
-  }
-
   if (provider === 'pi') {
     // Pi authenticates via the interactive /login command inside the TUI.
     return 'pi';
@@ -73,7 +67,6 @@ const getProviderTitle = (provider: LLMProvider) => {
   if (provider === 'opencode') return 'OpenCode CLI Login';
   if (provider === 'grok') return 'Grok Build CLI Login';
   if (provider === 'kimi') return 'Kimi CLI Login';
-  if (provider === 'agy') return 'Antigravity CLI Login';
   if (provider === 'pi') return 'Pi CLI Login';
   return 'Claude CLI Login';
 };

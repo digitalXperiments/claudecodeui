@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, rm, writeFile, readFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdir, rm, writeFile, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
 
+import { makeScratchDir } from '@/shared/scratch.js';
 import {
   buildGrokPriorSessionContextHint,
   seedGrokSessionTranscript,
@@ -34,9 +34,9 @@ test('shouldPreferGrokAcpSessionLoad is true only with explicit env', () => {
 });
 
 test('seedGrokSessionTranscript copies empty dest from prior session', async () => {
-  const root = await mkdtemp(path.join(tmpdir(), 'grok-acp-seed-'));
-  const previousHome = process.env.HOME;
-  process.env.HOME = root;
+  const root = await makeScratchDir('grok-acp-seed-');
+  const previousGrokHome = process.env.GROK_HOME;
+  process.env.GROK_HOME = path.join(root, '.grok');
   try {
     const projectPath = path.join(root, 'proj');
     const fromId = 'from-id';
@@ -55,16 +55,16 @@ test('seedGrokSessionTranscript copies empty dest from prior session', async () 
     const summary = await readFile(path.join(toDir, 'summary.json'), 'utf8');
     assert.match(summary, /title/);
   } finally {
-    if (previousHome === undefined) delete process.env.HOME;
-    else process.env.HOME = previousHome;
+    if (previousGrokHome === undefined) delete process.env.GROK_HOME;
+    else process.env.GROK_HOME = previousGrokHome;
     await rm(root, { recursive: true, force: true });
   }
 });
 
 test('seedGrokSessionTranscript does not overwrite non-empty dest', async () => {
-  const root = await mkdtemp(path.join(tmpdir(), 'grok-acp-seed-keep-'));
-  const previousHome = process.env.HOME;
-  process.env.HOME = root;
+  const root = await makeScratchDir('grok-acp-seed-keep-');
+  const previousGrokHome = process.env.GROK_HOME;
+  process.env.GROK_HOME = path.join(root, '.grok');
   try {
     const projectPath = path.join(root, 'proj');
     const fromId = 'from-id';
@@ -81,8 +81,8 @@ test('seedGrokSessionTranscript does not overwrite non-empty dest', async () => 
     const kept = await readFile(path.join(toDir, 'chat_history.jsonl'), 'utf8');
     assert.match(kept, /already here/);
   } finally {
-    if (previousHome === undefined) delete process.env.HOME;
-    else process.env.HOME = previousHome;
+    if (previousGrokHome === undefined) delete process.env.GROK_HOME;
+    else process.env.GROK_HOME = previousGrokHome;
     await rm(root, { recursive: true, force: true });
   }
 });
@@ -122,9 +122,9 @@ test('toGrokAcpMcpServers uses ACP env array + type (not config.toml map)', () =
 });
 
 test('buildGrokPriorSessionContextHint extracts recent user turns', async () => {
-  const root = await mkdtemp(path.join(tmpdir(), 'grok-acp-hint-'));
-  const previousHome = process.env.HOME;
-  process.env.HOME = root;
+  const root = await makeScratchDir('grok-acp-hint-');
+  const previousGrokHome = process.env.GROK_HOME;
+  process.env.GROK_HOME = path.join(root, '.grok');
   try {
     const projectPath = path.join(root, 'proj');
     const sessionId = 'sess-hint';
@@ -143,8 +143,8 @@ test('buildGrokPriorSessionContextHint extracts recent user turns', async () => 
     assert.match(hint, /second question/);
     assert.match(hint, /first answer about widgets/);
   } finally {
-    if (previousHome === undefined) delete process.env.HOME;
-    else process.env.HOME = previousHome;
+    if (previousGrokHome === undefined) delete process.env.GROK_HOME;
+    else process.env.GROK_HOME = previousGrokHome;
     await rm(root, { recursive: true, force: true });
   }
 });

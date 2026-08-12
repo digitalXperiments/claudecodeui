@@ -138,7 +138,6 @@ const KNOWN_LLM_PROVIDERS: LLMProvider[] = [
   'opencode',
   'grok',
   'kimi',
-  'agy',
   'pi',
 ];
 
