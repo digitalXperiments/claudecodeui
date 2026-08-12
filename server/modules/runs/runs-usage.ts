@@ -48,6 +48,11 @@ export type ProviderUsageSnapshot = {
   output: number;
   /** Concrete resolved model, when the disk record carries one (e.g. Claude's session JSONL). */
   model?: string | null;
+  /**
+   * A provider-reported real cost for this snapshot (e.g. OpenCode's own
+   * `session.cost`) — takes precedence over any $/token estimate.
+   */
+  costUsdEstimate?: number | null;
 };
 
 export function usageAccumulationMode(

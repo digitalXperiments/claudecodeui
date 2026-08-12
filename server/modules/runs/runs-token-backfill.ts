@@ -50,6 +50,7 @@ import Database from 'better-sqlite3';
 
 import { getConnection } from '@/modules/database/index.js';
 import { CLAUDE_MODEL_ALIASES } from '@/modules/providers/index.js';
+import { estimateCostUsd } from '@/modules/runs/model-pricing.js';
 import { readTokenBudgetUsage, type ProviderUsageSnapshot } from '@/modules/runs/runs-usage.js';
 import { runsDb } from '@/modules/runs/runs.repository.js';
 import { runService } from '@/modules/runs/runs.service.js';
@@ -184,6 +185,7 @@ function findLatestRunForSession(sessionId: string): AgentRun | null {
 export function mergeBackfillUsage(
   current: { token_input: number | null; token_output: number | null },
   snapshot: ProviderUsageSnapshot,
+  costUsdEstimate?: number | null,
 ): TokenUsage | null {
   const input = Math.max(current.token_input ?? 0, snapshot.input);
   const output = Math.max(current.token_output ?? 0, snapshot.output);
@@ -193,11 +195,19 @@ export function mergeBackfillUsage(
     input === current.token_input &&
     output === current.token_output;
   if (unchanged) return null;
-  return { input, output, total: input + output };
+  const merged: TokenUsage = { input, output, total: input + output };
+  if (costUsdEstimate != null) merged.costUsdEstimate = costUsdEstimate;
+  return merged;
 }
 
-function applyUsageToRun(run: AgentRun, snapshot: ProviderUsageSnapshot): boolean {
-  const merged = mergeBackfillUsage(run, snapshot);
+/** Prefer a provider's own reported cost (e.g. OpenCode's `session.cost`) over a $/token estimate. */
+function resolveSnapshotCost(provider: string | null, snapshot: ProviderUsageSnapshot): number | null {
+  if (snapshot.costUsdEstimate != null) return snapshot.costUsdEstimate;
+  return estimateCostUsd(provider, snapshot.model, snapshot.input, snapshot.output);
+}
+
+function applyUsageToRun(run: AgentRun, snapshot: ProviderUsageSnapshot, costUsdEstimate: number | null): boolean {
+  const merged = mergeBackfillUsage(run, snapshot, costUsdEstimate);
   if (!merged) return false;
   // Direct DB write — no extra token.usage timeline event (same rationale as
   // recordProviderUsage for chatty snapshots).
@@ -225,6 +235,7 @@ function patchRunTimestamps(
 function createSyntheticHistoryRun(
   session: BackfillSessionRow,
   snapshot: ProviderUsageSnapshot,
+  costUsdEstimate: number | null = null,
 ): AgentRun {
   const projectId =
     resolveProjectId(session.project_path) ?? resolveProjectId(session.runtime_project_path);
@@ -248,6 +259,7 @@ function createSyntheticHistoryRun(
     input: snapshot.input,
     output: snapshot.output,
     total: snapshot.input + snapshot.output,
+    ...(costUsdEstimate != null ? { costUsdEstimate } : {}),
   });
   const updated = runsDb.getById(run.run_id);
   if (!updated) {
@@ -328,16 +340,39 @@ async function readCodexHistoricalUsage(
   }
   const lines = content.trim().split('\n');
   let latestTokenInfo: Record<string, unknown> | null = null;
+  // The model is re-stamped on every `turn_context` entry (and mirrored onto
+  // `thread_settings_applied`), so the LAST one seen scanning backward is the
+  // model in effect for the most recent turn — same "latest wins" rule as
+  // the token usage scan just below it.
+  let latestModel: string | null = null;
   for (let i = lines.length - 1; i >= 0; i -= 1) {
     try {
       const entry = JSON.parse(lines[i]) as {
         type?: string;
-        payload?: { type?: string; info?: Record<string, unknown> };
+        payload?: {
+          type?: string;
+          info?: Record<string, unknown>;
+          model?: unknown;
+          thread_settings?: { model?: unknown };
+        };
       };
-      if (entry.type === 'event_msg' && entry.payload?.type === 'token_count' && entry.payload?.info) {
-        latestTokenInfo = entry.payload.info;
-        break;
+      if (!latestModel) {
+        const candidate =
+          (entry.type === 'turn_context' && entry.payload?.model) ||
+          (entry.payload?.type === 'thread_settings_applied' && entry.payload.thread_settings?.model);
+        if (typeof candidate === 'string' && candidate.trim()) {
+          latestModel = candidate.trim();
+        }
       }
+      if (
+        !latestTokenInfo &&
+        entry.type === 'event_msg' &&
+        entry.payload?.type === 'token_count' &&
+        entry.payload?.info
+      ) {
+        latestTokenInfo = entry.payload.info;
+      }
+      if (latestTokenInfo && latestModel) break;
     } catch {
       // skip
     }
@@ -348,8 +383,22 @@ async function readCodexHistoricalUsage(
     total: latestTokenInfo.total_token_usage,
     last: latestTokenInfo.last_token_usage,
     modelContextWindow: latestTokenInfo.model_context_window,
+    model: latestModel,
   });
-  return readTokenBudgetUsage(usage);
+  const snapshot = readTokenBudgetUsage(usage);
+  if (!snapshot) return null;
+  return { ...snapshot, model: usage?.model ?? null };
+}
+
+/** OpenCode's `session.model` column is a JSON blob: {"id","providerID","variant"}. */
+function parseOpenCodeModelId(raw: unknown): string | null {
+  if (typeof raw !== 'string' || !raw.trim()) return null;
+  try {
+    const parsed = JSON.parse(raw) as { id?: unknown };
+    return typeof parsed.id === 'string' && parsed.id.trim() ? parsed.id.trim() : null;
+  } catch {
+    return null;
+  }
 }
 
 function readOpenCodeHistoricalUsage(providerSessionId: string): ProviderUsageSnapshot | null {
@@ -370,6 +419,8 @@ function readOpenCodeHistoricalUsage(providerSessionId: string): ProviderUsageSn
       // Fall back to message aggregation is heavy; leave null when columns missing.
       return null;
     }
+    const hasModelColumn = columnNames.has('model');
+    const hasCostColumn = columnNames.has('cost');
     const row = db
       .prepare(
         `SELECT
@@ -378,6 +429,8 @@ function readOpenCodeHistoricalUsage(providerSessionId: string): ProviderUsageSn
            tokens_reasoning AS reasoningTokens,
            tokens_cache_read AS cacheReadTokens,
            tokens_cache_write AS cacheWriteTokens
+           ${hasModelColumn ? ', model AS model' : ''}
+           ${hasCostColumn ? ', cost AS cost' : ''}
          FROM session
          WHERE id = ?`,
       )
@@ -388,13 +441,18 @@ function readOpenCodeHistoricalUsage(providerSessionId: string): ProviderUsageSn
           reasoningTokens: number;
           cacheReadTokens: number;
           cacheWriteTokens: number;
+          model?: unknown;
+          cost?: unknown;
         }
       | undefined;
     if (!row) return null;
     const input = Number(row.inputTokens || 0) + Number(row.cacheReadTokens || 0);
     const output = Number(row.outputTokens || 0);
     if (input <= 0 && output <= 0) return null;
-    return { input, output };
+    // OpenCode already computed and billed at its own real rate — trust its
+    // number over any estimate from our own pricing table.
+    const cost = typeof row.cost === 'number' && Number.isFinite(row.cost) && row.cost >= 0 ? row.cost : null;
+    return { input, output, model: parseOpenCodeModelId(row.model), costUsdEstimate: cost };
   } catch {
     return null;
   } finally {
@@ -446,7 +504,10 @@ export async function readHistoricalSessionUsage(
       const { findKimiSessionDir, readKimiSessionTokenUsage } = await import('@/modules/providers/index.js');
       const kimiDir = findKimiSessionDir(providerSessionId);
       if (!kimiDir) return null;
-      return readTokenBudgetUsage(readKimiSessionTokenUsage(kimiDir));
+      const kimiUsage = readKimiSessionTokenUsage(kimiDir);
+      const snapshot = readTokenBudgetUsage(kimiUsage);
+      if (!snapshot) return null;
+      return { ...snapshot, model: kimiUsage.model };
     }
 
     if (provider === 'grok') {
@@ -455,7 +516,10 @@ export async function readHistoricalSessionUsage(
       const { readGrokSessionTokenUsage, resolveGrokSessionDir } = await import('@/modules/providers/index.js');
       const grokDir = resolveGrokSessionDir(projectPath, providerSessionId);
       if (!fsSync.existsSync(grokDir)) return null;
-      return readTokenBudgetUsage(readGrokSessionTokenUsage(grokDir));
+      const grokUsage = readGrokSessionTokenUsage(grokDir);
+      const snapshot = readTokenBudgetUsage(grokUsage);
+      if (!snapshot) return null;
+      return { ...snapshot, model: grokUsage.model };
     }
 
     if (provider === 'opencode') {
@@ -510,6 +574,7 @@ export async function backfillHistoricalRunTokens(
         continue;
       }
       result.sessionsWithUsage += 1;
+      const cost = resolveSnapshotCost(session.provider, snapshot);
 
       const existing = findLatestRunForSession(session.session_id);
       if (existing) {
@@ -518,7 +583,7 @@ export async function backfillHistoricalRunTokens(
           result.sessionsSkipped += 1;
           continue;
         }
-        if (applyUsageToRun(existing, snapshot)) {
+        if (applyUsageToRun(existing, snapshot, cost)) {
           if (snapshot.model) {
             runsDb.resolveModel(existing.run_id, snapshot.model, aliasesFor(session.provider));
           }
@@ -534,7 +599,7 @@ export async function backfillHistoricalRunTokens(
         continue;
       }
 
-      const created = createSyntheticHistoryRun(session, snapshot);
+      const created = createSyntheticHistoryRun(session, snapshot, cost);
       if (snapshot.model) runsDb.resolveModel(created.run_id, snapshot.model, aliasesFor(session.provider));
       result.runsCreated += 1;
     } catch (error) {
@@ -572,13 +637,12 @@ export async function resolveUnresolvedModels(
   const result: ResolveUnresolvedModelsResult = { runsScanned: 0, runsResolved: 0, errors: 0 };
 
   const db = getConnection();
-  // Scoped to claude: it's the only reader that ever returns a resolved
-  // `model` (readClaudeSessionTokenUsage parses it straight out of the
-  // session JSONL) — codex/kimi/grok/opencode never will, so including them
-  // here would just re-scan the same never-resolvable rows every pass for
-  // nothing. Claude aliases ('sonnet', 'opus[1m]', ...) are unresolved too,
-  // not just null/''/'default' — otherwise a run that explicitly requested
-  // 'sonnet' never gets swept up and stays fragmented from 'claude-sonnet-5'.
+  // Every reader (claude/codex/kimi/grok/opencode) can return a resolved
+  // `model` now, so all five are worth scanning. Claude aliases ('sonnet',
+  // 'opus[1m]', ...) are unresolved too, not just null/''/'default' —
+  // otherwise a run that explicitly requested 'sonnet' never gets swept up
+  // and stays fragmented from 'claude-sonnet-5'. Other providers have no
+  // equivalent alias sentinel today, so null/'' is enough for them.
   const claudeAliasPlaceholders = CLAUDE_MODEL_ALIASES.map(() => '?').join(', ');
   const rows = db
     .prepare(
@@ -593,8 +657,11 @@ export async function resolveUnresolvedModels(
          s.created_at
        FROM agent_runs r
        JOIN sessions s ON s.session_id = r.app_session_id
-       WHERE r.provider = 'claude'
-         AND (r.model IS NULL OR r.model = '' OR r.model IN (${claudeAliasPlaceholders}))
+       WHERE r.provider IN ('claude', 'codex', 'kimi', 'grok', 'opencode')
+         AND (
+           r.model IS NULL OR r.model = ''
+           OR (r.provider = 'claude' AND r.model IN (${claudeAliasPlaceholders}))
+         )
        LIMIT ?`,
     )
     .all(...CLAUDE_MODEL_ALIASES, limit) as Array<BackfillSessionRow & { run_id: string }>;
@@ -608,6 +675,25 @@ export async function resolveUnresolvedModels(
         runsDb.resolveModel(row.run_id, snapshot.model, aliases);
         result.runsResolved += 1;
       }
+      // The run already has tokens (that's why this query selected it) —
+      // patch cost in at the same time if it's still missing.
+      const current = runsDb.getById(row.run_id);
+      if (current && current.cost_usd_estimate == null && current.token_total != null) {
+        const cost = resolveSnapshotCost(row.provider, {
+          input: current.token_input ?? 0,
+          output: current.token_output ?? 0,
+          model: snapshot?.model ?? current.model,
+          costUsdEstimate: snapshot?.costUsdEstimate,
+        });
+        if (cost != null) {
+          runsDb.attachUsage(row.run_id, {
+            input: current.token_input,
+            output: current.token_output,
+            total: current.token_total,
+            costUsdEstimate: cost,
+          });
+        }
+      }
     } catch (error) {
       result.errors += 1;
       console.error(
@@ -618,6 +704,58 @@ export async function resolveUnresolvedModels(
   }
 
   return result;
+}
+
+export type BackfillMissingCostsResult = {
+  runsScanned: number;
+  runsUpdated: number;
+};
+
+/**
+ * Retroactively price runs that already have a resolved model and token
+ * totals but no cost estimate — either created before pricing existed, or
+ * whose model was already resolved on arrival (so `resolveUnresolvedModels`
+ * never touches them; that function only visits rows with an unresolved
+ * model). Pure $/token math against `model-pricing.ts` — no disk I/O, so
+ * this is cheap enough to run every pass alongside the other two.
+ */
+export function backfillMissingCosts(
+  options: { limit?: number } = {},
+): BackfillMissingCostsResult {
+  const limit = options.limit ?? DEFAULT_LIMIT;
+  const db = getConnection();
+  const rows = db
+    .prepare(
+      `SELECT run_id, provider, model, token_input, token_output, token_total
+       FROM agent_runs
+       WHERE token_total IS NOT NULL
+         AND model IS NOT NULL AND model != ''
+         AND provider IS NOT NULL
+         AND cost_usd_estimate IS NULL
+       LIMIT ?`,
+    )
+    .all(limit) as Array<{
+    run_id: string;
+    provider: string;
+    model: string;
+    token_input: number | null;
+    token_output: number | null;
+    token_total: number | null;
+  }>;
+
+  let runsUpdated = 0;
+  for (const row of rows) {
+    const cost = estimateCostUsd(row.provider, row.model, row.token_input, row.token_output);
+    if (cost == null) continue;
+    runsDb.attachUsage(row.run_id, {
+      input: row.token_input,
+      output: row.token_output,
+      total: row.token_total,
+      costUsdEstimate: cost,
+    });
+    runsUpdated += 1;
+  }
+  return { runsScanned: rows.length, runsUpdated };
 }
 
 let backfillInFlight: Promise<BackfillHistoricalTokensResult> | null = null;
@@ -642,6 +780,14 @@ export function scheduleHistoricalTokenBackfill(
         }
       } catch (error) {
         console.error('[Runs] model resolution failed', error);
+      }
+      try {
+        const costResult = backfillMissingCosts({ limit: options.limit });
+        if (costResult.runsUpdated > 0) {
+          console.log('[Runs] cost estimation', costResult);
+        }
+      } catch (error) {
+        console.error('[Runs] cost estimation failed', error);
       }
       return result;
     })

@@ -9,6 +9,7 @@
  */
 
 import { CLAUDE_MODEL_ALIASES } from '@/modules/providers/index.js';
+import { estimateCostUsd } from '@/modules/runs/model-pricing.js';
 import { runsDb } from '@/modules/runs/runs.repository.js';
 import {
   mergeRunUsage,
@@ -546,6 +547,11 @@ function recordProviderUsage(runId: string, message: NormalizedMessage): void {
   const mode = usageAccumulationMode(run.provider ?? message.provider);
   const merged = mergeRunUsage(run, snapshot, mode);
   if (!merged) return;
+  // Use whichever model is freshest: the one this very event just resolved,
+  // or the run's already-resolved value from an earlier event.
+  const effectiveModel = resolvedModel && !aliases.includes(resolvedModel) ? resolvedModel : run.model;
+  const cost = estimateCostUsd(provider, effectiveModel, merged.input, merged.output);
+  if (cost != null) merged.costUsdEstimate = cost;
   runsDb.attachUsage(runId, merged);
 }
 

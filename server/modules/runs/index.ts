@@ -10,6 +10,7 @@ export {
 } from '@/modules/runs/runs-maintenance.service.js';
 export {
   backfillHistoricalRunTokens,
+  backfillMissingCosts,
   listSessionsNeedingTokenBackfill,
   mergeBackfillUsage,
   normalizeSessionTimestamp,
@@ -22,8 +23,15 @@ export {
 export type {
   BackfillHistoricalTokensOptions,
   BackfillHistoricalTokensResult,
+  BackfillMissingCostsResult,
   BackfillSessionRow,
   HistoricalUsageReader,
   ResolveUnresolvedModelsResult,
 } from '@/modules/runs/runs-token-backfill.js';
+export {
+  estimateCostUsd,
+  PRICING_LAST_VERIFIED,
+  resolveModelPriceRate,
+} from '@/modules/runs/model-pricing.js';
+export type { ModelPriceRate } from '@/modules/runs/model-pricing.js';
 export * from '@/modules/runs/runs.types.js';

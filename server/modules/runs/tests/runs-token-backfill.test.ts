@@ -12,7 +12,7 @@
  */
 
 import assert from 'node:assert/strict';
-import { rm } from 'node:fs/promises';
+import { rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
 
@@ -21,9 +21,11 @@ import { closeConnection, getConnection, initializeDatabase } from '@/modules/da
 import { applyRunRetention } from '@/modules/runs/runs-maintenance.service.js';
 import {
   backfillHistoricalRunTokens,
+  backfillMissingCosts,
   listSessionsNeedingTokenBackfill,
   mergeBackfillUsage,
   normalizeSessionTimestamp,
+  readHistoricalSessionUsage,
   resetHistoricalTokenBackfillLatch,
   resolveUnresolvedModels,
   type BackfillSessionRow,
@@ -800,6 +802,157 @@ test('generation-agnostic claude aliases (not just "default") get normalized to 
       'chat',
     );
     assert.equal(runService.get(noopRun.run_id)?.model, 'haiku', 'an alias-shaped "resolved" value must not overwrite');
+  } finally {
+    await temp.restore();
+  }
+});
+
+test('readHistoricalSessionUsage recovers the resolved model from a real codex session JSONL', async () => {
+  const temp = await useTempDatabase();
+  try {
+    const jsonlPath = path.join(temp.directory, 'codex-session.jsonl');
+    const lines = [
+      { type: 'session_meta', payload: { model_provider: 'openai' } },
+      { type: 'turn_context', payload: { model: 'gpt-5.6-luna' } },
+      {
+        type: 'event_msg',
+        payload: {
+          type: 'token_count',
+          info: {
+            last_token_usage: { input_tokens: 400, output_tokens: 50, total_tokens: 450 },
+            total_token_usage: { input_tokens: 4000, output_tokens: 500, total_tokens: 4500 },
+          },
+        },
+      },
+      // A later turn switched models — the LAST turn_context wins.
+      { type: 'turn_context', payload: { model: 'gpt-5.6-sol' } },
+      {
+        type: 'event_msg',
+        payload: {
+          type: 'token_count',
+          info: {
+            last_token_usage: { input_tokens: 100, output_tokens: 20, total_tokens: 120 },
+            total_token_usage: { input_tokens: 4100, output_tokens: 520, total_tokens: 4620 },
+          },
+        },
+      },
+    ];
+    await writeFile(jsonlPath, lines.map((line) => JSON.stringify(line)).join('\n'));
+
+    const session: BackfillSessionRow = {
+      session_id: 'sess-codex-real',
+      provider: 'codex',
+      provider_session_id: 'sess-codex-real',
+      project_path: null,
+      runtime_project_path: null,
+      jsonl_path: jsonlPath,
+      created_at: '2026-07-01T00:00:00.000Z',
+    };
+    const snapshot = await readHistoricalSessionUsage(session);
+    assert.ok(snapshot);
+    assert.equal(snapshot!.model, 'gpt-5.6-sol', 'the most recent turn_context model wins');
+    assert.equal(snapshot!.input, 4100);
+    assert.equal(snapshot!.output, 520);
+  } finally {
+    await temp.restore();
+  }
+});
+
+test('backfillHistoricalRunTokens computes and attaches a cost estimate for a recovered model', async () => {
+  const temp = await useTempDatabase();
+  try {
+    seedSession({ sessionId: 'sess-cost-claude', provider: 'claude', createdAt: '2026-07-09T00:00:00.000Z' });
+    const reader: HistoricalUsageReader = (session) =>
+      session.session_id === 'sess-cost-claude'
+        ? { input: 1_000_000, output: 200_000, model: 'claude-sonnet-5' }
+        : null;
+
+    const result = await backfillHistoricalRunTokens({ readUsage: reader });
+    assert.equal(result.runsCreated, 1);
+
+    const created = getConnection()
+      .prepare(`SELECT run_id, cost_usd_estimate FROM agent_runs WHERE source = 'history'`)
+      .get() as { run_id: string; cost_usd_estimate: number };
+    // claude-sonnet-5: $2/M in, $10/M out -> 1M*2 + 0.2M*10 = 2 + 2 = 4
+    assert.equal(created.cost_usd_estimate, 4);
+  } finally {
+    await temp.restore();
+  }
+});
+
+test('backfillHistoricalRunTokens prefers a provider-reported real cost over the pricing-table estimate', async () => {
+  const temp = await useTempDatabase();
+  try {
+    seedSession({ sessionId: 'sess-cost-real', provider: 'opencode', createdAt: '2026-07-09T00:00:00.000Z' });
+    // OpenCode's own billed cost (1.10) deliberately differs from what our
+    // pricing table would estimate for this input/output — the real value
+    // must win.
+    const reader: HistoricalUsageReader = (session) =>
+      session.session_id === 'sess-cost-real'
+        ? { input: 151_920, output: 8_377, model: 'kimi-k3', costUsdEstimate: 1.1025642 }
+        : null;
+
+    await backfillHistoricalRunTokens({ readUsage: reader });
+    const created = getConnection()
+      .prepare(`SELECT cost_usd_estimate FROM agent_runs WHERE source = 'history'`)
+      .get() as { cost_usd_estimate: number };
+    assert.equal(created.cost_usd_estimate, 1.1025642);
+  } finally {
+    await temp.restore();
+  }
+});
+
+test('backfillMissingCosts retroactively prices runs that already had a resolved model but no cost', async () => {
+  const temp = await useTempDatabase();
+  try {
+    seedSession({ sessionId: 'sess-retro-cost', provider: 'claude', createdAt: '2026-07-10T00:00:00.000Z' });
+    const run = runService.create({
+      source: 'chat',
+      provider: 'claude',
+      model: 'claude-opus-5',
+      appSessionId: 'sess-retro-cost',
+    });
+    runService.attachUsage(run.run_id, { input: 2_000_000, output: 100_000, total: 2_100_000 });
+    assert.equal(runService.get(run.run_id)?.cost_usd_estimate, null);
+
+    const result = backfillMissingCosts();
+    assert.equal(result.runsUpdated, 1);
+    // claude-opus-5: $5/M in, $25/M out -> 2M*5 + 0.1M*25 = 10 + 2.5 = 12.5
+    assert.equal(runService.get(run.run_id)?.cost_usd_estimate, 12.5);
+
+    // Idempotent: already-priced rows are not re-scanned.
+    const second = backfillMissingCosts();
+    assert.equal(second.runsScanned, 0);
+  } finally {
+    await temp.restore();
+  }
+});
+
+test('a live token_budget event computes cost alongside resolving the model', async () => {
+  const temp = await useTempDatabase();
+  try {
+    seedSession({ sessionId: 'sess-live-cost', provider: 'claude', createdAt: '2026-07-11T00:00:00.000Z' });
+    const run = runService.create({
+      source: 'chat',
+      provider: 'claude',
+      model: 'default',
+      appSessionId: 'sess-live-cost',
+    });
+
+    recordNormalizedRunEvent(
+      run.run_id,
+      tokenBudgetMessage('claude', {
+        billedInputTokens: 1_000_000,
+        billedOutputTokens: 100_000,
+        model: 'claude-haiku-4-5',
+      }),
+      'chat',
+    );
+
+    const updated = runService.get(run.run_id);
+    assert.equal(updated?.model, 'claude-haiku-4-5');
+    // claude-haiku-4-5: $1/M in, $5/M out -> 1*1 + 0.1*5 = 1.5
+    assert.equal(updated?.cost_usd_estimate, 1.5);
   } finally {
     await temp.restore();
   }
