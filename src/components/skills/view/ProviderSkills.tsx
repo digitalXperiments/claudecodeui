@@ -52,7 +52,6 @@ const PROVIDER_NAMES: Record<SkillsProvider, string> = {
   opencode: 'OpenCode',
   grok: 'Grok Build',
   kimi: 'Kimi',
-  agy: 'Antigravity',
   pi: 'Pi',
 };
 
@@ -62,7 +61,6 @@ const PROVIDER_SKILL_PATHS: Record<Exclude<SkillsProvider, 'opencode'>, string> 
   cursor: '~/.cursor/skills/<skill-name>/SKILL.md',
   grok: '~/.grok/skills/<skill-name>/SKILL.md',
   kimi: '~/.kimi-code/skills/<skill-name>/SKILL.md',
-  agy: '~/.gemini/antigravity-cli/skills/<skill-name>/SKILL.md',
   pi: '~/.pi/agent/skills/<skill-name>/SKILL.md',
 };
 
@@ -460,7 +458,7 @@ export default function ProviderSkills({ selectedProvider, currentProjects }: Pr
 
       <Dialog open={isAddDialogOpen} onOpenChange={handleAddDialogOpenChange}>
         <DialogContent
-          wrapperClassName="z-[10000]"
+          wrapperClassName="z-[10100]"
           className="flex h-[calc(100vh-2rem)] max-h-[760px] w-[calc(100vw-2rem)] max-w-4xl flex-col overflow-hidden p-0 sm:h-[720px]"
         >
           <DialogTitle>Add {providerName} Skill</DialogTitle>

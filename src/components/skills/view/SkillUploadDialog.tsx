@@ -188,7 +188,7 @@ export default function SkillUploadDialog({
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent
-        wrapperClassName="z-[10000]"
+        wrapperClassName="z-[10100]"
         className="flex h-[calc(100vh-2rem)] max-h-[720px] w-[calc(100vw-2rem)] max-w-3xl flex-col overflow-hidden p-0 sm:h-[640px]"
       >
         <DialogTitle>{title}</DialogTitle>

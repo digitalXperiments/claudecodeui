@@ -6,6 +6,19 @@ export type AgentRunProfileTools = {
   disallowedCommands?: string[];
 };
 
+/** Swarm roster roles a profile may be auto-selected for by the orchestrator. */
+export const SWARM_PROFILE_ROLES = ['explorer', 'implementer', 'reviewer', 'tester', 'security', 'docs'] as const;
+
+export type SwarmProfileRole = (typeof SWARM_PROFILE_ROLES)[number];
+
+/**
+ * Capability tier, weakest → strongest. The orchestrator reads this as a
+ * quantitative signal when matching a seat to a step's difficulty.
+ */
+export const SWARM_PROFILE_LEVELS = ['basic', 'medium', 'advanced'] as const;
+
+export type SwarmProfileLevel = (typeof SWARM_PROFILE_LEVELS)[number];
+
 export type AgentRunProfile = {
   profile_id: string;
   name: string;
@@ -16,6 +29,10 @@ export type AgentRunProfile = {
   permission_mode: string;
   tools: AgentRunProfileTools;
   permission_intent: string;
+  swarm_roles: SwarmProfileRole[];
+  swarm_level: SwarmProfileLevel;
+  /** false = kept for explicit use, but excluded from automatic seat selection. */
+  enabled: boolean;
   created_at: string;
   updated_at: string;
 };
@@ -29,6 +46,9 @@ export type AgentRunProfileInput = {
   permissionMode?: string;
   tools?: AgentRunProfileTools;
   permissionIntent?: string;
+  swarmRoles?: SwarmProfileRole[];
+  swarmLevel?: SwarmProfileLevel;
+  enabled?: boolean;
 };
 
 const BASE = '/api/agent-profiles';
@@ -51,8 +71,15 @@ async function parse<T>(response: Response): Promise<T> {
 }
 
 export const agentProfilesApi = {
-  async list(): Promise<AgentRunProfile[]> {
-    const res = await authenticatedFetch(BASE);
+  async list(filter?: {
+    swarmRole?: SwarmProfileRole;
+    minSwarmLevel?: SwarmProfileLevel;
+  }): Promise<AgentRunProfile[]> {
+    const params = new URLSearchParams();
+    if (filter?.swarmRole) params.set('swarmRole', filter.swarmRole);
+    if (filter?.minSwarmLevel) params.set('minSwarmLevel', filter.minSwarmLevel);
+    const query = params.toString();
+    const res = await authenticatedFetch(query ? `${BASE}?${query}` : BASE);
     const data = await parse<{ profiles?: AgentRunProfile[] }>(res);
     return Array.isArray(data.profiles) ? data.profiles : [];
   },

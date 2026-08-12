@@ -61,7 +61,6 @@ const PROVIDER_NAMES: Record<SkillsProvider, string> = {
   opencode: 'OpenCode',
   grok: 'Grok',
   kimi: 'Kimi',
-  agy: 'Antigravity',
   pi: 'Pi',
 };
 
@@ -585,7 +584,7 @@ export default function ProjectSkills({ currentProjects }: ProjectSkillsProps) {
 
       <Dialog open={isAddDialogOpen} onOpenChange={handleAddDialogOpenChange}>
         <DialogContent
-          wrapperClassName="z-[10000]"
+          wrapperClassName="z-[10100]"
           className="flex h-[calc(100vh-2rem)] max-h-[720px] w-[calc(100vw-2rem)] max-w-3xl flex-col overflow-hidden p-0 sm:h-[640px]"
         >
           <DialogTitle>Add Project Skill</DialogTitle>

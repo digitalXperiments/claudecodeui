@@ -7,7 +7,6 @@ export const MCP_PROVIDER_NAMES: Record<McpProvider, string> = {
   opencode: 'OpenCode',
   grok: 'Grok Build',
   kimi: 'Kimi',
-  agy: 'Antigravity',
   pi: 'Pi',
 };
 
@@ -18,7 +17,6 @@ export const MCP_SUPPORTED_SCOPES: Record<McpProvider, McpScope[]> = {
   opencode: ['user', 'project'],
   grok: ['user', 'project'],
   kimi: ['user', 'project'],
-  agy: ['user', 'project'],
   pi: [],
 };
 
@@ -29,7 +27,6 @@ export const MCP_SUPPORTED_TRANSPORTS: Record<McpProvider, McpTransport[]> = {
   opencode: ['stdio', 'http'],
   grok: ['stdio', 'http'],
   kimi: ['stdio', 'http'],
-  agy: ['stdio', 'http', 'sse'],
   pi: [],
 };
 
@@ -44,7 +41,6 @@ export const MCP_PROVIDER_BUTTON_CLASSES: Record<McpProvider, string> = {
   opencode: 'bg-primary text-primary-foreground hover:bg-primary/90',
   grok: 'bg-primary text-primary-foreground hover:bg-primary/90',
   kimi: 'bg-primary text-primary-foreground hover:bg-primary/90',
-  agy: 'bg-primary text-primary-foreground hover:bg-primary/90',
   pi: 'bg-primary text-primary-foreground hover:bg-primary/90',
 };
 
@@ -55,7 +51,6 @@ export const MCP_SUPPORTS_WORKING_DIRECTORY: Record<McpProvider, boolean> = {
   opencode: false,
   grok: false,
   kimi: false,
-  agy: false,
   pi: false,
 };
 

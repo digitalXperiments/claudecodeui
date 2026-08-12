@@ -16,8 +16,6 @@ export default function AgentCategoryContentSection({
   onGrokPermissionsChange,
   codexPermissionMode,
   onCodexPermissionModeChange,
-  agyPermissionMode,
-  onAgyPermissionModeChange,
   piPermissionMode,
   onPiPermissionModeChange,
 }: AgentCategoryContentSectionProps) {
@@ -77,14 +75,6 @@ export default function AgentCategoryContentSection({
           agent="codex"
           permissionMode={codexPermissionMode}
           onPermissionModeChange={onCodexPermissionModeChange}
-        />
-      )}
-
-      {selectedCategory === 'permissions' && selectedAgent === 'agy' && (
-        <PermissionsContent
-          agent="agy"
-          permissionMode={agyPermissionMode}
-          onPermissionModeChange={onAgyPermissionModeChange}
         />
       )}
 

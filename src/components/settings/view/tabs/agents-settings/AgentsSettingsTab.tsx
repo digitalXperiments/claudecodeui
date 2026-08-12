@@ -23,8 +23,6 @@ export default function AgentsSettingsTab({
   onGrokPermissionsChange,
   codexPermissionMode,
   onCodexPermissionModeChange,
-  agyPermissionMode,
-  onAgyPermissionModeChange,
   piPermissionMode,
   onPiPermissionModeChange,
   projects,
@@ -50,7 +48,7 @@ export default function AgentsSettingsTab({
   }, [visibleCategories, selectedCategory]);
 
   const visibleAgents = useMemo<AgentProvider[]>(() => {
-    return ['claude', 'cursor', 'codex', 'opencode', 'grok', 'kimi', 'agy', 'pi'];
+    return ['claude', 'cursor', 'codex', 'opencode', 'grok', 'kimi', 'pi'];
   }, []);
 
   const agentContextById = useMemo<Record<AgentProvider, AgentContext>>(() => {
@@ -88,11 +86,6 @@ export default function AgentsSettingsTab({
       onLogin: () => onProviderLogin('kimi'),
       onRefresh: () => refresh('kimi'),
     },
-    agy: {
-      authStatus: providerAuthStatus.agy,
-      onLogin: () => onProviderLogin('agy'),
-      onRefresh: () => refresh('agy'),
-    },
     pi: {
       authStatus: providerAuthStatus.pi,
       onLogin: () => onProviderLogin('pi'),
@@ -108,7 +101,6 @@ export default function AgentsSettingsTab({
     providerAuthStatus.opencode,
     providerAuthStatus.grok,
     providerAuthStatus.kimi,
-    providerAuthStatus.agy,
     providerAuthStatus.pi,
   ]);
 
@@ -172,8 +164,6 @@ export default function AgentsSettingsTab({
           onGrokPermissionsChange={onGrokPermissionsChange}
           codexPermissionMode={codexPermissionMode}
           onCodexPermissionModeChange={onCodexPermissionModeChange}
-          agyPermissionMode={agyPermissionMode}
-          onAgyPermissionModeChange={onAgyPermissionModeChange}
           piPermissionMode={piPermissionMode}
           onPiPermissionModeChange={onPiPermissionModeChange}
           projects={projects}

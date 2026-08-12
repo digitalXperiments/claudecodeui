@@ -60,8 +60,6 @@ function Settings({ isOpen, onClose, projects = [], initialTab = 'agents' }: Set
     setGrokPermissions,
     codexPermissionMode,
     setCodexPermissionMode,
-    agyPermissionMode,
-    setAgyPermissionMode,
     piPermissionMode,
     setPiPermissionMode,
     providerAuthStatus,
@@ -214,8 +212,6 @@ function Settings({ isOpen, onClose, projects = [], initialTab = 'agents' }: Set
                   onGrokPermissionsChange={setGrokPermissions}
                   codexPermissionMode={codexPermissionMode}
                   onCodexPermissionModeChange={setCodexPermissionMode}
-                  agyPermissionMode={agyPermissionMode}
-                  onAgyPermissionModeChange={setAgyPermissionMode}
                   piPermissionMode={piPermissionMode}
                   onPiPermissionModeChange={setPiPermissionMode}
                   projects={projects}

@@ -10,9 +10,6 @@ export type AgentCategory = 'account' | 'permissions' | 'models';
 export type ProjectSortOrder = 'name' | 'date';
 export type SaveStatus = 'success' | 'error' | null;
 export type CodexPermissionMode = 'default' | 'acceptEdits' | 'bypassPermissions';
-// Antigravity's headless run modes: --mode plan (read-only), --mode accept-edits
-// (auto-accept file edits), or --dangerously-skip-permissions (auto-approve all).
-export type AgyPermissionMode = 'plan' | 'acceptEdits' | 'bypassPermissions';
 // Pi has no permission popups; plan = read-only tools, bypass = full tool set.
 export type PiPermissionMode = 'plan' | 'bypassPermissions';
 
@@ -84,7 +81,6 @@ export type SettingsStoragePayload = {
   cursor: CursorPermissionsState & { lastUpdated: string };
   codex: { permissionMode: CodexPermissionMode; lastUpdated: string };
   grok: GrokPermissionsState & { lastUpdated: string };
-  agy: { permissionMode: AgyPermissionMode; lastUpdated: string };
   pi: { permissionMode: PiPermissionMode; lastUpdated: string };
 };
 

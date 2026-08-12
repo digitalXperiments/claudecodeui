@@ -278,7 +278,7 @@ export default function SkillWizardDialog({
     <>
       <Dialog open={open} onOpenChange={onOpenChange}>
         <DialogContent
-          wrapperClassName="z-[10000]"
+          wrapperClassName="z-[10100]"
           className="flex h-[80vh] max-h-[820px] w-[calc(100vw-2rem)] max-w-[960px] flex-col overflow-hidden p-0"
         >
           <DialogTitle>{t('wizard.title')}</DialogTitle>
