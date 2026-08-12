@@ -264,6 +264,20 @@ export type SwarmConfig = {
    * follow-up swarm). Default true.
    */
   prOnRedValidation?: boolean;
+  /**
+   * Long-horizon unattended mode: only a crashed/silent provider ends a step
+   * — a reviewer/tester finding real issues just feeds back into another
+   * attempt. Raises the step-attempt and orchestrator-replan ceilings by an
+   * order of magnitude (still finite: a genuinely circular disagreement
+   * between agents must stop eventually, not run unattended forever).
+   */
+  autonomous?: boolean;
+  /**
+   * Orchestrator replan rounds per wave when steps are still failing after
+   * their attempt budget. Default/cap 1 normally; default 8 / cap 15 when
+   * `autonomous` is set.
+   */
+  maxReplanRounds?: number | null;
   orchestrator: SwarmAgentSpec;
   agents: SwarmAgentSpec[];
   skills: string[];
@@ -363,6 +377,14 @@ export type StartSwarmInput = {
   validationMaxAttempts?: number;
   /** Open the PR even if the gate stays red after every attempt (default true). */
   prOnRedValidation?: boolean;
+  /**
+   * Long-horizon unattended mode: raises step-attempt and replan-round
+   * ceilings by an order of magnitude. Only a crashed/silent provider ends a
+   * step; reviewer/tester feedback just triggers another attempt.
+   */
+  autonomous?: boolean;
+  /** Orchestrator replan rounds per wave (default/cap 1; 8/15 when autonomous). */
+  maxReplanRounds?: number;
   /** Optional request key: repeated starts for one project return the first swarm. */
   idempotencyKey?: string | null;
 };

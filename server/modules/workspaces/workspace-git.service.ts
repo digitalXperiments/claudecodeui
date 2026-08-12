@@ -7,7 +7,7 @@
  * instead of rejecting on non-zero exit, so callers decide what is fatal.
  */
 
-import { realpath } from 'node:fs/promises';
+import { realpath, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 // cross-spawn: drop-in spawn with Windows .cmd/PATHEXT resolution.
@@ -162,6 +162,47 @@ export async function isGitRepo(projectPath: string): Promise<boolean> {
   const toplevel = await canonicalPath(result.stdout.trim());
   const project = await canonicalPath(projectPath);
   return toplevel === project;
+}
+
+const AUTO_INIT_GITIGNORE = [
+  'node_modules/',
+  'dist/',
+  'build/',
+  '.venv/',
+  '__pycache__/',
+  '.DS_Store',
+  '*.log',
+  '',
+].join('\n');
+
+/**
+ * Turn a plain (non-git, or nested-inside-another-repo) project directory
+ * into its own git repository with one commit, so it becomes eligible for
+ * `git_worktree` mode instead of the merge-dead-end `sandbox_copy` fallback.
+ * Idempotent: safe to call on a path that already has an initialized-but-
+ * empty `.git` (e.g. a previous call that raced).
+ */
+export async function initRepo(projectPath: string): Promise<void> {
+  await runGitOrThrow(projectPath, ['init', '-b', 'main']);
+  // A fresh `git init` has no identity configured; commits fail without one
+  // and this repo has no human author to fall back to.
+  await runGit(projectPath, ['config', 'user.email', 'swarm@cloudcli.local']);
+  await runGit(projectPath, ['config', 'user.name', 'CloudCLI Swarm']);
+  const gitignorePath = path.join(projectPath, '.gitignore');
+  try {
+    // 'ax': create only if absent, fail loudly on any other error — never
+    // clobber a .gitignore the project already has.
+    await writeFile(gitignorePath, AUTO_INIT_GITIGNORE, { flag: 'ax' });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+  }
+  await runGit(projectPath, ['add', '-A']);
+  await runGit(projectPath, [
+    'commit',
+    '-m',
+    'Initial commit (auto-created for workspace isolation)',
+    '--allow-empty',
+  ]);
 }
 
 /** Current branch of the primary checkout; '' when detached. */

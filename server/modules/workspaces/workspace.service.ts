@@ -584,19 +584,29 @@ export function createWorkspaceService(options: WorkspaceServiceOptions = {}): W
     }
 
     const workspaceId = newWorkspaceId();
-    const gitRepo = await git.isGitRepo(projectPath);
-    const mode: WorkspaceMode = input.mode ?? (gitRepo ? 'git_worktree' : 'sandbox_copy');
-    if (mode === 'git_worktree' && !gitRepo) {
-      throw new CloudError(
-        'WORKSPACE_CREATE_FAILED',
-        `Project is not a git repository; use sandbox_copy mode: ${projectPath}`,
-      );
-    }
-    // sandbox_copy forced on a git repo is allowed (explicit opt-out of isolation).
 
     return withProjectLock(
       input.projectId,
       async () => {
+      let gitRepo = await git.isGitRepo(projectPath);
+      // A plain (or nested-inside-another-repo) project has no history to
+      // branch/worktree from, which otherwise forces the merge-dead-end
+      // `sandbox_copy` fallback (no git history — see mergeToBase below).
+      // Give it one so every project can use real, mergeable isolation.
+      // Only do this when the caller didn't explicitly ask for sandbox_copy.
+      // Runs inside the project lock so concurrent creates can't race init.
+      if (!gitRepo && input.mode !== 'sandbox_copy') {
+        await git.initRepo(projectPath);
+        gitRepo = await git.isGitRepo(projectPath);
+      }
+      const mode: WorkspaceMode = input.mode ?? (gitRepo ? 'git_worktree' : 'sandbox_copy');
+      if (mode === 'git_worktree' && !gitRepo) {
+        throw new CloudError(
+          'WORKSPACE_CREATE_FAILED',
+          `Project is not a git repository; use sandbox_copy mode: ${projectPath}`,
+        );
+      }
+      // sandbox_copy forced on a git repo is allowed (explicit opt-out of isolation).
       const rootPath = await chooseRootPath(projectPath, input.projectId, workspaceId);
       assertRootAllowed(rootPath, projectPath, input.projectId);
 

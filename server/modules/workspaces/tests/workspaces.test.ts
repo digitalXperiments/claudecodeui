@@ -341,7 +341,7 @@ test('git subprocesses are noninteractive and have a hard timeout', async () => 
   });
 });
 
-test('uses sandbox_copy for a non-git project and detects an orphan', async () => {
+test('uses sandbox_copy when explicitly requested and detects an orphan', async () => {
   await withDatabase(async (taskRoot) => {
     const projectPath = path.join(taskRoot, 'plain-project');
     await mkdir(projectPath, { recursive: true });
@@ -349,7 +349,12 @@ test('uses sandbox_copy for a non-git project and detects an orphan', async () =
     const projectId = projectsDb.createProjectPath(projectPath).project!.project_id;
     const service = createWorkspaceService({ tmpRoot: path.join(taskRoot, 'fallback') });
 
-    const workspace = await service.create({ projectId, projectPath, taskId: 'plain-task' });
+    const workspace = await service.create({
+      projectId,
+      projectPath,
+      taskId: 'plain-task',
+      mode: 'sandbox_copy',
+    });
     assert.equal(workspace.mode, 'sandbox_copy');
     await writeFile(path.join(workspace.root_path, 'output.txt'), 'isolated\n');
     assert.equal(await pathExists(path.join(projectPath, 'output.txt')), false);
@@ -359,5 +364,28 @@ test('uses sandbox_copy for a non-git project and detects an orphan', async () =
     const orphanStatus = await service.refreshStatus(workspace.workspace_id);
     assert.equal(orphanStatus.status, 'orphan');
     assert.equal(service.get(workspace.workspace_id)?.status, 'orphan');
+  });
+});
+
+test('auto-inits a plain non-git project so it gets real, mergeable git_worktree isolation', async () => {
+  await withDatabase(async (taskRoot) => {
+    const projectPath = path.join(taskRoot, 'plain-project');
+    await mkdir(projectPath, { recursive: true });
+    await writeFile(path.join(projectPath, 'input.txt'), 'source\n');
+    const projectId = projectsDb.createProjectPath(projectPath).project!.project_id;
+    const service = createWorkspaceService({ tmpRoot: path.join(taskRoot, 'fallback') });
+
+    const workspace = await service.create({ projectId, projectPath, taskId: 'plain-task' });
+    assert.equal(workspace.mode, 'git_worktree');
+    assert.equal(await pathExists(path.join(projectPath, '.git')), true);
+
+    await writeFile(path.join(workspace.root_path, 'output.txt'), 'isolated\n');
+    assert.equal(await pathExists(path.join(projectPath, 'output.txt')), false);
+    await runGit(workspace.root_path, ['add', '-A']);
+    await runGit(workspace.root_path, ['commit', '-m', 'add output.txt']);
+
+    const merged = await service.mergeToBase(workspace.workspace_id, { strategy: 'merge', deleteAfter: true });
+    assert.equal(merged.status, 'merged');
+    assert.equal(await pathExists(path.join(projectPath, 'output.txt')), true);
   });
 });

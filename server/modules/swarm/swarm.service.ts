@@ -112,6 +112,17 @@ const DEFAULT_STEP_TIMEOUT_MS = 45 * 60 * 1000;
 const MAX_STEP_TIMEOUT_MS = 4 * 60 * 60 * 1000;
 const DEFAULT_STEP_MAX_ATTEMPTS = 3;
 const STEP_MAX_ATTEMPTS_HARD_CAP = 5;
+// Autonomous (long-horizon, unattended) swarms only ever stop on a
+// crashed/silent provider — a reviewer/tester finding real issues just
+// triggers another attempt. These ceilings are still finite: a genuinely
+// circular disagreement between agents must stop eventually rather than
+// run unattended for good.
+const AUTONOMOUS_STEP_MAX_ATTEMPTS_DEFAULT = 12;
+const AUTONOMOUS_STEP_MAX_ATTEMPTS_HARD_CAP = 20;
+const DEFAULT_MAX_REPLAN_ROUNDS = 1;
+const MAX_REPLAN_ROUNDS_HARD_CAP = 1;
+const AUTONOMOUS_MAX_REPLAN_ROUNDS_DEFAULT = 8;
+const AUTONOMOUS_MAX_REPLAN_ROUNDS_HARD_CAP = 15;
 const DEFAULT_MAX_CONCURRENCY = 4;
 const MAX_CONCURRENCY = 8;
 const TERMINAL_SWARM_STATUSES = new Set(['succeeded', 'failed', 'aborted']);
@@ -404,6 +415,8 @@ function resolveSeatEffort(
 // of remediation rounds before anyone calls the goal unreachable.
 const VALIDATION_MAX_ATTEMPTS_DEFAULT = 4;
 const VALIDATION_MAX_ATTEMPTS_HARD_CAP = 8;
+const AUTONOMOUS_VALIDATION_MAX_ATTEMPTS_DEFAULT = 10;
+const AUTONOMOUS_VALIDATION_MAX_ATTEMPTS_HARD_CAP = 20;
 const MAX_REMEDIATION_STEPS_PER_ATTEMPT = 3;
 
 /** Capability tiers, weakest → strongest. Mirrors agent-profile swarm_level. */
@@ -424,6 +437,8 @@ function levelOf(value: unknown): SwarmAgentLevel {
  * clamped to 1..5.
  */
 function resolveStepMaxAttempts(config: SwarmConfig | null): number {
+  const autonomous = config?.autonomous === true;
+  const hardCap = autonomous ? AUTONOMOUS_STEP_MAX_ATTEMPTS_HARD_CAP : STEP_MAX_ATTEMPTS_HARD_CAP;
   const fromConfig = config?.stepMaxAttempts;
   const fromEnv = Number(process.env.CLOUDCLI_SWARM_STEP_MAX_ATTEMPTS);
   const raw =
@@ -431,8 +446,31 @@ function resolveStepMaxAttempts(config: SwarmConfig | null): number {
       ? fromConfig
       : Number.isFinite(fromEnv) && fromEnv > 0
         ? fromEnv
-        : DEFAULT_STEP_MAX_ATTEMPTS;
-  return Math.min(STEP_MAX_ATTEMPTS_HARD_CAP, Math.max(1, Math.trunc(raw)));
+        : autonomous
+          ? AUTONOMOUS_STEP_MAX_ATTEMPTS_DEFAULT
+          : DEFAULT_STEP_MAX_ATTEMPTS;
+  return Math.min(hardCap, Math.max(1, Math.trunc(raw)));
+}
+
+/**
+ * Orchestrator replan rounds per wave: explicit swarm config wins, then the
+ * CLOUDCLI_SWARM_MAX_REPLAN_ROUNDS env override, then the (autonomous-aware)
+ * default; always clamped so replanning can never loop unbounded.
+ */
+function resolveMaxReplanRounds(config: SwarmConfig | null): number {
+  const autonomous = config?.autonomous === true;
+  const hardCap = autonomous ? AUTONOMOUS_MAX_REPLAN_ROUNDS_HARD_CAP : MAX_REPLAN_ROUNDS_HARD_CAP;
+  const fromConfig = config?.maxReplanRounds;
+  const fromEnv = Number(process.env.CLOUDCLI_SWARM_MAX_REPLAN_ROUNDS);
+  const raw =
+    typeof fromConfig === 'number' && Number.isFinite(fromConfig) && fromConfig > 0
+      ? fromConfig
+      : Number.isFinite(fromEnv) && fromEnv > 0
+        ? fromEnv
+        : autonomous
+          ? AUTONOMOUS_MAX_REPLAN_ROUNDS_DEFAULT
+          : DEFAULT_MAX_REPLAN_ROUNDS;
+  return Math.min(hardCap, Math.max(1, Math.trunc(raw)));
 }
 
 /**
@@ -455,6 +493,8 @@ function shortCheckNames(labels: string[]): string {
 }
 
 function resolveValidationMaxAttempts(config: SwarmConfig | null): number {
+  const autonomous = config?.autonomous === true;
+  const hardCap = autonomous ? AUTONOMOUS_VALIDATION_MAX_ATTEMPTS_HARD_CAP : VALIDATION_MAX_ATTEMPTS_HARD_CAP;
   const fromConfig = config?.validationMaxAttempts;
   const fromEnv = Number(process.env.CLOUDCLI_SWARM_VALIDATION_MAX_ATTEMPTS);
   const raw =
@@ -462,8 +502,10 @@ function resolveValidationMaxAttempts(config: SwarmConfig | null): number {
       ? fromConfig
       : Number.isFinite(fromEnv) && fromEnv > 0
         ? fromEnv
-        : VALIDATION_MAX_ATTEMPTS_DEFAULT;
-  return Math.min(VALIDATION_MAX_ATTEMPTS_HARD_CAP, Math.max(1, Math.trunc(raw)));
+        : autonomous
+          ? AUTONOMOUS_VALIDATION_MAX_ATTEMPTS_DEFAULT
+          : VALIDATION_MAX_ATTEMPTS_DEFAULT;
+  return Math.min(hardCap, Math.max(1, Math.trunc(raw)));
 }
 
 /** Observability: record seat-policy adjustments on the blackboard. */
@@ -728,6 +770,12 @@ function resolveRoster(input: StartSwarmInput): {
     throw new CloudError('RUN_NOT_FOUND', `Swarm may use at most ${MAX_SKILLS} skills`);
   }
 
+  const autonomous = input.autonomous === true;
+  const stepAttemptsHardCap = autonomous ? AUTONOMOUS_STEP_MAX_ATTEMPTS_HARD_CAP : STEP_MAX_ATTEMPTS_HARD_CAP;
+  const validationAttemptsHardCap = autonomous
+    ? AUTONOMOUS_VALIDATION_MAX_ATTEMPTS_HARD_CAP
+    : VALIDATION_MAX_ATTEMPTS_HARD_CAP;
+  const replanRoundsHardCap = autonomous ? AUTONOMOUS_MAX_REPLAN_ROUNDS_HARD_CAP : MAX_REPLAN_ROUNDS_HARD_CAP;
   const config: SwarmConfig = {
     // Approval was historically used to gate Kanban task creation; Agent Swarm
     // now ends on orchestrator handoff only (no task side effects).
@@ -747,7 +795,7 @@ function resolveRoster(input: StartSwarmInput): {
       typeof input.stepMaxAttempts === 'number' &&
       Number.isFinite(input.stepMaxAttempts) &&
       input.stepMaxAttempts > 0
-        ? Math.min(STEP_MAX_ATTEMPTS_HARD_CAP, Math.trunc(input.stepMaxAttempts))
+        ? Math.min(stepAttemptsHardCap, Math.trunc(input.stepMaxAttempts))
         : null,
     maxConcurrency:
       typeof input.maxConcurrency === 'number' && Number.isFinite(input.maxConcurrency)
@@ -760,9 +808,16 @@ function resolveRoster(input: StartSwarmInput): {
       typeof input.validationMaxAttempts === 'number' &&
       Number.isFinite(input.validationMaxAttempts) &&
       input.validationMaxAttempts > 0
-        ? Math.min(VALIDATION_MAX_ATTEMPTS_HARD_CAP, Math.trunc(input.validationMaxAttempts))
+        ? Math.min(validationAttemptsHardCap, Math.trunc(input.validationMaxAttempts))
         : null,
     prOnRedValidation: input.prOnRedValidation !== false,
+    autonomous,
+    maxReplanRounds:
+      typeof input.maxReplanRounds === 'number' &&
+      Number.isFinite(input.maxReplanRounds) &&
+      input.maxReplanRounds > 0
+        ? Math.min(replanRoundsHardCap, Math.trunc(input.maxReplanRounds))
+        : null,
     orchestrator,
     agents: workers,
     skills: Array.isArray(input.skills)
@@ -2570,14 +2625,17 @@ export const swarmService = {
         }
         swarmDb.update(swarmId, { findings: [...findings], plan: livePlan });
 
-        // Re-plan the failed steps through the orchestrator (bounded, never loops forever).
-        const failedResults = results.filter((r) => r.failed);
-        const failedSteps = failedResults.map((r) => r.step);
-        if (failedSteps.length > 0) {
+        // Re-plan the failed steps through the orchestrator. Bounded by
+        // maxReplanRounds (1 normally; up to 15 in autonomous mode) — a
+        // "needs_changes" verdict or a crash both just feed the same failure
+        // history into the next round until resolved or the budget runs out.
+        let roundResults = results.filter((r) => r.failed);
+        const maxReplanRounds = resolveMaxReplanRounds(swarm.config ?? null);
+        for (let round = 1; round <= maxReplanRounds && roundResults.length > 0; round += 1) {
           const attemptsByStep: Record<string, SwarmStepAttemptRecord[]> = {};
-          for (const result of failedResults) attemptsByStep[result.step.id] = result.attempts;
+          for (const result of roundResults) attemptsByStep[result.step.id] = result.attempts;
           const replanned = await this.replanFailedSteps(swarmId, {
-            failedSteps,
+            failedSteps: roundResults.map((r) => r.step),
             attemptsByStep,
             goal: swarm.goal,
             projectPath: workPath,
@@ -2592,44 +2650,49 @@ export const swarmService = {
               blackboard: (swarmDb.get(swarmId)?.blackboard ?? []),
               signal: abortController.signal,
           });
-          if (replanned && replanned.steps.length > 0) {
-            for (const newStep of replanned.steps) {
-              const result = await this.runStepWithFeedbackRetries(swarmId, {
-                step: newStep,
-                goal: swarm.goal,
-                projectPath: workPath,
-                parentRunId: swarm.parent_run_id,
-                rosterRef,
-                skills,
-                gitContext,
-                defaultProvider,
-                defaultModel: opts.defaultModel ?? null,
-                timeoutMs: stepTimeoutMs,
-                stallTimeoutMs,
-                signal: abortController.signal,
-                maxAttempts: stepMaxAttempts,
-                autoRoster,
-                costLedger,
-              });
-              assertNotCancelled(swarmId);
-              roster = rosterRef.current;
-              findings.push(result.finding);
-              livePlan.steps.push({
-                ...newStep,
-                status: result.needsChanges ? 'needs_changes' : result.failed ? 'failed' : 'succeeded',
-              });
-              if (!result.failed && newStep.replacesStepId) {
-                const recoveredIndex = livePlan.steps.findIndex((step) => step.id === newStep.replacesStepId);
-                if (recoveredIndex >= 0) {
-                  livePlan.steps[recoveredIndex] = {
-                    ...livePlan.steps[recoveredIndex],
-                    status: 'recovered',
-                  };
-                }
+          if (!replanned || replanned.steps.length === 0) break;
+          const nextRoundResults: Array<Awaited<ReturnType<typeof swarmService.runStepWithFeedbackRetries>>> = [];
+          for (const newStep of replanned.steps) {
+            const result = await this.runStepWithFeedbackRetries(swarmId, {
+              step: newStep,
+              goal: swarm.goal,
+              projectPath: workPath,
+              parentRunId: swarm.parent_run_id,
+              rosterRef,
+              skills,
+              gitContext,
+              defaultProvider,
+              defaultModel: opts.defaultModel ?? null,
+              timeoutMs: stepTimeoutMs,
+              stallTimeoutMs,
+              signal: abortController.signal,
+              maxAttempts: stepMaxAttempts,
+              autoRoster,
+              costLedger,
+            });
+            assertNotCancelled(swarmId);
+            roster = rosterRef.current;
+            findings.push(result.finding);
+            const existingIdx = livePlan.steps.findIndex((step) => step.id === newStep.id);
+            const stepStatus = result.needsChanges ? 'needs_changes' : result.failed ? 'failed' : 'succeeded';
+            if (existingIdx >= 0) {
+              livePlan.steps[existingIdx] = { ...livePlan.steps[existingIdx], status: stepStatus };
+            } else {
+              livePlan.steps.push({ ...newStep, status: stepStatus });
+            }
+            if (!result.failed && newStep.replacesStepId) {
+              const recoveredIndex = livePlan.steps.findIndex((step) => step.id === newStep.replacesStepId);
+              if (recoveredIndex >= 0) {
+                livePlan.steps[recoveredIndex] = {
+                  ...livePlan.steps[recoveredIndex],
+                  status: 'recovered',
+                };
               }
             }
-            swarmDb.update(swarmId, { findings: [...findings], plan: livePlan });
+            if (result.failed) nextRoundResults.push(result);
           }
+          swarmDb.update(swarmId, { findings: [...findings], plan: livePlan });
+          roundResults = nextRoundResults;
         }
       }
 
@@ -4366,7 +4429,12 @@ export const swarmService = {
           .filter((s) => typeof s?.title === 'string' && s.title.trim())
           .slice(0, failed.length)
           .map((s, i) => ({
-            id: typeof s.id === 'string' ? s.id : `replan-${i + 1}`,
+            // A plain positional fallback (e.g. `replan-1`) collides across
+            // replan rounds — round 2's step could get the exact id round 1's
+            // step already used, so it points `replacesStepId` at itself and
+            // its own "succeeded" write gets clobbered by the "recovered"
+            // write meant for a *different* step. Must be unique per call.
+            id: typeof s.id === 'string' ? s.id : `replan-${i + 1}-${newMsgId()}`,
             replacesStepId: failed[i]?.id ?? null,
             title: (s.title as string).trim(),
             kind: (isSwarmAgentKind(s.kind) ? s.kind : 'implementer') as SwarmPlanStep['kind'],
@@ -4383,6 +4451,13 @@ export const swarmService = {
               : [],
             prompt: typeof s.prompt === 'string' ? s.prompt : `Recover failed step ${s.title}`,
             dependsOn: Array.isArray(s.dependsOn) ? (s.dependsOn as string[]) : [],
+            // Recovery must clear the same bar the original step did — a
+            // replacement that quietly drops requiresChanges/acceptance
+            // criteria could report "succeeded" without ever proving it
+            // fixed what actually failed.
+            requiresChanges: failed[i]?.requiresChanges,
+            acceptanceCriteria: failed[i]?.acceptanceCriteria,
+            verificationCommands: failed[i]?.verificationCommands,
           }));
           replaced = cleaned;
         }

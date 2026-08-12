@@ -115,6 +115,15 @@ router.post(
               : undefined,
         // Red gate still publishes the PR + report unless explicitly opted out.
         prOnRedValidation: body.prOnRedValidation === false ? false : undefined,
+        // Long-horizon unattended mode: raises step-attempt/replan-round
+        // ceilings by an order of magnitude; only a crash/silence ends a step.
+        autonomous: body.autonomous === true,
+        maxReplanRounds:
+          typeof body.maxReplanRounds === 'number' && body.maxReplanRounds > 0
+            ? body.maxReplanRounds
+            : typeof body.maxReplanRounds === 'string' && Number(body.maxReplanRounds) > 0
+              ? Number(body.maxReplanRounds)
+              : undefined,
         stepTimeoutMs:
           typeof body.stepTimeoutMs === 'number' && body.stepTimeoutMs > 0
             ? body.stepTimeoutMs

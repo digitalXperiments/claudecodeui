@@ -959,7 +959,7 @@ test('production pipeline uses fake provider runtime and serializes worktree wri
   });
 });
 
-test('production pipeline accepts real source edits in a non-git sandbox_copy workspace', async () => {
+test('production pipeline auto-inits a non-git project into a mergeable git_worktree workspace', async () => {
   await withDatabase(async (root) => {
     setSwarmTestExecutor(null);
     const projectPath = path.join(root, 'plain-project');
@@ -1029,7 +1029,8 @@ test('production pipeline accepts real source edits in a non-git sandbox_copy wo
     });
     await waitFor(() => swarmService.get(started.swarm_id)?.status === 'succeeded', 10_000);
     const done = swarmService.get(started.swarm_id)!;
-    assert.equal(workspaceService.get(done.workspace_id!)?.mode, 'sandbox_copy');
+    assert.equal(workspaceService.get(done.workspace_id!)?.mode, 'git_worktree');
+    assert.equal(runGit(projectPath, ['rev-parse', '--is-inside-work-tree']).stdout, 'true');
     assert.equal(done.plan?.steps[0]?.status, 'succeeded');
     assert.ok(workerCwd && path.resolve(workerCwd) !== path.resolve(projectPath));
   });
@@ -1124,6 +1125,115 @@ test('a reviewer/agent that honestly reports unmet acceptance criteria is "needs
     const firstAttemptMember = members.find((m) => m.error && /Acceptance evidence missing or unmet/.test(m.error));
     assert.ok(firstAttemptMember, 'expected a member record carrying the unmet-criteria error');
     assert.equal(firstAttemptMember!.status, 'needs_changes');
+  });
+});
+
+test('autonomous mode keeps replanning across multiple rounds instead of giving up after one', async () => {
+  await withDatabase(async (root) => {
+    setSwarmTestExecutor(null);
+    const projectPath = path.join(root, 'repo');
+    await mkdir(projectPath, { recursive: true });
+    await initGitRepo(projectPath);
+    const projectId = projectsDb.createProjectPath(projectPath).project!.project_id;
+    let workerAttempts = 0;
+    let replanRounds = 0;
+
+    configureSwarmRuntimes({
+      claude: async (prompt, options, writer) => {
+        const sink = writer as { setSessionId(id: string): void; send(message: unknown): void };
+        sink.setSessionId(`native-${Math.random().toString(36).slice(2)}`);
+        let output: string;
+        if (prompt.includes('"strategy"')) {
+          output = JSON.stringify({
+            summary: 'Edit the source file',
+            strategy: 'One implementation step, 1 attempt each — must replan to recover',
+            steps: [{
+              id: 'edit-source',
+              title: 'Edit source',
+              kind: 'implementer',
+              assignTo: 'Builder',
+              wave: 1,
+              dependsOn: [],
+              requiresChanges: true,
+              acceptanceCriteria: ['The source file compiles cleanly'],
+              prompt: 'Update app.txt.',
+            }],
+          });
+        } else if (prompt.includes('Replan failed steps')) {
+          replanRounds += 1;
+          output = JSON.stringify({
+            steps: [{
+              title: `Retry edit source (round ${replanRounds})`,
+              kind: 'implementer',
+              assignTo: 'Builder',
+              prompt: 'Try again; write app.txt so it compiles.',
+            }],
+          });
+        } else if (prompt.includes('"completed"')) {
+          output = JSON.stringify({
+            summary: 'Source edit completed.',
+            completed: ['Edit source'],
+            remaining: [],
+            recommendations: [],
+            risks: [],
+          });
+        } else {
+          workerAttempts += 1;
+          const cwd = String(options.cwd ?? '');
+          await writeFile(path.join(cwd, 'app.txt'), `after-${workerAttempts}\n`);
+          // Attempts 1 and 2 (initial + round-1 replan) honestly report the
+          // criterion unmet; only the 3rd attempt (round-2 replan) succeeds —
+          // this can only resolve if the swarm survives past one replan round.
+          const met = workerAttempts >= 3;
+          output = JSON.stringify({
+            summary: met ? 'Compiles cleanly now.' : 'Still does not compile.',
+            findings: ['Edited the isolated worktree.'],
+            changedFiles: ['app.txt'],
+            verification: ['read back app.txt'],
+            acceptance: [{ criterion: '1', met, evidence: met ? 'compiles cleanly' : 'still fails to compile' }],
+            recommendations: [],
+            risks: [],
+            severity: 'info',
+          });
+        }
+        sink.send({ kind: 'stream_delta', provider: 'claude', sessionId: null, content: output });
+        sink.send({ kind: 'complete', provider: 'claude', sessionId: null, exitCode: 0, success: true });
+      },
+    });
+
+    const started = swarmService.start({
+      projectId,
+      goal: 'Edit a file that needs two rounds of orchestrator replanning to resolve',
+      agents: [
+        { kind: 'orchestrator', label: 'Lead', provider: 'claude' },
+        { kind: 'implementer', label: 'Builder', provider: 'claude' },
+      ],
+      requireApproval: false,
+      requirePlanApproval: false,
+      validateBeforePr: false,
+      autonomous: true,
+      stepMaxAttempts: 1,
+      maxReplanRounds: 2,
+    });
+    await waitFor(() => swarmService.get(started.swarm_id)?.status === 'succeeded', 10_000);
+    const done = swarmService.get(started.swarm_id)!;
+    assert.equal(workerAttempts, 3, 'expected the initial attempt plus two replan-round attempts');
+    assert.equal(replanRounds, 2, 'expected exactly two replan rounds, not one');
+
+    const steps = done.plan?.steps ?? [];
+    // Every replan round's default id must be unique — a collision would let
+    // a later round's "succeeded" write get clobbered by an unrelated
+    // "recovered" write, or silently drop a step.
+    assert.equal(new Set(steps.map((s) => s.id)).size, steps.length);
+    assert.equal(steps.length, 3);
+    assert.equal(steps.find((s) => s.id === 'edit-source')?.status, 'needs_changes');
+    assert.equal(steps.filter((s) => s.status === 'recovered').length, 1);
+    assert.equal(steps.filter((s) => s.status === 'succeeded').length, 1);
+    // The recovery chain resolved end-to-end even though the *original* step
+    // never flips to "recovered" itself — it's excluded transitively via the
+    // recovered-set indirection, which is what actually makes the swarm
+    // succeed.
+    assert.equal(done.status, 'succeeded');
   });
 });
 

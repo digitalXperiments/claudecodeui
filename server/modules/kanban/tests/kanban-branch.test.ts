@@ -117,7 +117,7 @@ test('an implementation run creates and persists a feature branch in a git repo'
   });
 });
 
-test('a non-git project still runs without creating a branch', async () => {
+test('a non-git project is auto-initialized into git and still gets a feature branch', async () => {
   await withIsolated(async (plainProjectId, tempDirectory) => {
     const board = kanbanDb.createBoard({ name: 'Board' });
     const task = kanbanDb.createTask({
@@ -131,8 +131,10 @@ test('a non-git project still runs without creating a branch', async () => {
     await kanbanRunner.runTask(task.task_id, 'manual');
 
     const updated = kanbanDb.getTask(task.task_id);
-    assert.equal(updated?.feature_branch, null);
+    assert.equal(updated?.feature_branch, `feat/${task.task_id}-plain-folder`);
     assert.equal(updated?.status, 'done');
+    const workspace = workspaceService.get(updated!.workspace_id!);
+    assert.equal(workspace?.mode, 'git_worktree');
   });
 });
 

@@ -344,6 +344,14 @@ export default function AgentSwarmView({
   const [validationMaxAttempts, setValidationMaxAttempts] = useState(4);
   const [maxConcurrency, setMaxConcurrency] = useState(3);
   const [parallelWriters, setParallelWriters] = useState(false);
+  /**
+   * Long-horizon unattended mode: only a crashed/silent provider ends a step
+   * — a reviewer/tester finding real issues just triggers another attempt.
+   * Raises step-attempt and orchestrator-replan ceilings by an order of
+   * magnitude (still finite, so a genuinely circular disagreement stops
+   * eventually instead of running unattended forever).
+   */
+  const [autonomous, setAutonomous] = useState(false);
   /** provider → model options cache */
   const [modelsByProvider, setModelsByProvider] = useState<Record<string, ModelOption[]>>({});
   const [modelsLoading, setModelsLoading] = useState<Record<string, boolean>>({});
@@ -826,6 +834,7 @@ export default function AgentSwarmView({
         validationMaxAttempts,
         maxConcurrency,
         parallelWriters,
+        autonomous,
       });
       if (!startAttempt.current || startAttempt.current.fingerprint !== fingerprint) {
         startAttempt.current = {
@@ -858,6 +867,7 @@ export default function AgentSwarmView({
           validationMaxAttempts: validationMaxAttempts > 0 ? validationMaxAttempts : undefined,
           maxConcurrency: maxConcurrency > 0 ? maxConcurrency : undefined,
           parallelWriters,
+          autonomous,
         }),
       });
       if (payload.swarm) {
@@ -1382,6 +1392,22 @@ export default function AgentSwarmView({
                       <span className="font-medium text-foreground">Parallel isolated writers</span>
                       <span className="block text-[10px] text-muted-foreground">
                         Disjoint implementation steps use child worktrees and merge back safely.
+                      </span>
+                    </span>
+                  </label>
+                  <label className="flex cursor-pointer items-start gap-2 rounded-lg border border-border/60 px-2.5 py-2 text-[11px] transition hover:border-border hover:bg-muted/40">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5 accent-primary"
+                      checked={autonomous}
+                      onChange={(e) => setAutonomous(e.target.checked)}
+                    />
+                    <span>
+                      <span className="font-medium text-foreground">Autonomous (long-horizon)</span>
+                      <span className="block text-[10px] text-muted-foreground">
+                        Only a crashed or silent agent stops a step — a reviewer/tester finding
+                        real issues just triggers another attempt. Raises attempt and replan
+                        budgets so the swarm can keep working for hours unattended.
                       </span>
                     </span>
                   </label>
