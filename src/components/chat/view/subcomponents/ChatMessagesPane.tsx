@@ -44,8 +44,6 @@ interface ChatMessagesPaneProps {
   setGrokModel: (model: string) => void;
   kimiModel: string;
   setKimiModel: (model: string) => void;
-  agyModel: string;
-  setAgyModel: (model: string) => void;
   piModel: string;
   setPiModel: (model: string) => void;
   providerModelCatalog: Partial<Record<LLMProvider, ProviderModelsDefinition>>;
@@ -100,8 +98,6 @@ function ChatMessagesPane({
   setGrokModel,
   kimiModel,
   setKimiModel,
-  agyModel,
-  setAgyModel,
   piModel,
   setPiModel,
   providerModelCatalog,
@@ -207,8 +203,6 @@ function ChatMessagesPane({
           setGrokModel={setGrokModel}
           kimiModel={kimiModel}
           setKimiModel={setKimiModel}
-          agyModel={agyModel}
-          setAgyModel={setAgyModel}
           piModel={piModel}
           setPiModel={setPiModel}
           providerModelCatalog={providerModelCatalog}

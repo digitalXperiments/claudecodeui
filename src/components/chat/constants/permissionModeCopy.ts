@@ -94,23 +94,23 @@ export const PERMISSION_MODE_COPY: Record<
   opencode: {
     default: {
       label: 'Default',
-      summary: 'OpenCode’s normal permission handling for the selected agent.',
-      technical: 'No --auto / --agent plan override',
+      summary: 'Prompt for edits, shell, web fetch and access outside the workspace.',
+      technical: 'OpenCode ACP mode = build + OPENCODE_PERMISSION ask',
     },
     acceptEdits: {
       label: 'Accept Edits',
-      summary: 'Auto-allow file edits; other permissions follow OpenCode defaults.',
-      technical: 'OPENCODE_PERMISSION={"edit":"allow"}',
+      summary: 'Auto-allow file edits; shell, web fetch and outside-workspace access still prompt.',
+      technical: 'OPENCODE_PERMISSION={"edit":"allow", …:"ask"}',
     },
     auto: {
       label: 'Auto',
-      summary: 'Auto-approve permissions that are not explicitly denied. OpenCode’s most permissive mode — explicit deny rules still block.',
-      technical: 'opencode --auto',
+      summary: 'Approve prompts automatically. Your own OpenCode deny rules still block.',
+      technical: 'OpenCode ACP mode = build, approvals answered automatically',
     },
     plan: {
       label: 'Plan',
-      summary: 'Use OpenCode’s read-only plan agent.',
-      technical: 'opencode --agent plan',
+      summary: 'OpenCode’s read-only plan agent; anything it does need is still asked for.',
+      technical: 'OpenCode ACP mode = plan + OPENCODE_PERMISSION ask',
     },
   },
   grok: {
@@ -160,23 +160,6 @@ export const PERMISSION_MODE_COPY: Record<
       label: 'Bypass Permissions',
       summary: 'YOLO — automatically approve all actions.',
       technical: 'Kimi ACP mode = yolo',
-    },
-  },
-  agy: {
-    plan: {
-      label: 'Plan',
-      summary: 'Read-only planning mode (no edits or shell).',
-      technical: 'agy --mode plan',
-    },
-    acceptEdits: {
-      label: 'Accept Edits',
-      summary: 'Auto-accept file edits; other tools may still prompt (can stall headless).',
-      technical: 'agy --mode accept-edits',
-    },
-    bypassPermissions: {
-      label: 'Bypass Permissions',
-      summary: 'Auto-approve every tool permission request (recommended for headless chat).',
-      technical: 'agy --dangerously-skip-permissions',
     },
   },
   pi: {

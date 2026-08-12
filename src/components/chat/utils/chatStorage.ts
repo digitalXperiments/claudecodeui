@@ -99,11 +99,9 @@ export const providerToolsSettingsKey = (provider: string): string =>
         ? 'opencode-settings'
         : provider === 'grok'
           ? 'grok-tools-settings'
-          : provider === 'agy'
-            ? 'agy-tools-settings'
-            : provider === 'pi'
-              ? 'pi-tools-settings'
-              : 'claude-settings';
+          : provider === 'pi'
+            ? 'pi-tools-settings'
+            : 'claude-settings';
 
 export type ProviderToolsSettings = {
   allowedTools?: unknown;

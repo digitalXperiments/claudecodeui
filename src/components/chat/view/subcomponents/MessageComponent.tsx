@@ -214,11 +214,9 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
                                 ? t('messageTypes.grok', { defaultValue: 'Grok Build' })
                                 : provider === 'kimi'
                                   ? t('messageTypes.kimi', { defaultValue: 'Kimi' })
-                                  : provider === 'agy'
-                                    ? t('messageTypes.agy', { defaultValue: 'Antigravity' })
-                                    : provider === 'pi'
-                                      ? t('messageTypes.pi', { defaultValue: 'Pi' })
-                                      : t('messageTypes.claude'))}
+                                  : provider === 'pi'
+                                    ? t('messageTypes.pi', { defaultValue: 'Pi' })
+                                    : t('messageTypes.claude'))}
               </div>
             </div>
           )}

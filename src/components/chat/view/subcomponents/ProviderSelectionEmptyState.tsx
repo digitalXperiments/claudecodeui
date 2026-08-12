@@ -32,7 +32,6 @@ const PROVIDER_META: { id: LLMProvider; name: string }[] = [
   { id: "opencode", name: "OpenCode" },
   { id: "grok", name: "xAI" },
   { id: "kimi", name: "Moonshot AI" },
-  { id: "agy", name: "Google Antigravity" },
   { id: "pi", name: "Pi" },
 ];
 
@@ -68,8 +67,6 @@ type ProviderSelectionEmptyStateProps = {
   setGrokModel: (model: string) => void;
   kimiModel: string;
   setKimiModel: (model: string) => void;
-  agyModel: string;
-  setAgyModel: (model: string) => void;
   piModel: string;
   setPiModel: (model: string) => void;
   providerModelCatalog: Partial<Record<LLMProvider, ProviderModelsDefinition>>;
@@ -102,7 +99,6 @@ function getCurrentModel(
   o: string,
   g: string,
   k: string,
-  a: string,
   pi: string,
 ) {
   if (p === "claude") return c;
@@ -110,7 +106,6 @@ function getCurrentModel(
   if (p === "opencode") return o;
   if (p === "grok") return g;
   if (p === "kimi") return k;
-  if (p === "agy") return a;
   if (p === "pi") return pi;
   return cu;
 }
@@ -122,7 +117,6 @@ function getProviderDisplayName(p: LLMProvider) {
   if (p === "opencode") return "OpenCode";
   if (p === "grok") return "Grok Build";
   if (p === "kimi") return "Kimi";
-  if (p === "agy") return "Antigravity";
   if (p === "pi") return "Pi";
   return "Claude";
 }
@@ -145,8 +139,6 @@ export default function ProviderSelectionEmptyState({
   setGrokModel,
   kimiModel,
   setKimiModel,
-  agyModel,
-  setAgyModel,
   piModel,
   setPiModel,
   providerModelCatalog,
@@ -181,7 +173,6 @@ export default function ProviderSelectionEmptyState({
     opencodeModel,
     grokModel,
     kimiModel,
-    agyModel,
     piModel,
   );
 
@@ -207,9 +198,6 @@ export default function ProviderSelectionEmptyState({
       } else if (providerId === "kimi") {
         setKimiModel(modelValue);
         localStorage.setItem("kimi-model", modelValue);
-      } else if (providerId === "agy") {
-        setAgyModel(modelValue);
-        localStorage.setItem("agy-model", modelValue);
       } else if (providerId === "pi") {
         setPiModel(modelValue);
         localStorage.setItem("pi-model", modelValue);
@@ -221,7 +209,7 @@ export default function ProviderSelectionEmptyState({
         localStorage.setItem("cursor-model", modelValue);
       }
     },
-    [setClaudeModel, setCursorModel, setCodexModel, setOpenCodeModel, setKimiModel, setAgyModel, setPiModel, setGrokModel],
+    [setClaudeModel, setCursorModel, setCodexModel, setOpenCodeModel, setKimiModel, setPiModel, setGrokModel],
   );
 
   const handleModelSelect = useCallback(
@@ -375,10 +363,6 @@ export default function ProviderSelectionEmptyState({
                 kimi: t("providerSelection.readyPrompt.kimi", {
                   model: kimiModel,
                   defaultValue: "Ready with Kimi {{model}}",
-                }),
-                agy: t("providerSelection.readyPrompt.agy", {
-                  model: agyModel,
-                  defaultValue: "Ready with Antigravity {{model}}",
                 }),
                 pi: t("providerSelection.readyPrompt.pi", {
                   model: piModel,

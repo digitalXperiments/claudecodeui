@@ -31,7 +31,6 @@ const SWITCH_PROVIDER_LABELS: Record<string, string> = {
   opencode: 'OpenCode',
   grok: 'Grok',
   kimi: 'Kimi',
-  agy: 'Antigravity',
   pi: 'Pi',
 };
 
@@ -106,8 +105,6 @@ function ChatInterface({
     setGrokModel,
     kimiModel,
     setKimiModel,
-    agyModel,
-    setAgyModel,
     piModel,
     setPiModel,
     permissionMode,
@@ -642,8 +639,6 @@ function ChatInterface({
           setGrokModel={setGrokModel}
           kimiModel={kimiModel}
           setKimiModel={setKimiModel}
-          agyModel={agyModel}
-          setAgyModel={setAgyModel}
           piModel={piModel}
           setPiModel={setPiModel}
           providerModelCatalog={providerModelCatalog}
@@ -767,11 +762,9 @@ function ChatInterface({
                       ? t('messageTypes.grok', { defaultValue: 'Grok Build' })
                       : provider === 'kimi'
                         ? t('messageTypes.kimi', { defaultValue: 'Kimi' })
-                        : provider === 'agy'
-                          ? t('messageTypes.agy', { defaultValue: 'Antigravity' })
-                          : provider === 'pi'
-                            ? t('messageTypes.pi', { defaultValue: 'Pi' })
-                            : t('messageTypes.claude'),
+                        : provider === 'pi'
+                          ? t('messageTypes.pi', { defaultValue: 'Pi' })
+                          : t('messageTypes.claude'),
           })}
           isTextareaExpanded={isTextareaExpanded}
           sendByCtrlEnter={sendByCtrlEnter}

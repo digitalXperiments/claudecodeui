@@ -33,11 +33,10 @@ const FALLBACK_DEFAULT_MODEL: Record<LLMProvider, string> = {
   opencode: 'anthropic/claude-sonnet-4-5',
   grok: 'grok-4.5',
   kimi: 'kimi-code/kimi-for-coding',
-  agy: 'Gemini 3.5 Flash (Medium)',
   pi: 'anthropic/claude-sonnet-4-20250514',
 };
 
-const PROVIDERS: LLMProvider[] = ['claude', 'cursor', 'codex', 'opencode', 'grok', 'kimi', 'agy', 'pi'];
+const PROVIDERS: LLMProvider[] = ['claude', 'cursor', 'codex', 'opencode', 'grok', 'kimi', 'pi'];
 const CODEX_FAST_MODE_STORAGE_KEY = 'codex-fast-mode';
 
 const readStoredProvider = (): LLMProvider => {
@@ -73,14 +72,13 @@ const FALLBACK_PERMISSION_MODES: Record<LLMProvider, PermissionMode[]> = {
   opencode: ['default', 'acceptEdits', 'auto', 'plan'],
   grok: ['default', 'acceptEdits', 'auto', 'bypassPermissions', 'plan'],
   kimi: ['default', 'plan', 'auto', 'bypassPermissions'],
-  agy: ['plan', 'acceptEdits', 'bypassPermissions'],
   pi: ['plan', 'bypassPermissions'],
 };
 
 /**
  * Fallback image attachment support, used only until the backend capability
  * matrix loads. All current runtimes accept pasted/attached images (Claude as
- * base64 vision blocks; Grok/Cursor/OpenCode/Kimi/Agy as path references).
+ * base64 vision blocks; Grok/Cursor/OpenCode/Kimi as path references).
  * Mirrors provider-capabilities.service.ts.
  */
 const FALLBACK_SUPPORTS_IMAGES: Record<LLMProvider, boolean> = {
@@ -90,7 +88,6 @@ const FALLBACK_SUPPORTS_IMAGES: Record<LLMProvider, boolean> = {
   opencode: true,
   grok: true,
   kimi: true,
-  agy: true,
   pi: true,
 };
 
@@ -102,7 +99,6 @@ const FALLBACK_SUPPORTS_FILES: Record<LLMProvider, boolean> = {
   opencode: true,
   grok: true,
   kimi: true,
-  agy: true,
   pi: true,
 };
 
@@ -184,9 +180,6 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
   const [kimiModel, setKimiModel] = useState<string>(() => {
     return localStorage.getItem('kimi-model') || FALLBACK_DEFAULT_MODEL.kimi;
   });
-  const [agyModel, setAgyModel] = useState<string>(() => {
-    return localStorage.getItem('agy-model') || FALLBACK_DEFAULT_MODEL.agy;
-  });
   const [piModel, setPiModel] = useState<string>(() => {
     return localStorage.getItem('pi-model') || FALLBACK_DEFAULT_MODEL.pi;
   });
@@ -251,12 +244,6 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     if (targetProvider === 'kimi') {
       setKimiModel(model);
       localStorage.setItem('kimi-model', model);
-      return;
-    }
-
-    if (targetProvider === 'agy') {
-      setAgyModel(model);
-      localStorage.setItem('agy-model', model);
       return;
     }
 
@@ -496,9 +483,8 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     opencode: opencodeModel,
     grok: grokModel,
     kimi: kimiModel,
-    agy: agyModel,
     pi: piModel,
-  }), [claudeModel, cursorModel, codexModel, opencodeModel, grokModel, kimiModel, agyModel, piModel]);
+  }), [claudeModel, cursorModel, codexModel, opencodeModel, grokModel, kimiModel, piModel]);
 
   /** Effective model for the open conversation: its own recorded choice, or the provider default. */
   const currentProviderModel = useMemo(
@@ -594,19 +580,6 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
       }
     }
   }, [providerModelCatalog.kimi, kimiModel]);
-
-  useEffect(() => {
-    const agy = providerModelCatalog.agy;
-    if (agy) {
-      const next = pickStoredOrCurrent('agy-model', agyModel, agy);
-      if (next !== agyModel) {
-        setAgyModel(next);
-      }
-      if (localStorage.getItem('agy-model') !== next) {
-        localStorage.setItem('agy-model', next);
-      }
-    }
-  }, [providerModelCatalog.agy, agyModel]);
 
   useEffect(() => {
     const pi = providerModelCatalog.pi;
@@ -910,8 +883,6 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     setGrokModel,
     kimiModel,
     setKimiModel,
-    agyModel,
-    setAgyModel,
     piModel,
     setPiModel,
     permissionMode,

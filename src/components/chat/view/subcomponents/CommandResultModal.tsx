@@ -87,7 +87,6 @@ const PROVIDER_LABELS: Record<string, string> = {
   opencode: 'OpenCode',
   grok: 'Grok',
   kimi: 'Kimi',
-  agy: 'Antigravity',
   pi: 'Pi',
 };
 

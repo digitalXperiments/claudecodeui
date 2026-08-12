@@ -12,7 +12,7 @@ import type { LLMProvider } from '../types/app';
  * server-side so the auth-health watchdog skips disabled providers.
  */
 
-export const ALL_AGENT_PROVIDERS: LLMProvider[] = ['claude', 'cursor', 'codex', 'opencode', 'grok', 'kimi', 'agy', 'pi'];
+export const ALL_AGENT_PROVIDERS: LLMProvider[] = ['claude', 'cursor', 'codex', 'opencode', 'grok', 'kimi', 'pi'];
 
 const STORAGE_KEY = 'disabledAgents';
 const SYNC_EVENT = 'agent-visibility:sync';

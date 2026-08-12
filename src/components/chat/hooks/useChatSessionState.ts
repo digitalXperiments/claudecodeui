@@ -137,6 +137,13 @@ export function useChatSessionState({
   const loadAllOverlayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastLoadedSessionKeyRef = useRef<string | null>(null);
   /**
+   * Last session we successfully issued `chat.subscribe` for on the current
+   * websocket. Grok (and other file-backed providers) emit frequent
+   * `session_upserted` events that rebuild `selectedProject`; those must not
+   * re-subscribe or the activity indicator / permissions thrash every write.
+   */
+  const lastSubscribedSessionRef = useRef<{ sessionId: string; ws: WebSocket | null } | null>(null);
+  /**
    * Tracks the last processed value from `useProjectsState.newSessionTrigger`.
    *
    * The trigger itself is intentionally increment-only and routed via:
@@ -193,6 +200,7 @@ export function useChatSessionState({
     pendingScrollRestoreRef.current = null;
     pendingInitialScrollRef.current = true;
     lastLoadedSessionKeyRef.current = null;
+    lastSubscribedSessionRef.current = null;
 
     if (loadAllOverlayTimerRef.current) {
       clearTimeout(loadAllOverlayTimerRef.current);
@@ -501,7 +509,9 @@ export function useChatSessionState({
 
   // Main session loading effect — store-based
   useEffect(() => {
-    if (!selectedSession || !selectedProject) {
+    const projectId = selectedProject?.projectId ?? null;
+
+    if (!selectedSession || !projectId) {
       // A freshly created session can be mid-run before the router has a
       // canonical selectedSession (the URL effect synthesizes one on the
       // next render). Keep the active view intact instead of wiping it.
@@ -516,17 +526,29 @@ export function useChatSessionState({
       setTotalMessages(0);
       setTokenBudget(null);
       lastLoadedSessionKeyRef.current = null;
+      lastSubscribedSessionRef.current = null;
       return;
     }
 
     const selectedSessionId = selectedSession.id;
-    const sessionKey = `${selectedSessionId}:${selectedProject.projectId}`;
+    const sessionKey = `${selectedSessionId}:${projectId}`;
 
-    const subscribeToSelectedSession = () => {
+    const subscribeToSelectedSession = (force = false) => {
       if (!ws) {
         return;
       }
 
+      const last = lastSubscribedSessionRef.current;
+      if (
+        !force
+        && last
+        && last.sessionId === selectedSessionId
+        && last.ws === ws
+      ) {
+        return;
+      }
+
+      lastSubscribedSessionRef.current = { sessionId: selectedSessionId, ws };
       statusCheckSentAtRef.current.set(selectedSessionId, Date.now());
       sendMessage({
         type: 'chat.subscribe',
@@ -537,9 +559,25 @@ export function useChatSessionState({
       });
     };
 
-    // Skip if already loaded and fresh
-    if (lastLoadedSessionKeyRef.current === sessionKey && sessionStore.has(selectedSessionId) && !sessionStore.isStale(selectedSessionId)) {
-      subscribeToSelectedSession();
+    const alreadyLoaded = lastLoadedSessionKeyRef.current === sessionKey && sessionStore.has(selectedSessionId);
+
+    // Same conversation already in view: keep pagination/scroll intact.
+    // Only re-subscribe when the socket changes, and only soft-refresh when
+    // the cache is stale. Re-running a full load here used to thrash Grok
+    // sessions because every file-watcher `session_upserted` rebuilt the
+    // selected project object and re-entered this effect.
+    if (alreadyLoaded) {
+      subscribeToSelectedSession(false);
+      if (sessionStore.isStale(selectedSessionId) && !processingSessionsRef.current?.has(selectedSessionId)) {
+        void sessionStore.refreshFromServer(selectedSessionId).then(() => {
+          const slot = sessionStore.getSessionSlot(selectedSessionId);
+          if (slot) {
+            setHasMoreMessages(slot.hasMore);
+            setTotalMessages(slot.total);
+            if (slot.tokenUsage) setTokenBudget(slot.tokenUsage as Record<string, unknown>);
+          }
+        });
+      }
       return;
     }
 
@@ -548,7 +586,7 @@ export function useChatSessionState({
       resetStreamingState();
     }
 
-    // Reset pagination/scroll state
+    // Reset pagination/scroll state only when actually switching conversations
     messagesOffsetRef.current = 0;
     setHasMoreMessages(false);
     setTotalMessages(0);
@@ -574,7 +612,7 @@ export function useChatSessionState({
     // and replays any live events missed since `lastSeq`. Recording the send
     // time lets the ack handler discard idle acks that a newer request has
     // since outdated.
-    subscribeToSelectedSession();
+    subscribeToSelectedSession(true);
 
     lastLoadedSessionKeyRef.current = sessionKey;
 
@@ -595,7 +633,7 @@ export function useChatSessionState({
     });
   }, [
     resetStreamingState,
-    selectedProject,
+    selectedProject?.projectId,
     selectedSession?.id,
     sendMessage,
     statusCheckSentAtRef,

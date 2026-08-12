@@ -12,7 +12,6 @@ const PROVIDER_INPUT_LABELS: Record<string, string> = {
   opencode: 'OpenCode',
   grok: 'Grok Build',
   kimi: 'Kimi',
-  agy: 'Antigravity',
   pi: 'Pi',
 };
 

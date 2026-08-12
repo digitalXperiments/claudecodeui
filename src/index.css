@@ -566,7 +566,9 @@
 /* Mobile optimizations and components */
 @layer components {
   .chat-messages-pane {
-    contain: layout style paint;
+    /* Avoid paint containment on the scroll root: child size changes during
+       streaming would otherwise force full-pane repaints that look like flicker. */
+    contain: layout style;
   }
 
   .chat-composer-shell {
@@ -589,20 +591,15 @@
     clip-path: inset(-8px -8px 0 -8px);
   }
 
+  /*
+   * Message isolation without content-visibility.
+   * content-visibility:auto + contain-intrinsic-size was added for desktop
+   * perf, but it re-estimates height while streaming/tool rows grow and
+   * produces whole-pane flicker/jump for every provider (not just Grok).
+   * Keep layout/style containment only; skip paint so overlays/shadows are fine.
+   */
   .chat-message {
-    contain: layout style paint;
-    content-visibility: auto;
-    contain-intrinsic-size: auto 180px;
-  }
-
-  .chat-message.assistant {
-    contain-intrinsic-size: auto 240px;
-  }
-
-  .chat-message.user,
-  .chat-message.tool,
-  .chat-message.error {
-    contain-intrinsic-size: auto 96px;
+    contain: layout style;
   }
 
   /* Mobile touch optimization and safe areas */

@@ -42,7 +42,6 @@ const PROVIDER_MODEL_LABELS: Record<LLMProvider, string> = {
   opencode: 'OpenCode',
   grok: 'Grok Build',
   kimi: 'Kimi',
-  agy: 'Antigravity',
   pi: 'Pi',
 };
 

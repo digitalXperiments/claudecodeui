@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { Shimmer } from '../../../../shared/view/ui';
@@ -20,6 +20,12 @@ const ACTION_KEYS = [
 ];
 const DEFAULT_ACTION_WORDS = ['Thinking', 'Processing', 'Analyzing', 'Working', 'Computing', 'Reasoning'];
 const EXIT_ANIMATION_MS = 220;
+const ENTER_ANIMATION_MS = 320;
+
+const activityFieldsEqual = (a: SessionActivity, b: SessionActivity): boolean =>
+  a.statusText === b.statusText
+  && a.canInterrupt === b.canInterrupt
+  && a.startedAt === b.startedAt;
 
 /**
  * Minimal response-in-progress indicator, in the spirit of the inline status
@@ -32,26 +38,53 @@ export default function ActivityIndicator({ activity, onAbort, isInputFocused = 
   const { t } = useTranslation('chat');
   const [renderedActivity, setRenderedActivity] = useState<SessionActivity | null>(activity);
   const [isExiting, setIsExiting] = useState(false);
+  // Enter class is applied only for the enter keyframe window, not for the
+  // whole processing lifetime — otherwise remounts (permission toggles, parent
+  // re-renders) replay blur/translate and look like composer flicker.
+  const [isEntering, setIsEntering] = useState(Boolean(activity));
   const startedAt = renderedActivity?.startedAt ?? null;
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  // Tracks on-screen state without putting renderedActivity in the effect deps
+  // (which would re-fire the effect on every status-text update).
+  const isShowingRef = useRef(Boolean(activity));
 
   useEffect(() => {
     if (activity) {
-      setRenderedActivity(activity);
+      const wasHidden = !isShowingRef.current;
+      setRenderedActivity((prev) => {
+        if (prev && activityFieldsEqual(prev, activity)) {
+          return prev;
+        }
+        return activity;
+      });
       setIsExiting(false);
+      isShowingRef.current = true;
+      if (wasHidden) {
+        setIsEntering(true);
+      }
       return;
     }
 
-    if (!renderedActivity) return;
+    if (!isShowingRef.current) {
+      return;
+    }
 
     setIsExiting(true);
+    setIsEntering(false);
     const timer = setTimeout(() => {
       setRenderedActivity(null);
       setIsExiting(false);
+      isShowingRef.current = false;
     }, EXIT_ANIMATION_MS);
 
     return () => clearTimeout(timer);
-  }, [activity, renderedActivity]);
+  }, [activity]);
+
+  useEffect(() => {
+    if (!isEntering) return;
+    const timer = setTimeout(() => setIsEntering(false), ENTER_ANIMATION_MS);
+    return () => clearTimeout(timer);
+  }, [isEntering]);
 
   useEffect(() => {
     if (startedAt === null) return;
@@ -79,12 +112,14 @@ export default function ActivityIndicator({ activity, onAbort, isInputFocused = 
       : 'border-border/50 shadow-[0_-1px_1px_hsl(var(--foreground)/0.04),1px_0_1px_hsl(var(--foreground)/0.03),-1px_0_1px_hsl(var(--foreground)/0.03)]',
   ].join(' ');
 
+  const animationClass = isExiting
+    ? 'chat-activity-exit'
+    : isEntering
+      ? 'chat-activity-enter'
+      : '';
+
   return (
-    <div
-      className={`pointer-events-none bg-transparent ${
-        isExiting ? 'chat-activity-exit' : 'chat-activity-enter'
-      }`}
-    >
+    <div className={`pointer-events-none bg-transparent ${animationClass}`}>
       <div className="flex items-end justify-between gap-2">
         <div className={`${tabSurfaceClassName} gap-2`}>
           <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-primary" aria-hidden />
