@@ -274,6 +274,13 @@ export function useShellTerminal({
           return;
         }
 
+        // Skip fit while CSS-hidden (0×0) so FitAddon does not thrash / flash
+        // when the shell tab is mounted but not active.
+        const { width, height } = terminalContainer.getBoundingClientRect();
+        if (width < 2 || height < 2) {
+          return;
+        }
+
         currentFitAddon.fit();
         sendSocketMessage(wsRef.current, {
           type: 'resize',

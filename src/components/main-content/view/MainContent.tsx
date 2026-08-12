@@ -66,12 +66,28 @@ function MainContent({
   const { currentProject, setCurrentProject } = useTaskMaster() as TaskMasterContextValue;
   const { tasksEnabled, isTaskMasterInstalled } = useTasksSettings() as TasksSettingsContextValue;
   const [browserUseEnabled, setBrowserUseEnabled] = useState(false);
+  // Lazy keep-alive: mount shell on first visit, then CSS-hide instead of unmount
+  // so xterm is not disposed on tab switch (blank flash). Avoids connecting a PTY
+  // for users who never open the shell tab.
+  const [shellEverOpened, setShellEverOpened] = useState(false);
 
   const shouldShowTasksTab = Boolean(tasksEnabled && isTaskMasterInstalled);
   const shouldShowBrowserTab = browserUseEnabled;
   const selectedSessionIsProcessing = Boolean(
     selectedSession?.id && processingSessions.has(selectedSession.id),
   );
+
+  useEffect(() => {
+    if (activeTab === 'shell') {
+      setShellEverOpened(true);
+    }
+  }, [activeTab]);
+
+  // Reset keep-alive when project changes so a new project does not reuse a
+  // stale terminal instance keyed to the previous project path.
+  useEffect(() => {
+    setShellEverOpened(false);
+  }, [selectedProject?.projectId]);
 
   const {
     editingFile,
@@ -196,14 +212,10 @@ function MainContent({
             </ErrorBoundary>
           </div>
 
-          {activeTab === 'files' && (
-            <div className="h-full overflow-hidden">
-              <FileTree selectedProject={selectedProject} onFileOpen={handleFileOpen} />
-            </div>
-          )}
-
-          {activeTab === 'shell' && (
-            <div className="h-full w-full overflow-hidden">
+          {/* Keep shell mounted after first open (CSS hide) so xterm is not disposed on tab switch.
+              Mount when active OR already opened (effect latches shellEverOpened for subsequent hides). */}
+          {(shellEverOpened || activeTab === 'shell') && (
+            <div className={`h-full w-full overflow-hidden ${activeTab === 'shell' ? 'block' : 'hidden'}`}>
               <StandaloneShell
                 project={selectedProject}
                 session={selectedSession}
@@ -212,6 +224,12 @@ function MainContent({
                 autoConnect={!selectedSessionIsProcessing}
                 waitForChat={selectedSessionIsProcessing}
               />
+            </div>
+          )}
+
+          {activeTab === 'files' && (
+            <div className="h-full overflow-hidden">
+              <FileTree selectedProject={selectedProject} onFileOpen={handleFileOpen} />
             </div>
           )}
 

@@ -1,4 +1,5 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import { useAuth } from '../components/auth/context/AuthContext';
 import { api } from '../utils/api';
 
 const TasksSettingsContext = createContext({
@@ -20,6 +21,7 @@ export const useTasksSettings = () => {
 };
 
 export const TasksSettingsProvider = ({ children }) => {
+  const { user, token, isLoading: isAuthLoading } = useAuth();
   const [tasksEnabled, setTasksEnabled] = useState(() => {
     // Load from localStorage on initialization
     const saved = localStorage.getItem('tasks-enabled');
@@ -36,11 +38,30 @@ export const TasksSettingsProvider = ({ children }) => {
     localStorage.setItem('tasks-enabled', JSON.stringify(tasksEnabled));
   }, [tasksEnabled]);
 
-  // Check TaskMaster installation status asynchronously on component mount
+  // Protected endpoint — only probe after auth resolves with a session.
+  // Eager mount fetch on / and /login produced unauthenticated 401 noise.
   useEffect(() => {
+    if (isAuthLoading) {
+      return;
+    }
+
+    if (!user || !token) {
+      setInstallationStatus(null);
+      setIsTaskMasterInstalled(null);
+      setIsTaskMasterReady(null);
+      setIsCheckingInstallation(false);
+      return;
+    }
+
+    let cancelled = false;
+
     const checkInstallation = async () => {
+      setIsCheckingInstallation(true);
       try {
         const response = await api.get('/taskmaster/installation-status');
+        if (cancelled) {
+          return;
+        }
         if (response.ok) {
           const data = await response.json();
           setInstallationStatus(data);
@@ -59,23 +80,29 @@ export const TasksSettingsProvider = ({ children }) => {
           setIsTaskMasterReady(false);
         }
       } catch (error) {
-        console.error('Error checking TaskMaster installation:', error);
-        setIsTaskMasterInstalled(false);
-        setIsTaskMasterReady(false);
+        if (!cancelled) {
+          console.error('Error checking TaskMaster installation:', error);
+          setIsTaskMasterInstalled(false);
+          setIsTaskMasterReady(false);
+        }
       } finally {
-        setIsCheckingInstallation(false);
+        if (!cancelled) {
+          setIsCheckingInstallation(false);
+        }
       }
     };
 
-    // Run check asynchronously without blocking initial render
-    setTimeout(checkInstallation, 0);
+    void checkInstallation();
+    return () => {
+      cancelled = true;
+    };
+  }, [isAuthLoading, token, user]);
+
+  const toggleTasksEnabled = useCallback(() => {
+    setTasksEnabled(prev => !prev);
   }, []);
 
-  const toggleTasksEnabled = () => {
-    setTasksEnabled(prev => !prev);
-  };
-
-  const contextValue = {
+  const contextValue = useMemo(() => ({
     tasksEnabled,
     setTasksEnabled,
     toggleTasksEnabled,
@@ -83,7 +110,14 @@ export const TasksSettingsProvider = ({ children }) => {
     isTaskMasterReady,
     installationStatus,
     isCheckingInstallation
-  };
+  }), [
+    tasksEnabled,
+    toggleTasksEnabled,
+    isTaskMasterInstalled,
+    isTaskMasterReady,
+    installationStatus,
+    isCheckingInstallation,
+  ]);
 
   return (
     <TasksSettingsContext.Provider value={contextValue}>

@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { memo, useMemo, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
@@ -58,7 +58,7 @@ type CodeBlockProps = {
   children?: React.ReactNode;
 };
 
-const CodeBlock = ({ node, inline, className, children, ...props }: CodeBlockProps) => {
+const CodeBlock = memo(function CodeBlock({ node, inline, className, children, ...props }: CodeBlockProps) {
   const { t } = useTranslation('chat');
   const { isDarkMode } = useTheme();
   const [copied, setCopied] = useState(false);
@@ -155,7 +155,11 @@ const CodeBlock = ({ node, inline, className, children, ...props }: CodeBlockPro
       </SyntaxHighlighter>
     </div>
   );
-};
+}, (prev, next) => {
+  const prevRaw = Array.isArray(prev.children) ? prev.children.join('') : String(prev.children ?? '');
+  const nextRaw = Array.isArray(next.children) ? next.children.join('') : String(next.children ?? '');
+  return prevRaw === nextRaw && prev.className === next.className && prev.inline === next.inline;
+});
 
 const markdownComponents = {
   code: CodeBlock,
@@ -183,7 +187,7 @@ const markdownComponents = {
   ),
 };
 
-export function Markdown({ children, className }: MarkdownProps) {
+export const Markdown = memo(function Markdown({ children, className }: MarkdownProps) {
   const content = normalizeInlineCodeFences(String(children ?? ''));
   const remarkPlugins = useMemo(() => [remarkGfm, remarkMath], []);
   const rehypePlugins = useMemo(() => [rehypeKatex], []);
@@ -235,4 +239,6 @@ export function Markdown({ children, className }: MarkdownProps) {
       </ReactMarkdown>
     </div>
   );
-}
+}, (prev, next) =>
+  String(prev.children ?? '') === String(next.children ?? '') && prev.className === next.className,
+);

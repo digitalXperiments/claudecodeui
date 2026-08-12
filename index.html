@@ -27,9 +27,34 @@
     <link rel="apple-touch-icon" sizes="152x152" href="/icons/icon-152x152.png" />
     <link rel="apple-touch-icon" sizes="180x180" href="/icons/icon-192x192.png" />
     
-    <!-- Theme Color -->
-    <meta name="theme-color" content="#ffffff" />
-    <meta name="msapplication-TileColor" content="#ffffff" />
+    <!-- Theme Color (bootstrap script below overwrites before paint when dark) -->
+    <meta name="theme-color" content="#f6f4ef" />
+    <meta name="msapplication-TileColor" content="#f6f4ef" />
+
+    <!--
+      Pre-paint theme bootstrap — must stay in sync with ThemeContext.jsx:
+      localStorage key "theme" with values light | dark | system (default system).
+      Only sets the initial class; ThemeContext remains source of truth after mount.
+    -->
+    <script>
+      (function () {
+        try {
+          var stored = localStorage.getItem('theme');
+          var mode = (stored === 'light' || stored === 'dark' || stored === 'system') ? stored : 'system';
+          var prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+          var isDark = mode === 'dark' || (mode === 'system' && prefersDark);
+          if (isDark) {
+            document.documentElement.classList.add('dark');
+            var themeColor = document.querySelector('meta[name="theme-color"]');
+            if (themeColor) themeColor.setAttribute('content', '#141414');
+            var statusBar = document.querySelector('meta[name="apple-mobile-web-app-status-bar-style"]');
+            if (statusBar) statusBar.setAttribute('content', 'black-translucent');
+            var tile = document.querySelector('meta[name="msapplication-TileColor"]');
+            if (tile) tile.setAttribute('content', '#141414');
+          }
+        } catch (e) { /* private mode / blocked storage — ThemeContext will apply after mount */ }
+      })();
+    </script>
     
     <!-- Prevent zoom on iOS -->
     <meta name="format-detection" content="telephone=no" />

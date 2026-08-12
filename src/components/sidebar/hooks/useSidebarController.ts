@@ -182,10 +182,6 @@ export function useSidebarController({
   }, []);
 
   useEffect(() => {
-    setInitialSessionsLoaded(new Set());
-  }, [projects]);
-
-  useEffect(() => {
     // Auto-expand only when the selected project identity changes.
     // Depending on the full `selectedProject` object (or `selectedSession`) causes
     // websocket-driven list refreshes to re-open projects users manually collapsed.
@@ -204,16 +200,37 @@ export function useSidebarController({
     });
   }, [selectedProject?.projectId]);
 
+  // Soft-update loaded flags: never wipe the whole set on projects identity
+  // changes (websocket refreshes rebuild the array every few seconds and used
+  // to flash session skeletons). Only add newly-hydrated projects / prune gone ones.
   useEffect(() => {
-    if (projects.length > 0 && !isLoading) {
-      const loadedProjects = new Set<string>();
-      projects.forEach((project) => {
+    if (isLoading) return;
+
+    setInitialSessionsLoaded((prev) => {
+      if (projects.length === 0) {
+        return prev.size === 0 ? prev : new Set();
+      }
+
+      const next = new Set<string>();
+      for (const project of projects) {
+        // sessions array present (even empty) means the project payload is hydrated
         if (project.sessions && project.sessions.length >= 0) {
-          loadedProjects.add(project.projectId);
+          next.add(project.projectId);
         }
-      });
-      setInitialSessionsLoaded(loadedProjects);
-    }
+      }
+
+      if (prev.size === next.size) {
+        let same = true;
+        for (const id of next) {
+          if (!prev.has(id)) {
+            same = false;
+            break;
+          }
+        }
+        if (same) return prev;
+      }
+      return next;
+    });
   }, [projects, isLoading]);
 
   useEffect(() => {

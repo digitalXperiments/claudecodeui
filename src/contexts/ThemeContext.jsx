@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 
 const ThemeContext = createContext();
 
@@ -12,6 +12,9 @@ export const useTheme = () => {
 
 const THEME_MODES = ['light', 'dark', 'system'];
 
+// localStorage key + modes must stay aligned with the pre-paint bootstrap in index.html
+const THEME_STORAGE_KEY = 'theme';
+
 const getSystemDarkMode = () =>
   typeof window !== 'undefined' &&
   window.matchMedia &&
@@ -20,7 +23,7 @@ const getSystemDarkMode = () =>
 // Read the saved mode: 'light' | 'dark' | 'system'. Defaults to 'system'.
 // Legacy saves of 'light'/'dark' remain valid.
 const getSavedThemeMode = () => {
-  const savedTheme = localStorage.getItem('theme');
+  const savedTheme = localStorage.getItem(THEME_STORAGE_KEY);
   return THEME_MODES.includes(savedTheme) ? savedTheme : 'system';
 };
 
@@ -28,7 +31,7 @@ export const ThemeProvider = ({ children }) => {
   const [themeMode, setThemeModeState] = useState(getSavedThemeMode);
 
   const [isDarkMode, setIsDarkMode] = useState(() => {
-    const savedTheme = localStorage.getItem('theme');
+    const savedTheme = localStorage.getItem(THEME_STORAGE_KEY);
     if (savedTheme === 'dark') return true;
     if (savedTheme === 'light') return false;
     return getSystemDarkMode();
@@ -37,7 +40,7 @@ export const ThemeProvider = ({ children }) => {
   // Resolve the effective theme whenever the mode changes and persist it
   useEffect(() => {
     setIsDarkMode(themeMode === 'system' ? getSystemDarkMode() : themeMode === 'dark');
-    localStorage.setItem('theme', themeMode);
+    localStorage.setItem(THEME_STORAGE_KEY, themeMode);
   }, [themeMode]);
 
   // Update document class and meta tags when the effective theme changes
@@ -84,23 +87,29 @@ export const ThemeProvider = ({ children }) => {
     return () => mediaQuery.removeEventListener('change', handleChange);
   }, [themeMode]);
 
-  const setThemeMode = (mode) => {
+  const setThemeMode = useCallback((mode) => {
     if (THEME_MODES.includes(mode)) {
       setThemeModeState(mode);
     }
-  };
+  }, []);
 
   // Toggling picks an explicit mode opposite to the current effective theme
-  const toggleDarkMode = () => {
-    setThemeModeState(isDarkMode ? 'light' : 'dark');
-  };
+  const toggleDarkMode = useCallback(() => {
+    setThemeModeState((prev) => {
+      const currentlyDark = prev === 'system' ? getSystemDarkMode() : prev === 'dark';
+      return currentlyDark ? 'light' : 'dark';
+    });
+  }, []);
 
-  const value = {
-    isDarkMode,
-    themeMode,
-    setThemeMode,
-    toggleDarkMode,
-  };
+  const value = useMemo(
+    () => ({
+      isDarkMode,
+      themeMode,
+      setThemeMode,
+      toggleDarkMode,
+    }),
+    [isDarkMode, themeMode, setThemeMode, toggleDarkMode],
+  );
 
   return (
     <ThemeContext.Provider value={value}>

@@ -674,24 +674,48 @@ export function useSessionStore() {
   /**
    * Update or create a streaming message (accumulated text so far).
    * Uses a well-known ID so subsequent calls replace the same message.
+   * Timestamp is frozen on first create so the bubble clock does not tick every flush.
+   * Finalize keeps the same id (no remount); the next stream renames the prior
+   * finalized row only when a new stream_delta needs the well-known slot again.
    */
   const updateStreaming = useCallback((sessionId: string, accumulatedText: string, msgProvider: LLMProvider) => {
     const slot = getSlot(sessionId);
     const streamId = `__streaming_${sessionId}`;
-    const msg: NormalizedMessage = {
-      id: streamId,
-      sessionId,
-      timestamp: new Date().toISOString(),
-      provider: msgProvider,
-      kind: 'stream_delta',
-      content: accumulatedText,
-    };
-    const idx = slot.realtimeMessages.findIndex(m => m.id === streamId);
-    if (idx >= 0) {
+    let idx = slot.realtimeMessages.findIndex(m => m.id === streamId);
+
+    // Previous stream was finalized while keeping the well-known id — mint a
+    // permanent id for that row so React can keep its DOM, then open a fresh slot.
+    if (idx >= 0 && slot.realtimeMessages[idx].kind !== 'stream_delta') {
+      const prev = slot.realtimeMessages[idx];
       slot.realtimeMessages = [...slot.realtimeMessages];
-      slot.realtimeMessages[idx] = msg;
+      slot.realtimeMessages[idx] = {
+        ...prev,
+        id: `text_${sessionId}_${Date.now().toString(36)}`,
+      };
+      idx = -1;
+    }
+
+    if (idx >= 0) {
+      const existing = slot.realtimeMessages[idx];
+      slot.realtimeMessages = [...slot.realtimeMessages];
+      slot.realtimeMessages[idx] = {
+        ...existing,
+        content: accumulatedText,
+        provider: msgProvider,
+        // preserve id + timestamp across flushes
+      };
     } else {
-      slot.realtimeMessages = [...slot.realtimeMessages, msg];
+      slot.realtimeMessages = [
+        ...slot.realtimeMessages,
+        {
+          id: streamId,
+          sessionId,
+          timestamp: new Date().toISOString(),
+          provider: msgProvider,
+          kind: 'stream_delta',
+          content: accumulatedText,
+        },
+      ];
     }
     recomputeMergedIfNeeded(slot);
     notify(sessionId);
@@ -699,7 +723,7 @@ export function useSessionStore() {
 
   /**
    * Finalize streaming: convert the streaming message to a regular text message.
-   * The well-known streaming ID is replaced with a unique text message ID.
+   * Keeps the same id so MessageComponent does not remount on stream end.
    */
   const finalizeStreaming = useCallback((sessionId: string) => {
     const slot = storeRef.current.get(sessionId);
@@ -711,7 +735,6 @@ export function useSessionStore() {
       slot.realtimeMessages = [...slot.realtimeMessages];
       slot.realtimeMessages[idx] = {
         ...stream,
-        id: `text_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
         kind: 'text',
         role: 'assistant',
       };
@@ -731,20 +754,38 @@ export function useSessionStore() {
   const updateThinkingStream = useCallback((sessionId: string, accumulatedText: string, msgProvider: LLMProvider) => {
     const slot = getSlot(sessionId);
     const streamId = `__thinking_stream_${sessionId}`;
-    const msg: NormalizedMessage = {
-      id: streamId,
-      sessionId,
-      timestamp: new Date().toISOString(),
-      provider: msgProvider,
-      kind: 'thinking',
-      content: accumulatedText,
-    };
-    const idx = slot.realtimeMessages.findIndex(m => m.id === streamId);
-    if (idx >= 0) {
+    let idx = slot.realtimeMessages.findIndex(m => m.id === streamId);
+
+    if (idx >= 0 && slot.realtimeMessages[idx].kind !== 'thinking') {
+      const prev = slot.realtimeMessages[idx];
       slot.realtimeMessages = [...slot.realtimeMessages];
-      slot.realtimeMessages[idx] = msg;
+      slot.realtimeMessages[idx] = {
+        ...prev,
+        id: `thinking_${sessionId}_${Date.now().toString(36)}`,
+      };
+      idx = -1;
+    }
+
+    if (idx >= 0) {
+      const existing = slot.realtimeMessages[idx];
+      slot.realtimeMessages = [...slot.realtimeMessages];
+      slot.realtimeMessages[idx] = {
+        ...existing,
+        content: accumulatedText,
+        provider: msgProvider,
+      };
     } else {
-      slot.realtimeMessages = [...slot.realtimeMessages, msg];
+      slot.realtimeMessages = [
+        ...slot.realtimeMessages,
+        {
+          id: streamId,
+          sessionId,
+          timestamp: new Date().toISOString(),
+          provider: msgProvider,
+          kind: 'thinking',
+          content: accumulatedText,
+        },
+      ];
     }
     recomputeMergedIfNeeded(slot);
     notify(sessionId);
@@ -754,6 +795,7 @@ export function useSessionStore() {
    * Finalize a live thinking burst: give the well-known streaming id a
    * permanent unique one so a subsequent burst (e.g. after the next tool
    * call) starts a fresh block instead of continuing to grow this one.
+   * Thinking blocks are usually collapsed, so the remount cost is acceptable.
    */
   const finalizeThinkingStream = useCallback((sessionId: string) => {
     const slot = storeRef.current.get(sessionId);
@@ -765,7 +807,7 @@ export function useSessionStore() {
       slot.realtimeMessages = [...slot.realtimeMessages];
       slot.realtimeMessages[idx] = {
         ...stream,
-        id: `thinking_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        id: `thinking_${sessionId}_${Date.now().toString(36)}`,
       };
       recomputeMergedIfNeeded(slot);
       notify(sessionId);

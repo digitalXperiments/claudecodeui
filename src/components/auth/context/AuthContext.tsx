@@ -76,7 +76,12 @@ export function AuthProvider({ children }: AuthProviderProps) {
 
   const checkAuthStatus = useCallback(async () => {
     try {
-      setIsLoading(true);
+      // Only show the full-screen auth loader on cold start. After login/register,
+      // setSession already set user+token and this effect re-runs because `token`
+      // is a dependency — flashing AuthLoadingScreen would blank the whole app.
+      if (!user) {
+        setIsLoading(true);
+      }
       setError(null);
 
       const statusResponse = await api.auth.status();
@@ -113,7 +118,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
     } finally {
       setIsLoading(false);
     }
-  }, [checkOnboardingStatus, clearSession, token]);
+  }, [checkOnboardingStatus, clearSession, token, user]);
 
   useEffect(() => {
     if (IS_PLATFORM) {
