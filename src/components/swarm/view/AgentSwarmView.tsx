@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Archive,
   ArchiveRestore,
@@ -8,11 +8,15 @@ import {
   Compass,
   Code2,
   Eye,
+  FileDown,
   Loader2,
   Network,
   Plus,
   RefreshCw,
   Search,
+  Settings2,
+  ShieldAlert,
+  ShieldCheck,
   Sparkles,
   Trash2,
   UserCog,
@@ -20,8 +24,10 @@ import {
 } from 'lucide-react';
 
 import { authenticatedFetch } from '../../../utils/api';
+import { useWebSocket } from '../../../contexts/WebSocketContext';
 import { Button } from '../../../shared/view/ui';
 import type { Project } from '../../../types/app';
+import { agentProfilesApi } from '../../settings/api/agentProfilesApi';
 import {
   clampPermissionMode,
   defaultRoster,
@@ -32,22 +38,101 @@ import {
   SWARM_PROVIDERS,
   type SwarmAgentSpec,
   type SwarmRun,
+  type SwarmValidationSummary,
+  type SwarmWorkspaceStatus,
 } from '../types';
+
+function apiErrorMessage(payload: unknown): string | null {
+  if (typeof payload === 'string' && payload.trim()) return payload.trim();
+  if (!payload || typeof payload !== 'object') return null;
+  if (Array.isArray(payload)) {
+    for (const item of payload) {
+      const nested = apiErrorMessage(item);
+      if (nested) return nested;
+    }
+    return null;
+  }
+
+  const value = payload as Record<string, unknown>;
+  for (const key of ['message', 'detail', 'reason', 'title']) {
+    const candidate = value[key];
+    if (typeof candidate === 'string' && candidate.trim()) return candidate.trim();
+  }
+  for (const key of ['error', 'errors', 'details', 'data', 'cause']) {
+    const nested = apiErrorMessage(value[key]);
+    if (nested) return nested;
+  }
+  return null;
+}
 
 async function requestJson<T>(url: string, options?: RequestInit): Promise<T> {
   const response = await authenticatedFetch(url, options);
-  const payload = (await response.json().catch(() => ({}))) as T & {
-    error?: string;
-    message?: string;
-  };
+  const payload = (await response.json().catch(() => null)) as T | null;
   if (!response.ok) {
-    throw new Error(
-      (payload as { error?: string; message?: string }).error ||
-        (payload as { message?: string }).message ||
-        `Request failed (${response.status})`,
-    );
+    throw new Error(apiErrorMessage(payload) || `Request failed (${response.status})`);
   }
-  return payload;
+  return (payload ?? {}) as T;
+}
+
+const POLLED_SWARM_STATUSES = new Set([
+  'queued',
+  'planning',
+  'awaiting_plan_approval',
+  'running',
+  'handing_off',
+  'awaiting_approval',
+]);
+
+const ABORTABLE_SWARM_STATUSES = new Set([
+  'queued',
+  'planning',
+  'awaiting_plan_approval',
+  'running',
+  'handing_off',
+  'awaiting_approval',
+]);
+
+const ARCHIVE_BLOCKING_SWARM_STATUSES = new Set([
+  'queued',
+  'planning',
+  'awaiting_plan_approval',
+  'running',
+  'handing_off',
+  'awaiting_approval',
+]);
+
+const isPolledStatus = (status: string) => POLLED_SWARM_STATUSES.has(status);
+const isAbortableStatus = (status: string) => ABORTABLE_SWARM_STATUSES.has(status);
+
+function allowsSwarmAction(swarm: SwarmRun, action: string): boolean {
+  if (
+    action === 'abort' &&
+    Boolean(swarm.cancelRequestedAt ?? swarm.cancel_requested_at)
+  ) {
+    return false;
+  }
+  const advertised = swarm.allowedActions ?? swarm.allowed_actions;
+  if (advertised) {
+    const camelAction = action.replace(/-([a-z])/g, (_, letter: string) => letter.toUpperCase());
+    return advertised.includes(action) || advertised.includes(camelAction);
+  }
+  switch (action) {
+    case 'approve-plan':
+    case 'reject-plan':
+      return swarm.status === 'awaiting_plan_approval';
+    case 'approve':
+    case 'reject':
+      return swarm.status === 'awaiting_approval';
+    case 'abort':
+      return isAbortableStatus(swarm.status);
+    case 'archive':
+    case 'delete':
+      return !ARCHIVE_BLOCKING_SWARM_STATUSES.has(swarm.status);
+    case 'retry-step':
+      return ['failed', 'awaiting_approval'].includes(swarm.status);
+    default:
+      return false;
+  }
 }
 
 function statusBadgeClass(status: string): string {
@@ -57,7 +142,14 @@ function statusBadgeClass(status: string): string {
   if (status === 'failed' || status === 'aborted') {
     return 'bg-red-500/15 text-red-700 ring-red-500/25 dark:text-red-300';
   }
-  if (status === 'awaiting_approval') {
+  // A reviewer/agent that ran fine and reported unmet acceptance criteria is
+  // not a crash — give it the same amber "needs attention" tone as approval
+  // gates instead of the red "something broke" tone.
+  if (
+    status === 'needs_changes'
+    || status === 'awaiting_approval'
+    || status === 'awaiting_plan_approval'
+  ) {
     return 'bg-amber-500/15 text-amber-800 ring-amber-500/25 dark:text-amber-300';
   }
   if (['planning', 'running', 'handing_off', 'queued'].includes(status)) {
@@ -66,15 +158,91 @@ function statusBadgeClass(status: string): string {
   return 'bg-muted text-muted-foreground ring-border';
 }
 
-function statusTone(status: string): string {
-  if (status === 'succeeded') return 'text-emerald-600 dark:text-emerald-400';
-  if (status === 'failed' || status === 'aborted') return 'text-red-600 dark:text-red-400';
-  if (status === 'awaiting_approval') return 'text-amber-600 dark:text-amber-400';
-  if (status === 'planning' || status === 'running' || status === 'handing_off') {
-    return 'text-sky-600 dark:text-sky-400';
-  }
-  return 'text-muted-foreground';
+/** Human-readable label for a step/member/attempt status badge. */
+function statusLabel(status: string): string {
+  if (status === 'needs_changes') return 'Changes requested';
+  return status;
 }
+
+/** Chip tone for a pre-PR validation check / overall verdict. */
+function validationChipClass(status: string): string {
+  switch (status) {
+    case 'passed':
+      return 'bg-emerald-500/15 text-emerald-700 ring-emerald-500/25 dark:text-emerald-300';
+    case 'failed':
+      return 'bg-red-500/15 text-red-700 ring-red-500/25 dark:text-red-300';
+    case 'degraded':
+      return 'bg-amber-500/15 text-amber-800 ring-amber-500/25 dark:text-amber-300';
+    case 'skipped':
+    default:
+      return 'bg-muted text-muted-foreground ring-border';
+  }
+}
+
+/** Overall verdict for the validation summary (degraded passes stay visible). */
+function validationOverallStatus(validation: SwarmValidationSummary): string {
+  if (!validation.passed) return 'failed';
+  return validation.degraded ? 'degraded' : 'passed';
+}
+
+/** True when a failed swarm died at the pre-PR validation gate. */
+function isValidationFailure(swarm: SwarmRun): boolean {
+  if (swarm.synthesis?.validation && !swarm.synthesis.validation.passed) return true;
+  const lastError = swarm.last_error ?? '';
+  return /pre-?pr validation|validation gate|validation failed/i.test(lastError);
+}
+
+type BlackboardBadge = {
+  tone: 'success' | 'danger' | 'neutral';
+  label: string;
+  rest: string;
+};
+
+const BLACKBOARD_BADGE_TONE: Record<BlackboardBadge['tone'], string> = {
+  success: 'bg-emerald-500/15 text-emerald-700 ring-emerald-500/25 dark:text-emerald-300',
+  danger: 'bg-red-500/15 text-red-700 ring-red-500/25 dark:text-red-300',
+  neutral: 'bg-muted text-muted-foreground ring-border',
+};
+
+/**
+ * Structured badge for audit-style blackboard system lines:
+ *   "[permission] APPROVED|DENIED (policy|orchestrator) …" and "[policy] …".
+ * Returns null for ordinary messages (rendered as before).
+ */
+function blackboardBadge(content: string): BlackboardBadge | null {
+  const permission = content.match(
+    /^\[permission\]\s*(APPROVED|DENIED)\s*(?:\((policy|orchestrator)\))?\s*/i,
+  );
+  if (permission) {
+    const verdict = permission[1].toUpperCase();
+    const source = permission[2]?.toLowerCase();
+    return {
+      tone: verdict === 'APPROVED' ? 'success' : 'danger',
+      label: source ? `${verdict.toLowerCase()} · ${source}` : verdict.toLowerCase(),
+      rest: content.slice(permission[0].length),
+    };
+  }
+  const policy = content.match(/^\[policy\]\s*/i);
+  if (policy) {
+    return { tone: 'neutral', label: 'policy', rest: content.slice(policy[0].length) };
+  }
+  return null;
+}
+
+/** Capability tier badges — the orchestrator staffs steps by these. */
+const LEVEL_LABEL: Record<string, string> = {
+  basic: 'L1 basic',
+  medium: 'L2 medium',
+  advanced: 'L3 advanced',
+};
+
+const LEVEL_CHIP: Record<string, string> = {
+  basic: 'rounded-full border border-border bg-muted/60 px-1.5 text-[9px] font-medium text-muted-foreground',
+  medium:
+    'rounded-full border border-sky-500/40 bg-sky-500/10 px-1.5 text-[9px] font-medium text-sky-700 dark:text-sky-300',
+  advanced:
+    'rounded-full border border-violet-500/40 bg-violet-500/10 px-1.5 text-[9px] font-medium text-violet-700 dark:text-violet-300',
+};
 
 function kindIcon(kind: string) {
   switch (kind) {
@@ -103,7 +271,7 @@ function emptyAgent(kind: string = 'implementer'): SwarmAgentSpec {
     effort: kind === 'explorer' ? 'low' : kind === 'implementer' ? 'high' : 'medium',
     permissionMode: clampPermissionMode(
       provider,
-      kind === 'implementer' ? 'acceptEdits' : 'bypassPermissions',
+      kind === 'implementer' ? 'acceptEdits' : 'default',
     ),
     skills: [],
     focus: '',
@@ -127,14 +295,19 @@ export default function AgentSwarmView({
   projects,
   isVisible,
 }: AgentSwarmViewProps) {
+  const { subscribe } = useWebSocket();
   const [swarms, setSwarms] = useState<SwarmRun[]>([]);
-  const [busy, setBusy] = useState(false);
+  const [starting, setStarting] = useState(false);
+  const [busyBySwarm, setBusyBySwarm] = useState<Record<string, string>>({});
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
-  // The swarm record carries no workspace status, so remember which worktrees
-  // this session already removed and hide their cleanup action.
+  // Persisted workspace status is preferred; this is a graceful fallback for
+  // older servers that do not expose it on either workspace or swarm DTOs.
   const [cleanedWorkspaces, setCleanedWorkspaces] = useState<string[]>([]);
+  const [workspaceStateById, setWorkspaceStateById] = useState<
+    Record<string, { status?: SwarmWorkspaceStatus; cleanedAt?: string | null }>
+  >({});
   const [tab, setTab] = useState<'create' | 'history'>('history');
   const [historyFilter, setHistoryFilter] = useState<'active' | 'archived'>('active');
   const [search, setSearch] = useState('');
@@ -146,9 +319,31 @@ export default function AgentSwarmView({
   const [skillOptions, setSkillOptions] = useState<SkillOption[]>([]);
   const [skillsLoading, setSkillsLoading] = useState(false);
   const [roster, setRoster] = useState<SwarmAgentSpec[]>(() => defaultRoster());
+  /**
+   * 'auto' (default): goal + orchestrator only — the orchestrator staffs the
+   * rest of the roster from swarm-tagged Agent Profiles (autoRoster: true).
+   * 'advanced': today's full manual roster builder (autoRoster omitted).
+   */
+  const [rosterMode, setRosterMode] = useState<'auto' | 'advanced'>('auto');
+  /** Pre-PR stability gate (static checks + smoke + PDF report). Default ON. */
+  const [validateBeforePr, setValidateBeforePr] = useState(true);
+  /** null until the profiles API answers; then whether any profile is swarm-tagged. */
+  const [hasSwarmProfiles, setHasSwarmProfiles] = useState<boolean | null>(null);
+  /** Auto mode is fully hands-off, so it defaults to no plan-approval gate. */
   const [requirePlanApproval, setRequirePlanApproval] = useState(false);
-  const [stepTimeoutMs, setStepTimeoutMs] = useState(0);
-  const [maxConcurrency, setMaxConcurrency] = useState(0);
+  /**
+   * Hard wall-clock ceiling per agent run. Generous on purpose: a stuck agent is
+   * caught by the stall budget instead, so this only bounds runaway work.
+   */
+  const [stepTimeoutMs, setStepTimeoutMs] = useState(2_700_000);
+  /** Silence budget — an agent that emits nothing for this long is reassigned. */
+  const [stallTimeoutMs, setStallTimeoutMs] = useState(300_000);
+  /** Attempts per task before the orchestrator replans it. */
+  const [stepMaxAttempts, setStepMaxAttempts] = useState(3);
+  /** Remediation rounds the orchestrator gets to turn a red gate green. */
+  const [validationMaxAttempts, setValidationMaxAttempts] = useState(4);
+  const [maxConcurrency, setMaxConcurrency] = useState(3);
+  const [parallelWriters, setParallelWriters] = useState(false);
   /** provider → model options cache */
   const [modelsByProvider, setModelsByProvider] = useState<Record<string, ModelOption[]>>({});
   const [modelsLoading, setModelsLoading] = useState<Record<string, boolean>>({});
@@ -156,6 +351,25 @@ export default function AgentSwarmView({
   const [permModesByProvider, setPermModesByProvider] = useState<Record<string, string[]> | null>(
     null,
   );
+  const refreshSequence = useRef(0);
+  const refreshController = useRef<AbortController | null>(null);
+  const modelControllers = useRef(new Map<string, AbortController>());
+  const modelCache = useRef<Record<string, ModelOption[]>>({});
+  const busySwarmIds = useRef(new Set<string>());
+  const startingRef = useRef(false);
+  const startAttempt = useRef<{ fingerprint: string; key: string } | null>(null);
+
+  const setSwarmBusy = useCallback((swarmId: string, action: string | null) => {
+    if (action) busySwarmIds.current.add(swarmId);
+    else busySwarmIds.current.delete(swarmId);
+    setBusyBySwarm((previous) => {
+      if (action) return { ...previous, [swarmId]: action };
+      if (!(swarmId in previous)) return previous;
+      const next = { ...previous };
+      delete next[swarmId];
+      return next;
+    });
+  }, []);
 
   useEffect(() => {
     if (selectedProject?.projectId && !projectId) {
@@ -194,6 +408,30 @@ export default function AgentSwarmView({
     };
   }, [isVisible]);
 
+  // Probe Agent Profiles for swarm-role tags so the auto-roster form can hint
+  // when the orchestrator would fall back to built-in defaults.
+  useEffect(() => {
+    if (!isVisible || tab !== 'create') return;
+    let cancelled = false;
+    agentProfilesApi
+      .list()
+      .then((profiles) => {
+        if (cancelled) return;
+        setHasSwarmProfiles(
+          profiles.some(
+            (p) => p.enabled !== false && Array.isArray(p.swarm_roles) && p.swarm_roles.length > 0,
+          ),
+        );
+      })
+      .catch(() => {
+        // Availability unknown — suppress the hint rather than mislead.
+        if (!cancelled) setHasSwarmProfiles(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isVisible, tab]);
+
   // Clamp roster permission modes when capabilities load.
   useEffect(() => {
     if (!permModesByProvider) return;
@@ -208,38 +446,66 @@ export default function AgentSwarmView({
   }, [permModesByProvider]);
 
   const hasLive = useMemo(
-    () =>
-      swarms.some((s) =>
-        ['queued', 'planning', 'running', 'handing_off', 'awaiting_approval'].includes(s.status),
-      ),
+    () => swarms.some((s) => isPolledStatus(s.status)),
     [swarms],
   );
 
-  const refresh = useCallback(async () => {
-    setRefreshing(true);
-    setError(null);
+  const refresh = useCallback(async ({ silent = false }: { silent?: boolean } = {}) => {
+    const sequence = ++refreshSequence.current;
+    refreshController.current?.abort();
+    const controller = new AbortController();
+    refreshController.current = controller;
+    if (!silent) {
+      setRefreshing(true);
+      setError(null);
+    }
     try {
       const qs = new URLSearchParams({ limit: '50' });
       if (historyFilter === 'archived') qs.set('archivedOnly', 'true');
-      const payload = await requestJson<{ swarms?: SwarmRun[] }>(`/api/swarm?${qs.toString()}`);
+      const payload = await requestJson<{ swarms?: SwarmRun[] }>(`/api/swarm?${qs.toString()}`, {
+        signal: controller.signal,
+      });
+      if (sequence !== refreshSequence.current) return;
       setSwarms(Array.isArray(payload.swarms) ? payload.swarms : []);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'Could not load swarms.');
+      if (controller.signal.aborted || sequence !== refreshSequence.current) return;
+      if (!silent) {
+        setError(caught instanceof Error ? caught.message : 'Could not load swarms.');
+      }
     } finally {
-      setRefreshing(false);
+      if (sequence === refreshSequence.current) {
+        refreshController.current = null;
+        setRefreshing(false);
+      }
     }
   }, [historyFilter]);
 
   useEffect(() => {
     if (!isVisible) return;
     void refresh();
+    return () => {
+      refreshSequence.current += 1;
+      refreshController.current?.abort();
+      refreshController.current = null;
+      setRefreshing(false);
+    };
   }, [isVisible, refresh]);
+
+  // Swarm writes fan out over the existing authenticated websocket. Polling is
+  // retained only as a slow recovery fallback for missed frames/reconnects.
+  useEffect(() => {
+    if (!isVisible) return;
+    return subscribe((event) => {
+      if (event.kind !== 'swarm_updated') return;
+      if (!refreshController.current) void refresh({ silent: true });
+    });
+  }, [isVisible, refresh, subscribe]);
 
   useEffect(() => {
     if (!isVisible || !hasLive || historyFilter === 'archived') return;
     const id = window.setInterval(() => {
-      void refresh();
-    }, 2500);
+      if (!refreshController.current) void refresh({ silent: true });
+    }, 10_000);
     return () => window.clearInterval(id);
   }, [isVisible, hasLive, refresh, historyFilter]);
 
@@ -294,65 +560,83 @@ export default function AgentSwarmView({
 
   // Load models for every unique provider in the roster.
   useEffect(() => {
+    if (!isVisible) return;
     const providers = [
       ...new Set(roster.map((s) => (s.provider || 'claude').trim()).filter(Boolean)),
     ];
-    let cancelled = false;
+    const controllers = modelControllers.current;
+    const startedHere: Array<[string, AbortController]> = [];
 
     for (const provider of providers) {
-      if (modelsByProvider[provider] || modelsLoading[provider]) continue;
+      if (provider in modelCache.current || controllers.has(provider)) continue;
+      const controller = new AbortController();
+      controllers.set(provider, controller);
+      startedHere.push([provider, controller]);
       setModelsLoading((prev) => ({ ...prev, [provider]: true }));
-      void authenticatedFetch(`/api/providers/${encodeURIComponent(provider)}/models`)
-        .then(async (res) => {
-          const body = (await res.json()) as {
-            success?: boolean;
-            data?: {
-              models?: {
-                OPTIONS?: Array<{ value: string; label?: string }>;
-                DEFAULT?: string;
-              };
-            };
+      void requestJson<{
+        data?: {
+          models?: {
+            OPTIONS?: Array<{ value: string; label?: string }>;
+            DEFAULT?: string;
           };
-          const options = Array.isArray(body?.data?.models?.OPTIONS)
-            ? body.data!.models!.OPTIONS!.map((m) => ({
-                value: m.value,
-                label: m.label || m.value,
+        };
+      }>(`/api/providers/${encodeURIComponent(provider)}/models`, {
+        signal: controller.signal,
+      })
+        .then((body) => {
+          if (controller.signal.aborted) return;
+          const options = Array.isArray(body.data?.models?.OPTIONS)
+            ? body.data.models.OPTIONS.map((model) => ({
+                value: model.value,
+                label: model.label || model.value,
               }))
             : [];
-          if (cancelled) return;
+          modelCache.current[provider] = options;
           setModelsByProvider((prev) => ({ ...prev, [provider]: options }));
+          const configuredDefault = body.data?.models?.DEFAULT;
           const defaultModel =
-            body?.data?.models?.DEFAULT &&
-            options.some((o) => o.value === body.data!.models!.DEFAULT)
-              ? body.data!.models!.DEFAULT!
+            configuredDefault && options.some((option) => option.value === configuredDefault)
+              ? configuredDefault
               : options[0]?.value ?? null;
           if (defaultModel) {
             setRoster((prev) =>
               prev.map((seat) => {
                 if ((seat.provider || 'claude') !== provider) return seat;
-                if (seat.model && options.some((o) => o.value === seat.model)) return seat;
+                if (seat.model && options.some((option) => option.value === seat.model)) {
+                  return seat;
+                }
                 return { ...seat, model: defaultModel };
               }),
             );
           }
         })
-        .catch(() => {
-          if (!cancelled) {
-            setModelsByProvider((prev) => ({ ...prev, [provider]: [] }));
+        .catch((caught) => {
+          if (controller.signal.aborted || (caught instanceof DOMException && caught.name === 'AbortError')) {
+            return;
           }
+          modelCache.current[provider] = [];
+          setModelsByProvider((prev) => ({ ...prev, [provider]: [] }));
         })
         .finally(() => {
-          if (!cancelled) {
-            setModelsLoading((prev) => ({ ...prev, [provider]: false }));
-          }
+          if (controllers.get(provider) !== controller) return;
+          controllers.delete(provider);
+          setModelsLoading((prev) => ({ ...prev, [provider]: false }));
         });
     }
 
     return () => {
-      cancelled = true;
+      for (const [provider, controller] of startedHere) {
+        controller.abort();
+        if (controllers.get(provider) === controller) {
+          controllers.delete(provider);
+          setModelsLoading((prev) => ({ ...prev, [provider]: false }));
+        }
+      }
     };
+    // The provider signature intentionally controls request lifetime. Model
+    // responses update the cache without cancelling other provider requests.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [roster.map((s) => s.provider || 'claude').join('|')]);
+  }, [isVisible, roster.map((s) => s.provider || 'claude').join('|')]);
 
   const projectName = useCallback(
     (id: string) => {
@@ -373,6 +657,47 @@ export default function AgentSwarmView({
         (s.parent_run_id ?? '').toLowerCase().includes(q),
     );
   }, [swarms, search, projectName]);
+
+  // Resolve persisted workspace lifecycle for the expanded swarm. Newer swarm
+  // DTOs can provide it inline; older servers fall back to the workspace API.
+  useEffect(() => {
+    if (!isVisible || !expanded) return;
+    const swarm = swarms.find((candidate) => candidate.swarm_id === expanded);
+    const workspaceId = swarm?.workspace_id || swarm?.synthesis?.workspaceId || null;
+    if (!swarm || !workspaceId) return;
+    const inlineStatus = swarm.workspaceStatus ?? swarm.workspace_status;
+    const inlineCleanedAt = swarm.workspaceCleanedAt ?? swarm.workspace_cleaned_at;
+    if (inlineStatus || inlineCleanedAt) {
+      setWorkspaceStateById((previous) => ({
+        ...previous,
+        [workspaceId]: {
+          status: inlineStatus ?? previous[workspaceId]?.status,
+          cleanedAt: inlineCleanedAt ?? previous[workspaceId]?.cleanedAt,
+        },
+      }));
+      return;
+    }
+
+    const controller = new AbortController();
+    void requestJson<{
+      workspace?: { status?: SwarmWorkspaceStatus; cleaned_at?: string | null };
+    }>(`/api/workspaces/${encodeURIComponent(workspaceId)}`, { signal: controller.signal })
+      .then((payload) => {
+        if (controller.signal.aborted || !payload.workspace) return;
+        setWorkspaceStateById((previous) => ({
+          ...previous,
+          [workspaceId]: {
+            status: payload.workspace?.status,
+            cleanedAt: payload.workspace?.cleaned_at ?? null,
+          },
+        }));
+      })
+      .catch(() => {
+        // Workspace status is an enhancement; keep the older session fallback
+        // when talking to a server that does not expose this endpoint/DTO.
+      });
+    return () => controller.abort();
+  }, [expanded, isVisible, swarms]);
 
   const updateSeat = (index: number, patch: Partial<SwarmAgentSpec>) => {
     setRoster((prev) => {
@@ -455,6 +780,7 @@ export default function AgentSwarmView({
   };
 
   const start = async () => {
+    if (startingRef.current) return;
     if (!projectId.trim()) {
       setError('Select a project for this swarm.');
       return;
@@ -468,12 +794,16 @@ export default function AgentSwarmView({
       setError('Exactly one orchestrator is required.');
       return;
     }
-    setBusy(true);
+    startingRef.current = true;
+    setStarting(true);
     setError(null);
     try {
+      const autoRoster = rosterMode === 'auto';
       const ordered = [
         ...roster.filter((a) => a.kind === 'orchestrator'),
-        ...roster.filter((a) => a.kind !== 'orchestrator'),
+        // Auto-roster sends the orchestrator seat only; the orchestrator
+        // staffs workers from swarm-tagged Agent Profiles server-side.
+        ...(autoRoster ? [] : roster.filter((a) => a.kind !== 'orchestrator')),
       ].map((seat) => ({
         ...seat,
         permissionMode: clampPermissionMode(
@@ -482,9 +812,35 @@ export default function AgentSwarmView({
           permModesByProvider,
         ),
       }));
+      const fingerprint = JSON.stringify({
+        projectId,
+        goal: goal.trim(),
+        agents: ordered,
+        skills: selectedSkills,
+        requirePlanApproval,
+        autoRoster,
+        validateBeforePr,
+        stepTimeoutMs,
+        stallTimeoutMs,
+        stepMaxAttempts,
+        validationMaxAttempts,
+        maxConcurrency,
+        parallelWriters,
+      });
+      if (!startAttempt.current || startAttempt.current.fingerprint !== fingerprint) {
+        startAttempt.current = {
+          fingerprint,
+          key:
+            globalThis.crypto?.randomUUID?.() ??
+            `swarm-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        };
+      }
       const payload = await requestJson<{ swarm?: SwarmRun }>('/api/swarm', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Idempotency-Key': startAttempt.current.key,
+        },
         body: JSON.stringify({
           projectId,
           goal: goal.trim(),
@@ -492,11 +848,20 @@ export default function AgentSwarmView({
           skills: selectedSkills,
           requireApproval: false,
           requirePlanApproval,
+          // Only the simplified path opts in; advanced keeps today's manual
+          // roster semantics (autoRoster omitted).
+          ...(autoRoster ? { autoRoster: true } : {}),
+          validateBeforePr,
           stepTimeoutMs: stepTimeoutMs > 0 ? stepTimeoutMs : undefined,
+          stallTimeoutMs: stallTimeoutMs > 0 ? stallTimeoutMs : undefined,
+          stepMaxAttempts: stepMaxAttempts > 0 ? stepMaxAttempts : undefined,
+          validationMaxAttempts: validationMaxAttempts > 0 ? validationMaxAttempts : undefined,
           maxConcurrency: maxConcurrency > 0 ? maxConcurrency : undefined,
+          parallelWriters,
         }),
       });
       if (payload.swarm) {
+        startAttempt.current = null;
         setExpanded(payload.swarm.swarm_id);
         setHistoryFilter('active');
         setTab('history');
@@ -506,7 +871,8 @@ export default function AgentSwarmView({
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Could not start swarm.');
     } finally {
-      setBusy(false);
+      startingRef.current = false;
+      setStarting(false);
     }
   };
 
@@ -514,7 +880,17 @@ export default function AgentSwarmView({
     swarmId: string,
     action: 'approve' | 'reject' | 'approve-plan' | 'reject-plan' | 'abort',
   ) => {
-    setBusy(true);
+    const confirmation =
+      action === 'abort'
+        ? 'Abort this swarm? Running provider processes will be stopped and unfinished work may be lost.'
+        : action === 'reject-plan'
+          ? 'Reject this plan and end the swarm? Worker agents will not run.'
+          : action === 'reject'
+            ? 'Reject this handoff and mark the swarm as failed?'
+            : null;
+    if (confirmation && !window.confirm(confirmation)) return;
+    if (busySwarmIds.current.has(swarmId)) return;
+    setSwarmBusy(swarmId, action);
     setError(null);
     try {
       await requestJson(`/api/swarm/${encodeURIComponent(swarmId)}/${action}`, {
@@ -524,12 +900,13 @@ export default function AgentSwarmView({
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : `Could not ${action} swarm.`);
     } finally {
-      setBusy(false);
+      setSwarmBusy(swarmId, null);
     }
   };
 
   const retryStep = async (swarmId: string, stepId: string) => {
-    setBusy(true);
+    if (busySwarmIds.current.has(swarmId)) return;
+    setSwarmBusy(swarmId, 'retry-step');
     setError(null);
     try {
       await requestJson(`/api/swarm/${encodeURIComponent(swarmId)}/retry-step`, {
@@ -541,12 +918,61 @@ export default function AgentSwarmView({
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Could not retry step.');
     } finally {
-      setBusy(false);
+      setSwarmBusy(swarmId, null);
+    }
+  };
+
+  /**
+   * Open the pre-PR validation report (PDF preferred, HTML fallback) in a new
+   * tab. Fetched with auth headers and served as a blob URL — a bare anchor
+   * would drop the Authorization header.
+   */
+  const downloadReport = async (swarmId: string) => {
+    if (busySwarmIds.current.has(swarmId)) return;
+    setSwarmBusy(swarmId, 'download-report');
+    setError(null);
+    let blobUrl: string | null = null;
+    try {
+      const response = await authenticatedFetch(
+        `/api/swarm/${encodeURIComponent(swarmId)}/report`,
+      );
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null);
+        throw new Error(
+          apiErrorMessage(payload) || `Validation report unavailable (${response.status})`,
+        );
+      }
+      const blob = await response.blob();
+      blobUrl = URL.createObjectURL(blob);
+      const opened = window.open(blobUrl, '_blank', 'noopener');
+      if (!opened) {
+        // Pop-up blocked — fall back to a direct download.
+        const anchor = document.createElement('a');
+        anchor.href = blobUrl;
+        anchor.download = `swarm-validation-${swarmId}.${
+          blob.type.includes('pdf') ? 'pdf' : 'html'
+        }`;
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+      }
+    } catch (caught) {
+      setError(
+        caught instanceof Error ? caught.message : 'Could not open the validation report.',
+      );
+    } finally {
+      if (blobUrl) {
+        const url = blobUrl;
+        // Give the new tab time to load the blob before revoking it.
+        window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+      }
+      setSwarmBusy(swarmId, null);
     }
   };
 
   const archiveSwarm = async (swarmId: string, restore = false) => {
-    setBusy(true);
+    if (busySwarmIds.current.has(swarmId)) return;
+    setSwarmBusy(swarmId, restore ? 'restore' : 'archive');
     setError(null);
     try {
       await requestJson(`/api/swarm/${encodeURIComponent(swarmId)}/archive`, {
@@ -559,7 +985,7 @@ export default function AgentSwarmView({
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Could not update archive state.');
     } finally {
-      setBusy(false);
+      setSwarmBusy(swarmId, null);
     }
   };
 
@@ -571,10 +997,12 @@ export default function AgentSwarmView({
    * of the agent's work, so it is kept even though the worktree goes.
    */
   const cleanupWorkspace = async (
+    swarmId: string,
     workspaceId: string,
     branch: string | null,
     pushed: boolean,
   ) => {
+    if (busySwarmIds.current.has(swarmId)) return;
     const ok = window.confirm(
       pushed
         ? `Remove the worktree and local branch for this swarm?\n\n${branch ?? workspaceId}\n\n` +
@@ -585,10 +1013,12 @@ export default function AgentSwarmView({
             `it is the only copy of the work. Uncommitted changes in the worktree are lost.`,
     );
     if (!ok) return;
-    setBusy(true);
+    setSwarmBusy(swarmId, 'cleanup-workspace');
     setError(null);
     try {
-      await requestJson(`/api/workspaces/${encodeURIComponent(workspaceId)}/discard`, {
+      const payload = await requestJson<{
+        workspace?: { status?: SwarmWorkspaceStatus; cleaned_at?: string | null };
+      }>(`/api/workspaces/${encodeURIComponent(workspaceId)}/discard`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ deleteBranch: pushed }),
@@ -596,20 +1026,28 @@ export default function AgentSwarmView({
       setCleanedWorkspaces((previous) =>
         previous.includes(workspaceId) ? previous : [...previous, workspaceId],
       );
+      setWorkspaceStateById((previous) => ({
+        ...previous,
+        [workspaceId]: {
+          status: payload.workspace?.status ?? 'discarded',
+          cleanedAt: payload.workspace?.cleaned_at ?? new Date().toISOString(),
+        },
+      }));
       await refresh();
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Could not clean up the workspace.');
     } finally {
-      setBusy(false);
+      setSwarmBusy(swarmId, null);
     }
   };
 
   const deleteSwarm = async (swarmId: string, goalLabel: string) => {
+    if (busySwarmIds.current.has(swarmId)) return;
     const ok = window.confirm(
       `Permanently delete this swarm?\n\n"${goalLabel.slice(0, 120)}${goalLabel.length > 120 ? '…' : ''}"\n\nThis cannot be undone.`,
     );
     if (!ok) return;
-    setBusy(true);
+    setSwarmBusy(swarmId, 'delete');
     setError(null);
     try {
       await requestJson(`/api/swarm/${encodeURIComponent(swarmId)}`, {
@@ -620,12 +1058,9 @@ export default function AgentSwarmView({
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Could not delete swarm.');
     } finally {
-      setBusy(false);
+      setSwarmBusy(swarmId, null);
     }
   };
-
-  const isLiveStatus = (status: string) =>
-    ['queued', 'planning', 'awaiting_plan_approval', 'running', 'handing_off', 'awaiting_approval'].includes(status);
 
   const fieldClass =
     'mt-1 w-full rounded-lg border border-border/80 bg-background px-3 py-2 text-sm text-foreground shadow-sm outline-none transition focus:border-primary/50 focus:ring-2 focus:ring-primary/15';
@@ -638,7 +1073,10 @@ export default function AgentSwarmView({
       <div className="border-b border-border/50 bg-background/80 px-5 py-4 pr-14 backdrop-blur-sm">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0">
-            <h2 className="flex items-center gap-2 text-base font-semibold tracking-tight text-foreground">
+            <h2
+              id="agent-swarm-title"
+              className="flex items-center gap-2 text-base font-semibold tracking-tight text-foreground"
+            >
               <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10 text-primary ring-1 ring-primary/20">
                 <Network className="h-4 w-4" />
               </span>
@@ -653,6 +1091,7 @@ export default function AgentSwarmView({
             <button
               type="button"
               onClick={() => setTab('create')}
+              aria-pressed={tab === 'create'}
               className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-all ${
                 tab === 'create'
                   ? 'bg-background text-foreground shadow-sm ring-1 ring-border/60'
@@ -665,6 +1104,7 @@ export default function AgentSwarmView({
             <button
               type="button"
               onClick={() => setTab('history')}
+              aria-pressed={tab === 'history'}
               className={`rounded-md px-3 py-1.5 text-xs font-medium transition-all ${
                 tab === 'history'
                   ? 'bg-background text-foreground shadow-sm ring-1 ring-border/60'
@@ -683,7 +1123,11 @@ export default function AgentSwarmView({
       </div>
 
       {error ? (
-        <div className="mx-5 mt-3 flex items-start gap-2 rounded-lg border border-red-500/25 bg-red-500/10 px-3 py-2.5 text-xs text-red-700 dark:text-red-300">
+        <div
+          role="alert"
+          aria-live="assertive"
+          className="mx-5 mt-3 flex items-start gap-2 rounded-lg border border-red-500/25 bg-red-500/10 px-3 py-2.5 text-xs text-red-700 dark:text-red-300"
+        >
           <XCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
           <span className="flex-1">{error}</span>
           <button
@@ -704,10 +1148,14 @@ export default function AgentSwarmView({
             <section className="rounded-xl border border-border/60 bg-card/50 p-4 shadow-sm">
               <div className="space-y-4">
                 <div>
-                  <label className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  <label
+                    htmlFor="swarm-project"
+                    className="text-xs font-semibold uppercase tracking-wide text-muted-foreground"
+                  >
                     Project
                   </label>
                   <select
+                    id="swarm-project"
                     className={fieldClass}
                     value={projectId}
                     onChange={(e) => setProjectId(e.target.value)}
@@ -721,10 +1169,14 @@ export default function AgentSwarmView({
                   </select>
                 </div>
                 <div>
-                  <label className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  <label
+                    htmlFor="swarm-goal"
+                    className="text-xs font-semibold uppercase tracking-wide text-muted-foreground"
+                  >
                     Goal
                   </label>
                   <textarea
+                    id="swarm-goal"
                     className={`${fieldClass} min-h-[96px] resize-y`}
                     placeholder="What should this swarm accomplish?"
                     value={goal}
@@ -783,7 +1235,7 @@ export default function AgentSwarmView({
                         key={skill.directoryName}
                         className={`flex cursor-pointer items-start gap-2 rounded-lg border px-2.5 py-2 text-xs transition ${
                           selected
-                            ? 'border-primary/40 bg-primary/8 shadow-sm'
+                            ? 'bg-primary/8 border-primary/40 shadow-sm'
                             : 'border-border/60 hover:border-border hover:bg-muted/40'
                         }`}
                       >
@@ -821,32 +1273,90 @@ export default function AgentSwarmView({
                 </p>
               </div>
               <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                <label className="flex cursor-pointer items-start gap-2 rounded-lg border border-border/60 px-2.5 py-2 text-xs transition hover:border-border hover:bg-muted/40">
-                  <input
-                    type="checkbox"
-                    className="mt-0.5 accent-primary"
-                    checked={requirePlanApproval}
-                    onChange={(e) => setRequirePlanApproval(e.target.checked)}
-                  />
-                  <span>
-                    <span className="font-medium text-foreground">Approve plan before running</span>
-                    <span className="block text-[11px] text-muted-foreground">
-                      The orchestrator plans first; you review cost &amp; steps, then approve
-                      before any worker agent runs.
+                <div className="space-y-2">
+                  <label className="flex cursor-pointer items-start gap-2 rounded-lg border border-border/60 px-2.5 py-2 text-xs transition hover:border-border hover:bg-muted/40">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5 accent-primary"
+                      checked={requirePlanApproval}
+                      onChange={(e) => setRequirePlanApproval(e.target.checked)}
+                    />
+                    <span>
+                      <span className="font-medium text-foreground">Approve plan before running</span>
+                      <span className="block text-[11px] text-muted-foreground">
+                        The orchestrator plans first; you review cost &amp; steps, then approve
+                        before any worker agent runs.
+                      </span>
                     </span>
-                  </span>
-                </label>
+                  </label>
+                  <label className="flex cursor-pointer items-start gap-2 rounded-lg border border-border/60 px-2.5 py-2 text-xs transition hover:border-border hover:bg-muted/40">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5 accent-primary"
+                      checked={validateBeforePr}
+                      onChange={(e) => setValidateBeforePr(e.target.checked)}
+                    />
+                    <span>
+                      <span className="flex items-center gap-1 font-medium text-foreground">
+                        <ShieldCheck className="h-3 w-3 text-emerald-600 dark:text-emerald-400" />
+                        Pre-PR validation gate
+                      </span>
+                      <span className="block text-[11px] text-muted-foreground">
+                        Run static checks + smoke verification and attach a test report
+                        (PDF) before the PR is opened. Recommended.
+                      </span>
+                    </span>
+                  </label>
+                </div>
                 <div className="space-y-2">
                   <label className="block text-[11px] font-medium text-muted-foreground">
-                    Per-step timeout (ms, 0 = none)
+                    Stall timeout (ms — no output for this long = reassign)
                     <input
                       type="number"
                       min={0}
-                      step={1000}
+                      step={30000}
+                      className={fieldClass}
+                      value={stallTimeoutMs || ''}
+                      placeholder="300000"
+                      onChange={(e) => setStallTimeoutMs(Number(e.target.value) || 0)}
+                    />
+                  </label>
+                  <label className="block text-[11px] font-medium text-muted-foreground">
+                    Hard per-step ceiling (ms, 0 = none)
+                    <input
+                      type="number"
+                      min={0}
+                      step={60000}
                       className={fieldClass}
                       value={stepTimeoutMs || ''}
                       placeholder="0"
                       onChange={(e) => setStepTimeoutMs(Number(e.target.value) || 0)}
+                    />
+                  </label>
+                  <label className="block text-[11px] font-medium text-muted-foreground">
+                    Attempts per task (feedback + reassignment)
+                    <input
+                      type="number"
+                      min={1}
+                      max={5}
+                      step={1}
+                      className={fieldClass}
+                      value={stepMaxAttempts || ''}
+                      placeholder="3"
+                      onChange={(e) => setStepMaxAttempts(Number(e.target.value) || 0)}
+                    />
+                  </label>
+                  <label className="block text-[11px] font-medium text-muted-foreground">
+                    Validation remediation rounds
+                    <input
+                      type="number"
+                      min={1}
+                      max={8}
+                      step={1}
+                      className={fieldClass}
+                      value={validationMaxAttempts || ''}
+                      placeholder="4"
+                      onChange={(e) => setValidationMaxAttempts(Number(e.target.value) || 0)}
                     />
                   </label>
                   <label className="block text-[11px] font-medium text-muted-foreground">
@@ -861,6 +1371,20 @@ export default function AgentSwarmView({
                       onChange={(e) => setMaxConcurrency(Number(e.target.value) || 0)}
                     />
                   </label>
+                  <label className="flex cursor-pointer items-start gap-2 rounded-lg border border-border/60 px-2.5 py-2 text-[11px] transition hover:border-border hover:bg-muted/40">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5 accent-primary"
+                      checked={parallelWriters}
+                      onChange={(e) => setParallelWriters(e.target.checked)}
+                    />
+                    <span>
+                      <span className="font-medium text-foreground">Parallel isolated writers</span>
+                      <span className="block text-[10px] text-muted-foreground">
+                        Disjoint implementation steps use child worktrees and merge back safely.
+                      </span>
+                    </span>
+                  </label>
                 </div>
               </div>
             </section>
@@ -873,11 +1397,88 @@ export default function AgentSwarmView({
                     Agent roster
                   </h3>
                   <p className="mt-0.5 text-[11px] text-muted-foreground">
-                    Exactly one orchestrator. Add workers — they run in parallel waves.
+                    {rosterMode === 'auto'
+                      ? 'Pick the orchestrator — it staffs the rest of the roster for you.'
+                      : 'Exactly one orchestrator. Add workers — they run in parallel waves.'}
                   </p>
                 </div>
-                <div className="flex flex-wrap gap-1.5">
-                  {(['explorer', 'implementer', 'reviewer'] as const).map((k) => (
+                <div
+                  role="group"
+                  aria-label="Roster mode"
+                  className="flex items-center gap-1 rounded-lg border border-border/60 bg-muted/40 p-1 shadow-sm"
+                >
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setRosterMode('auto');
+                      setRequirePlanApproval(false);
+                    }}
+                    aria-pressed={rosterMode === 'auto'}
+                    className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-all ${
+                      rosterMode === 'auto'
+                        ? 'bg-background text-foreground shadow-sm ring-1 ring-border/60'
+                        : 'text-muted-foreground hover:text-foreground'
+                    }`}
+                  >
+                    <Sparkles className="h-3.5 w-3.5" />
+                    Auto
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setRosterMode('advanced');
+                      setRequirePlanApproval(true);
+                    }}
+                    aria-pressed={rosterMode === 'advanced'}
+                    className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-all ${
+                      rosterMode === 'advanced'
+                        ? 'bg-background text-foreground shadow-sm ring-1 ring-border/60'
+                        : 'text-muted-foreground hover:text-foreground'
+                    }`}
+                  >
+                    <Settings2 className="h-3.5 w-3.5" />
+                    Advanced
+                  </button>
+                </div>
+              </div>
+
+              {rosterMode === 'auto' ? (
+                <div className="space-y-2">
+                  <div className="rounded-lg border border-primary/20 bg-primary/5 px-3 py-2 text-[11px] leading-relaxed text-muted-foreground">
+                    <span className="font-medium text-foreground">Auto roster: </span>
+                    the orchestrator selects explorer, implementer, and reviewer seats from
+                    Agent Profiles tagged for swarm roles, then runs the goal end to end.
+                    You only review the final report and merge the PR.
+                  </div>
+                  {hasSwarmProfiles === false ? (
+                    <div
+                      role="note"
+                      className="flex flex-wrap items-center gap-x-1.5 gap-y-1 rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-800 dark:text-amber-300"
+                    >
+                      <ShieldAlert className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                      <span>
+                        No Agent Profiles are tagged for swarm roles yet — the orchestrator
+                        will fall back to built-in defaults.
+                      </span>
+                      <button
+                        type="button"
+                        className="font-medium text-amber-900 underline underline-offset-2 hover:no-underline dark:text-amber-200"
+                        onClick={() =>
+                          window.dispatchEvent(
+                            new CustomEvent('cloudcli:open-settings', {
+                              detail: { tab: 'agent-profiles' },
+                            }),
+                          )
+                        }
+                      >
+                        Tag profiles in Settings → Agent Profiles
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
+              ) : (
+                <div className="flex flex-wrap justify-end gap-1.5">
+                  {(['explorer', 'implementer', 'reviewer', 'tester', 'security', 'docs'] as const).map((k) => (
                     <Button
                       key={k}
                       size="sm"
@@ -900,10 +1501,11 @@ export default function AgentSwarmView({
                     Custom
                   </Button>
                 </div>
-              </div>
+              )}
 
               <div className="space-y-3">
                 {roster.map((seat, index) => {
+                  if (rosterMode === 'auto' && seat.kind !== 'orchestrator') return null;
                   const isOrch = seat.kind === 'orchestrator';
                   const provider = seat.provider || 'claude';
                   const modelOptions = modelsByProvider[provider] ?? [];
@@ -920,7 +1522,7 @@ export default function AgentSwarmView({
                       key={seat.id || `${seat.label}-${index}`}
                       className={`overflow-hidden rounded-xl border shadow-sm transition ${
                         isOrch
-                          ? 'border-primary/35 bg-gradient-to-br from-primary/8 via-primary/5 to-transparent'
+                          ? 'from-primary/8 border-primary/35 bg-gradient-to-br via-primary/5 to-transparent'
                           : 'border-border/60 bg-card/60'
                       }`}
                     >
@@ -929,7 +1531,7 @@ export default function AgentSwarmView({
                           isOrch ? 'border-primary/15 bg-primary/5' : 'border-border/40 bg-muted/30'
                         }`}
                       >
-                        <div className="flex items-center gap-2 min-w-0">
+                        <div className="flex min-w-0 items-center gap-2">
                           <span
                             className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md ${
                               isOrch
@@ -959,7 +1561,7 @@ export default function AgentSwarmView({
                             type="button"
                             className="rounded-md p-1.5 text-muted-foreground transition hover:bg-red-500/10 hover:text-red-500"
                             onClick={() => removeSeat(index)}
-                            aria-label="Remove agent"
+                            aria-label={`Remove ${seat.label || seat.kind} agent`}
                           >
                             <Trash2 className="h-3.5 w-3.5" />
                           </button>
@@ -1090,11 +1692,11 @@ export default function AgentSwarmView({
             <div className="sticky bottom-0 -mx-1 flex justify-end bg-gradient-to-t from-background via-background to-transparent pb-1 pt-4">
               <Button
                 onClick={() => void start()}
-                disabled={busy}
+                disabled={starting}
                 className="h-10 rounded-lg px-5 shadow-md"
               >
                 <Network className="mr-1.5 h-4 w-4" />
-                {busy ? 'Starting…' : 'Deploy Agent Swarm'}
+                {starting ? 'Starting…' : 'Deploy Agent Swarm'}
               </Button>
             </div>
           </div>
@@ -1106,6 +1708,7 @@ export default function AgentSwarmView({
                 <button
                   type="button"
                   onClick={() => setHistoryFilter('active')}
+                  aria-pressed={historyFilter === 'active'}
                   className={`rounded-md px-3 py-1.5 text-xs font-medium transition ${
                     historyFilter === 'active'
                       ? 'bg-background text-foreground shadow-sm'
@@ -1117,6 +1720,7 @@ export default function AgentSwarmView({
                 <button
                   type="button"
                   onClick={() => setHistoryFilter('archived')}
+                  aria-pressed={historyFilter === 'archived'}
                   className={`flex items-center gap-1 rounded-md px-3 py-1.5 text-xs font-medium transition ${
                     historyFilter === 'archived'
                       ? 'bg-background text-foreground shadow-sm'
@@ -1131,6 +1735,7 @@ export default function AgentSwarmView({
                 <div className="relative min-w-0 flex-1">
                   <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
                   <input
+                    aria-label="Search swarms"
                     className="h-8 w-full rounded-lg border border-border/60 bg-background pl-8 pr-2.5 text-xs outline-none focus:border-primary/40 focus:ring-1 focus:ring-primary/20"
                     placeholder="Search swarms…"
                     value={search}
@@ -1151,7 +1756,10 @@ export default function AgentSwarmView({
             </div>
 
             {hasLive && historyFilter === 'active' ? (
-              <div className="flex items-center gap-2 rounded-lg border border-sky-500/20 bg-sky-500/8 px-3 py-2 text-[11px] text-sky-800 dark:text-sky-200">
+              <div
+                role="status"
+                className="bg-sky-500/8 flex items-center gap-2 rounded-lg border border-sky-500/20 px-3 py-2 text-[11px] text-sky-800 dark:text-sky-200"
+              >
                 <span className="relative flex h-2 w-2">
                   <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-sky-400 opacity-60" />
                   <span className="relative inline-flex h-2 w-2 rounded-full bg-sky-500" />
@@ -1198,12 +1806,39 @@ export default function AgentSwarmView({
               <div className="space-y-2.5">
                 {filteredSwarms.map((swarm) => {
                   const open = expanded === swarm.swarm_id;
-                  const live = isLiveStatus(swarm.status);
+                  const live = isPolledStatus(swarm.status);
+                  const executing = ['queued', 'planning', 'running', 'handing_off'].includes(
+                    swarm.status,
+                  );
+                  const cancelRequested = Boolean(
+                    swarm.cancelRequestedAt ?? swarm.cancel_requested_at,
+                  );
+                  const canAbort = allowsSwarmAction(swarm, 'abort');
+                  const canArchive = allowsSwarmAction(swarm, 'archive');
+                  const canDelete = allowsSwarmAction(swarm, 'delete');
+                  const swarmBusy = Boolean(busyBySwarm[swarm.swarm_id]);
                   const archived = Boolean(swarm.archived_at);
+                  const workspaceId =
+                    swarm.workspace_id || swarm.synthesis?.workspaceId || null;
+                  const workspaceState = workspaceId
+                    ? workspaceStateById[workspaceId]
+                    : undefined;
+                  const workspaceStatus =
+                    swarm.workspaceStatus ?? swarm.workspace_status ?? workspaceState?.status;
+                  const workspaceRemoved = Boolean(
+                    workspaceId &&
+                      (swarm.workspaceCleanedAt ||
+                        swarm.workspace_cleaned_at ||
+                        workspaceState?.cleanedAt ||
+                        workspaceStatus === 'discarded' ||
+                        workspaceStatus === 'orphan' ||
+                        cleanedWorkspaces.includes(workspaceId)),
+                  );
 
                   return (
                     <div
                       key={swarm.swarm_id}
+                      aria-busy={swarmBusy}
                       className={`overflow-hidden rounded-xl border bg-card/70 shadow-sm transition ${
                         open
                           ? 'border-primary/30 ring-1 ring-primary/15'
@@ -1213,6 +1848,8 @@ export default function AgentSwarmView({
                       <div className="flex items-stretch gap-0">
                         <button
                           type="button"
+                          aria-expanded={open}
+                          aria-controls={`swarm-details-${swarm.swarm_id}`}
                           className="min-w-0 flex-1 px-4 py-3 text-left transition hover:bg-muted/20"
                           onClick={() => setExpanded(open ? null : swarm.swarm_id)}
                         >
@@ -1234,10 +1871,12 @@ export default function AgentSwarmView({
                                     swarm.status,
                                   )}`}
                                 >
-                                  {live ? (
+                                  {executing ? (
                                     <Loader2 className="mr-1 h-2.5 w-2.5 animate-spin" />
                                   ) : null}
-                                  {swarm.status.replace(/_/g, ' ')}
+                                  {cancelRequested
+                                    ? 'cancellation requested'
+                                    : swarm.status.replace(/_/g, ' ')}
                                 </span>
                                 {archived ? (
                                   <span className="inline-flex items-center gap-0.5 rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground ring-1 ring-border">
@@ -1274,7 +1913,8 @@ export default function AgentSwarmView({
                               type="button"
                               className="rounded-md p-2 text-muted-foreground transition hover:bg-muted hover:text-foreground disabled:opacity-40"
                               title="Restore from archive"
-                              disabled={busy}
+                              aria-label="Restore swarm from archive"
+                              disabled={swarmBusy}
                               onClick={(e) => {
                                 e.stopPropagation();
                                 void archiveSwarm(swarm.swarm_id, true);
@@ -1286,8 +1926,9 @@ export default function AgentSwarmView({
                             <button
                               type="button"
                               className="rounded-md p-2 text-muted-foreground transition hover:bg-muted hover:text-foreground disabled:opacity-40"
-                              title={live ? 'Finish the swarm before archiving' : 'Archive'}
-                              disabled={busy || live}
+                              title={canArchive ? 'Archive' : 'Finish the swarm before archiving'}
+                              aria-label={canArchive ? 'Archive swarm' : 'Archive unavailable while swarm runs'}
+                              disabled={swarmBusy || !canArchive}
                               onClick={(e) => {
                                 e.stopPropagation();
                                 void archiveSwarm(swarm.swarm_id, false);
@@ -1299,8 +1940,9 @@ export default function AgentSwarmView({
                           <button
                             type="button"
                             className="rounded-md p-2 text-muted-foreground transition hover:bg-red-500/10 hover:text-red-500 disabled:opacity-40"
-                            title={live ? 'Finish the swarm before deleting' : 'Delete permanently'}
-                            disabled={busy || live}
+                            title={canDelete ? 'Delete permanently' : 'Finish the swarm before deleting'}
+                            aria-label={canDelete ? 'Delete swarm permanently' : 'Delete unavailable while swarm runs'}
+                            disabled={swarmBusy || !canDelete}
                             onClick={(e) => {
                               e.stopPropagation();
                               void deleteSwarm(swarm.swarm_id, swarm.goal);
@@ -1312,7 +1954,10 @@ export default function AgentSwarmView({
                       </div>
 
                       {open ? (
-                        <div className="space-y-4 border-t border-border/40 bg-muted/15 px-4 py-4 text-xs">
+                        <div
+                          id={`swarm-details-${swarm.swarm_id}`}
+                          className="space-y-4 border-t border-border/40 bg-muted/15 px-4 py-4 text-xs"
+                        >
                           {/* Roster chips */}
                           <div>
                             <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
@@ -1326,6 +1971,11 @@ export default function AgentSwarmView({
                                 >
                                   <span className="text-muted-foreground">{kindIcon(r.kind)}</span>
                                   <span className="font-medium text-foreground">{r.label}</span>
+                                  {r.kind !== 'orchestrator' ? (
+                                    <span className={LEVEL_CHIP[r.level ?? 'medium']}>
+                                      {LEVEL_LABEL[r.level ?? 'medium']}
+                                    </span>
+                                  ) : null}
                                   <span className="text-muted-foreground">
                                     {r.provider || '?'}
                                     {r.model ? ` · ${r.model}` : ''}
@@ -1346,6 +1996,23 @@ export default function AgentSwarmView({
                               </div>
                             ) : null}
                           </div>
+
+                          {swarm.last_error ? (
+                            <div
+                              role="alert"
+                              className="rounded-lg border border-red-500/25 bg-red-500/10 px-3 py-2 text-[11px] text-red-700 dark:text-red-300"
+                            >
+                              {isValidationFailure(swarm) ? (
+                                <div className="mb-1 flex items-center gap-1.5 font-semibold">
+                                  <ShieldAlert className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                                  {swarm.pr_url
+                                    ? 'Validation still red — PR opened anyway with the report, ready for a follow-up swarm'
+                                    : 'Pre-PR validation failed — no PR was opened'}
+                                </div>
+                              ) : null}
+                              {swarm.last_error}
+                            </div>
+                          ) : null}
 
                           {/* Plan */}
                           {swarm.plan ? (
@@ -1370,13 +2037,13 @@ export default function AgentSwarmView({
                                     key={step.id}
                                     className="flex items-start gap-2 rounded-lg border border-border/40 bg-background/80 px-2.5 py-1.5"
                                   >
-                                    {step.status === 'succeeded' ? (
+                                    {step.status === 'succeeded' || step.status === 'recovered' ? (
                                       <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-500" />
                                     ) : step.status === 'failed' ? (
                                       <XCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-red-500" />
-                                    ) : ['running', 'planning', 'awaiting_plan_approval'].includes(
-                                        swarm.status,
-                                      ) ? (
+                                    ) : step.status === 'needs_changes' ? (
+                                      <XCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-500" />
+                                    ) : step.status === 'running' ? (
                                       <Loader2 className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin text-sky-500" />
                                     ) : (
                                       <span className="mt-0.5 h-3.5 w-3.5 shrink-0 rounded-full border border-border" />
@@ -1386,17 +2053,18 @@ export default function AgentSwarmView({
                                       <span className="text-muted-foreground">
                                         {' '}
                                         · {step.assignTo || step.kind}
+                                        {step.difficulty ? ` · ${step.difficulty}` : ''}
                                         {step.wave != null ? ` · wave ${step.wave}` : ''}
                                         {step.status ? ` · ${step.status}` : ''}
                                       </span>
                                     </span>
-                                    {step.status === 'failed' &&
-                                    !isLiveStatus(swarm.status) ? (
+                                    {(step.status === 'failed' || step.status === 'needs_changes') &&
+                                    allowsSwarmAction(swarm, 'retry-step') ? (
                                       <Button
                                         size="sm"
                                         variant="outline"
                                         className="h-6 shrink-0 rounded-md px-2 text-[10px]"
-                                        disabled={busy}
+                                        disabled={swarmBusy}
                                         onClick={() => void retryStep(swarm.swarm_id, step.id)}
                                       >
                                         <RefreshCw className="mr-1 h-3 w-3" />
@@ -1435,7 +2103,7 @@ export default function AgentSwarmView({
                                           m.status,
                                         )}`}
                                       >
-                                        {m.status}
+                                        {statusLabel(m.status)}
                                       </span>
                                       <span className="text-[10px] text-muted-foreground">
                                         {m.provider}
@@ -1507,14 +2175,54 @@ export default function AgentSwarmView({
                                 Blackboard
                               </div>
                               <div className="max-h-48 space-y-2 overflow-y-auto rounded-lg border border-border/40 bg-background/80 p-2.5">
-                                {(swarm.blackboard ?? []).map((msg) => (
-                                  <div key={msg.id} className="text-[11px]">
-                                    <span className="font-medium text-foreground">{msg.from}</span>
-                                    <span className="text-muted-foreground"> · {msg.kind}</span>
-                                    <p className="mt-0.5 whitespace-pre-wrap text-muted-foreground">
-                                      {msg.content.slice(0, 400)}
-                                      {msg.content.length > 400 ? '…' : ''}
-                                    </p>
+                                {(swarm.blackboard ?? []).map((msg) => {
+                                  const badge = blackboardBadge(msg.content);
+                                  const body = badge ? badge.rest : msg.content;
+                                  return (
+                                    <div
+                                      key={msg.id}
+                                      className="text-[11px]"
+                                      title={badge ? msg.content : undefined}
+                                    >
+                                      <span className="font-medium text-foreground">
+                                        {msg.from}
+                                      </span>
+                                      <span className="text-muted-foreground"> · {msg.kind}</span>
+                                      {badge ? (
+                                        <span
+                                          className={`ml-1.5 inline-flex items-center rounded-full px-1.5 py-0.5 align-middle text-[9px] font-semibold uppercase tracking-wide ring-1 ring-inset ${
+                                            BLACKBOARD_BADGE_TONE[badge.tone]
+                                          }`}
+                                        >
+                                          {badge.label}
+                                        </span>
+                                      ) : null}
+                                      <p className="mt-0.5 whitespace-pre-wrap text-muted-foreground">
+                                        {body.slice(0, 400)}
+                                        {body.length > 400 ? '…' : ''}
+                                      </p>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          ) : null}
+
+                          {swarm.artifacts && swarm.artifacts.length > 0 ? (
+                            <div>
+                              <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                                Evidence artifacts
+                              </div>
+                              <div className="space-y-1.5 rounded-lg border border-border/40 bg-background/80 p-2.5">
+                                {swarm.artifacts.map((artifact) => (
+                                  <div key={artifact.artifact_id} className="rounded-md border border-border/40 px-2 py-1.5">
+                                    <div className="flex items-center justify-between gap-2">
+                                      <span className="font-medium text-foreground">{artifact.label}</span>
+                                      <span className="rounded bg-muted px-1.5 py-0.5 text-[9px] uppercase text-muted-foreground">{artifact.kind}</span>
+                                    </div>
+                                    {artifact.content ? (
+                                      <pre className="mt-1 max-h-24 overflow-auto whitespace-pre-wrap text-[10px] text-muted-foreground">{artifact.content}</pre>
+                                    ) : null}
                                   </div>
                                 ))}
                               </div>
@@ -1536,6 +2244,12 @@ export default function AgentSwarmView({
                                   <div>
                                     <span className="font-medium text-foreground">Workspace: </span>
                                     {swarm.workspace_id || swarm.synthesis?.workspaceId}
+                                  </div>
+                                ) : null}
+                                {workspaceStatus ? (
+                                  <div>
+                                    <span className="font-medium text-foreground">Status: </span>
+                                    {workspaceStatus.replace(/_/g, ' ')}
                                   </div>
                                 ) : null}
                                 {swarm.feature_branch || swarm.synthesis?.featureBranch ? (
@@ -1574,10 +2288,8 @@ export default function AgentSwarmView({
                                 nothing else does.
                               */}
                               {(() => {
-                                const workspaceId =
-                                  swarm.workspace_id || swarm.synthesis?.workspaceId || null;
                                 if (!workspaceId || live) return null;
-                                if (cleanedWorkspaces.includes(workspaceId)) {
+                                if (workspaceRemoved) {
                                   return (
                                     <div className="mt-2.5 border-t border-border/50 pt-2.5 text-[11px] text-muted-foreground">
                                       Worktree removed.
@@ -1586,12 +2298,14 @@ export default function AgentSwarmView({
                                 }
                                 const branch =
                                   swarm.feature_branch || swarm.synthesis?.featureBranch || null;
-                                const pushed = Boolean(swarm.pr_url || swarm.synthesis?.prUrl);
+                                const pushed =
+                                  swarm.synthesis?.pushed ??
+                                  Boolean(swarm.pr_url || swarm.synthesis?.prUrl);
                                 return (
                                   <div className="mt-2.5 flex items-center gap-2 border-t border-border/50 pt-2.5">
                                     <button
                                       type="button"
-                                      disabled={busy}
+                                      disabled={swarmBusy}
                                       title={
                                         pushed
                                           ? 'Remove the worktree and local branch'
@@ -1600,7 +2314,12 @@ export default function AgentSwarmView({
                                       className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-[11px] font-medium text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
                                       onClick={(event) => {
                                         event.stopPropagation();
-                                        void cleanupWorkspace(workspaceId, branch, pushed);
+                                        void cleanupWorkspace(
+                                          swarm.swarm_id,
+                                          workspaceId,
+                                          branch,
+                                          pushed,
+                                        );
                                       }}
                                     >
                                       <Trash2 className="h-3 w-3" />
@@ -1616,6 +2335,95 @@ export default function AgentSwarmView({
                               })()}
                             </div>
                           )}
+
+                          {/* Pre-PR validation gate */}
+                          {(() => {
+                            const validation = swarm.synthesis?.validation;
+                            if (!validation) return null;
+                            const overall = validationOverallStatus(validation);
+                            const hasReport = Boolean(
+                              validation.reportPdfPath || validation.reportHtmlPath,
+                            );
+                            return (
+                              <div
+                                className={`rounded-lg border p-3 ${
+                                  overall === 'failed'
+                                    ? 'border-red-500/30 bg-red-500/5'
+                                    : 'border-border/50 bg-background/80'
+                                }`}
+                              >
+                                <div className="mb-1.5 flex flex-wrap items-center gap-2">
+                                  <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                                    {overall === 'failed' ? (
+                                      <ShieldAlert className="h-3.5 w-3.5 text-red-500" aria-hidden="true" />
+                                    ) : (
+                                      <ShieldCheck className="h-3.5 w-3.5 text-emerald-500" aria-hidden="true" />
+                                    )}
+                                    Pre-PR validation
+                                  </div>
+                                  <span
+                                    className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ring-1 ring-inset ${validationChipClass(
+                                      overall,
+                                    )}`}
+                                  >
+                                    {overall}
+                                  </span>
+                                  {validation.generatedAt ? (
+                                    <span className="text-[10px] text-muted-foreground">
+                                      {new Date(validation.generatedAt).toLocaleString()}
+                                    </span>
+                                  ) : null}
+                                </div>
+                                {validation.summary ? (
+                                  <p className="text-[11px] text-muted-foreground">
+                                    {validation.summary}
+                                  </p>
+                                ) : null}
+                                {validation.degraded ? (
+                                  <p className="mt-1 text-[11px] text-amber-700 dark:text-amber-300">
+                                    Degraded run — smoke/PDF tooling was unavailable, so only
+                                    static checks were performed.
+                                  </p>
+                                ) : null}
+                                {validation.checks.length > 0 ? (
+                                  <ul className="mt-2 space-y-1">
+                                    {validation.checks.map((check) => (
+                                      <li
+                                        key={check.id}
+                                        className="flex items-center justify-between gap-2 rounded-md border border-border/40 bg-background/80 px-2.5 py-1.5 text-[11px]"
+                                      >
+                                        <span className="min-w-0 truncate font-medium text-foreground">
+                                          {check.label}
+                                        </span>
+                                        <span
+                                          className={`inline-flex shrink-0 items-center rounded-full px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide ring-1 ring-inset ${validationChipClass(
+                                            check.status,
+                                          )}`}
+                                        >
+                                          {check.status}
+                                        </span>
+                                      </li>
+                                    ))}
+                                  </ul>
+                                ) : null}
+                                {hasReport ? (
+                                  <div className="mt-2.5 border-t border-border/50 pt-2.5">
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      className="h-7 rounded-md text-[11px]"
+                                      disabled={swarmBusy}
+                                      title="Open the validation report in a new tab (PDF preferred, HTML fallback)"
+                                      onClick={() => void downloadReport(swarm.swarm_id)}
+                                    >
+                                      <FileDown className="mr-1 h-3 w-3" />
+                                      Download test report (PDF)
+                                    </Button>
+                                  </div>
+                                ) : null}
+                              </div>
+                            );
+                          })()}
 
                           {/* Handoff */}
                           {swarm.synthesis?.summary ? (
@@ -1675,53 +2483,63 @@ export default function AgentSwarmView({
                             </div>
                           ) : null}
 
-                          {swarm.status === 'awaiting_plan_approval' ? (
+                          {allowsSwarmAction(swarm, 'approve-plan') ||
+                          allowsSwarmAction(swarm, 'reject-plan') ? (
                             <div className="rounded-lg border border-amber-500/25 bg-amber-500/10 p-3">
                               <div className="mb-2 text-xs font-medium text-amber-800 dark:text-amber-300">
                                 Orchestrator plan is ready — review it below before any worker
                                 agents run.
                               </div>
                               <div className="flex flex-wrap gap-2">
-                                <Button
-                                  size="sm"
-                                  className="rounded-lg"
-                                  onClick={() => void act(swarm.swarm_id, 'approve-plan')}
-                                  disabled={busy}
-                                >
-                                  Approve plan & run
-                                </Button>
-                                <Button
-                                  size="sm"
-                                  variant="outline"
-                                  className="rounded-lg"
-                                  onClick={() => void act(swarm.swarm_id, 'reject-plan')}
-                                  disabled={busy}
-                                >
-                                  Reject plan
-                                </Button>
+                                {allowsSwarmAction(swarm, 'approve-plan') ? (
+                                  <Button
+                                    size="sm"
+                                    className="rounded-lg"
+                                    onClick={() => void act(swarm.swarm_id, 'approve-plan')}
+                                    disabled={swarmBusy}
+                                  >
+                                    Approve plan & run
+                                  </Button>
+                                ) : null}
+                                {allowsSwarmAction(swarm, 'reject-plan') ? (
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    className="rounded-lg border-red-500/40 text-red-600 hover:bg-red-500/10 hover:text-red-700 dark:text-red-400"
+                                    onClick={() => void act(swarm.swarm_id, 'reject-plan')}
+                                    disabled={swarmBusy}
+                                  >
+                                    Reject plan
+                                  </Button>
+                                ) : null}
                               </div>
                             </div>
                           ) : null}
 
-                          {swarm.status === 'awaiting_approval' ? (
+                          {allowsSwarmAction(swarm, 'approve') ||
+                          allowsSwarmAction(swarm, 'reject') ? (
                             <div className="flex flex-wrap gap-2">
-                              <Button
-                                size="sm"
-                                className="rounded-lg"
-                                onClick={() => void act(swarm.swarm_id, 'approve')}
-                                disabled={busy}
-                              >
-                                Acknowledge handoff
-                              </Button>
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                className="rounded-lg"
-                                onClick={() => void act(swarm.swarm_id, 'reject')}
-                                disabled={busy}
-                              >
-                                Reject
-                              </Button>
+                              {allowsSwarmAction(swarm, 'approve') ? (
+                                <Button
+                                  size="sm"
+                                  className="rounded-lg"
+                                  onClick={() => void act(swarm.swarm_id, 'approve')}
+                                  disabled={swarmBusy}
+                                >
+                                  Acknowledge handoff
+                                </Button>
+                              ) : null}
+                              {allowsSwarmAction(swarm, 'reject') ? (
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="rounded-lg border-red-500/40 text-red-600 hover:bg-red-500/10 hover:text-red-700 dark:text-red-400"
+                                  onClick={() => void act(swarm.swarm_id, 'reject')}
+                                  disabled={swarmBusy}
+                                >
+                                  Reject
+                                </Button>
+                              ) : null}
                             </div>
                           ) : null}
 
@@ -1731,13 +2549,18 @@ export default function AgentSwarmView({
                               {swarm.parent_run_id || swarm.swarm_id}
                               {swarm.feature_branch ? ` · ${swarm.feature_branch}` : ''}
                             </div>
+                            {busyBySwarm[swarm.swarm_id] ? (
+                              <span role="status" className="font-medium text-primary">
+                                {busyBySwarm[swarm.swarm_id].replace(/-/g, ' ')}…
+                              </span>
+                            ) : null}
                             <div className="flex gap-1">
-                              {live ? (
+                              {canAbort ? (
                                 <Button
                                   size="sm"
                                   variant="outline"
                                   className="h-7 rounded-md text-[11px] text-red-600 hover:bg-red-500/10 hover:text-red-600 dark:text-red-400"
-                                  disabled={busy}
+                                  disabled={swarmBusy}
                                   onClick={() => void act(swarm.swarm_id, 'abort')}
                                 >
                                   <XCircle className="mr-1 h-3 w-3" />
@@ -1749,7 +2572,7 @@ export default function AgentSwarmView({
                                   size="sm"
                                   variant="outline"
                                   className="h-7 rounded-md text-[11px]"
-                                  disabled={busy}
+                                  disabled={swarmBusy}
                                   onClick={() => void archiveSwarm(swarm.swarm_id, true)}
                                 >
                                   <ArchiveRestore className="mr-1 h-3 w-3" />
@@ -1760,7 +2583,7 @@ export default function AgentSwarmView({
                                   size="sm"
                                   variant="outline"
                                   className="h-7 rounded-md text-[11px]"
-                                  disabled={busy || live}
+                                  disabled={swarmBusy || !canArchive}
                                   onClick={() => void archiveSwarm(swarm.swarm_id, false)}
                                 >
                                   <Archive className="mr-1 h-3 w-3" />
@@ -1771,7 +2594,7 @@ export default function AgentSwarmView({
                                 size="sm"
                                 variant="outline"
                                 className="h-7 rounded-md text-[11px] text-red-600 hover:bg-red-500/10 hover:text-red-600 dark:text-red-400"
-                                disabled={busy || live}
+                                disabled={swarmBusy || !canDelete}
                                 onClick={() => void deleteSwarm(swarm.swarm_id, swarm.goal)}
                               >
                                 <Trash2 className="mr-1 h-3 w-3" />
