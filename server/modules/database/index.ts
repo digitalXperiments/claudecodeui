@@ -17,11 +17,19 @@ export { vapidKeysDb } from '@/modules/database/repositories/vapid-keys.js';
 export {
   agentRunProfilesDb,
   compilePermissionIntent,
+  DEFAULT_SWARM_PROFILE_LEVEL,
+  isSwarmProfileLevel,
+  isSwarmProfileRole,
+  SWARM_LEVEL_RANK,
+  SWARM_PROFILE_LEVELS,
+  SWARM_PROFILE_ROLES,
 } from '@/modules/database/repositories/agent-run-profiles.db.js';
 export type {
   AgentRunProfile,
   AgentRunProfileTools,
   CreateAgentRunProfileInput,
+  SwarmProfileLevel,
+  SwarmProfileRole,
   UpdateAgentRunProfileInput,
 } from '@/modules/database/repositories/agent-run-profiles.db.js';
 export { systemNotificationsDb } from '@/modules/database/repositories/system-notifications.db.js';

@@ -787,8 +787,11 @@ export const runMigrations = (db: Database) => {
 
     // Named agent run profiles + in-app notification inbox (additive).
     db.exec(AGENT_RUN_PROFILES_TABLE_SCHEMA_SQL);
+    ensureAgentProfileSwarmRolesSchema(db);
     db.exec(SYSTEM_NOTIFICATIONS_TABLE_SCHEMA_SQL);
     db.exec(INTERRUPTS_TABLE_SCHEMA_SQL);
+    ensureInterruptDedupeSchema(db);
+    ensureInterruptLifecycleSchema(db);
 
     // Kanban orchestration tables (additive; safe to re-exec via IF NOT EXISTS).
     db.exec(KANBAN_SCHEMA_SQL);
@@ -821,6 +824,50 @@ export const runMigrations = (db: Database) => {
   }
 };
 
+/**
+ * Additive agent_run_profiles.swarm_roles column: JSON array of swarm roles
+ * ("explorer" | "implementer" | "reviewer") a profile may serve when the
+ * swarm orchestrator auto-selects its roster. NULL = not available to swarms.
+ */
+function ensureAgentProfileSwarmRolesSchema(db: Database): void {
+  if (!tableExists(db, 'agent_run_profiles')) return;
+  const columns = getTableInfo(db, 'agent_run_profiles').map((column) => column.name);
+  addColumnToTableIfNotExists(db, 'agent_run_profiles', columns, 'swarm_roles', 'TEXT DEFAULT NULL');
+  // Capability tier ("basic" | "medium" | "advanced") the orchestrator uses to
+  // match seat strength to step difficulty. NULL on upgraded rows = "medium".
+  addColumnToTableIfNotExists(db, 'agent_run_profiles', columns, 'swarm_level', 'TEXT DEFAULT NULL');
+  // 0 = disabled: excluded from every automatic seat selection (swarm
+  // auto-roster, retry reassignment) while staying available for explicit use.
+  addColumnToTableIfNotExists(db, 'agent_run_profiles', columns, 'enabled', 'INTEGER NOT NULL DEFAULT 1');
+}
+
+/** Durable interrupt dedupe key used by atomic open/snoozed upserts. */
+function ensureInterruptDedupeSchema(db: Database): void {
+  if (!tableExists(db, 'interrupts')) return;
+  const columns = getTableInfo(db, 'interrupts').map((column) => column.name);
+  addColumnToTableIfNotExists(db, 'interrupts', columns, 'dedupe_key', 'TEXT');
+  db.exec(
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_interrupts_active_dedupe
+       ON interrupts(dedupe_key)
+       WHERE dedupe_key IS NOT NULL AND status IN ('open', 'snoozed')`,
+  );
+}
+
+/**
+ * Additive interrupt lifecycle columns: `expires_at` (approval-gate deadline;
+ * past it the interrupt transitions to status 'expired' and stops being
+ * actionable) and `read_at` (viewport mark-as-read; read ≠ resolved).
+ */
+function ensureInterruptLifecycleSchema(db: Database): void {
+  if (!tableExists(db, 'interrupts')) return;
+  const columns = getTableInfo(db, 'interrupts').map((column) => column.name);
+  addColumnToTableIfNotExists(db, 'interrupts', columns, 'expires_at', 'DATETIME');
+  addColumnToTableIfNotExists(db, 'interrupts', columns, 'read_at', 'DATETIME');
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_interrupts_expiry ON interrupts(status, expires_at)`,
+  );
+}
+
 /** Additive columns for Agent Swarm orchestration (plan, blackboard, per-agent config). */
 function ensureSwarmAgentSchema(db: Database): void {
   if (!tableExists(db, 'swarm_runs')) return;
@@ -833,12 +880,52 @@ function ensureSwarmAgentSchema(db: Database): void {
   addColumnToTableIfNotExists(db, 'swarm_runs', runCols, 'pr_url', 'TEXT');
   addColumnToTableIfNotExists(db, 'swarm_runs', runCols, 'feature_branch', 'TEXT');
   addColumnToTableIfNotExists(db, 'swarm_runs', runCols, 'archived_at', 'DATETIME');
+  addColumnToTableIfNotExists(db, 'swarm_runs', runCols, 'version', 'INTEGER NOT NULL DEFAULT 0');
+  addColumnToTableIfNotExists(db, 'swarm_runs', runCols, 'cancel_requested_at', 'DATETIME');
+  addColumnToTableIfNotExists(db, 'swarm_runs', runCols, 'lease_owner', 'TEXT');
+  addColumnToTableIfNotExists(db, 'swarm_runs', runCols, 'lease_expires_at', 'DATETIME');
+  addColumnToTableIfNotExists(db, 'swarm_runs', runCols, 'idempotency_key', 'TEXT');
+  addColumnToTableIfNotExists(db, 'swarm_runs', runCols, 'last_error', 'TEXT');
   db.exec(
     `CREATE INDEX IF NOT EXISTS idx_swarm_runs_created ON swarm_runs(created_at DESC)`,
   );
   db.exec(
     `CREATE INDEX IF NOT EXISTS idx_swarm_runs_archived ON swarm_runs(archived_at)`,
   );
+  db.exec(
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_swarm_runs_idempotency
+       ON swarm_runs(project_id, idempotency_key) WHERE idempotency_key IS NOT NULL`,
+  );
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS swarm_messages (
+      message_id TEXT PRIMARY KEY NOT NULL,
+      swarm_id TEXT NOT NULL,
+      seq INTEGER NOT NULL,
+      from_agent TEXT NOT NULL,
+      to_agent TEXT,
+      kind TEXT NOT NULL,
+      content TEXT NOT NULL,
+      step_id TEXT,
+      at DATETIME NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(swarm_id, seq),
+      FOREIGN KEY (swarm_id) REFERENCES swarm_runs(swarm_id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_swarm_messages_swarm_seq ON swarm_messages(swarm_id, seq);
+    CREATE TABLE IF NOT EXISTS swarm_artifacts (
+      artifact_id TEXT PRIMARY KEY NOT NULL,
+      swarm_id TEXT NOT NULL,
+      step_id TEXT,
+      attempt_id TEXT,
+      kind TEXT NOT NULL,
+      label TEXT NOT NULL,
+      content TEXT,
+      path TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (swarm_id) REFERENCES swarm_runs(swarm_id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_swarm_artifacts_swarm ON swarm_artifacts(swarm_id, created_at);
+  `);
 
   if (!tableExists(db, 'swarm_members')) return;
   const memberCols = getTableInfo(db, 'swarm_members').map((c) => c.name);

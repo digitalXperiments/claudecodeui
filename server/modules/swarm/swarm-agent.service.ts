@@ -7,6 +7,7 @@ import {
 } from '@/modules/mission-control/index.js';
 import { sessionsService } from '@/modules/providers/index.js';
 import { recordNormalizedRunEvent, runService } from '@/modules/runs/index.js';
+import { swarmPermissionBroker } from '@/modules/swarm/swarm-permission-broker.service.js';
 import {
   chatRunRegistry,
   DETACHED_CONNECTION,
@@ -37,6 +38,28 @@ export function getSwarmAbortFn(provider: LLMProvider): ((providerSessionId: str
   return runtimeAbortFns[provider];
 }
 
+/** Abort the live provider process addressed by the stable app-session id. */
+export async function abortSwarmAgentSession(
+  appSessionId: string,
+  provider: LLMProvider,
+): Promise<boolean> {
+  const live = chatRunRegistry.getRun(appSessionId);
+  if (!live || live.status !== 'running') return false;
+  let aborted = false;
+  const abortFn = live.providerSessionId ? getSwarmAbortFn(provider) : undefined;
+  if (abortFn && live.providerSessionId) {
+    try {
+      aborted = Boolean(await abortFn(live.providerSessionId));
+    } catch {
+      aborted = false;
+    }
+  }
+  // Always close the registry run. Some providers do not announce a native id
+  // until late, but cancellation must still unblock the orchestration promise.
+  chatRunRegistry.completeRun(appSessionId, { exitCode: 1, aborted: true });
+  return aborted;
+}
+
 export function getSwarmSpawnFn(provider: LLMProvider): ProviderSpawnFn | undefined {
   return runtimeSpawnFns[provider];
 }
@@ -48,7 +71,6 @@ const SWARM_PROVIDERS: LLMProvider[] = [
   'opencode',
   'grok',
   'kimi',
-  'agy',
   'pi',
 ];
 
@@ -140,17 +162,29 @@ export type SwarmMemberAgentResult = {
   text: string;
   success: boolean;
   errorMessage: string | null;
-  /** True when the run hit the per-step timeout and was force-aborted. */
+  /** True when the run hit the stall or hard-ceiling budget and was force-aborted. */
   timedOut?: boolean;
+  /**
+   * True when the run was killed for going SILENT (no provider events for the
+   * stall budget) rather than for exceeding the hard wall-clock ceiling. A
+   * stalled agent is a stuck agent; a ceiling hit may just be slow work.
+   */
+  stalled?: boolean;
 };
 
+const DEFAULT_STALL_TIMEOUT_MS = 5 * 60 * 1000;
+
 /**
- * One headless provider run for a swarm member (or synthesizer).
- * Creates a fresh app session, records events on the given run spine row,
- * awaits completion, returns assistant text. An optional per-run timeout
- * force-aborts the provider session and marks the run `timed_out`.
+ * Silence budget: how long a swarm agent may emit NO events before it is
+ * treated as stuck. Wall-clock alone kills agents that are legitimately busy,
+ * which is why the hard ceiling is generous and this is the primary signal.
  */
-export async function runSwarmAgent(params: {
+export function swarmStallTimeoutMs(): number {
+  const raw = Number(process.env.CLOUDCLI_SWARM_STALL_TIMEOUT_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_STALL_TIMEOUT_MS;
+}
+
+export type RunSwarmAgentParams = {
   projectId: string;
   projectPath: string;
   provider: LLMProvider;
@@ -161,9 +195,64 @@ export async function runSwarmAgent(params: {
   /** Existing spine run id to attach events to (member/parent). */
   runId: string;
   title?: string;
-  /** Force-abort after this many ms (0/null disables). */
+  /** Hard wall-clock ceiling in ms (0/null disables). Generous by design. */
   timeoutMs?: number | null;
-}): Promise<SwarmMemberAgentResult> {
+  /**
+   * Silence budget in ms: abort when the provider emits no event for this long
+   * (0/null disables; omitted uses `swarmStallTimeoutMs()`). This is the signal
+   * that actually distinguishes a stuck agent from a slow one.
+   */
+  stallTimeoutMs?: number | null;
+  /** Swarm-wide cancellation signal. */
+  signal?: AbortSignal | null;
+  /**
+   * Swarm permission-broker registration. When present, the run is registered
+   * for the lifetime of the provider process and every normalized
+   * `permission_request` event is answered by the broker's seat policy
+   * (approve / deny / orchestrator adjudication) instead of hanging on an
+   * interactive prompt no operator will ever see.
+   */
+  permission?: {
+    swarmId: string;
+    memberId?: string | null;
+    seatKind: string;
+    seatLabel?: string | null;
+    workspaceRoot: string;
+    /** Set false for adjudication runs (recursion guard). */
+    allowEscalation?: boolean;
+  } | null;
+};
+
+/**
+ * One headless provider run for a swarm member (or synthesizer).
+ * Creates a fresh app session, records events on the given run spine row,
+ * awaits completion, returns assistant text. An optional per-run timeout
+ * force-aborts the provider session and marks the run `timed_out`.
+ *
+ * Registers the run with the swarm permission broker (when a `permission`
+ * context is supplied) so unattended permission prompts are always answered.
+ */
+export async function runSwarmAgent(params: RunSwarmAgentParams): Promise<SwarmMemberAgentResult> {
+  if (params.permission) {
+    swarmPermissionBroker.register(params.runId, {
+      swarmId: params.permission.swarmId,
+      memberId: params.permission.memberId ?? null,
+      seatKind: params.permission.seatKind,
+      seatLabel: params.permission.seatLabel ?? null,
+      workspaceRoot: params.permission.workspaceRoot,
+      permissionMode: params.permissionMode ?? null,
+      provider: params.provider,
+      allowEscalation: params.permission.allowEscalation,
+    });
+  }
+  try {
+    return await runSwarmAgentInner(params);
+  } finally {
+    if (params.permission) swarmPermissionBroker.deregister(params.runId);
+  }
+}
+
+async function runSwarmAgentInner(params: RunSwarmAgentParams): Promise<SwarmMemberAgentResult> {
   const { provider, projectPath, prompt, runId } = params;
   const spawnFn = runtimeSpawnFns[provider];
   if (!spawnFn) {
@@ -171,6 +260,11 @@ export async function runSwarmAgent(params: {
       code: 'SWARM_RUNTIME_UNAVAILABLE',
       statusCode: 400,
     });
+  }
+  if (params.signal?.aborted) {
+    const error = new Error('Swarm agent cancelled');
+    error.name = 'AbortError';
+    throw error;
   }
 
   const created = sessionsService.createAppSession(provider, projectPath);
@@ -182,6 +276,12 @@ export async function runSwarmAgent(params: {
   } catch {
     /* optional */
   }
+
+  // Liveness clock for stall detection: every normalized provider event
+  // (assistant text, tool call, tool result, permission request) counts as
+  // progress. Started before the spawn so a provider that never emits anything
+  // is still caught.
+  let lastEventAt = Date.now();
 
   let result: Awaited<ReturnType<typeof startProviderRun>>;
   try {
@@ -199,7 +299,20 @@ export async function runSwarmAgent(params: {
       }),
       connection: DETACHED_CONNECTION,
       userId: null,
-      onEvent: (message) => recordNormalizedRunEvent(runId, message, 'swarm'),
+      onEvent: (message) => {
+        lastEventAt = Date.now();
+        recordNormalizedRunEvent(runId, message, 'swarm');
+        if (message.kind === 'permission_request') {
+          // Fire-and-forget: the broker resolves the pending approval via the
+          // process-wide registry; the runtime's own bounded unattended
+          // timeout remains the last-resort backstop.
+          void swarmPermissionBroker
+            .handlePermissionRequest(runId, message as unknown as AnyRecord)
+            .catch((error) => {
+              console.error('[SwarmPermissionBroker] Unhandled broker failure', error);
+            });
+        }
+      },
     });
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
@@ -230,39 +343,84 @@ export async function runSwarmAgent(params: {
   }
 
   const timeoutMs = typeof params.timeoutMs === 'number' && params.timeoutMs > 0 ? params.timeoutMs : null;
+  const stallTimeoutMs =
+    params.stallTimeoutMs === null
+      ? null
+      : typeof params.stallTimeoutMs === 'number'
+        ? params.stallTimeoutMs > 0
+          ? params.stallTimeoutMs
+          : null
+        : swarmStallTimeoutMs();
+
+  /** Whatever the agent managed to say before being killed. */
+  const partialText = (): string => {
+    try {
+      return extractRunOutcome(appSessionId).text ?? '';
+    } catch {
+      return '';
+    }
+  };
 
   let timedOut = false;
+  let stalled = false;
+  let cancelled = false;
   try {
+    let timer: NodeJS.Timeout | null = null;
+    let stallTimer: NodeJS.Timeout | null = null;
+    let rejectCancellation: ((error: Error) => void) | null = null;
+    const onAbort = () => {
+      cancelled = true;
+      const error = new Error('Swarm agent cancelled');
+      error.name = 'AbortError';
+      rejectCancellation?.(error);
+    };
+    const cancellation = new Promise<never>((_resolve, reject) => {
+      rejectCancellation = reject;
+      if (params.signal?.aborted) onAbort();
+      else params.signal?.addEventListener('abort', onAbort, { once: true });
+    });
+    const races: Promise<unknown>[] = [result.completion, cancellation];
     if (timeoutMs != null) {
-      // Force-abort the provider session if the completion never settles in
-      // time. The run spine is closed here so the swarm pipeline knows it
-      // failed instead of hanging forever.
-      const timeout = new Promise<never>((_resolve, reject) => {
-        const t = setTimeout(() => {
+      races.push(new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => {
           timedOut = true;
-          reject(new Error(`Swarm agent timed out after ${timeoutMs}ms`));
+          reject(new Error(`Swarm agent exceeded its hard limit of ${timeoutMs}ms`));
         }, timeoutMs);
-        t.unref?.();
-      });
-      await Promise.race([result.completion, timeout]);
-    } else {
-      await result.completion;
+        timer.unref?.();
+      }));
+    }
+    if (stallTimeoutMs != null) {
+      // Poll the liveness clock instead of one fixed deadline: each event
+      // pushes the deadline out, so busy agents are never killed.
+      const pollMs = Math.max(5_000, Math.min(30_000, Math.floor(stallTimeoutMs / 4)));
+      races.push(new Promise<never>((_resolve, reject) => {
+        stallTimer = setInterval(() => {
+          const silentFor = Date.now() - lastEventAt;
+          if (silentFor >= stallTimeoutMs) {
+            timedOut = true;
+            stalled = true;
+            reject(
+              new Error(
+                `Swarm agent stalled: no output for ${silentFor}ms (stall budget ${stallTimeoutMs}ms)`,
+              ),
+            );
+          }
+        }, pollMs);
+        stallTimer.unref?.();
+      }));
+    }
+    try {
+      await Promise.race(races);
+    } finally {
+      if (timer) clearTimeout(timer);
+      if (stallTimer) clearInterval(stallTimer);
+      params.signal?.removeEventListener('abort', onAbort);
     }
   } catch (error) {
     try {
-      if (timedOut) {
+      if (timedOut || cancelled) {
         // Stop the underlying provider process (best-effort, mirrors chat abort).
-        const run = chatRunRegistry.getRun(appSessionId);
-        const providerSessionId = run?.providerSessionId ?? null;
-        const abortFn = providerSessionId ? getSwarmAbortFn(provider) : undefined;
-        if (abortFn && providerSessionId) {
-          try {
-            await abortFn(providerSessionId);
-          } catch {
-            /* best-effort */
-          }
-        }
-        chatRunRegistry.completeRun(appSessionId, { exitCode: 1, aborted: true });
+        await abortSwarmAgentSession(appSessionId, provider);
       }
     } catch {
       /* best-effort */
@@ -270,17 +428,32 @@ export async function runSwarmAgent(params: {
     const msg = error instanceof Error ? error.message : String(error);
     try {
       runService.markTerminal(runId, {
-        status: timedOut ? 'timed_out' : 'failed',
+        status: cancelled ? 'aborted' : timedOut ? 'timed_out' : 'failed',
         errorSummary: msg,
       });
     } catch {
       /* optional */
     }
+    if (timedOut && !cancelled) {
+      // Return the partial transcript: the next agent to pick this task up
+      // needs to know how far the killed one actually got.
+      return {
+        appSessionId,
+        runId,
+        text: partialText(),
+        success: false,
+        errorMessage: msg,
+        timedOut: true,
+        stalled,
+      };
+    }
     throw error;
   }
 
   if (timedOut) {
-    const msg = `Swarm run timed out after ${timeoutMs}ms`;
+    const msg = stalled
+      ? `Swarm run stalled (stall budget ${stallTimeoutMs}ms)`
+      : `Swarm run exceeded its hard limit of ${timeoutMs}ms`;
     try {
       runService.markTerminal(runId, {
         status: 'timed_out',
@@ -292,21 +465,26 @@ export async function runSwarmAgent(params: {
     return {
       appSessionId,
       runId,
-      text: '',
+      text: partialText(),
       success: false,
       errorMessage: msg,
       timedOut: true,
+      stalled,
     };
   }
 
   const { text, failed, errorMessage } = extractRunOutcome(appSessionId);
 
   if (failed) {
+    // Falling back to the transcript here used to report the agent's own
+    // opening line ("I'll audit the storefront…") as the failure reason, which
+    // reads as if the agent said something wrong rather than as "the provider
+    // exited non-zero". The transcript is returned below either way, so the
+    // error field says what actually happened.
     const auth =
       resolveProviderAuthFailure(provider, errorMessage, text) ||
       errorMessage ||
-      text.slice(0, 500) ||
-      `Provider "${provider}" run failed`;
+      `Provider "${provider}" exited with a failure before finishing this step`;
     // recordNormalizedRunEvent may already have closed the run; still return outcome.
     return { appSessionId, runId, text, success: false, errorMessage: auth };
   }
@@ -320,9 +498,70 @@ export async function runSwarmAgent(params: {
   };
 }
 
+export type ParsedAcceptanceEvidence = {
+  criterion: string;
+  met: boolean;
+  evidence: string;
+};
+
+/** Lowercase, strip punctuation, collapse whitespace — for criterion comparison. */
+function normalizeCriterionText(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * Does one reported acceptance entry satisfy the step's numbered criterion?
+ *
+ * Exact echo is the happy path, but weaker models paraphrase the criterion or
+ * reference it by number ("1", "#2", "criterion 3"), and orchestrators write
+ * multi-clause criteria hundreds of characters long — demanding a verbatim
+ * echo of those turned honest reports into "Acceptance evidence missing" and
+ * sent whole retry cascades after work that was actually done. Accepted forms:
+ *   - a numbered reference matching the criterion's 1-based position
+ *   - exact or substring match after punctuation/whitespace normalization
+ *   - >=60% significant-token overlap (paraphrase tolerance)
+ */
+export function acceptanceEvidenceMatches(
+  criterion: string,
+  index: number,
+  evidence: ParsedAcceptanceEvidence,
+): boolean {
+  if (!evidence.met) return false;
+  const actualRaw = evidence.criterion.trim();
+  const numbered = actualRaw.match(/^(?:acceptance\s+)?(?:criterion|criteria|ac)?\s*#?(\d{1,2})[.)]?$/i);
+  if (numbered) return Number(numbered[1]) === index + 1;
+
+  const expected = normalizeCriterionText(criterion);
+  const actual = normalizeCriterionText(actualRaw);
+  if (!expected || !actual) return false;
+  if (expected === actual || expected.includes(actual) || actual.includes(expected)) return true;
+
+  const significant = (text: string): Set<string> =>
+    new Set(text.split(' ').filter((token) => token.length > 3));
+  const expectedTokens = significant(expected);
+  const actualTokens = significant(actual);
+  if (expectedTokens.size === 0 || actualTokens.size === 0) return false;
+  const [smaller, larger] =
+    expectedTokens.size <= actualTokens.size
+      ? [expectedTokens, actualTokens]
+      : [actualTokens, expectedTokens];
+  let hits = 0;
+  for (const token of smaller) {
+    if (larger.has(token)) hits += 1;
+  }
+  return hits / smaller.size >= 0.6;
+}
+
 export type ParsedMemberFindings = {
   summary: string;
   findings: string[];
+  changedFiles: string[];
+  verification: string[];
+  acceptance: ParsedAcceptanceEvidence[];
   recommendations: string[];
   risks: string[];
   severity: 'info' | 'warning' | 'critical';
@@ -335,6 +574,9 @@ export function parseMemberFindings(text: string): ParsedMemberFindings {
     return {
       summary: 'No output from agent.',
       findings: [],
+      changedFiles: [],
+      verification: [],
+      acceptance: [],
       recommendations: [],
       risks: [],
       severity: 'info',
@@ -351,13 +593,26 @@ export function parseMemberFindings(text: string): ParsedMemberFindings {
           ? o.summary.trim()
           : firstParagraph(rawText);
       const findings = stringArray(o.findings);
+      const changedFiles = stringArray(o.changedFiles ?? o.changed_files).slice(0, 40);
+      const verification = stringArray(o.verification ?? o.verificationCommands).slice(0, 20);
+      const acceptance = Array.isArray(o.acceptance)
+        ? o.acceptance
+            .filter((entry): entry is Record<string, unknown> => Boolean(entry && typeof entry === 'object'))
+            .map((entry) => ({
+              criterion: typeof entry.criterion === 'string' ? entry.criterion.trim() : '',
+              met: entry.met === true,
+              evidence: typeof entry.evidence === 'string' ? entry.evidence.trim().slice(0, 800) : '',
+            }))
+            .filter((entry) => entry.criterion)
+            .slice(0, 8)
+        : [];
       const recommendations = stringArray(o.recommendations);
       const risks = stringArray(o.risks);
       const severity =
         o.severity === 'critical' || o.severity === 'warning' || o.severity === 'info'
           ? o.severity
           : 'info';
-      return { summary, findings, recommendations, risks, severity, rawText };
+      return { summary, findings, changedFiles, verification, acceptance, recommendations, risks, severity, rawText };
     }
   } catch {
     /* free-form prose */
@@ -366,6 +621,9 @@ export function parseMemberFindings(text: string): ParsedMemberFindings {
   return {
     summary: firstParagraph(rawText, 800),
     findings: [],
+    changedFiles: [],
+    verification: [],
+    acceptance: [],
     recommendations: [],
     risks: [],
     severity: 'info',
@@ -469,6 +727,15 @@ export type ParsedPlan = {
     title: string;
     kind: string;
     assignTo?: string | null;
+    /** Auto-roster: agent profile the orchestrator picked for this step. */
+    profileId?: string | null;
+    /** Capability tier the step demands: basic | medium | advanced. */
+    difficulty?: 'basic' | 'medium' | 'advanced' | null;
+    /** Files/globs/areas this step exclusively owns. */
+    scope?: string[];
+    acceptanceCriteria?: string[];
+    verificationCommands?: string[];
+    requiresChanges?: boolean;
     provider?: string | null;
     model?: string | null;
     effort?: string | null;
@@ -525,6 +792,12 @@ export function parseOrchestratorPlan(text: string, fallbackAgents: Array<{ kind
               : typeof e.assign_to === 'string'
                 ? e.assign_to.trim()
                 : null;
+          const profileId =
+            typeof e.profileId === 'string'
+              ? e.profileId.trim()
+              : typeof e.profile_id === 'string'
+                ? e.profile_id.trim()
+                : null;
           const dependsOn = Array.isArray(e.dependsOn)
             ? e.dependsOn.filter((d): d is string => typeof d === 'string')
             : Array.isArray(e.depends_on)
@@ -536,11 +809,35 @@ export function parseOrchestratorPlan(text: string, fallbackAgents: Array<{ kind
               : typeof e.parallelGroup === 'number'
                 ? e.parallelGroup
                 : index + 1;
+          const difficulty: 'basic' | 'medium' | 'advanced' | null =
+            e.difficulty === 'basic' || e.difficulty === 'medium' || e.difficulty === 'advanced'
+              ? e.difficulty
+              : null;
+          const scope = Array.isArray(e.scope)
+            ? (e.scope as unknown[])
+                .filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0)
+                .map((entry) => entry.trim().slice(0, 300))
+                .slice(0, 24)
+            : typeof e.scope === 'string' && e.scope.trim()
+              ? [e.scope.trim().slice(0, 300)]
+              : [];
+          const acceptanceCriteria = stringArray(e.acceptanceCriteria ?? e.acceptance_criteria)
+            .map((criterion) => criterion.slice(0, 500))
+            .slice(0, 5);
+          const verificationCommands = stringArray(e.verificationCommands ?? e.verification_commands)
+            .map((command) => command.slice(0, 300))
+            .slice(0, 5);
           return {
             id,
             title: title.slice(0, 200),
             kind,
             assignTo,
+            profileId,
+            difficulty,
+            scope,
+            acceptanceCriteria,
+            verificationCommands,
+            requiresChanges: e.requiresChanges === true || e.requires_changes === true,
             provider: typeof e.provider === 'string' ? e.provider : null,
             model: typeof e.model === 'string' ? e.model : null,
             effort: typeof e.effort === 'string' ? e.effort : null,

@@ -5,15 +5,25 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { makeScratchDir } from '@/shared/scratch.js';
-import { closeConnection, initializeDatabase, projectsDb } from '@/modules/database/index.js';
+import { agentRunProfilesDb, closeConnection, initializeDatabase, projectsDb } from '@/modules/database/index.js';
 import {
+  acceptanceEvidenceMatches,
+  configureSwarmAbortFns,
+  configureSwarmRuntimes,
   parseMemberFindings,
   parseSynthesis,
 } from '@/modules/swarm/swarm-agent.service.js';
-import { setSwarmTestExecutor, swarmService } from '@/modules/swarm/swarm.service.js';
+import {
+  pickReassignmentSeatForTest,
+  setSwarmTestExecutor,
+  splitWaveByScope,
+  swarmService,
+} from '@/modules/swarm/swarm.service.js';
 import { swarmDb } from '@/modules/swarm/swarm.repository.js';
+import type { SwarmAgentSpec, SwarmPlanStep } from '@/modules/swarm/swarm.types.js';
 import { runService } from '@/modules/runs/index.js';
 import { workspaceService } from '@/modules/workspaces/index.js';
+import { chatRunRegistry } from '@/modules/websocket/index.js';
 
 function runGit(
   repoPath: string,
@@ -46,6 +56,9 @@ async function withDatabase(callback: (root: string) => Promise<void>): Promise<
     await callback(root);
   } finally {
     setSwarmTestExecutor(null);
+    configureSwarmRuntimes({});
+    configureSwarmAbortFns({});
+    chatRunRegistry.clearAll();
     closeConnection();
     if (previousDatabasePath === undefined) delete process.env.DATABASE_PATH;
     else process.env.DATABASE_PATH = previousDatabasePath;
@@ -64,7 +77,6 @@ function planFixture(goal: string) {
         id: 'step-1',
         title: 'Explore the codebase',
         kind: 'explorer',
-        assignTo: 'Explorer',
         prompt: 'Map the codebase.',
         wave: 1,
       },
@@ -72,7 +84,6 @@ function planFixture(goal: string) {
         id: 'step-2',
         title: 'Implement changes',
         kind: 'implementer',
-        assignTo: 'Implementer',
         prompt: 'Implement the changes.',
         wave: 2,
       },
@@ -110,15 +121,32 @@ function installFastPipeline(opts: {
     const members = swarmDb.listMembers(swarmId);
     const findings = [];
     for (const member of members) {
+      let runId = member.run_id;
+      if (!runId) {
+        const attemptRun = runService.create({
+          source: 'swarm',
+          projectId: swarm.project_id,
+          parentRunId: swarm.parent_run_id,
+          rootRunId: swarm.parent_run_id,
+          provider: member.provider,
+          model: member.model,
+          title: `Test attempt: ${member.label ?? member.role}`,
+          trigger: `swarm-test:${swarmId}`,
+          status: 'running',
+          meta: { swarmId, memberId: member.member_id },
+        });
+        runId = attemptRun.run_id;
+        swarmDb.updateMember(member.member_id, { runId, status: 'running' });
+      }
       if (opts.failMember) {
         swarmDb.updateMember(member.member_id, {
           status: 'failed',
           error: 'simulated failure',
           finished: true,
         });
-        if (member.run_id) {
+        if (runId) {
           try {
-            runService.markTerminal(member.run_id, {
+            runService.markTerminal(runId, {
               status: 'failed',
               errorSummary: 'simulated failure',
             });
@@ -140,9 +168,9 @@ function installFastPipeline(opts: {
         findingsSummary: summary,
         finished: true,
       });
-      if (member.run_id) {
+      if (runId) {
         try {
-          runService.markTerminal(member.run_id, { status: 'succeeded' });
+          runService.markTerminal(runId, { status: 'succeeded' });
         } catch {
           /* optional */
         }
@@ -235,6 +263,37 @@ test('parseMemberFindings extracts structured JSON', () => {
   assert.equal(parsed.summary, 'Looks mostly good');
   assert.equal(parsed.findings[0], 'Missing tests on auth-health');
   assert.equal(parsed.severity, 'warning');
+});
+
+test('acceptanceEvidenceMatches accepts numbered, verbatim, and paraphrased echoes', () => {
+  const criterion =
+    'A numbered defect list for the Stats frontend, each entry giving file:path, what is wrong, and a severity';
+
+  const met = (echoed: string) =>
+    acceptanceEvidenceMatches(criterion, 2, { criterion: echoed, met: true, evidence: 'x' });
+
+  // Numbered references (criteria are presented to the agent as a 1-based list).
+  assert.equal(met('3'), true);
+  assert.equal(met('#3'), true);
+  assert.equal(met('criterion 3'), true);
+  assert.equal(met('2'), false);
+
+  // Verbatim and substring echoes still work.
+  assert.equal(met(criterion), true);
+  assert.equal(met('A numbered defect list for the Stats frontend'), true);
+
+  // Paraphrase with strong token overlap (weaker models reword long criteria).
+  assert.equal(
+    met('Numbered defect list covering the Stats frontend with file:path, what is wrong, and severity for each entry'),
+    true,
+  );
+
+  // Unrelated evidence and unmet entries never match.
+  assert.equal(met('Confirmed the sidebar wiring is complete'), false);
+  assert.equal(
+    acceptanceEvidenceMatches(criterion, 2, { criterion: '3', met: false, evidence: 'x' }),
+    false,
+  );
 });
 
 test('parseSynthesis extracts action items', () => {
@@ -579,7 +638,61 @@ test('swarm opens a real (non-draft) PR and stops without merging to base', asyn
   });
 });
 
-test('complete-member updates findings', async () => {
+test('finalizeSwarmPullRequest skips push and PR when the worktree has no diff from base', async () => {
+  await withDatabase(async (root) => {
+    installFastPipeline({ requireApproval: false });
+    const projectPath = path.join(root, 'repo');
+    await mkdir(projectPath, { recursive: true });
+    await initGitRepo(projectPath);
+
+    const originPath = path.join(root, 'origin.git');
+    runGit(root, ['init', '--bare', originPath]);
+    runGit(projectPath, ['remote', 'add', 'origin', originPath]);
+
+    const projectId = projectsDb.createProjectPath(projectPath).project!.project_id;
+    const started = swarmService.start({
+      projectId,
+      goal: 'Explore only, no write step ever ran',
+      agents: [{ kind: 'orchestrator', label: 'Lead', provider: 'claude' }],
+      requireApproval: false,
+    });
+
+    const { workspace } = await swarmService.ensureSwarmWorkspace(started.swarm_id, {
+      projectId,
+      projectPath,
+      goal: started.goal,
+      parentRunId: started.parent_run_id,
+    });
+
+    // No file written in the worktree — a plan whose write step was blocked
+    // or never dispatched leaves the branch byte-identical to base.
+    const handoff = await swarmService.finalizeSwarmPullRequest(started.swarm_id, {
+      summary: 'Nothing to hand off.',
+      completed: [],
+      remaining: [],
+      recommendations: [],
+      risks: [],
+      memberCount: 1,
+      generatedAt: new Date().toISOString(),
+    });
+
+    assert.equal(handoff.pushed, false);
+    assert.match(handoff.prError ?? '', /no changes to submit/i);
+    assert.equal(handoff.prUrl, undefined);
+
+    // The push must never have happened — the remote has no such branch.
+    const remoteBranches = spawnSync('git', ['branch', '--list', workspace.feature_branch!], {
+      cwd: originPath,
+      encoding: 'utf8',
+    });
+    assert.equal(String(remoteBranches.stdout).trim(), '');
+
+    await workspaceService.discard(workspace.workspace_id, { deleteBranch: true });
+    await waitFor(() => swarmDb.get(started.swarm_id)?.status === 'succeeded');
+  });
+});
+
+test('complete-member rejects stale completion after handoff', async () => {
   await withDatabase(async (root) => {
     installFastPipeline({ requireApproval: true });
     const projectPath = path.join(root, 'project');
@@ -594,12 +707,15 @@ test('complete-member updates findings', async () => {
     });
     await waitFor(() => (swarmDb.get(started.swarm_id)?.members?.length ?? 0) > 0);
     const member = swarmService.get(started.swarm_id)!.members![0];
-    const updated = swarmService.completeMember(
-      started.swarm_id,
-      member.member_id,
-      'Custom tester finding: cover timeout paths.',
+    await waitFor(() => swarmService.get(started.swarm_id)?.status === 'awaiting_approval');
+    assert.throws(
+      () => swarmService.completeMember(
+        started.swarm_id,
+        member.member_id,
+        'Custom tester finding: cover timeout paths.',
+      ),
+      /not allowed/i,
     );
-    assert.ok(updated.findings.some((f) => f.summary.includes('Custom tester')));
   });
 });
 
@@ -778,4 +894,1043 @@ test('runWaveWithConcurrency caps parallel execution', async () => {
   );
   assert.equal(peak, 2);
   assert.deepEqual(order.sort((a, b) => a - b), [1, 2, 3, 4, 5]);
+});
+
+test('production pipeline uses fake provider runtime and serializes worktree writers', async () => {
+  await withDatabase(async (root) => {
+    setSwarmTestExecutor(null);
+    const projectPath = path.join(root, 'repo');
+    await mkdir(projectPath, { recursive: true });
+    await initGitRepo(projectPath);
+    const projectId = projectsDb.createProjectPath(projectPath).project!.project_id;
+    let activeWriters = 0;
+    let peakWriters = 0;
+    const runtimePaths: string[] = [];
+    configureSwarmRuntimes({
+      claude: async (prompt, options, writer) => {
+        const output = prompt.includes('"strategy"')
+          ? JSON.stringify({
+              summary: 'Implement twice safely',
+              strategy: 'Two writer steps in one wave',
+              steps: [
+                { id: 'write-1', title: 'First write', kind: 'implementer', assignTo: 'Builder', wave: 1, dependsOn: [], prompt: 'First change' },
+                { id: 'write-2', title: 'Second write', kind: 'implementer', assignTo: 'Builder', wave: 1, dependsOn: [], prompt: 'Second change' },
+              ],
+            })
+          : prompt.includes('"completed"')
+            ? JSON.stringify({ summary: 'Both writer attempts completed.', completed: ['First write', 'Second write'], remaining: [], recommendations: [], risks: [] })
+            : JSON.stringify({ summary: 'Writer completed.', findings: ['isolated workspace'], recommendations: [], risks: [], severity: 'info' });
+        const isWriter = prompt.includes('## Your assigned step') && !prompt.includes('Replan failed');
+        if (isWriter) {
+          activeWriters += 1;
+          peakWriters = Math.max(peakWriters, activeWriters);
+          runtimePaths.push(String(options.cwd ?? ''));
+          await new Promise((resolve) => setTimeout(resolve, 40));
+          activeWriters -= 1;
+        }
+        const sink = writer as { setSessionId(id: string): void; send(message: unknown): void };
+        sink.setSessionId(`native-${Math.random().toString(36).slice(2)}`);
+        sink.send({ kind: 'stream_delta', provider: 'claude', sessionId: null, content: output });
+        sink.send({ kind: 'complete', provider: 'claude', sessionId: null, exitCode: 0, success: true });
+      },
+    });
+
+    const started = swarmService.start({
+      projectId,
+      goal: 'Exercise the real production swarm pipeline',
+      agents: [
+        { kind: 'orchestrator', label: 'Lead', provider: 'claude' },
+        { kind: 'implementer', label: 'Builder', provider: 'claude' },
+      ],
+      requireApproval: false,
+      requirePlanApproval: false,
+      validateBeforePr: false,
+      maxConcurrency: 8,
+    });
+    await waitFor(() => swarmService.get(started.swarm_id)?.status === 'succeeded', 10_000);
+    const done = swarmService.get(started.swarm_id)!;
+    assert.equal(peakWriters, 1);
+    assert.equal(done.plan?.steps.filter((step) => step.status === 'succeeded').length, 2);
+    assert.ok(runtimePaths.every((cwd) => cwd && path.resolve(cwd) !== path.resolve(projectPath)));
+    assert.deepEqual(
+      swarmDb.listAttempts(started.swarm_id).filter((attempt) => attempt.phase === 'execute').map((attempt) => attempt.status),
+      ['succeeded', 'succeeded'],
+    );
+  });
+});
+
+test('production pipeline accepts real source edits in a non-git sandbox_copy workspace', async () => {
+  await withDatabase(async (root) => {
+    setSwarmTestExecutor(null);
+    const projectPath = path.join(root, 'plain-project');
+    await mkdir(projectPath, { recursive: true });
+    await writeFile(path.join(projectPath, 'app.txt'), 'before\n');
+    const projectId = projectsDb.createProjectPath(projectPath).project!.project_id;
+    let workerCwd = '';
+
+    configureSwarmRuntimes({
+      claude: async (prompt, options, writer) => {
+        const sink = writer as { setSessionId(id: string): void; send(message: unknown): void };
+        sink.setSessionId(`native-${Math.random().toString(36).slice(2)}`);
+        let output: string;
+        if (prompt.includes('"strategy"')) {
+          output = JSON.stringify({
+            summary: 'Edit the source file',
+            strategy: 'One implementation step',
+            steps: [{
+              id: 'edit-source',
+              title: 'Edit source',
+              kind: 'implementer',
+              assignTo: 'Builder',
+              wave: 1,
+              dependsOn: [],
+              requiresChanges: true,
+              acceptanceCriteria: ['The source file is updated'],
+              prompt: 'Update app.txt.',
+            }],
+          });
+        } else if (prompt.includes('"completed"')) {
+          output = JSON.stringify({
+            summary: 'Source edit completed.',
+            completed: ['Edit source'],
+            remaining: [],
+            recommendations: [],
+            risks: [],
+          });
+        } else {
+          workerCwd = String(options.cwd ?? '');
+          await writeFile(path.join(workerCwd, 'app.txt'), 'after\n');
+          output = JSON.stringify({
+            summary: 'Updated app.txt.',
+            findings: ['Source was changed in the isolated copy.'],
+            changedFiles: ['app.txt'],
+            verification: ['read back app.txt'],
+            acceptance: [{ criterion: '1', met: true, evidence: 'app.txt contains after' }],
+            recommendations: [],
+            risks: [],
+            severity: 'info',
+          });
+        }
+        sink.send({ kind: 'stream_delta', provider: 'claude', sessionId: null, content: output });
+        sink.send({ kind: 'complete', provider: 'claude', sessionId: null, exitCode: 0, success: true });
+      },
+    });
+
+    const started = swarmService.start({
+      projectId,
+      goal: 'Edit a non-git project safely',
+      agents: [
+        { kind: 'orchestrator', label: 'Lead', provider: 'claude' },
+        { kind: 'implementer', label: 'Builder', provider: 'claude' },
+      ],
+      requireApproval: false,
+      requirePlanApproval: false,
+      validateBeforePr: false,
+    });
+    await waitFor(() => swarmService.get(started.swarm_id)?.status === 'succeeded', 10_000);
+    const done = swarmService.get(started.swarm_id)!;
+    assert.equal(workspaceService.get(done.workspace_id!)?.mode, 'sandbox_copy');
+    assert.equal(done.plan?.steps[0]?.status, 'succeeded');
+    assert.ok(workerCwd && path.resolve(workerCwd) !== path.resolve(projectPath));
+  });
+});
+
+test('a reviewer/agent that honestly reports unmet acceptance criteria is "needs_changes", not "failed"', async () => {
+  await withDatabase(async (root) => {
+    setSwarmTestExecutor(null);
+    const projectPath = path.join(root, 'repo');
+    await mkdir(projectPath, { recursive: true });
+    await initGitRepo(projectPath);
+    const projectId = projectsDb.createProjectPath(projectPath).project!.project_id;
+    let workerRuns = 0;
+
+    configureSwarmRuntimes({
+      claude: async (prompt, options, writer) => {
+        const sink = writer as { setSessionId(id: string): void; send(message: unknown): void };
+        sink.setSessionId(`native-${Math.random().toString(36).slice(2)}`);
+        let output: string;
+        if (prompt.includes('"strategy"')) {
+          output = JSON.stringify({
+            summary: 'Edit the source file',
+            strategy: 'One implementation step',
+            steps: [{
+              id: 'edit-source',
+              title: 'Edit source',
+              kind: 'implementer',
+              assignTo: 'Builder',
+              wave: 1,
+              dependsOn: [],
+              requiresChanges: true,
+              acceptanceCriteria: ['The source file compiles cleanly'],
+              prompt: 'Update app.txt.',
+            }],
+          });
+        } else if (prompt.includes('"completed"')) {
+          output = JSON.stringify({
+            summary: 'Source edit completed.',
+            completed: ['Edit source'],
+            remaining: [],
+            recommendations: [],
+            risks: [],
+          });
+        } else {
+          workerRuns += 1;
+          const cwd = String(options.cwd ?? '');
+          await writeFile(path.join(cwd, 'app.txt'), `after-${workerRuns}\n`);
+          // First attempt: agent ran cleanly and honestly reports the
+          // criterion is not met yet. Second attempt: it is met.
+          const met = workerRuns > 1;
+          output = JSON.stringify({
+            summary: met ? 'Updated app.txt and verified it compiles.' : 'Updated app.txt but it does not compile yet.',
+            findings: ['Edited the isolated worktree.'],
+            changedFiles: ['app.txt'],
+            verification: ['read back app.txt'],
+            acceptance: [{ criterion: '1', met, evidence: met ? 'compiles cleanly' : 'still fails to compile' }],
+            recommendations: [],
+            risks: [],
+            severity: 'info',
+          });
+        }
+        sink.send({ kind: 'stream_delta', provider: 'claude', sessionId: null, content: output });
+        sink.send({ kind: 'complete', provider: 'claude', sessionId: null, exitCode: 0, success: true });
+      },
+    });
+
+    const started = swarmService.start({
+      projectId,
+      goal: 'Edit a file and self-grade against acceptance criteria',
+      agents: [
+        { kind: 'orchestrator', label: 'Lead', provider: 'claude' },
+        { kind: 'implementer', label: 'Builder', provider: 'claude' },
+      ],
+      requireApproval: false,
+      requirePlanApproval: false,
+      validateBeforePr: false,
+    });
+    await waitFor(() => swarmService.get(started.swarm_id)?.status === 'succeeded', 10_000);
+    const done = swarmService.get(started.swarm_id)!;
+    assert.equal(workerRuns, 2, 'expected the honest first attempt to be retried');
+    assert.equal(done.plan?.steps[0]?.status, 'succeeded');
+
+    const attempts = swarmDb.listAttempts(started.swarm_id, 'edit-source');
+    assert.equal(attempts.length, 2);
+    // The run that crashed vs the run that honestly reported "not ready yet"
+    // must not collapse into the same status — only the latter is a verdict.
+    assert.equal(attempts[0].status, 'needs_changes');
+    assert.equal(attempts[1].status, 'succeeded');
+    assert.match(attempts[0].error ?? '', /Acceptance evidence missing or unmet/);
+
+    const members = swarmDb.listMembers(started.swarm_id);
+    const firstAttemptMember = members.find((m) => m.error && /Acceptance evidence missing or unmet/.test(m.error));
+    assert.ok(firstAttemptMember, 'expected a member record carrying the unmet-criteria error');
+    assert.equal(firstAttemptMember!.status, 'needs_changes');
+  });
+});
+
+test('production abort kills live provider run and cannot be overwritten by late completion', async () => {
+  await withDatabase(async (root) => {
+    setSwarmTestExecutor(null);
+    const projectPath = path.join(root, 'repo');
+    await mkdir(projectPath, { recursive: true });
+    await initGitRepo(projectPath);
+    const projectId = projectsDb.createProjectPath(projectPath).project!.project_id;
+    let releaseWorker: (() => void) | null = null;
+    const abortedProviderIds: string[] = [];
+    configureSwarmAbortFns({
+      claude: async (providerSessionId) => {
+        abortedProviderIds.push(providerSessionId);
+        releaseWorker?.();
+        return true;
+      },
+    });
+    configureSwarmRuntimes({
+      claude: async (prompt, _options, writer) => {
+        const sink = writer as { setSessionId(id: string): void; send(message: unknown): void };
+        if (prompt.includes('"strategy"')) {
+          sink.setSessionId('native-plan');
+          sink.send({ kind: 'stream_delta', provider: 'claude', sessionId: null, content: JSON.stringify({
+            summary: 'One blocking worker', strategy: 'Run it', steps: [
+              { id: 'block', title: 'Blocking worker', kind: 'implementer', assignTo: 'Builder', wave: 1, dependsOn: [], prompt: 'Wait until aborted' },
+            ],
+          }) });
+          sink.send({ kind: 'complete', provider: 'claude', sessionId: null, exitCode: 0, success: true });
+          return;
+        }
+        sink.setSessionId('native-worker');
+        await new Promise<void>((resolve) => { releaseWorker = resolve; });
+        // Simulate a runtime that emits success after its abort handler returns.
+        sink.send({ kind: 'stream_delta', provider: 'claude', sessionId: null, content: JSON.stringify({ summary: 'late success', findings: [], recommendations: [], risks: [], severity: 'info' }) });
+        sink.send({ kind: 'complete', provider: 'claude', sessionId: null, exitCode: 0, success: true });
+      },
+    });
+    const started = swarmService.start({
+      projectId,
+      goal: 'Abort the real worker',
+      agents: [
+        { kind: 'orchestrator', label: 'Lead', provider: 'claude' },
+        { kind: 'implementer', label: 'Builder', provider: 'claude' },
+      ],
+      requirePlanApproval: false,
+      validateBeforePr: false,
+      requireApproval: false,
+    });
+    await waitFor(() => swarmService.get(started.swarm_id)?.members?.some((member) => member.status === 'running' && member.kind === 'implementer') === true, 10_000);
+    const aborted = await swarmService.abort(started.swarm_id);
+    assert.equal(aborted.status, 'aborted');
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(swarmService.get(started.swarm_id)?.status, 'aborted');
+    assert.deepEqual(abortedProviderIds, ['native-worker']);
+    assert.ok(!swarmDb.listAttempts(started.swarm_id).some((attempt) => attempt.phase === 'handoff'));
+  });
+});
+
+test('idempotency key returns one swarm and one parent run', async () => {
+  await withDatabase(async (root) => {
+    installFastPipeline();
+    const projectPath = path.join(root, 'project');
+    await mkdir(projectPath, { recursive: true });
+    const projectId = projectsDb.createProjectPath(projectPath).project!.project_id;
+    const input = { projectId, goal: 'Exactly once', provider: 'claude', idempotencyKey: 'start-123' };
+    const first = swarmService.start(input);
+    const second = swarmService.start(input);
+    assert.equal(second.swarm_id, first.swarm_id);
+    assert.equal(second.parent_run_id, first.parent_run_id);
+    assert.equal(swarmDb.list(projectId, 10, { includeArchived: true }).length, 1);
+  });
+});
+
+test('user-selected bypassPermissions on an implementer reaches the runtime unmodified', async () => {
+  await withDatabase(async (root) => {
+    setSwarmTestExecutor(null);
+    const projectPath = path.join(root, 'repo');
+    await mkdir(projectPath, { recursive: true });
+    await initGitRepo(projectPath);
+    const projectId = projectsDb.createProjectPath(projectPath).project!.project_id;
+    const workerModes: Array<string | undefined> = [];
+    const orchestratorModes: Array<string | undefined> = [];
+    configureSwarmRuntimes({
+      claude: async (prompt, options, writer) => {
+        const sink = writer as { setSessionId(id: string): void; send(message: unknown): void };
+        sink.setSessionId(`native-${Math.random().toString(36).slice(2)}`);
+        let output: string;
+        if (prompt.includes('"strategy"')) {
+          orchestratorModes.push(options.permissionMode as string | undefined);
+          output = JSON.stringify({
+            summary: 'One implementer step',
+            strategy: 'Single wave',
+            steps: [
+              { id: 'w1', title: 'Do the change', kind: 'implementer', assignTo: 'Builder', wave: 1, dependsOn: [], prompt: 'Change it' },
+            ],
+          });
+        } else if (prompt.includes('"completed"')) {
+          orchestratorModes.push(options.permissionMode as string | undefined);
+          output = JSON.stringify({ summary: 'Done', completed: ['Do the change'], remaining: [], recommendations: [], risks: [] });
+        } else {
+          workerModes.push(options.permissionMode as string | undefined);
+          output = JSON.stringify({ summary: 'Changed.', findings: [], recommendations: [], risks: [], severity: 'info' });
+        }
+        sink.send({ kind: 'stream_delta', provider: 'claude', sessionId: null, content: output });
+        sink.send({ kind: 'complete', provider: 'claude', sessionId: null, exitCode: 0, success: true });
+      },
+    });
+
+    const started = swarmService.start({
+      projectId,
+      goal: 'Bypass permissions passthrough',
+      agents: [
+        { kind: 'orchestrator', label: 'Lead', provider: 'claude' },
+        { kind: 'implementer', label: 'Builder', provider: 'claude', permissionMode: 'bypassPermissions' },
+      ],
+      requireApproval: false,
+      requirePlanApproval: false,
+      validateBeforePr: false,
+    });
+    await waitFor(() => swarmService.get(started.swarm_id)?.status === 'succeeded', 10_000);
+
+    // The user's requested mode reaches buildHeadlessOptions unmodified.
+    assert.deepEqual(workerModes, ['bypassPermissions']);
+    // Orchestrator plan/handoff runs stay read-only by policy.
+    assert.ok(orchestratorModes.length >= 2);
+    assert.ok(orchestratorModes.every((mode) => mode === 'plan'), `orchestrator modes: ${orchestratorModes.join(',')}`);
+    // The member row persists the honored mode.
+    const implementer = swarmService.get(started.swarm_id)!.members!.find((m) => m.kind === 'implementer');
+    assert.equal(implementer?.permission_mode, 'bypassPermissions');
+  });
+});
+
+test('effort is dropped and persisted as null for a provider without supportsEffort', async () => {
+  await withDatabase(async (root) => {
+    setSwarmTestExecutor(null);
+    const projectPath = path.join(root, 'repo');
+    await mkdir(projectPath, { recursive: true });
+    await initGitRepo(projectPath);
+    const projectId = projectsDb.createProjectPath(projectPath).project!.project_id;
+    const workerEfforts: Array<unknown> = [];
+    const claudeRuntime = async (prompt: string, _options: Record<string, unknown>, writer: unknown) => {
+      const sink = writer as { setSessionId(id: string): void; send(message: unknown): void };
+      sink.setSessionId(`native-${Math.random().toString(36).slice(2)}`);
+      const output = prompt.includes('"strategy"')
+        ? JSON.stringify({
+            summary: 'One cursor step',
+            strategy: 'Single wave',
+            steps: [
+              { id: 'w1', title: 'Do the change', kind: 'implementer', assignTo: 'Builder', wave: 1, dependsOn: [], prompt: 'Change it' },
+            ],
+          })
+        : JSON.stringify({ summary: 'Done', completed: ['Do the change'], remaining: [], recommendations: [], risks: [] });
+      sink.send({ kind: 'stream_delta', provider: 'claude', sessionId: null, content: output });
+      sink.send({ kind: 'complete', provider: 'claude', sessionId: null, exitCode: 0, success: true });
+    };
+    configureSwarmRuntimes({
+      claude: claudeRuntime,
+      cursor: async (_prompt, options, writer) => {
+        const sink = writer as { setSessionId(id: string): void; send(message: unknown): void };
+        sink.setSessionId(`cursor-${Math.random().toString(36).slice(2)}`);
+        workerEfforts.push(options.effort);
+        sink.send({
+          kind: 'stream_delta',
+          provider: 'cursor',
+          sessionId: null,
+          content: JSON.stringify({ summary: 'Changed.', findings: [], recommendations: [], risks: [], severity: 'info' }),
+        });
+        sink.send({ kind: 'complete', provider: 'cursor', sessionId: null, exitCode: 0, success: true });
+      },
+    });
+
+    const started = swarmService.start({
+      projectId,
+      goal: 'Effort capability validation',
+      agents: [
+        { kind: 'orchestrator', label: 'Lead', provider: 'claude' },
+        // cursor has supportsEffort=false — the requested effort must be dropped.
+        { kind: 'implementer', label: 'Builder', provider: 'cursor', effort: 'high' },
+      ],
+      requireApproval: false,
+      requirePlanApproval: false,
+      validateBeforePr: false,
+    });
+    await waitFor(() => swarmService.get(started.swarm_id)?.status === 'succeeded', 10_000);
+
+    // The runtime never sees the unsupported effort.
+    assert.deepEqual(workerEfforts, [undefined]);
+    // The member row stores null instead of the silently-dropped value.
+    const done = swarmService.get(started.swarm_id)!;
+    const implementer = done.members!.find((m) => m.kind === 'implementer');
+    assert.equal(implementer?.effort, null);
+    // The drop is observable on the blackboard.
+    assert.ok(
+      done.blackboard.some((m) => m.content.includes('[policy]') && m.content.includes('effort "high" dropped')),
+      'expected a policy note about the dropped effort',
+    );
+  });
+});
+
+// ————————————————————————————————————————————————————————————————————————
+// Per-task attempt budget: feedback retries + capability-aware reassignment
+// ————————————————————————————————————————————————————————————————————————
+
+test('a failing pinned-provider step is retried by the takeover seat provider and model', async () => {
+  await withDatabase(async (root) => {
+    setSwarmTestExecutor(null);
+    const projectPath = path.join(root, 'repo');
+    await mkdir(projectPath, { recursive: true });
+    await initGitRepo(projectPath);
+    const projectId = projectsDb.createProjectPath(projectPath).project!.project_id;
+
+    /** Prompts seen by worker runs, in order. */
+    const workerPrompts: string[] = [];
+    let workerCalls = 0;
+    let grokWorkerCalls = 0;
+    let opencodeWorkerCalls = 0;
+    let opencodeModel: unknown = null;
+    configureSwarmRuntimes({
+      claude: async (prompt, _options, writer) => {
+        const sink = writer as { setSessionId(id: string): void; send(message: unknown): void };
+        sink.setSessionId(`native-${Math.random().toString(36).slice(2)}`);
+        const output = prompt.includes('"strategy"')
+          ? JSON.stringify({
+              summary: 'One step',
+              strategy: 'Single implementer',
+              steps: [
+                { id: 'w1', title: 'Do the thing', kind: 'implementer', difficulty: 'medium', assignTo: 'Builder', provider: 'grok', model: 'grok-test-model', wave: 1, dependsOn: [], prompt: 'Do it' },
+              ],
+            })
+          : prompt.includes('"completed"')
+            ? JSON.stringify({ summary: 'Done.', completed: ['Do the thing'], remaining: [], recommendations: [], risks: [] })
+            : JSON.stringify({ summary: 'Applied.', findings: [], recommendations: [], risks: [], severity: 'info' });
+        sink.send({ kind: 'stream_delta', provider: 'claude', sessionId: null, content: output });
+        sink.send({ kind: 'complete', provider: 'claude', sessionId: null, exitCode: 0, success: true });
+      },
+      grok: async (prompt, _options, writer) => {
+        const sink = writer as { setSessionId(id: string): void; send(message: unknown): void };
+        sink.setSessionId(`native-grok-${Math.random().toString(36).slice(2)}`);
+        grokWorkerCalls += 1;
+        workerCalls += 1;
+        workerPrompts.push(prompt);
+        sink.send({ kind: 'complete', provider: 'grok', sessionId: null, exitCode: 1, success: false, error: 'boom: could not apply the change' });
+      },
+      opencode: async (prompt, options, writer) => {
+        const sink = writer as { setSessionId(id: string): void; send(message: unknown): void };
+        sink.setSessionId(`native-opencode-${Math.random().toString(36).slice(2)}`);
+        opencodeWorkerCalls += 1;
+        workerCalls += 1;
+        workerPrompts.push(prompt);
+        opencodeModel = (options as { model?: unknown }).model;
+        const output = JSON.stringify({ summary: 'Applied.', findings: [], recommendations: [], risks: [], severity: 'info' });
+        sink.send({ kind: 'stream_delta', provider: 'opencode', sessionId: null, content: output });
+        sink.send({ kind: 'complete', provider: 'opencode', sessionId: null, exitCode: 0, success: true });
+      },
+    });
+
+    const started = swarmService.start({
+      projectId,
+      goal: 'Retry a failing step',
+      agents: [
+        { kind: 'orchestrator', label: 'Lead', provider: 'claude' },
+        { kind: 'implementer', label: 'Builder', provider: 'grok', model: 'grok-test-model', level: 'medium' },
+        { kind: 'implementer', label: 'Senior', provider: 'opencode', model: 'opencode-test-model', level: 'advanced' },
+      ],
+      requireApproval: false,
+      requirePlanApproval: false,
+      validateBeforePr: false,
+      stepMaxAttempts: 3,
+    });
+    await waitFor(() => swarmService.get(started.swarm_id)?.status === 'succeeded', 15_000);
+    const done = swarmService.get(started.swarm_id)!;
+
+    // Two worker attempts on the SAME step, and the step ends succeeded.
+    assert.equal(workerCalls, 2);
+    assert.equal(grokWorkerCalls, 1, 'the pinned provider should only receive the first attempt');
+    assert.equal(opencodeWorkerCalls, 1, 'the takeover must launch its own provider runtime');
+    assert.equal(opencodeModel, 'opencode-test-model', 'the takeover must launch its own model');
+    assert.equal(done.plan?.steps.find((s) => s.id === 'w1')?.status, 'succeeded');
+
+    // The retry carried the first failure into the prompt.
+    assert.ok(
+      workerPrompts[1]?.includes('PREVIOUS ATTEMPTS AT THIS EXACT STEP FAILED'),
+      'retry prompt must carry the failure feedback block',
+    );
+    assert.ok(
+      workerPrompts[1]?.includes('Provider "grok" exited with a failure'),
+      'retry prompt must quote the previous failure',
+    );
+    assert.ok(
+      workerPrompts[1]?.includes('Attempt 1 by "Builder"'),
+      'retry prompt must name the seat that failed',
+    );
+
+    // The retry went to the stronger untried seat, not back to the same one.
+    assert.ok(
+      workerPrompts[1]?.includes('DIFFERENT agent taking this step over'),
+      'retry must be marked as a takeover',
+    );
+    const board = done.blackboard.map((m) => m.content);
+    assert.ok(
+      board.some((c) => c.includes('[retry]') && c.includes('reassigned to roster seat "Senior"')),
+      board.join('\n'),
+    );
+    assert.ok(
+      board.some((c) => c.includes('[retry] step w1 succeeded on attempt 2 with "Senior"')),
+      board.join('\n'),
+    );
+
+    // Both attempts are durably recorded.
+    const attempts = swarmDb
+      .listAttempts(started.swarm_id)
+      .filter((a) => a.phase === 'execute' && a.step_id === 'w1');
+    assert.deepEqual(attempts.map((a) => a.status), ['failed', 'succeeded']);
+    assert.equal(
+      done.members?.some((member) => member.status === 'queued' || member.status === 'running') ?? false,
+      false,
+      'a terminal swarm must not retain live-looking roster rows',
+    );
+  });
+});
+
+test('a step that fails every attempt exhausts the budget and escalates to a replan', async () => {
+  await withDatabase(async (root) => {
+    setSwarmTestExecutor(null);
+    const projectPath = path.join(root, 'repo');
+    await mkdir(projectPath, { recursive: true });
+    await initGitRepo(projectPath);
+    const projectId = projectsDb.createProjectPath(projectPath).project!.project_id;
+
+    let workerCalls = 0;
+    let replanCalls = 0;
+    configureSwarmRuntimes({
+      claude: async (prompt, _options, writer) => {
+        const sink = writer as { setSessionId(id: string): void; send(message: unknown): void };
+        sink.setSessionId(`native-${Math.random().toString(36).slice(2)}`);
+        if (prompt.includes('Replan failed steps')) {
+          replanCalls += 1;
+          // No recovery available.
+          sink.send({ kind: 'stream_delta', provider: 'claude', sessionId: null, content: JSON.stringify({ steps: [] }) });
+          sink.send({ kind: 'complete', provider: 'claude', sessionId: null, exitCode: 0, success: true });
+          return;
+        }
+        if (prompt.includes('## Your assigned step')) {
+          workerCalls += 1;
+          sink.send({ kind: 'complete', provider: 'claude', sessionId: null, exitCode: 1, success: false, error: 'always broken' });
+          return;
+        }
+        const output = prompt.includes('"strategy"')
+          ? JSON.stringify({
+              summary: 'One step',
+              strategy: 'Single implementer',
+              steps: [
+                { id: 'w1', title: 'Impossible', kind: 'implementer', difficulty: 'basic', assignTo: 'Builder', wave: 1, dependsOn: [], prompt: 'Do it' },
+              ],
+            })
+          : JSON.stringify({ summary: 'Nothing landed.', completed: [], remaining: ['Impossible'], recommendations: [], risks: [] });
+        sink.send({ kind: 'stream_delta', provider: 'claude', sessionId: null, content: output });
+        sink.send({ kind: 'complete', provider: 'claude', sessionId: null, exitCode: 0, success: true });
+      },
+    });
+
+    const started = swarmService.start({
+      projectId,
+      goal: 'Never succeeds',
+      agents: [
+        { kind: 'orchestrator', label: 'Lead', provider: 'claude' },
+        { kind: 'implementer', label: 'Builder', provider: 'claude' },
+      ],
+      requireApproval: false,
+      requirePlanApproval: false,
+      validateBeforePr: false,
+      stepMaxAttempts: 2,
+    });
+    await waitFor(
+      () => ['succeeded', 'failed'].includes(swarmService.get(started.swarm_id)?.status ?? ''),
+      15_000,
+    );
+    const done = swarmService.get(started.swarm_id)!;
+
+    // Exactly the attempt budget, then one orchestrator replan.
+    assert.equal(workerCalls, 2);
+    assert.equal(replanCalls, 1);
+    const board = done.blackboard.map((m) => m.content);
+    assert.ok(
+      board.some((c) => c.includes('[retry] step w1 exhausted its 2 attempt(s)')),
+      board.join('\n'),
+    );
+    const replanAttempt = swarmDb
+      .listAttempts(started.swarm_id)
+      .find((attempt) => attempt.phase === 'replan');
+    assert.ok(replanAttempt?.run_id, 'replan must have a canonical child run');
+    assert.notEqual(replanAttempt!.run_id, 'replan-failed-steps');
+    assert.ok(runService.get(replanAttempt!.run_id!), 'replan child run must be persisted');
+  });
+});
+
+test('auto-roster refuses to staff an advanced step with a basic profile', async () => {
+  await withDatabase(async (root) => {
+    setSwarmTestExecutor(null);
+    const projectPath = path.join(root, 'repo');
+    await mkdir(projectPath, { recursive: true });
+    await initGitRepo(projectPath);
+    const projectId = projectsDb.createProjectPath(projectPath).project!.project_id;
+
+    const cheap = agentRunProfilesDb.create({
+      name: 'Cheap Hands',
+      provider: 'claude',
+      permissionMode: 'acceptEdits',
+      swarmRoles: ['implementer'],
+      swarmLevel: 'basic',
+    });
+    const strong = agentRunProfilesDb.create({
+      name: 'Deep Thinker',
+      provider: 'claude',
+      permissionMode: 'acceptEdits',
+      swarmRoles: ['implementer'],
+      swarmLevel: 'advanced',
+    });
+
+    configureSwarmRuntimes({
+      claude: async (prompt, _options, writer) => {
+        const sink = writer as { setSessionId(id: string): void; send(message: unknown): void };
+        sink.setSessionId(`native-${Math.random().toString(36).slice(2)}`);
+        const output = prompt.includes('"strategy"')
+          ? JSON.stringify({
+              summary: 'One hard step',
+              strategy: 'Single implementer',
+              steps: [
+                {
+                  id: 'w1',
+                  title: 'Redesign the module',
+                  kind: 'implementer',
+                  difficulty: 'advanced',
+                  // Deliberately under-staffed: a basic profile on an advanced step.
+                  profileId: cheap.profile_id,
+                  wave: 1,
+                  dependsOn: [],
+                  prompt: 'Redesign it',
+                },
+              ],
+            })
+          : prompt.includes('"completed"')
+            ? JSON.stringify({ summary: 'Done.', completed: ['Redesign the module'], remaining: [], recommendations: [], risks: [] })
+            : JSON.stringify({ summary: 'Redesigned.', findings: [], recommendations: [], risks: [], severity: 'info' });
+        sink.send({ kind: 'stream_delta', provider: 'claude', sessionId: null, content: output });
+        sink.send({ kind: 'complete', provider: 'claude', sessionId: null, exitCode: 0, success: true });
+      },
+    });
+
+    const started = swarmService.start({
+      projectId,
+      goal: 'Level-aware staffing',
+      orchestrator: { kind: 'orchestrator', label: 'Lead', provider: 'claude' },
+      autoRoster: true,
+      requireApproval: false,
+      requirePlanApproval: false,
+      validateBeforePr: false,
+    });
+    await waitFor(() => swarmService.get(started.swarm_id)?.status === 'succeeded', 15_000);
+    const done = swarmService.get(started.swarm_id)!;
+
+    // The step was promoted to the advanced profile, and the promotion is audited.
+    const step = done.plan?.steps.find((s) => s.id === 'w1');
+    assert.equal(step?.profileId, strong.profile_id);
+    assert.equal(step?.difficulty, 'advanced');
+    assert.equal(step?.assignTo, 'Deep Thinker');
+    const seat = (done.roles ?? []).find((r) => r.label === 'Deep Thinker');
+    assert.equal(seat?.level, 'advanced');
+    assert.ok(
+      done.blackboard.some((m) => m.content.includes('is level basic but the step is rated advanced')),
+      done.blackboard.map((m) => m.content).join('\n'),
+    );
+  });
+});
+
+// ————————————————————————————————————————————————————————————————————————
+// Plan sizing: real parallelism for read-only steps, scope-disjoint dispatch
+// ————————————————————————————————————————————————————————————————————————
+
+test('splitWaveByScope keeps disjoint same-kind steps together and separates overlapping ones', () => {
+  const step = (id: string, kind: string, scope?: string[]): SwarmPlanStep => ({
+    id,
+    title: id,
+    kind,
+    prompt: id,
+    dependsOn: [],
+    wave: 1,
+    ...(scope ? { scope } : {}),
+  });
+
+  // Genuinely disjoint file sets → one group, run together.
+  const disjoint = splitWaveByScope([
+    step('a', 'implementer', ['apps/web/src/cart/**']),
+    step('b', 'implementer', ['apps/web/src/account/**']),
+  ]);
+  assert.equal(disjoint.groups.length, 1, 'disjoint scopes must share a group');
+  assert.deepEqual(disjoint.conflicts, []);
+
+  // Overlapping by path containment → separate groups, reported.
+  const overlapping = splitWaveByScope([
+    step('a', 'implementer', ['apps/web/src/cart/**']),
+    step('b', 'implementer', ['apps/web/src/cart/page.tsx']),
+  ]);
+  assert.equal(overlapping.groups.length, 2, 'overlapping scopes must serialize');
+  assert.equal(overlapping.conflicts.length, 1);
+  assert.equal(overlapping.conflicts[0]!.step, 'b');
+  assert.equal(overlapping.conflicts[0]!.against, 'a');
+
+  // Undeclared scope = owns everything of its kind → serialize.
+  const unscoped = splitWaveByScope([step('a', 'implementer'), step('b', 'implementer')]);
+  assert.equal(unscoped.groups.length, 2, 'unscoped same-kind steps must serialize');
+  assert.deepEqual(unscoped.conflicts[0]!.overlap, ['no declared scope']);
+
+  // Different kinds never conflict with each other.
+  const mixed = splitWaveByScope([step('a', 'explorer'), step('b', 'implementer')]);
+  assert.equal(mixed.groups.length, 1);
+  assert.deepEqual(mixed.conflicts, []);
+});
+
+test('read-only steps run concurrently while writers stay serialized', async () => {
+  await withDatabase(async (root) => {
+    setSwarmTestExecutor(null);
+    const projectPath = path.join(root, 'repo');
+    await mkdir(projectPath, { recursive: true });
+    await initGitRepo(projectPath);
+    const projectId = projectsDb.createProjectPath(projectPath).project!.project_id;
+
+    let activeExplorers = 0;
+    let peakExplorers = 0;
+    let activeWriters = 0;
+    let peakWriters = 0;
+    configureSwarmRuntimes({
+      claude: async (prompt, _options, writer) => {
+        const sink = writer as { setSessionId(id: string): void; send(message: unknown): void };
+        sink.setSessionId(`native-${Math.random().toString(36).slice(2)}`);
+        const isStep = prompt.includes('## Your assigned step');
+        const isExplorer = isStep && prompt.includes('You are an Explorer agent');
+        const isWriter = isStep && prompt.includes('You are an Implementation agent');
+        if (isExplorer) {
+          activeExplorers += 1;
+          peakExplorers = Math.max(peakExplorers, activeExplorers);
+          await new Promise((resolve) => setTimeout(resolve, 60));
+          activeExplorers -= 1;
+        }
+        if (isWriter) {
+          activeWriters += 1;
+          peakWriters = Math.max(peakWriters, activeWriters);
+          await new Promise((resolve) => setTimeout(resolve, 60));
+          activeWriters -= 1;
+        }
+        const output = prompt.includes('"strategy"')
+          ? JSON.stringify({
+              summary: 'Two readers then two disjoint writers',
+              strategy: 'Parallel explore, serialized writes',
+              steps: [
+                { id: 'e1', title: 'Map cart', kind: 'explorer', difficulty: 'basic', assignTo: 'Scout', wave: 1, dependsOn: [], scope: ['src/cart/**'], prompt: 'Map the cart' },
+                { id: 'e2', title: 'Map account', kind: 'explorer', difficulty: 'basic', assignTo: 'Scout', wave: 1, dependsOn: [], scope: ['src/account/**'], prompt: 'Map the account' },
+                { id: 'w1', title: 'Cart layout', kind: 'implementer', difficulty: 'medium', assignTo: 'Builder', wave: 2, dependsOn: ['e1'], scope: ['src/cart/**'], prompt: 'Do cart' },
+                { id: 'w2', title: 'Account layout', kind: 'implementer', difficulty: 'medium', assignTo: 'Builder', wave: 2, dependsOn: ['e2'], scope: ['src/account/**'], prompt: 'Do account' },
+              ],
+            })
+          : prompt.includes('"completed"')
+            ? JSON.stringify({ summary: 'Done.', completed: ['all'], remaining: [], recommendations: [], risks: [] })
+            : JSON.stringify({ summary: 'Step done.', findings: [], recommendations: [], risks: [], severity: 'info' });
+        sink.send({ kind: 'stream_delta', provider: 'claude', sessionId: null, content: output });
+        sink.send({ kind: 'complete', provider: 'claude', sessionId: null, exitCode: 0, success: true });
+      },
+    });
+
+    const started = swarmService.start({
+      projectId,
+      goal: 'Parallel readers, serial writers',
+      agents: [
+        { kind: 'orchestrator', label: 'Lead', provider: 'claude' },
+        { kind: 'explorer', label: 'Scout', provider: 'claude' },
+        { kind: 'implementer', label: 'Builder', provider: 'claude' },
+      ],
+      requireApproval: false,
+      requirePlanApproval: false,
+      validateBeforePr: false,
+      maxConcurrency: 4,
+    });
+    await waitFor(() => swarmService.get(started.swarm_id)?.status === 'succeeded', 20_000);
+    const done = swarmService.get(started.swarm_id)!;
+
+    // Read-only exploration is now genuinely concurrent...
+    assert.equal(peakExplorers, 2, 'two read-only steps in one wave must overlap');
+    // ...while writers still serialize on the single shared worktree, even
+    // though their scopes are disjoint and they share a wave.
+    assert.equal(peakWriters, 1, 'writers must never overlap in one worktree');
+    assert.equal(done.plan?.steps.filter((s) => s.status === 'succeeded').length, 4);
+  });
+});
+
+test('same-kind steps over one area are serialized with a [plan] warning, never dropped', async () => {
+  await withDatabase(async (root) => {
+    setSwarmTestExecutor(null);
+    const projectPath = path.join(root, 'repo');
+    await mkdir(projectPath, { recursive: true });
+    await initGitRepo(projectPath);
+    const projectId = projectsDb.createProjectPath(projectPath).project!.project_id;
+
+    let peakExplorers = 0;
+    let activeExplorers = 0;
+    configureSwarmRuntimes({
+      claude: async (prompt, _options, writer) => {
+        const sink = writer as { setSessionId(id: string): void; send(message: unknown): void };
+        sink.setSessionId(`native-${Math.random().toString(36).slice(2)}`);
+        if (prompt.includes('You are an Explorer agent') && prompt.includes('## Your assigned step')) {
+          activeExplorers += 1;
+          peakExplorers = Math.max(peakExplorers, activeExplorers);
+          await new Promise((resolve) => setTimeout(resolve, 60));
+          activeExplorers -= 1;
+        }
+        const output = prompt.includes('"strategy"')
+          ? JSON.stringify({
+              summary: 'Two explorers on the same area',
+              strategy: 'Redundant fan-out',
+              steps: [
+                { id: 'e1', title: 'Look at cart', kind: 'explorer', difficulty: 'basic', assignTo: 'Scout', wave: 1, dependsOn: [], scope: ['src/cart/**'], prompt: 'Look' },
+                { id: 'e2', title: 'Also look at cart', kind: 'explorer', difficulty: 'basic', assignTo: 'Scout', wave: 1, dependsOn: [], scope: ['src/cart/page.tsx'], prompt: 'Look again' },
+              ],
+            })
+          : prompt.includes('"completed"')
+            ? JSON.stringify({ summary: 'Done.', completed: ['looked'], remaining: [], recommendations: [], risks: [] })
+            : JSON.stringify({ summary: 'Looked.', findings: [], recommendations: [], risks: [], severity: 'info' });
+        sink.send({ kind: 'stream_delta', provider: 'claude', sessionId: null, content: output });
+        sink.send({ kind: 'complete', provider: 'claude', sessionId: null, exitCode: 0, success: true });
+      },
+    });
+
+    const started = swarmService.start({
+      projectId,
+      goal: 'Redundant fan-out',
+      agents: [
+        { kind: 'orchestrator', label: 'Lead', provider: 'claude' },
+        { kind: 'explorer', label: 'Scout', provider: 'claude' },
+      ],
+      requireApproval: false,
+      requirePlanApproval: false,
+      validateBeforePr: false,
+      maxConcurrency: 4,
+    });
+    await waitFor(() => swarmService.get(started.swarm_id)?.status === 'succeeded', 20_000);
+    const done = swarmService.get(started.swarm_id)!;
+
+    // Overlapping scopes lose the concurrency they were never entitled to...
+    assert.equal(peakExplorers, 1, 'overlapping same-kind steps must not overlap');
+    // ...but both still run — nothing is discarded.
+    assert.equal(done.plan?.steps.filter((s) => s.status === 'succeeded').length, 2);
+    const board = done.blackboard.map((m) => m.content);
+    assert.ok(
+      board.some((c) => c.includes('[plan] steps e2 and e1 are both "explorer" over the same scope')),
+      board.join('\n'),
+    );
+    // The sizing summary is auditable at a glance.
+    assert.ok(
+      board.some((c) => c.includes('[policy] Plan sizing: 2 step(s)') && c.includes('2 explorer')),
+      board.join('\n'),
+    );
+  });
+});
+
+// ————————————————————————————————————————————————————————————————————————
+// Implementer failure on a LEAN roster: a capable substitute must be found
+// ————————————————————————————————————————————————————————————————————————
+
+test('a failed implementer on a one-seat MANUAL roster is taken over by a capable profile', async () => {
+  await withDatabase(async (root) => {
+    setSwarmTestExecutor(null);
+    const projectPath = path.join(root, 'repo');
+    await mkdir(projectPath, { recursive: true });
+    await initGitRepo(projectPath);
+    const projectId = projectsDb.createProjectPath(projectPath).project!.project_id;
+
+    // A genuinely different, equally-capable agent exists in the profile pool —
+    // but the operator's manual roster does not include it.
+    agentRunProfilesDb.create({
+      name: 'Grok Builder',
+      provider: 'grok',
+      permissionMode: 'default',
+      swarmRoles: ['implementer'],
+      swarmLevel: 'medium',
+    });
+
+    const seatsUsed: string[] = [];
+    let workerCalls = 0;
+    const runtime = async (prompt: string, _options: unknown, writer: unknown, provider: string) => {
+      const sink = writer as { setSessionId(id: string): void; send(message: unknown): void };
+      sink.setSessionId(`native-${Math.random().toString(36).slice(2)}`);
+      if (prompt.includes('## Your assigned step')) {
+        workerCalls += 1;
+        seatsUsed.push(provider);
+        // Only the original claude seat fails; the substitute succeeds.
+        if (provider === 'claude') {
+          sink.send({ kind: 'complete', provider, sessionId: null, exitCode: 1, success: false });
+          return;
+        }
+      }
+      const output = prompt.includes('"strategy"')
+        ? JSON.stringify({
+            summary: 'One implementer',
+            strategy: 'Lean plan',
+            steps: [
+              { id: 'w1', title: 'Do the work', kind: 'implementer', difficulty: 'medium', assignTo: 'Builder', wave: 1, dependsOn: [], scope: ['src/**'], prompt: 'Do it' },
+            ],
+          })
+        : prompt.includes('"completed"')
+          ? JSON.stringify({ summary: 'Done.', completed: ['Do the work'], remaining: [], recommendations: [], risks: [] })
+          : JSON.stringify({ summary: 'Done it.', findings: [], recommendations: [], risks: [], severity: 'info' });
+      sink.send({ kind: 'stream_delta', provider, sessionId: null, content: output });
+      sink.send({ kind: 'complete', provider, sessionId: null, exitCode: 0, success: true });
+    };
+    configureSwarmRuntimes({
+      claude: (p, o, w) => runtime(p as string, o, w, 'claude'),
+      grok: (p, o, w) => runtime(p as string, o, w, 'grok'),
+    });
+
+    const started = swarmService.start({
+      projectId,
+      // Manual roster with exactly ONE implementer — the lean-plan norm.
+      goal: 'Lean roster takeover',
+      agents: [
+        { kind: 'orchestrator', label: 'Lead', provider: 'claude' },
+        { kind: 'implementer', label: 'Builder', provider: 'claude', level: 'medium' },
+      ],
+      requireApproval: false,
+      requirePlanApproval: false,
+      validateBeforePr: false,
+      stepMaxAttempts: 2,
+    });
+    await waitFor(() => swarmService.get(started.swarm_id)?.status === 'succeeded', 20_000);
+    const done = swarmService.get(started.swarm_id)!;
+
+    // The step succeeded because a DIFFERENT agent took it over.
+    assert.equal(workerCalls, 2);
+    assert.deepEqual(seatsUsed, ['claude', 'grok'], 'the substitute must be a different agent');
+    assert.equal(done.plan?.steps.find((s) => s.id === 'w1')?.status, 'succeeded');
+
+    // The seat was added to the roster and the departure from the manual roster
+    // is recorded, since the operator did not list it.
+    assert.ok(
+      (done.roles ?? []).some((seat) => seat.label === 'Grok Builder'),
+      'the takeover seat must be persisted onto the roster',
+    );
+    const board = done.blackboard.map((m) => m.content);
+    assert.ok(
+      board.some((c) => c.includes('no untried implementer seat') && c.includes('Grok Builder')),
+      board.join('\n'),
+    );
+  });
+});
+
+test('retry escalates to a stronger seat on the same provider, but never to a clone', () => {
+  const step: SwarmPlanStep = {
+    id: 's1',
+    title: 's1',
+    kind: 'implementer',
+    prompt: 's1',
+    dependsOn: [],
+    difficulty: 'medium',
+  };
+  const failed: SwarmAgentSpec = {
+    id: 'a',
+    kind: 'implementer',
+    label: 'Medium Claude',
+    provider: 'claude',
+    model: null,
+    effort: 'medium',
+    level: 'medium',
+  };
+  const clone: SwarmAgentSpec = { ...failed, id: 'b', label: 'Medium Claude Copy' };
+  const stronger: SwarmAgentSpec = {
+    id: 'c',
+    kind: 'implementer',
+    label: 'Strong Claude',
+    provider: 'claude',
+    model: null,
+    effort: 'high',
+    level: 'advanced',
+  };
+
+  const args = {
+    swarmId: 'swarm-x',
+    step,
+    triedSeatIds: new Set(['a']),
+    triedSignatures: new Set(['claude||medium']),
+    maxTriedLevelRank: 2,
+    autoRoster: false,
+    defaultProvider: 'claude',
+    defaultModel: null,
+    failedSeat: failed,
+  };
+
+  // A same-provider, same-effort, same-level seat is a re-run, not a retry.
+  assert.equal(
+    pickReassignmentSeatForTest({ ...args, rosterRef: { current: [failed, clone] } }),
+    null,
+    'a clone of the failed agent must not be selected',
+  );
+
+  // The same provider at a strictly higher tier IS a real escalation.
+  const escalated = pickReassignmentSeatForTest({
+    ...args,
+    rosterRef: { current: [failed, clone, stronger] },
+  });
+  assert.equal(escalated?.seat.label, 'Strong Claude');
 });

@@ -225,6 +225,15 @@ CREATE TABLE IF NOT EXISTS agent_run_profiles (
     permission_mode    TEXT DEFAULT 'default',
     tools_json         TEXT DEFAULT '{}',
     permission_intent  TEXT DEFAULT '',
+    -- JSON array of swarm roles this profile may serve ("explorer" |
+    -- "implementer" | "reviewer"). NULL/empty = not available to swarms.
+    swarm_roles        TEXT DEFAULT NULL,
+    -- Quantitative capability tier the orchestrator ranks seats by:
+    -- "basic" | "medium" | "advanced". NULL is read as "medium".
+    swarm_level        TEXT DEFAULT NULL,
+    -- 0 = disabled: kept for explicit/manual use but excluded from every
+    -- automatic seat selection (swarm auto-roster, retry reassignment).
+    enabled            INTEGER NOT NULL DEFAULT 1,
     created_at         DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at         DATETIME DEFAULT CURRENT_TIMESTAMP
 );
@@ -270,6 +279,9 @@ CREATE TABLE IF NOT EXISTS interrupts (
     resolved_by TEXT,
     resolution TEXT,
     priority INTEGER NOT NULL DEFAULT 50,
+    dedupe_key TEXT,
+    expires_at DATETIME,
+    read_at DATETIME,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     meta_json TEXT DEFAULT '{}',
@@ -277,6 +289,10 @@ CREATE TABLE IF NOT EXISTS interrupts (
 );
 CREATE INDEX IF NOT EXISTS idx_interrupts_open ON interrupts(status, priority, created_at);
 CREATE INDEX IF NOT EXISTS idx_interrupts_project ON interrupts(project_id, status);
+-- NOTE: indexes over additive columns (expires_at, dedupe_key) live in the
+-- migration that adds those columns, NOT here. This SQL also runs against
+-- databases created before the column existed, where CREATE INDEX on a missing
+-- column fails and crashes boot. See ensureInterruptLifecycleSchema.
 `;
 
 export const KANBAN_TASK_DEPS_TABLE_SCHEMA_SQL = `
@@ -659,6 +675,12 @@ CREATE TABLE IF NOT EXISTS swarm_runs (
     approval_status  TEXT,
     interrupt_id     TEXT,
     archived_at      DATETIME,
+    version          INTEGER NOT NULL DEFAULT 0,
+    cancel_requested_at DATETIME,
+    lease_owner      TEXT,
+    lease_expires_at DATETIME,
+    idempotency_key  TEXT,
+    last_error       TEXT,
     created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
     finished_at      DATETIME,
@@ -690,6 +712,57 @@ CREATE TABLE IF NOT EXISTS swarm_members (
     FOREIGN KEY (swarm_id) REFERENCES swarm_runs(swarm_id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_swarm_members_swarm ON swarm_members(swarm_id);
+CREATE TABLE IF NOT EXISTS swarm_step_attempts (
+    attempt_id        TEXT PRIMARY KEY NOT NULL,
+    swarm_id          TEXT NOT NULL,
+    step_id           TEXT NOT NULL,
+    member_id         TEXT,
+    run_id            TEXT,
+    phase             TEXT NOT NULL DEFAULT 'execute',
+    attempt_no        INTEGER NOT NULL,
+    status            TEXT NOT NULL,
+    workspace_id      TEXT,
+    error             TEXT,
+    started_at        DATETIME,
+    finished_at       DATETIME,
+    created_at        DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at        DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(swarm_id, step_id, attempt_no),
+    FOREIGN KEY (swarm_id) REFERENCES swarm_runs(swarm_id) ON DELETE CASCADE,
+    FOREIGN KEY (member_id) REFERENCES swarm_members(member_id) ON DELETE SET NULL,
+    FOREIGN KEY (run_id) REFERENCES agent_runs(run_id) ON DELETE SET NULL,
+    FOREIGN KEY (workspace_id) REFERENCES agent_workspaces(workspace_id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_swarm_attempts_swarm ON swarm_step_attempts(swarm_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_swarm_attempts_step ON swarm_step_attempts(swarm_id, step_id, attempt_no DESC);
+CREATE TABLE IF NOT EXISTS swarm_messages (
+    message_id       TEXT PRIMARY KEY NOT NULL,
+    swarm_id         TEXT NOT NULL,
+    seq              INTEGER NOT NULL,
+    from_agent       TEXT NOT NULL,
+    to_agent         TEXT,
+    kind             TEXT NOT NULL,
+    content          TEXT NOT NULL,
+    step_id          TEXT,
+    at               DATETIME NOT NULL,
+    created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(swarm_id, seq),
+    FOREIGN KEY (swarm_id) REFERENCES swarm_runs(swarm_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_swarm_messages_swarm_seq ON swarm_messages(swarm_id, seq);
+CREATE TABLE IF NOT EXISTS swarm_artifacts (
+    artifact_id       TEXT PRIMARY KEY NOT NULL,
+    swarm_id          TEXT NOT NULL,
+    step_id           TEXT,
+    attempt_id        TEXT,
+    kind              TEXT NOT NULL,
+    label             TEXT NOT NULL,
+    content           TEXT,
+    path              TEXT,
+    created_at        DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (swarm_id) REFERENCES swarm_runs(swarm_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_swarm_artifacts_swarm ON swarm_artifacts(swarm_id, created_at);
 `;
 
 /** Phase 9 — declarative provider failover playbooks and ordered candidates. */

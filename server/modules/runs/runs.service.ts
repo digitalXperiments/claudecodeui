@@ -41,7 +41,12 @@ export interface RunService {
   create(input: CreateRunInput): AgentRun;
   get(runId: string): AgentRun | null;
   list(filter: RunListFilter): { runs: AgentRunSummary[]; nextCursor?: string };
-  updateStatus(runId: string, status: RunStatus, patch?: Partial<AgentRun>): void;
+  updateStatus(
+    runId: string,
+    status: RunStatus,
+    patch?: Partial<AgentRun>,
+    options?: { allowTerminalTransition?: boolean },
+  ): void;
   appendEvent(runId: string, event: Omit<RunEventEnvelope, 'event_id' | 'seq'>): RunEventEnvelope;
   recordMessage(runId: string, message: NormalizedMessage, source: RunEventEnvelope['source']): void;
   listEvents(runId: string, opts?: { afterSeq?: number; limit?: number }): RunEventEnvelope[];
@@ -321,13 +326,34 @@ export const runService: RunService = {
     return runsDb.putBudget(input);
   },
 
-  updateStatus(runId: string, status: RunStatus, patch: Partial<AgentRun> = {}): void {
+  updateStatus(
+    runId: string,
+    status: RunStatus,
+    patch: Partial<AgentRun> = {},
+    options: { allowTerminalTransition?: boolean } = {},
+  ): void {
     const run = requireRun(runId);
+    if (
+      TERMINAL_RUN_STATUSES.has(run.status) &&
+      run.status !== status &&
+      options.allowTerminalTransition !== true
+    ) {
+      throw new CloudError(
+        'RUN_ALREADY_TERMINAL',
+        `Run ${runId} is already terminal (${run.status})`,
+      );
+    }
     const nextPatch = { ...patch };
     if (status === 'running' && !run.started_at && !nextPatch.started_at) {
       nextPatch.started_at = nowIso();
     }
-    runsDb.updateStatus(runId, status, nextPatch);
+    if (!runsDb.updateStatus(runId, status, nextPatch, options)) {
+      const current = runsDb.getById(runId);
+      throw new CloudError(
+        'RUN_ALREADY_TERMINAL',
+        `Run ${runId} is already terminal (${current?.status ?? 'unknown'})`,
+      );
+    }
     this.appendEvent(runId, {
       run_id: runId,
       ts: nowIso(),
@@ -435,7 +461,13 @@ export const runService: RunService = {
         `Run ${runId} is already terminal (${run.status})`,
       );
     }
-    runsDb.markTerminal(runId, result);
+    if (!runsDb.markTerminal(runId, result)) {
+      const current = runsDb.getById(runId);
+      throw new CloudError(
+        'RUN_ALREADY_TERMINAL',
+        `Run ${runId} is already terminal (${current?.status ?? 'unknown'})`,
+      );
+    }
     this.appendEvent(runId, {
       run_id: runId,
       ts: nowIso(),

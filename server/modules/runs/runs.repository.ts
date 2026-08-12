@@ -288,9 +288,14 @@ export const runsDb = {
     return { runs: page.map(mapRun), nextCursor };
   },
 
-  updateStatus(runId: string, status: RunStatus, patch: Partial<AgentRun> = {}): void {
+  updateStatus(
+    runId: string,
+    status: RunStatus,
+    patch: Partial<AgentRun> = {},
+    options: { allowTerminalTransition?: boolean } = {},
+  ): boolean {
     const db = getConnection();
-    db.prepare(
+    const updated = db.prepare(
       `UPDATE agent_runs SET
         status = ?,
         started_at = COALESCE(?, started_at),
@@ -307,7 +312,8 @@ export const runsDb = {
         workspace_id = COALESCE(?, workspace_id),
         app_session_id = COALESCE(?, app_session_id),
         updated_at = ?
-      WHERE run_id = ?`,
+      WHERE run_id = ?
+        AND (? = 1 OR status NOT IN ('succeeded', 'failed', 'aborted', 'timed_out') OR status = ?)`,
     ).run(
       status,
       patch.started_at ?? null,
@@ -325,7 +331,10 @@ export const runsDb = {
       patch.app_session_id ?? null,
       nowIso(),
       runId,
+      options.allowTerminalTransition === true ? 1 : 0,
+      status,
     );
+    return updated.changes === 1;
   },
 
   /**
@@ -420,12 +429,13 @@ export const runsDb = {
     );
   },
 
-  markTerminal(runId: string, result: TerminalResult): void {
+  markTerminal(runId: string, result: TerminalResult): boolean {
     const db = getConnection();
-    db.prepare(
+    const updated = db.prepare(
       `UPDATE agent_runs SET
         status = ?, error_summary = ?, exit_code = ?, finished_at = ?, updated_at = ?
-      WHERE run_id = ?`,
+      WHERE run_id = ?
+        AND status NOT IN ('succeeded', 'failed', 'aborted', 'timed_out')`,
     ).run(
       result.status,
       result.errorSummary ?? null,
@@ -434,11 +444,13 @@ export const runsDb = {
       nowIso(),
       runId,
     );
+    return updated.changes === 1;
   },
 
   /**
-   * Runs that were in flight when the server last stopped can never resume —
-   * mark them failed. Returns the number of reconciled rows.
+   * Mark non-resumable in-flight runs failed after a restart. Swarm-owned
+   * parent/child runs are excluded while their durable swarm is nonterminal;
+   * the swarm recovery worker owns those rows and may resume them safely.
    */
   reconcileOrphans(): number {
     const db = getConnection();
@@ -447,7 +459,22 @@ export const runsDb = {
       .prepare(
         `UPDATE agent_runs SET
           status = 'failed', error_summary = ?, finished_at = ?, updated_at = ?
-        WHERE status IN ('queued', 'starting', 'running')`,
+        WHERE status IN ('queued', 'starting', 'running')
+          AND NOT (
+            source = 'swarm'
+            AND EXISTS (
+              SELECT 1
+              FROM swarm_runs AS swarm
+              WHERE swarm.status IN (
+                'queued', 'planning', 'awaiting_plan_approval',
+                'running', 'handing_off', 'awaiting_approval'
+              )
+                AND (
+                  swarm.parent_run_id = agent_runs.run_id
+                  OR swarm.parent_run_id = agent_runs.parent_run_id
+                )
+            )
+          )`,
       )
       .run(ORPHAN_ERROR_SUMMARY, now, now);
     return result.changes;
@@ -973,5 +1000,83 @@ export const runsDb = {
       sources,
       byHourUtc,
     };
+  },
+  /**
+   * Observed cost/performance of past SWARM step runs, grouped by the agent
+   * profile that executed them and the difficulty they were rated.
+   *
+   * This is the measured alternative to asking agents to estimate their own
+   * cost: a model cannot introspect its future token usage, but `agent_runs`
+   * already records what every run actually spent. Only `source = 'swarm'` rows
+   * with a `profile_id` and a step role are considered; medians are computed by
+   * the caller so a couple of pathological runs cannot skew the picture.
+   */
+  listSwarmStepOutcomes(input?: {
+    /** Only runs created within this many days (default 60). */
+    lookbackDays?: number;
+    /** Hard row cap so a huge history cannot stall planning (default 4000). */
+    limit?: number;
+  }): Array<{
+    profileId: string;
+    role: string;
+    difficulty: string | null;
+    attempt: number;
+    status: string;
+    tokenTotal: number | null;
+    costUsd: number | null;
+    durationMs: number | null;
+  }> {
+    const db = getConnection();
+    const lookbackDays = clampLimit(input?.lookbackDays, 60, 3650);
+    const limit = clampLimit(input?.limit, 4000, 50_000);
+    const rows = db
+      .prepare(
+        `SELECT
+           profile_id,
+           json_extract(meta_json, '$.role')       AS role,
+           json_extract(meta_json, '$.difficulty') AS difficulty,
+           json_extract(meta_json, '$.attempt')    AS attempt,
+           status,
+           token_total,
+           cost_usd_estimate,
+           -- ROUND before CAST: julianday arithmetic lands a hair under the true
+           -- millisecond count, and CAST alone truncates it (120000ms → 119999).
+           CAST(
+             ROUND((julianday(finished_at) - julianday(COALESCE(started_at, created_at))) * 86400000.0)
+             AS INTEGER
+           ) AS duration_ms
+         FROM agent_runs
+         WHERE source = 'swarm'
+           AND profile_id IS NOT NULL
+           AND json_extract(meta_json, '$.role') IS NOT NULL
+           AND json_extract(meta_json, '$.phase') IS NULL
+           AND created_at >= datetime('now', ?)
+         ORDER BY created_at DESC
+         LIMIT ?`,
+      )
+      .all(`-${lookbackDays} days`, limit) as Array<{
+        profile_id: string;
+        role: string;
+        difficulty: string | null;
+        attempt: number | null;
+        status: string;
+        token_total: number | null;
+        cost_usd_estimate: number | null;
+        duration_ms: number | null;
+      }>;
+
+    return rows.map((row) => ({
+      profileId: row.profile_id,
+      role: String(row.role),
+      difficulty: row.difficulty ? String(row.difficulty) : null,
+      attempt: Number(row.attempt) > 0 ? Number(row.attempt) : 1,
+      status: row.status,
+      tokenTotal: row.token_total != null ? Number(row.token_total) : null,
+      costUsd: row.cost_usd_estimate != null ? Number(row.cost_usd_estimate) : null,
+      durationMs:
+        row.duration_ms != null && Number.isFinite(row.duration_ms) && row.duration_ms >= 0
+          ? Number(row.duration_ms)
+          : null,
+    }));
   },
 };

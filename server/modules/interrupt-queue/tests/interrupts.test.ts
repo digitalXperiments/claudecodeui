@@ -96,6 +96,24 @@ test('interrupts dedupe, prioritize, snooze, and resolve actions', async () => {
     assert.equal(interruptsService.countOpen(), 0);
     interruptsDb.resolve(first.interrupt_id, 'dismissed', 'user-1', 'dismiss');
     assert.equal(interruptsService.countOpen(), 0);
+
+    // Resolving releases the active-key uniqueness slot; the next lifecycle
+    // gets a fresh row, while duplicate creates within that lifecycle converge.
+    const reopened = interruptsService.create({
+      kind: 'run_failed',
+      title: 'Failed again later',
+      runId: 'run_1',
+      dedupeKey: 'run_failed:run_1',
+    });
+    const reopenedDuplicate = interruptsService.create({
+      kind: 'run_failed',
+      title: 'Same later failure',
+      runId: 'run_1',
+      dedupeKey: 'run_failed:run_1',
+    });
+    assert.notEqual(reopened.interrupt_id, first.interrupt_id);
+    assert.equal(reopenedDuplicate.interrupt_id, reopened.interrupt_id);
+    assert.equal(interruptsService.countOpen(), 1);
   });
 });
 
@@ -119,5 +137,25 @@ test('approve permission and abort run actions call their server handlers', asyn
     interruptsService.act(failed.interrupt_id, { key: 'abort_run' });
     assert.equal(runService.get(run.run_id)?.status, 'aborted');
     interruptsService.configurePermissionResolver(null);
+  });
+});
+
+test('failed swarm actions remain open instead of acknowledging a side effect that did not happen', async () => {
+  await withDatabase(async () => {
+    const interrupt = interruptsService.create({
+      kind: 'approval_pending',
+      title: 'Missing swarm approval',
+      actions: [{ id: 'approve_swarm', label: 'Approve' }],
+      meta: { swarmId: 'swarm_missing' },
+    });
+
+    await assert.rejects(
+      interruptsService.actAndWait(interrupt.interrupt_id, {
+        key: 'approve_swarm',
+        actor: 'user-1',
+      }),
+      /Swarm not found/,
+    );
+    assert.equal(interruptsService.get(interrupt.interrupt_id)?.status, 'open');
   });
 });

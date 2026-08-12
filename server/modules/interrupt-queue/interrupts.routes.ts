@@ -17,7 +17,11 @@ function actor(req: express.Request): string | null {
 
 function mapError(error: unknown): never {
   if (error instanceof CloudError) {
-    throw new AppError(error.message, { code: error.code, statusCode: error.code === 'INTERRUPT_NOT_FOUND' ? 404 : 409 });
+    // 410 Gone for expired approval gates: approve/deny on a stale interrupt
+    // must fail cleanly instead of pretending success.
+    const statusCode =
+      error.code === 'INTERRUPT_NOT_FOUND' ? 404 : error.code === 'INTERRUPT_EXPIRED' ? 410 : 409;
+    throw new AppError(error.message, { code: error.code, statusCode });
   }
   throw error;
 }
@@ -30,11 +34,34 @@ router.get('/', asyncHandler(async (req, res) => {
     status,
     limit: Number(req.query.limit) || 50,
   });
-  res.json({ success: true, interrupts, count: interruptsService.countOpen(text(req.query.projectId)) });
+  const projectId = text(req.query.projectId);
+  res.json({
+    success: true,
+    interrupts,
+    count: interruptsService.countOpen(projectId),
+    unread: interruptsService.countUnread(projectId),
+  });
 }));
 
 router.get('/count', asyncHandler(async (req, res) => {
-  res.json({ success: true, count: interruptsService.countOpen(text(req.query.projectId)) });
+  const projectId = text(req.query.projectId);
+  res.json({
+    success: true,
+    count: interruptsService.countOpen(projectId),
+    unread: interruptsService.countUnread(projectId),
+  });
+}));
+
+/**
+ * Batch viewport mark-as-read (IntersectionObserver batches on the client).
+ * Read state only clears the unread badge; items remain actionable.
+ */
+router.post('/read', asyncHandler(async (req, res) => {
+  const rawIds = Array.isArray(req.body?.ids) ? req.body.ids : null;
+  if (!rawIds) throw new AppError('ids must be an array', { code: 'INTERRUPT_INVALID_INPUT', statusCode: 400 });
+  const ids = rawIds.filter((value: unknown): value is string => typeof value === 'string' && value.trim().length > 0);
+  const { updated, unread } = interruptsService.markRead(ids);
+  res.json({ success: true, updated, unread });
 }));
 
 /** Plan-my-day checklist (PRD §7.7) — open interrupts ordered by priority. */
@@ -51,7 +78,7 @@ router.get('/plan-my-day', asyncHandler(async (req, res) => {
 
 router.post('/:interruptId/actions/:actionKey', asyncHandler(async (req, res) => {
   try {
-    const interrupt = interruptsService.act(String(req.params.interruptId), {
+    const interrupt = await interruptsService.actAndWait(String(req.params.interruptId), {
       key: String(req.params.actionKey),
       actor: actor(req),
       body: req.body && typeof req.body === 'object' ? req.body : undefined,
@@ -70,4 +97,3 @@ router.post('/:interruptId/snooze', asyncHandler(async (req, res) => {
 }));
 
 export default router;
-

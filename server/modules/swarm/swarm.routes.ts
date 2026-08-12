@@ -71,7 +71,7 @@ router.get(
     res.json({
       success: true,
       roster: swarmService.defaultRoster(),
-      kinds: ['orchestrator', 'explorer', 'implementer', 'reviewer', 'custom'],
+      kinds: ['orchestrator', 'explorer', 'implementer', 'reviewer', 'tester', 'security', 'docs', 'custom'],
     });
   }),
 );
@@ -101,11 +101,37 @@ router.post(
         skills,
         requireApproval: body.requireApproval === true,
         requirePlanApproval: body.requirePlanApproval === true,
+        // Orchestrator staffs worker seats from swarm-tagged agent profiles.
+        autoRoster:
+          body.autoRoster === true ? true : body.autoRoster === false ? false : undefined,
+        // Pre-PR stability gate defaults ON; only an explicit false opts out.
+        validateBeforePr: body.validateBeforePr === false ? false : undefined,
+        // Validation attempt budget (initial run + remediation re-runs).
+        validationMaxAttempts:
+          typeof body.validationMaxAttempts === 'number' && body.validationMaxAttempts > 0
+            ? body.validationMaxAttempts
+            : typeof body.validationMaxAttempts === 'string' && Number(body.validationMaxAttempts) > 0
+              ? Number(body.validationMaxAttempts)
+              : undefined,
+        // Red gate still publishes the PR + report unless explicitly opted out.
+        prOnRedValidation: body.prOnRedValidation === false ? false : undefined,
         stepTimeoutMs:
           typeof body.stepTimeoutMs === 'number' && body.stepTimeoutMs > 0
             ? body.stepTimeoutMs
             : typeof body.stepTimeoutMs === 'string' && Number(body.stepTimeoutMs) > 0
               ? Number(body.stepTimeoutMs)
+              : undefined,
+        stallTimeoutMs:
+          typeof body.stallTimeoutMs === 'number' && body.stallTimeoutMs > 0
+            ? body.stallTimeoutMs
+            : typeof body.stallTimeoutMs === 'string' && Number(body.stallTimeoutMs) > 0
+              ? Number(body.stallTimeoutMs)
+              : undefined,
+        stepMaxAttempts:
+          typeof body.stepMaxAttempts === 'number' && body.stepMaxAttempts > 0
+            ? body.stepMaxAttempts
+            : typeof body.stepMaxAttempts === 'string' && Number(body.stepMaxAttempts) > 0
+              ? Number(body.stepMaxAttempts)
               : undefined,
         maxConcurrency:
           typeof body.maxConcurrency === 'number' && body.maxConcurrency > 0
@@ -113,10 +139,13 @@ router.post(
             : typeof body.maxConcurrency === 'string' && Number(body.maxConcurrency) > 0
               ? Number(body.maxConcurrency)
               : undefined,
+        parallelWriters: body.parallelWriters === true,
         provider: optionalString(body.provider) ?? null,
         model: optionalString(body.model) ?? null,
         effort: optionalString(body.effort) ?? null,
         permissionMode: optionalString(body.permissionMode) ?? null,
+        idempotencyKey:
+          optionalString(req.header('Idempotency-Key')) ?? optionalString(body.idempotencyKey) ?? null,
       });
       res.status(201).json({ success: true, swarm });
     } catch (error) {
@@ -126,11 +155,57 @@ router.post(
 );
 
 router.get(
+  '/swarm/:swarmId/artifacts',
+  asyncHandler(async (req, res) => {
+    const swarmId = stringValue(req.params.swarmId);
+    const swarm = swarmService.get(swarmId);
+    if (!swarm) throw new AppError('Swarm not found', { code: 'SWARM_NOT_FOUND', statusCode: 404 });
+    res.json({ success: true, artifacts: swarm.artifacts ?? [] });
+  }),
+);
+
+router.get(
   '/swarm/:swarmId',
   asyncHandler(async (req, res) => {
     const swarm = swarmService.get(stringValue(req.params.swarmId));
     if (!swarm) throw new AppError('Swarm not found', { code: 'SWARM_NOT_FOUND', statusCode: 404 });
     res.json({ success: true, swarm });
+  }),
+);
+
+// Pre-PR validation report (PDF preferred, HTML fallback) written by the
+// stability gate under the primary project's tmp/cloudcli/swarm-reports/.
+router.get(
+  '/swarm/:swarmId/report',
+  asyncHandler(async (req, res) => {
+    const swarmId = stringValue(req.params.swarmId);
+    const report = swarmService.validationReport(swarmId);
+    if (!report)
+      throw new AppError('Swarm not found', { code: 'SWARM_NOT_FOUND', statusCode: 404 });
+    const file = report.pdfPath ?? report.htmlPath;
+    if (!file)
+      throw new AppError('No validation report has been generated for this swarm', {
+        code: 'SWARM_REPORT_NOT_FOUND',
+        statusCode: 404,
+      });
+    res.sendFile(file);
+  }),
+);
+
+// Small JSON summary of the validation gate (check statuses, artifact paths).
+router.get(
+  '/swarm/:swarmId/report/summary',
+  asyncHandler(async (req, res) => {
+    const swarmId = stringValue(req.params.swarmId);
+    const report = swarmService.validationReport(swarmId);
+    if (!report)
+      throw new AppError('Swarm not found', { code: 'SWARM_NOT_FOUND', statusCode: 404 });
+    if (!report.summaryPath)
+      throw new AppError('No validation summary has been generated for this swarm', {
+        code: 'SWARM_REPORT_NOT_FOUND',
+        statusCode: 404,
+      });
+    res.sendFile(report.summaryPath);
   }),
 );
 

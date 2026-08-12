@@ -12,7 +12,7 @@ export type InterruptKind =
   | 'ci_failed';
 
 export type InterruptSeverity = 'info' | 'warning' | 'error' | 'critical';
-export type InterruptStatus = 'open' | 'snoozed' | 'resolved' | 'dismissed';
+export type InterruptStatus = 'open' | 'snoozed' | 'resolved' | 'dismissed' | 'expired';
 
 export type InterruptAction = {
   id: string;
@@ -38,6 +38,10 @@ export type Interrupt = {
   resolved_by: string | null;
   resolution: string | null;
   priority: number;
+  /** Approval-gate deadline: past this the interrupt is no longer actionable. */
+  expires_at: string | null;
+  /** Viewport mark-as-read timestamp. Read ≠ resolved: the item stays actionable. */
+  read_at: string | null;
   created_at: string;
   updated_at: string;
   meta: Record<string, unknown>;
@@ -57,6 +61,11 @@ export type CreateInterruptInput = {
   priority?: number;
   meta?: Record<string, unknown>;
   dedupeKey?: string;
+  /**
+   * ISO deadline after which the interrupt auto-expires. `undefined` applies
+   * the kind default (permission_pending gets a bounded TTL); `null` opts out.
+   */
+  expiresAt?: string | null;
 };
 
 export type InterruptListFilter = {
