@@ -8,7 +8,7 @@ import { Cron } from 'croner';
 
 import { getConnection } from '@/modules/database/index.js';
 import { interruptsService } from '@/modules/interrupt-queue/index.js';
-import { runService } from '@/modules/runs/runs.service.js';
+import { scheduleHistoricalTokenBackfill } from '@/modules/runs/runs-token-backfill.js';
 import { TERMINAL_RUN_STATUSES } from '@/shared/run-events.js';
 
 /** Minutes without a durable event while status is in-flight before flagging stuck. */
@@ -109,6 +109,15 @@ export function applyRunRetention(): { eventsDeleted: number; runsDeleted: numbe
     .prepare(
       `DELETE FROM agent_runs
        WHERE status IN (${placeholders})
+         -- Historical token-backfill rows (source = 'history', see
+         -- runs-token-backfill.ts) are stamped with the *session's* original
+         -- created_at/finished_at, which is routinely older than the
+         -- retention window by design (that's the whole point of "historical").
+         -- Retention would delete them here, then the very next backfill pass
+         -- would recreate them (the session still lacks a token-covered run)
+         -- — a nightly delete/recreate loop with real WS broadcast noise.
+         -- These rows carry no operational data to retire, so exclude them.
+         AND source != 'history'
          AND COALESCE(finished_at, updated_at, created_at) < ?`,
     )
     .run(...terminal, runCutoff);
@@ -146,7 +155,17 @@ export function startRunMaintenance(): () => void {
     } catch (error) {
       console.error('[Runs] retention failed', error);
     }
+    // Sessions discovered after boot (provider sync) may still lack token_*;
+    // re-run the idempotent backfill alongside nightly retention. Safe to run
+    // right after retention now that retention excludes source='history' rows.
+    void scheduleHistoricalTokenBackfill();
   });
+
+  // One-shot (coalesced) durable fill of agent_runs.token_* from provider disk
+  // for sessions that predate live token_budget persistence. Fire-and-forget so
+  // boot is not blocked on filesystem scans.
+  void scheduleHistoricalTokenBackfill();
+
   return stopRunMaintenance;
 }
 

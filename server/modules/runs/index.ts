@@ -8,4 +8,20 @@ export {
   startRunMaintenance,
   stopRunMaintenance,
 } from '@/modules/runs/runs-maintenance.service.js';
+export {
+  backfillHistoricalRunTokens,
+  listSessionsNeedingTokenBackfill,
+  mergeBackfillUsage,
+  normalizeSessionTimestamp,
+  readHistoricalSessionUsage,
+  resetHistoricalTokenBackfillLatch,
+  scheduleHistoricalTokenBackfill,
+  TOKEN_BACKFILL_META_KEY,
+} from '@/modules/runs/runs-token-backfill.js';
+export type {
+  BackfillHistoricalTokensOptions,
+  BackfillHistoricalTokensResult,
+  BackfillSessionRow,
+  HistoricalUsageReader,
+} from '@/modules/runs/runs-token-backfill.js';
 export * from '@/modules/runs/runs.types.js';

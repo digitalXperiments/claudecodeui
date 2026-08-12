@@ -17,8 +17,10 @@ export { projectMemoryService, getMemoryPreamble, configureMemoryCurationRuntime
 export { providerCapabilitiesService } from './services/provider-capabilities.service.js';
 export { providerAuthService } from './services/provider-auth.service.js';
 export { providerRegistry } from './provider.registry.js';
-export { buildClaudeTokenBudgetFromUsage } from './list/claude/claude-token-usage.js';
+export { buildClaudeTokenBudgetFromUsage, readClaudeSessionTokenUsage } from './list/claude/claude-token-usage.js';
 export { buildCodexTokenUsage } from './list/codex/codex-token-usage.js';
+export { findKimiSessionDir, readKimiSessionTokenUsage } from './list/kimi/kimi-token-usage.js';
+export { readGrokSessionTokenUsage, resolveGrokSessionDir } from './list/grok/grok-sessions.provider.js';
 export { configureSkillTestRuntimes, testSkill } from './services/skill-test.service.js';
 export type { SkillTestResult } from './services/skill-test.service.js';
 

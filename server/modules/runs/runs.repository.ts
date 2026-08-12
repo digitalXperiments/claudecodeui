@@ -728,17 +728,32 @@ export const runsDb = {
     const sessionsWhereSql =
       sessionsWhere.length > 0 ? ` WHERE ${sessionsWhere.join(' AND ')}` : '';
 
+    // Historical token backfill (server/modules/runs/runs-token-backfill.ts)
+    // inserts a synthetic `source = 'history'` run per recovered session so
+    // its tokens land in the same SUM(token_total) every dimension below
+    // already reads — that is the point of the feature. But it is a
+    // bookkeeping row, not a real agent invocation: it always has
+    // status='succeeded' and zero duration by construction (created_at ==
+    // finished_at), which would otherwise inflate totalRuns, skew
+    // successRate/avgDurationMs, and pollute the byStatus/byHour timelines.
+    // Token sums stay unconditional (COALESCE(SUM(token_total)...); every
+    // run/duration/cost count below is conditional on `source != 'history'`
+    // so a history row contributes its tokens but nothing else.
+    const NOT_HISTORY_CASE = `CASE WHEN COALESCE(source, '') != 'history' THEN 1 ELSE 0 END`;
+    const operationalDurationSql = `CASE WHEN COALESCE(source, '') != 'history' THEN (${RUN_DURATION_MS_SQL}) ELSE 0 END`;
+    const operationalCostSql = `CASE WHEN COALESCE(source, '') != 'history' THEN cost_usd_estimate ELSE NULL END`;
+
     const overviewRow = db
       .prepare(
         `SELECT
-           COUNT(*) AS runs,
+           COALESCE(SUM(${NOT_HISTORY_CASE}), 0) AS runs,
            COUNT(token_total) AS runs_with_tokens,
            COALESCE(SUM(token_total), 0) AS tokens,
            COALESCE(SUM(token_input), 0) AS input_tokens,
            COALESCE(SUM(token_output), 0) AS output_tokens,
-           COUNT(cost_usd_estimate) AS runs_with_cost,
-           SUM(cost_usd_estimate) AS cost,
-           COALESCE(SUM(${RUN_DURATION_MS_SQL}), 0) AS duration_ms,
+           COUNT(${operationalCostSql}) AS runs_with_cost,
+           SUM(${operationalCostSql}) AS cost,
+           COALESCE(SUM(${operationalDurationSql}), 0) AS duration_ms,
            COUNT(DISTINCT app_session_id) AS active_conversations
          FROM agent_runs${whereSql}`,
       )
@@ -754,8 +769,12 @@ export const runsDb = {
       active_conversations: number;
     };
 
+    const operationalWhereSql = whereSql
+      ? `${whereSql} AND COALESCE(source, '') != 'history'`
+      : ` WHERE COALESCE(source, '') != 'history'`;
+
     const byStatusRows = db
-      .prepare(`SELECT status, COUNT(*) AS cnt FROM agent_runs${whereSql} GROUP BY status`)
+      .prepare(`SELECT status, COUNT(*) AS cnt FROM agent_runs${operationalWhereSql} GROUP BY status`)
       .all(...(params as never[])) as Array<{ status: string; cnt: number }>;
     const byStatus: StatsStatusCount[] = byStatusRows.map((row) => ({
       status: row.status,
@@ -766,12 +785,12 @@ export const runsDb = {
       .prepare(
         `SELECT
            date(created_at) AS day,
-           COUNT(*) AS runs,
+           COALESCE(SUM(${NOT_HISTORY_CASE}), 0) AS runs,
            COALESCE(SUM(token_total), 0) AS tokens,
            COALESCE(SUM(token_input), 0) AS input_tokens,
            COALESCE(SUM(token_output), 0) AS output_tokens,
-           COALESCE(SUM(cost_usd_estimate), 0) AS cost,
-           COALESCE(SUM(${RUN_DURATION_MS_SQL}), 0) AS duration_ms
+           COALESCE(SUM(${operationalCostSql}), 0) AS cost,
+           COALESCE(SUM(${operationalDurationSql}), 0) AS duration_ms
          FROM agent_runs${whereSql}
          GROUP BY day
          ORDER BY day ASC`,
@@ -790,12 +809,12 @@ export const runsDb = {
       .prepare(
         `SELECT
            provider,
-           COUNT(*) AS runs,
+           COALESCE(SUM(${NOT_HISTORY_CASE}), 0) AS runs,
            COALESCE(SUM(token_total), 0) AS tokens,
            COALESCE(SUM(token_input), 0) AS input_tokens,
            COALESCE(SUM(token_output), 0) AS output_tokens,
-           SUM(cost_usd_estimate) AS cost,
-           COALESCE(SUM(${RUN_DURATION_MS_SQL}), 0) AS duration_ms
+           SUM(${operationalCostSql}) AS cost,
+           COALESCE(SUM(${operationalDurationSql}), 0) AS duration_ms
          FROM agent_runs${whereSql}
          GROUP BY provider
          ORDER BY tokens DESC, runs DESC`,
@@ -815,12 +834,12 @@ export const runsDb = {
         `SELECT
            provider,
            model,
-           COUNT(*) AS runs,
+           COALESCE(SUM(${NOT_HISTORY_CASE}), 0) AS runs,
            COALESCE(SUM(token_total), 0) AS tokens,
            COALESCE(SUM(token_input), 0) AS input_tokens,
            COALESCE(SUM(token_output), 0) AS output_tokens,
-           SUM(cost_usd_estimate) AS cost,
-           COALESCE(SUM(${RUN_DURATION_MS_SQL}), 0) AS duration_ms
+           SUM(${operationalCostSql}) AS cost,
+           COALESCE(SUM(${operationalDurationSql}), 0) AS duration_ms
          FROM agent_runs${whereSql}
          GROUP BY provider, model
          ORDER BY tokens DESC, runs DESC
@@ -841,7 +860,7 @@ export const runsDb = {
       .prepare(
         `SELECT
            source,
-           COUNT(*) AS runs,
+           COALESCE(SUM(${NOT_HISTORY_CASE}), 0) AS runs,
            COALESCE(SUM(token_total), 0) AS tokens
          FROM agent_runs${whereSql}
          GROUP BY source
@@ -852,7 +871,7 @@ export const runsDb = {
     const hourRows = db
       .prepare(
         `SELECT CAST(strftime('%H', created_at) AS INTEGER) AS hour, COUNT(*) AS runs
-         FROM agent_runs${whereSql}
+         FROM agent_runs${operationalWhereSql}
          GROUP BY hour`,
       )
       .all(...(params as never[])) as Array<{ hour: number; runs: number }>;
