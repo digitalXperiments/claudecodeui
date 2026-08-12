@@ -20,6 +20,7 @@ test('images inside the upload store pass through', () => {
 test('bare filenames are anchored inside the store', () => {
   const result = filterImagesToUploadStore(['shot.png'], STORE);
   assert.equal(result.length, 1);
+  assert.equal(result[0].path, path.join(STORE, 'shot.png'));
 });
 
 test('paths outside the store, traversal, and subdirs are dropped', () => {

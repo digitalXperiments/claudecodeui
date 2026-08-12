@@ -7,7 +7,6 @@ export const WEBHOOK_PROVIDERS = [
   'opencode',
   'grok',
   'kimi',
-  'agy',
   'pi',
 ] as const satisfies readonly LLMProvider[];
 

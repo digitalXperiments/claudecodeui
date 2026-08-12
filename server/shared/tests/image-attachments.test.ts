@@ -8,6 +8,7 @@ import {
   appendImagesInputTag,
   buildClaudeUserContent,
   buildCodexInputItems,
+  buildPiPromptPayload,
   isAllowedImageSourcePath,
   isImageDescriptor,
   normalizeImageDescriptors,
@@ -264,6 +265,31 @@ test('buildCodexInputItems path-references documents and keeps images as local_i
   assert.ok(textItem.text.includes('<images_input>'));
   assert.ok(textItem.text.includes('report.pdf'));
   assert.equal(items[1].type, 'local_image');
+});
+
+test('buildPiPromptPayload sends image bytes through RPC and keeps documents as paths', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'pi-image-attachments-'));
+  try {
+    await writeFile(path.join(cwd, 'image.png'), PNG_BYTES);
+    const payload = await buildPiPromptPayload(
+      'Inspect the attachments',
+      [
+        { path: 'image.png', mimeType: 'image/png' },
+        { path: 'spec.pdf', mimeType: 'application/pdf' },
+      ],
+      cwd,
+    );
+
+    assert.deepEqual(payload.images, [{
+      type: 'image',
+      data: PNG_BYTES.toString('base64'),
+      mimeType: 'image/png',
+    }]);
+    assert.match(payload.message, /1\. spec\.pdf/);
+    assert.doesNotMatch(payload.message, /image\.png/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
 });
 
 test('buildClaudeUserContent refuses symlinked images outside allowed roots', async (t) => {

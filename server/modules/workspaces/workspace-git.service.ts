@@ -7,38 +7,119 @@
  * instead of rejecting on non-zero exit, so callers decide what is fatal.
  */
 
-// cross-spawn: drop-in spawn with Windows .cmd/PATHEXT resolution.
-import spawn from 'cross-spawn';
 import { realpath } from 'node:fs/promises';
 import path from 'node:path';
+
+// cross-spawn: drop-in spawn with Windows .cmd/PATHEXT resolution.
+import spawn from 'cross-spawn';
 
 import type { DiffFile, MergeStrategy, WorkspaceDirtyFile } from '@/modules/workspaces/workspace.types.js';
 
 export type GitResult = { code: number | null; stdout: string; stderr: string };
 
+export type RunGitOptions = {
+  /** Hard deadline for the subprocess. */
+  timeoutMs?: number;
+  /** Combined stdout/stderr capture ceiling. */
+  maxOutputBytes?: number;
+};
+
+const DEFAULT_GIT_TIMEOUT_MS = 30_000;
+const DEFAULT_GIT_MAX_OUTPUT_BYTES = 2 * 1024 * 1024;
+const GIT_KILL_GRACE_MS = 1_000;
+
 /** Run git inside `cwd`, resolving with the exit result (never rejects on git failure). */
-export function runGit(cwd: string, args: string[]): Promise<GitResult> {
+export function runGit(
+  cwd: string,
+  args: string[],
+  options: RunGitOptions = {},
+): Promise<GitResult> {
   return new Promise((resolve) => {
+    const timeoutMs = Math.max(1, options.timeoutMs ?? DEFAULT_GIT_TIMEOUT_MS);
+    const maxOutputBytes = Math.max(1, options.maxOutputBytes ?? DEFAULT_GIT_MAX_OUTPUT_BYTES);
     let child;
     try {
-      child = spawn('git', args, { cwd });
+      child = spawn('git', args, {
+        cwd,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: {
+          ...process.env,
+          GIT_TERMINAL_PROMPT: '0',
+          GCM_INTERACTIVE: 'Never',
+          GIT_PAGER: 'cat',
+          PAGER: 'cat',
+        },
+      });
     } catch (error) {
       resolve({ code: null, stdout: '', stderr: error instanceof Error ? error.message : String(error) });
       return;
     }
     let stdout = '';
     let stderr = '';
+    let capturedBytes = 0;
+    let settled = false;
+    let terminationReason: string | null = null;
+    let killTimer: NodeJS.Timeout | null = null;
+    let forceSettleTimer: NodeJS.Timeout | null = null;
+
+    const terminate = (reason: string): void => {
+      if (terminationReason) return;
+      terminationReason = reason;
+      child.kill('SIGTERM');
+      killTimer = setTimeout(() => {
+        child.kill('SIGKILL');
+        // A broken child-process implementation must not keep the caller
+        // pending forever even if it never emits `close` after SIGKILL.
+        forceSettleTimer = setTimeout(() => finish(null), GIT_KILL_GRACE_MS);
+        forceSettleTimer.unref();
+      }, GIT_KILL_GRACE_MS);
+      killTimer.unref();
+    };
+
+    const append = (target: 'stdout' | 'stderr', chunk: unknown): void => {
+      const value = String(chunk);
+      const remaining = maxOutputBytes - capturedBytes;
+      if (remaining <= 0) {
+        terminate(`output exceeded ${maxOutputBytes} bytes`);
+        return;
+      }
+      const buffer = Buffer.from(value);
+      const accepted = buffer.subarray(0, remaining).toString();
+      capturedBytes += Buffer.byteLength(accepted);
+      if (target === 'stdout') stdout += accepted;
+      else stderr += accepted;
+      if (buffer.byteLength > remaining) {
+        terminate(`output exceeded ${maxOutputBytes} bytes`);
+      }
+    };
+
+    const finish = (code: number | null, error?: string): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      if (killTimer) clearTimeout(killTimer);
+      if (forceSettleTimer) clearTimeout(forceSettleTimer);
+      const diagnostic = terminationReason ?? error;
+      resolve({
+        code: diagnostic ? null : code,
+        stdout,
+        stderr: diagnostic ? `${stderr}${stderr ? '\n' : ''}git terminated: ${diagnostic}` : stderr,
+      });
+    };
+
+    const timeout = setTimeout(() => terminate(`timed out after ${timeoutMs}ms`), timeoutMs);
+    timeout.unref();
     child.stdout?.on('data', (chunk) => {
-      stdout += String(chunk);
+      append('stdout', chunk);
     });
     child.stderr?.on('data', (chunk) => {
-      stderr += String(chunk);
+      append('stderr', chunk);
     });
     child.on('error', (error) => {
-      resolve({ code: null, stdout, stderr: stderr || error.message });
+      finish(null, error.message);
     });
     child.on('close', (code) => {
-      resolve({ code, stdout, stderr });
+      finish(code);
     });
   });
 }
@@ -128,6 +209,14 @@ export async function remoteRepoSlug(cwd: string, remote = 'origin'): Promise<st
   const result = await runGit(cwd, ['remote', 'get-url', remote]);
   if (result.code !== 0) return null;
   return parseRemoteSlug(result.stdout);
+}
+
+/** Resolve a path inside the repository's private git directory. */
+export async function resolveGitPath(cwd: string, gitPath: string): Promise<string | null> {
+  const result = await runGit(cwd, ['rev-parse', '--git-path', gitPath]);
+  if (result.code !== 0 || !result.stdout.trim()) return null;
+  const resolved = result.stdout.trim();
+  return path.isAbsolute(resolved) ? resolved : path.resolve(cwd, resolved);
 }
 
 /** `git worktree add -b <branch> <rootPath> <base>` — creates branch + worktree. */

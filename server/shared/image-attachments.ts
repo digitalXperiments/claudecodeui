@@ -7,7 +7,7 @@ import path from 'node:path';
  *
  * Uploaded chat images are persisted once in the global `~/.cloudcli/assets`
  * folder and referenced by absolute path everywhere else:
- * - Claude: paths are read back into base64 `image` content blocks.
+ * - Claude/Pi: paths are read back into base64 image content blocks.
  * - Codex: paths become `local_image` input items.
  * - Cursor/OpenCode: paths are appended to the prompt inside an
  *   `<images_input>` tag, which is stripped again when history is read.
@@ -374,4 +374,68 @@ export function buildCodexInputItems(prompt: string, images: unknown, cwd?: stri
 
   const text = appendImagesInputTag(prompt, referencedByPath);
   return [{ type: 'text', text }, ...imageItems];
+}
+
+type PiImageContent = {
+  type: 'image';
+  data: string;
+  mimeType: string;
+};
+
+export type PiPromptPayload = {
+  message: string;
+  images?: PiImageContent[];
+};
+
+/**
+ * Builds Pi's RPC prompt payload. Pi accepts image content as base64 in the
+ * prompt's `images` field; documents and images that cannot be read inline
+ * remain path references in the shared `<images_input>` block.
+ */
+export async function buildPiPromptPayload(
+  prompt: string,
+  images: unknown,
+  cwd?: string,
+): Promise<PiPromptPayload> {
+  const inlineImages: PiImageContent[] = [];
+  const referencedByPath: ImageAttachmentDescriptor[] = [];
+
+  for (const descriptor of normalizeImageDescriptors(images)) {
+    if (!isImageDescriptor(descriptor)) {
+      referencedByPath.push(descriptor);
+      continue;
+    }
+
+    const mediaType = resolveImageMediaType(descriptor);
+    const resolvedPath = resolveImageAbsolutePath(cwd, descriptor.path);
+    if (!mediaType || !isAllowedImageSourcePath(resolvedPath, cwd)) {
+      console.warn(`[Images] Refusing to attach Pi image outside allowed roots: ${descriptor.path}`);
+      continue;
+    }
+
+    try {
+      const canonicalPath = await fs.realpath(resolvedPath);
+      if (!isAllowedImageSourcePath(canonicalPath, cwd)) {
+        console.warn(`[Images] Refusing to attach symlinked Pi image outside allowed roots: ${descriptor.path}`);
+        continue;
+      }
+      const bytes = await fs.readFile(canonicalPath);
+      inlineImages.push({
+        type: 'image',
+        data: bytes.toString('base64'),
+        mimeType: mediaType,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`[Images] Failed to inline Pi image ${descriptor.path}: ${message}`);
+      // Preserve the attachment as a path so Pi can still read it with its
+      // built-in tools when the model supports file-based inspection.
+      referencedByPath.push(descriptor);
+    }
+  }
+
+  return {
+    message: appendImagesInputTag(prompt, referencedByPath),
+    ...(inlineImages.length > 0 ? { images: inlineImages } : {}),
+  };
 }

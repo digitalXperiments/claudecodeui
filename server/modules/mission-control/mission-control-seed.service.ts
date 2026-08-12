@@ -1,3 +1,4 @@
+import { appConfigDb } from '@/modules/database/index.js';
 import { missionControlDb } from '@/modules/mission-control/mission-control.repository.js';
 import type { CreateMcSectionInput, McSection } from '@/modules/mission-control/mission-control.types.js';
 import { syncMissionControlSchedules } from '@/modules/mission-control/mission-control-scheduler.service.js';
@@ -23,6 +24,94 @@ export const TRELLO_TASKS_SECTION_TITLE = 'Trello Tasks';
  * Bump when produce_prompt semantics change so ensure*() can refresh existing rows.
  */
 export const TRELLO_TASKS_PROMPT_VERSION = 5;
+
+// ---------------------------------------------------------------------------
+// Built-in seed suppressions
+//
+// On every boot we re-ensure a few first-party sections. Without a tombstone,
+// deleting them in the UI only lasts until the next restart. Persist the
+// user's opt-out in app_config so ensure*() skips re-creation.
+// ---------------------------------------------------------------------------
+
+/** app_config key: JSON string array of stable seed keys the user deleted. */
+export const MC_SEED_SUPPRESSIONS_KEY = 'mc_seed_suppressions';
+
+/** Stable keys (not titles) so renames of display titles stay coherent. */
+export const MC_SEED_KEYS = {
+  xArticles: 'x-articles',
+  swipeDigest: 'swipe-digest',
+  trelloTasks: 'trello-tasks',
+} as const;
+
+export type McSeedKey = (typeof MC_SEED_KEYS)[keyof typeof MC_SEED_KEYS];
+
+const SEED_TITLE_TO_KEY = new Map<string, McSeedKey>([
+  [X_ARTICLES_SECTION_TITLE.trim().toLowerCase(), MC_SEED_KEYS.xArticles],
+  [SWIPE_DIGEST_SECTION_TITLE.trim().toLowerCase(), MC_SEED_KEYS.swipeDigest],
+  [TRELLO_TASKS_SECTION_TITLE.trim().toLowerCase(), MC_SEED_KEYS.trelloTasks],
+]);
+
+function normalizeTitle(title: string): string {
+  return title.trim().toLowerCase();
+}
+
+function readSuppressedSeeds(): Set<string> {
+  const raw = appConfigDb.get(MC_SEED_SUPPRESSIONS_KEY);
+  if (!raw) return new Set();
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return new Set();
+    return new Set(
+      parsed.filter((value): value is string => typeof value === 'string' && value.length > 0),
+    );
+  } catch {
+    return new Set();
+  }
+}
+
+function writeSuppressedSeeds(keys: Set<string>): void {
+  appConfigDb.set(MC_SEED_SUPPRESSIONS_KEY, JSON.stringify([...keys].sort()));
+}
+
+/** Resolve a section title to a built-in seed key, if any. */
+export function seedKeyForSectionTitle(title: string): McSeedKey | null {
+  return SEED_TITLE_TO_KEY.get(normalizeTitle(title)) ?? null;
+}
+
+export function isSeedSuppressed(seedKey: McSeedKey): boolean {
+  return readSuppressedSeeds().has(seedKey);
+}
+
+/** Remember that the user deleted this built-in section (no-op for custom titles). */
+export function suppressSeedByTitle(title: string): void {
+  const key = seedKeyForSectionTitle(title);
+  if (!key) return;
+  const next = readSuppressedSeeds();
+  if (next.has(key)) return;
+  next.add(key);
+  writeSuppressedSeeds(next);
+}
+
+/**
+ * Forget a suppression — used when the user manually re-creates a section with
+ * the matching title, so boot-time ensure can maintain it again.
+ */
+export function clearSeedSuppressionByTitle(title: string): void {
+  const key = seedKeyForSectionTitle(title);
+  if (!key) return;
+  const next = readSuppressedSeeds();
+  if (!next.has(key)) return;
+  next.delete(key);
+  writeSuppressedSeeds(next);
+}
+
+export type EnsureSectionResult = {
+  created: boolean;
+  updated: boolean;
+  /** Null when the seed is suppressed and no row exists. */
+  section: McSection | null;
+  suppressed: boolean;
+};
 
 /**
  * Produce agent (Grok Build) pulls open Trello cards via Composio and emits MC
@@ -145,14 +234,10 @@ export function buildTrelloTasksSectionInput(board: TrelloSeedBoardConfig): Crea
  * No-op when `~/.cloudcli/mission-control/trello-seed.json` isn't present —
  * this feature is opt-in and never ships with baked-in board data.
  */
-export function ensureTrelloTasksSection(): {
-  created: boolean;
-  updated: boolean;
-  section: McSection | null;
-} {
+export function ensureTrelloTasksSection(): EnsureSectionResult {
   const board = loadTrelloSeedConfig();
   if (!board) {
-    return { created: false, updated: false, section: null };
+    return { created: false, updated: false, section: null, suppressed: false };
   }
 
   const input = buildTrelloTasksSectionInput(board);
@@ -161,14 +246,20 @@ export function ensureTrelloTasksSection(): {
     .find((s) => s.title.trim().toLowerCase() === TRELLO_TASKS_SECTION_TITLE.toLowerCase());
 
   if (!existing) {
+    if (isSeedSuppressed(MC_SEED_KEYS.trelloTasks)) {
+      return { created: false, updated: false, section: null, suppressed: true };
+    }
     const section = missionControlDb.createSection(input);
     try {
       syncMissionControlSchedules();
     } catch {
       // Scheduler may not be running in tests.
     }
-    return { created: true, updated: false, section };
+    return { created: true, updated: false, section, suppressed: false };
   }
+
+  // Section is present again — drop any stale tombstone from a prior delete.
+  clearSeedSuppressionByTitle(TRELLO_TASKS_SECTION_TITLE);
 
   const versionMarker = `Prompt version: ${TRELLO_TASKS_PROMPT_VERSION}`;
   const stale =
@@ -179,7 +270,7 @@ export function ensureTrelloTasksSection(): {
     JSON.stringify(existing.kanban_mcp_tools ?? []) !== JSON.stringify(input.kanban_mcp_tools ?? []);
 
   if (!stale) {
-    return { created: false, updated: false, section: existing };
+    return { created: false, updated: false, section: existing, suppressed: false };
   }
 
   const section = missionControlDb.updateSection(existing.section_id, {
@@ -201,7 +292,7 @@ export function ensureTrelloTasksSection(): {
     // ignore in tests
   }
 
-  return { created: false, updated: true, section };
+  return { created: false, updated: true, section, suppressed: false };
 }
 
 /**
@@ -215,22 +306,29 @@ export function ensureTrelloTasksSection(): {
  */
 function ensureArticleSection(
   title: string,
+  seedKey: McSeedKey,
   versionMarker: string,
   input: CreateMcSectionInput,
-): { created: boolean; updated: boolean; section: McSection } {
+): EnsureSectionResult {
   const existing = missionControlDb
     .listSections()
     .find((s) => s.title.trim().toLowerCase() === title.toLowerCase());
 
   if (!existing) {
+    if (isSeedSuppressed(seedKey)) {
+      return { created: false, updated: false, section: null, suppressed: true };
+    }
     const section = missionControlDb.createSection(input);
     try {
       syncMissionControlSchedules();
     } catch {
       // Scheduler may not be running in tests.
     }
-    return { created: true, updated: false, section };
+    return { created: true, updated: false, section, suppressed: false };
   }
+
+  // Section is present again — drop any stale tombstone from a prior delete.
+  clearSeedSuppressionByTitle(title);
 
   const stale =
     !existing.produce_prompt.includes(versionMarker) ||
@@ -240,7 +338,7 @@ function ensureArticleSection(
     JSON.stringify(existing.actions ?? []) !== JSON.stringify(input.actions ?? existing.actions ?? []);
 
   if (!stale) {
-    return { created: false, updated: false, section: existing };
+    return { created: false, updated: false, section: existing, suppressed: false };
   }
 
   // Refresh prompt-shaped fields and the studio binding only. Provider, model,
@@ -259,22 +357,29 @@ function ensureArticleSection(
 
   // updateSection returns null only when the row vanished between the read and
   // the write; fall back to the row we already have rather than throwing on boot.
-  return { created: false, updated: section !== null, section: section ?? existing };
+  return {
+    created: false,
+    updated: section !== null,
+    section: section ?? existing,
+    suppressed: false,
+  };
 }
 
 /** Ensure the X Articles drafting section exists and points at the studio. */
-export function ensureXArticlesSection(projectId: string) {
+export function ensureXArticlesSection(projectId: string): EnsureSectionResult {
   return ensureArticleSection(
     X_ARTICLES_SECTION_TITLE,
+    MC_SEED_KEYS.xArticles,
     `Prompt version: ${X_ARTICLES_PROMPT_VERSION}`,
     buildXArticlesSectionInput(projectId),
   );
 }
 
 /** Ensure the Swipe Digest section exists and points at the studio. */
-export function ensureSwipeDigestSection(projectId: string) {
+export function ensureSwipeDigestSection(projectId: string): EnsureSectionResult {
   return ensureArticleSection(
     SWIPE_DIGEST_SECTION_TITLE,
+    MC_SEED_KEYS.swipeDigest,
     `Prompt version: ${SWIPE_DIGEST_PROMPT_VERSION}`,
     buildSwipeDigestSectionInput(projectId),
   );
@@ -282,7 +387,7 @@ export function ensureSwipeDigestSection(projectId: string) {
 
 /**
  * Scaffold the article studio directory, register it as a project, and seed
- * both article sections against it.
+ * both article sections against it (unless the user deleted them).
  *
  * Filesystem work makes this async, so it is kept out of the synchronous
  * `ensureMissionControlSeedSections` path and awaited separately at boot.
@@ -294,7 +399,7 @@ export async function ensureArticleStudioSections(
   const sections = [
     ensureXArticlesSection(workspace.projectId).section,
     ensureSwipeDigestSection(workspace.projectId).section,
-  ];
+  ].filter((section): section is McSection => section !== null);
   return {
     workspacePath: workspace.workspacePath,
     projectId: workspace.projectId,

@@ -95,7 +95,7 @@ export function buildGenerateTaskFieldsPrompt(input: {
 function buildHeadlessOptions(provider: LLMProvider): AnyRecord {
   // Headless text-only generation: no tools, plan/default where possible.
   const options: AnyRecord = {
-    permissionMode: provider === 'claude' || provider === 'cursor' || provider === 'agy' || provider === 'pi'
+    permissionMode: provider === 'claude' || provider === 'cursor' || provider === 'pi'
       ? 'plan'
       : 'default',
   };

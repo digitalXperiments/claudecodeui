@@ -59,7 +59,7 @@ export function getKanbanSpawnFn(provider: LLMProvider): ProviderSpawnFn | undef
  *
  * - claude / cursor: `toolsSettings.{allowedTools,disallowedTools,skipPermissions}`
  * - grok:            `toolsSettings.{allowedCommands,disallowedCommands}`
- * - codex/agy/kimi/opencode: `permissionMode` only
+ * - codex/kimi/opencode:     `permissionMode` only
  *
  * Permissions are the safety boundary: `permission_mode` is passed verbatim and
  * bypass is only enabled when the task explicitly selected `bypassPermissions`.
@@ -169,7 +169,7 @@ function buildRuntimeOptions(
         disallowedCommands: disallowed,
       };
       break;
-    // codex, agy, kimi, opencode take only permissionMode (+ model/effort above).
+    // codex, kimi, opencode take only permissionMode (+ model/effort above).
     default:
       break;
   }

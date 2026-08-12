@@ -8,7 +8,6 @@ export const KANBAN_PROVIDERS: readonly LLMProvider[] = [
   'opencode',
   'grok',
   'kimi',
-  'agy',
   'pi',
 ] as const;
 

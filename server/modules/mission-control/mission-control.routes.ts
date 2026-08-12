@@ -25,6 +25,10 @@ import {
   resolveDefaultLegacyDbPath,
 } from '@/modules/mission-control/mission-control-import.service.js';
 import { generateArticleAssets } from '@/modules/mission-control/article-assets.service.js';
+import {
+  clearSeedSuppressionByTitle,
+  suppressSeedByTitle,
+} from '@/modules/mission-control/mission-control-seed.service.js';
 
 const router = express.Router();
 
@@ -221,6 +225,9 @@ router.post(
   '/sections',
   asyncHandler(async (req, res) => {
     const input = parseSectionBody(req.body ?? {}, false) as CreateMcSectionInput;
+    // Manual re-create of a built-in title lifts the boot-time tombstone so
+    // ensure*() can maintain prompts/bindings for that seed again.
+    clearSeedSuppressionByTitle(input.title);
     const section = missionControlDb.createSection(input);
     syncMissionControlSchedules();
     res.status(201).json({ section });
@@ -263,7 +270,18 @@ router.put(
 router.delete(
   '/sections/:id',
   asyncHandler(async (req, res) => {
-    const ok = missionControlDb.deleteSection(paramId(req.params.id));
+    const sectionId = paramId(req.params.id);
+    const existing = missionControlDb.getSection(sectionId);
+    if (!existing) {
+      throw new AppError('Section not found', {
+        code: 'MC_SECTION_NOT_FOUND',
+        statusCode: 404,
+      });
+    }
+    // Built-in seeds re-run on every boot; record the opt-out first so the
+    // next ensure*() does not resurrect the row we are about to delete.
+    suppressSeedByTitle(existing.title);
+    const ok = missionControlDb.deleteSection(sectionId);
     if (!ok) {
       throw new AppError('Section not found', {
         code: 'MC_SECTION_NOT_FOUND',

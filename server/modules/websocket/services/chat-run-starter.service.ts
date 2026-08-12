@@ -28,7 +28,7 @@ export type ProviderSpawnFn = (
 export function filterImagesToUploadStore(images: unknown, assetsRootOverride?: string): AnyRecord[] {
   const assetsRoot = path.resolve(assetsRootOverride ?? getGlobalImageAssetsDir());
 
-  return normalizeImageDescriptors(images).filter((descriptor) => {
+  return normalizeImageDescriptors(images).flatMap((descriptor) => {
     // Relative paths are anchored in the store; absolute ones must already be in it.
     const resolved = path.resolve(assetsRoot, descriptor.path);
     const relative = path.relative(assetsRoot, resolved);
@@ -41,8 +41,13 @@ export function filterImagesToUploadStore(images: unknown, assetsRootOverride?: 
 
     if (!isDirectChild) {
       console.warn(`[Chat] Dropping image outside the upload store: ${descriptor.path}`);
+      return [];
     }
-    return isDirectChild;
+
+    // Provider runtimes resolve paths relative to the project cwd. Return the
+    // canonical upload-store path so a valid bare filename remains valid for
+    // Pi's native image reader (and for the other path-based runtimes).
+    return [{ ...descriptor, path: resolved }];
   });
 }
 

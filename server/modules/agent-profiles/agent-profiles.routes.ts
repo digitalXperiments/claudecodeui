@@ -2,7 +2,13 @@ import express from 'express';
 
 import {
   agentRunProfilesDb,
+  isSwarmProfileLevel,
+  isSwarmProfileRole,
+  SWARM_PROFILE_LEVELS,
+  SWARM_PROFILE_ROLES,
   type CreateAgentRunProfileInput,
+  type SwarmProfileLevel,
+  type SwarmProfileRole,
   type UpdateAgentRunProfileInput,
 } from '@/modules/database/index.js';
 import { compilePermissionsWithClaude } from '@/modules/agent-profiles/compile-permissions-claude.service.js';
@@ -16,7 +22,6 @@ const KNOWN_PROVIDERS: readonly LLMProvider[] = [
   'opencode',
   'grok',
   'kimi',
-  'agy',
   'pi',
 ];
 
@@ -66,10 +71,94 @@ function parseTools(value: unknown): CreateAgentRunProfileInput['tools'] | undef
   return { allowedCommands: allowed, disallowedCommands: disallowed };
 }
 
+/** Validates a swarmRoles payload: must be an array of known role strings. */
+function parseSwarmRoles(value: unknown): SwarmProfileRole[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) {
+    throw new AppError('swarmRoles must be an array', {
+      code: 'AGENT_PROFILE_INVALID_SWARM_ROLES',
+      statusCode: 400,
+    });
+  }
+  const invalid = value.filter((role) => !isSwarmProfileRole(role));
+  if (invalid.length > 0) {
+    throw new AppError(
+      `Invalid swarm role(s): ${invalid.map(String).join(', ')}. Valid roles: ${SWARM_PROFILE_ROLES.join(', ')}`,
+      {
+        code: 'AGENT_PROFILE_INVALID_SWARM_ROLES',
+        statusCode: 400,
+      },
+    );
+  }
+  return [...new Set(value as SwarmProfileRole[])];
+}
+
+/** Validates an enabled payload: must be a boolean when present. */
+function parseEnabled(value: unknown): boolean | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'boolean') {
+    throw new AppError('enabled must be a boolean', {
+      code: 'AGENT_PROFILE_INVALID_ENABLED',
+      statusCode: 400,
+    });
+  }
+  return value;
+}
+
+/** Validates a swarmLevel payload: one of basic | medium | advanced. */
+function parseSwarmLevel(value: unknown): SwarmProfileLevel | undefined {
+  if (value === undefined) return undefined;
+  if (!isSwarmProfileLevel(value)) {
+    throw new AppError(
+      `Invalid swarm level: ${String(value) || '(empty)'}. Valid levels: ${SWARM_PROFILE_LEVELS.join(', ')}`,
+      {
+        code: 'AGENT_PROFILE_INVALID_SWARM_LEVEL',
+        statusCode: 400,
+      },
+    );
+  }
+  return value;
+}
+
+function validateSwarmLevelFilter(value: unknown): SwarmProfileLevel {
+  const level = readString(value).trim();
+  if (!isSwarmProfileLevel(level)) {
+    throw new AppError(
+      `Invalid minSwarmLevel filter: ${level || '(empty)'}. Valid levels: ${SWARM_PROFILE_LEVELS.join(', ')}`,
+      {
+        code: 'AGENT_PROFILE_INVALID_SWARM_LEVEL',
+        statusCode: 400,
+      },
+    );
+  }
+  return level;
+}
+
+function validateSwarmRoleFilter(value: unknown): SwarmProfileRole {
+  const role = readString(value).trim();
+  if (!isSwarmProfileRole(role)) {
+    throw new AppError(
+      `Invalid swarmRole filter: ${role || '(empty)'}. Valid roles: ${SWARM_PROFILE_ROLES.join(', ')}`,
+      {
+        code: 'AGENT_PROFILE_INVALID_SWARM_ROLES',
+        statusCode: 400,
+      },
+    );
+  }
+  return role;
+}
+
 router.get(
   '/',
-  asyncHandler(async (_req, res) => {
-    const profiles = agentRunProfilesDb.ensureSeedProfiles();
+  asyncHandler(async (req, res) => {
+    agentRunProfilesDb.ensureSeedProfiles();
+    const swarmRoleParam = req.query.swarmRole;
+    const minLevelParam = req.query.minSwarmLevel;
+    const profiles = agentRunProfilesDb.list({
+      swarmRole: swarmRoleParam === undefined ? undefined : validateSwarmRoleFilter(swarmRoleParam),
+      minSwarmLevel:
+        minLevelParam === undefined ? undefined : validateSwarmLevelFilter(minLevelParam),
+    });
     res.json({ success: true, profiles });
   }),
 );
@@ -125,6 +214,9 @@ router.post(
       tools: parseTools(body.tools),
       permissionIntent:
         readOptionalString(body.permissionIntent) ?? readOptionalString(body.permission_intent),
+      swarmRoles: parseSwarmRoles(body.swarmRoles ?? body.swarm_roles),
+      swarmLevel: parseSwarmLevel(body.swarmLevel ?? body.swarm_level),
+      enabled: parseEnabled(body.enabled),
     };
     const profile = agentRunProfilesDb.create(input);
     res.status(201).json({ success: true, profile });
@@ -159,6 +251,15 @@ router.put(
     if (body.permissionIntent !== undefined || body.permission_intent !== undefined) {
       patch.permissionIntent =
         readOptionalString(body.permissionIntent) ?? readOptionalString(body.permission_intent) ?? '';
+    }
+    if (body.swarmRoles !== undefined || body.swarm_roles !== undefined) {
+      patch.swarmRoles = parseSwarmRoles(body.swarmRoles ?? body.swarm_roles) ?? [];
+    }
+    if (body.swarmLevel !== undefined || body.swarm_level !== undefined) {
+      patch.swarmLevel = parseSwarmLevel(body.swarmLevel ?? body.swarm_level);
+    }
+    if (body.enabled !== undefined) {
+      patch.enabled = parseEnabled(body.enabled);
     }
     const profile = agentRunProfilesDb.update(profileId, patch);
     if (!profile) {

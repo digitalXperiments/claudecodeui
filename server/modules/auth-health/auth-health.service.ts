@@ -39,7 +39,6 @@ export const REAUTH_HINTS: Record<string, string> = {
   opencode: 'opencode auth login',
   grok: 'grok login',
   kimi: 'kimi login',
-  agy: 'agy',
   pi: 'pi (then /login)',
 };
 

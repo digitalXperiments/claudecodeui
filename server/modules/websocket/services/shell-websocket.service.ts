@@ -371,23 +371,6 @@ export function buildShellCommand(
     return `kimi${modeFlag}`;
   }
 
-  if (provider === 'agy') {
-    // Same flag mapping as agy-cli.js: plan -> --mode plan, acceptEdits ->
-    // --mode accept-edits, bypassPermissions -> --dangerously-skip-permissions.
-    let modeArgs = '';
-    if (permissionMode === 'plan') {
-      modeArgs = ' --mode plan';
-    } else if (permissionMode === 'acceptEdits') {
-      modeArgs = ' --mode accept-edits';
-    } else if (permissionMode === 'bypassPermissions') {
-      modeArgs = ' --dangerously-skip-permissions';
-    }
-    if (resumeSessionId) {
-      return `agy --conversation "${resumeSessionId}"${modeArgs}`;
-    }
-    return `agy${modeArgs}`;
-  }
-
   if (provider === 'pi') {
     // Plan mode maps to Pi's read-only tool allowlist (see buildPiSpawnArgs in
     // pi-cli.js); everything else keeps the full default tool set.
@@ -863,11 +846,9 @@ export function handleShellConnection(
                     ? 'Grok Build'
                     : provider === 'kimi'
                       ? 'Kimi'
-                      : provider === 'agy'
-                        ? 'Antigravity'
-                        : provider === 'pi'
-                          ? 'Pi'
-                          : 'Claude';
+                      : provider === 'pi'
+                        ? 'Pi'
+                        : 'Claude';
           welcomeMsg = hasSession && resumeSessionId
             ? provider === 'grok'
               ? `\x1b[36mResuming ${providerName} session ${resumeSessionId} in: ${projectPath}\x1b[0m\r\n` +

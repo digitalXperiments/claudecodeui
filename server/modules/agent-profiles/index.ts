@@ -2,6 +2,8 @@ export { default as agentProfilesRoutes } from '@/modules/agent-profiles/agent-p
 export {
   agentRunProfilesDb,
   compilePermissionIntent,
+  isSwarmProfileRole,
+  SWARM_PROFILE_ROLES,
 } from '@/modules/database/index.js';
 export {
   compilePermissionsWithClaude,
@@ -9,6 +11,7 @@ export {
 export type {
   AgentRunProfile,
   CreateAgentRunProfileInput,
+  SwarmProfileRole,
   UpdateAgentRunProfileInput,
 } from '@/modules/database/index.js';
 export type {

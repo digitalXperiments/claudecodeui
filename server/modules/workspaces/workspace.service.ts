@@ -3,11 +3,11 @@
  * worktrees, with a `sandbox_copy` fallback for non-git projects.
  *
  * Invariants enforced here:
- * - Path policy (§5.4): roots only under `<project>/.cloudcli/worktrees/` or
- *   `<tmpRoot>/worktrees/<project_id>/`; workspace ids are charset-validated
- *   and resolved paths prefix-checked (path traversal guard).
- * - Per-project async mutex around worktree add/remove/merge.
- * - `.cloudcli/worktrees/` kept in the project `.gitignore`.
+ * - Path policy (§5.4): roots only under `<project>/.worktrees/` (plus the
+ *   legacy read-compatible root) or `<tmpRoot>/worktrees/<project_id>/`;
+ *   workspace ids are charset-validated and paths prefix-checked.
+ * - Per-project in-process + cross-process lock around add/remove/merge.
+ * - `.worktrees/` kept in the repository-private `.git/info/exclude`.
  * - Never `git checkout` / `git switch` on the primary project path.
  */
 
@@ -18,13 +18,18 @@ import {
   mkdir,
   open,
   readFile,
+  readlink,
   readdir,
   realpath,
+  rename,
   rm,
   stat,
   symlink,
   writeFile,
 } from 'node:fs/promises';
+import { constants as fsConstants, realpathSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { hostname } from 'node:os';
 import path from 'node:path';
 
 import { projectsDb } from '@/modules/database/index.js';
@@ -57,24 +62,35 @@ import type {
  * legacy `<project>/.cloudcli/worktrees/` root, which stays allowed for reads.
  */
 const WORKTREES_DIRNAME = '.worktrees';
-const GITIGNORE_ENTRY = `${WORKTREES_DIRNAME}/`;
+const GIT_EXCLUDE_ENTRY = `${WORKTREES_DIRNAME}/`;
 const WORKSPACE_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
 const WORKTREES_MARKER = `${path.sep}${WORKTREES_DIRNAME}${path.sep}`;
 const LEGACY_WORKTREES_MARKER = `${path.sep}.cloudcli${path.sep}worktrees${path.sep}`;
 /** Scratch dir every workspace gets, per the strict `tmp/cloudcli/` temp rule. */
 const SCRATCH_SUBPATH = ['tmp', 'cloudcli'];
+const DEFAULT_LOCK_WAIT_MS = 15_000;
+const DEFAULT_LOCK_STALE_MS = 5 * 60_000;
+const DEFAULT_LOCK_RETRY_MS = 50;
+
+type LockOwner = {
+  token: string;
+  pid: number;
+  hostname: string;
+  acquired_at: string;
+};
 
 /** In-process per-project mutex (promise chain) for worktree add/remove/merge. */
 const projectLocks = new Map<string, Promise<void>>();
 
 /**
- * Cross-process file lock under `<project>/.cloudcli/locks/<name>.lock`
- * (PRD §5.5). Best-effort: if the project path is missing we still use the
- * in-process mutex so single-process tests keep working.
+ * Cross-process lease under `<project>/.cloudcli/locks/<name>.lock`
+ * (PRD §5.5). Acquisition is exclusive, ownership is tokenised, a heartbeat
+ * enables stale recovery, and waiting is bounded.
  */
 async function acquireFileLock(
   projectPath: string | null,
   lockName: string,
+  options: { waitMs: number; staleMs: number; retryMs: number },
 ): Promise<() => Promise<void>> {
   if (!projectPath) {
     return async () => undefined;
@@ -82,30 +98,110 @@ async function acquireFileLock(
   const lockDir = path.join(projectPath, '.cloudcli', 'locks');
   const lockPath = path.join(lockDir, `${lockName}.lock`);
   await mkdir(lockDir, { recursive: true });
-  const handle = await open(lockPath, 'w');
-  try {
-    await handle.writeFile(`${process.pid}\n${new Date().toISOString()}\n`);
-  } catch {
-    // Contents are diagnostic only.
+  const deadline = Date.now() + options.waitMs;
+
+  for (;;) {
+    const owner: LockOwner = {
+      token: randomUUID(),
+      pid: process.pid,
+      hostname: hostname(),
+      acquired_at: new Date().toISOString(),
+    };
+    try {
+      // `wx` is the actual cross-process mutex: only one contender can create
+      // the pathname. Keeping the handle open also gives us a cheap heartbeat.
+      const handle = await open(lockPath, 'wx', 0o600);
+      try {
+        await handle.writeFile(`${JSON.stringify(owner)}\n`);
+        await handle.sync();
+      } catch (error) {
+        await handle.close().catch(() => undefined);
+        await rm(lockPath, { force: true }).catch(() => undefined);
+        throw error;
+      }
+      const heartbeatMs = Math.max(250, Math.floor(options.staleMs / 3));
+      const heartbeat = setInterval(() => {
+        const now = new Date();
+        void handle.utimes(now, now).catch(() => undefined);
+      }, heartbeatMs);
+      heartbeat.unref();
+
+      return async () => {
+        clearInterval(heartbeat);
+        try {
+          await handle.close();
+        } catch {
+          // The token check below is still authoritative.
+        }
+
+        // Rename first, then inspect the uniquely named file. This prevents an
+        // old owner from unlinking a replacement lock acquired at the same path.
+        const releasePath = `${lockPath}.release-${owner.token}`;
+        try {
+          await rename(lockPath, releasePath);
+        } catch {
+          return;
+        }
+        try {
+          const current = JSON.parse(await readFile(releasePath, 'utf8')) as Partial<LockOwner>;
+          if (current.token === owner.token) {
+            await rm(releasePath, { force: true }).catch(() => undefined);
+            return;
+          }
+          // We did not own the file we moved. Restore it if the lock pathname
+          // is free; never delete another process's lease.
+          await rename(releasePath, lockPath).catch(() => undefined);
+        } catch {
+          await rename(releasePath, lockPath).catch(() => undefined);
+        }
+      };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
+        throw error;
+      }
+    }
+
+    // Recover abandoned locks only after their heartbeat expires. Rename is
+    // atomic; inode verification prevents a stale observation from reaping a
+    // freshly replaced lease.
+    try {
+      const observed = await lstat(lockPath);
+      if (Date.now() - observed.mtimeMs > options.staleMs) {
+        const stalePath = `${lockPath}.stale-${randomUUID()}`;
+        await rename(lockPath, stalePath);
+        const moved = await lstat(stalePath);
+        if (moved.dev === observed.dev && moved.ino === observed.ino) {
+          await rm(stalePath, { force: true });
+          continue;
+        }
+        await rename(stalePath, lockPath).catch(() => undefined);
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        continue;
+      }
+      // Another contender may be recovering/releasing; retry until deadline.
+    }
+
+    if (Date.now() >= deadline) {
+      throw new CloudError(
+        'WORKSPACE_CREATE_FAILED',
+        `Timed out waiting ${options.waitMs}ms for workspace lock ${lockName}`,
+      );
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, options.retryMs));
   }
-  return async () => {
-    try {
-      await handle.close();
-    } catch {
-      // ignore
-    }
-    try {
-      await rm(lockPath, { force: true });
-    } catch {
-      // ignore
-    }
-  };
 }
 
 async function withProjectLock<T>(
   projectId: string,
   fn: () => Promise<T>,
   projectPathForFileLock?: string | null,
+  lockOptions: { waitMs: number; staleMs: number; retryMs: number } = {
+    waitMs: DEFAULT_LOCK_WAIT_MS,
+    staleMs: DEFAULT_LOCK_STALE_MS,
+    retryMs: DEFAULT_LOCK_RETRY_MS,
+  },
 ): Promise<T> {
   const tail = projectLocks.get(projectId) ?? Promise.resolve();
   let release!: () => void;
@@ -115,14 +211,22 @@ async function withProjectLock<T>(
   const newTail = tail.then(() => ours);
   projectLocks.set(projectId, newTail);
   await tail;
-  const releaseFile = await acquireFileLock(projectPathForFileLock ?? null, projectId);
+  let releaseFile: (() => Promise<void>) | undefined;
   try {
+    releaseFile = await acquireFileLock(
+      projectPathForFileLock ?? null,
+      projectId,
+      lockOptions,
+    );
     return await fn();
   } finally {
-    await releaseFile();
-    release();
-    if (projectLocks.get(projectId) === newTail) {
-      projectLocks.delete(projectId);
+    try {
+      await releaseFile?.();
+    } finally {
+      release();
+      if (projectLocks.get(projectId) === newTail) {
+        projectLocks.delete(projectId);
+      }
     }
   }
 }
@@ -156,6 +260,11 @@ async function realpathOrSelf(target: string): Promise<string> {
 export function createWorkspaceService(options: WorkspaceServiceOptions = {}): WorkspaceService {
   const onEvent: WorkspaceEventHandler = options.onEvent ?? (() => {});
   const tmpRoot = options.tmpRoot ?? path.resolve('tmp/cloudcli');
+  const lockOptions = {
+    waitMs: Math.max(1, options.lockWaitMs ?? DEFAULT_LOCK_WAIT_MS),
+    staleMs: Math.max(750, options.lockStaleMs ?? DEFAULT_LOCK_STALE_MS),
+    retryMs: Math.max(1, options.lockRetryMs ?? DEFAULT_LOCK_RETRY_MS),
+  };
 
   const emit = (type: WorkspaceEventType, workspace: AgentWorkspace): void => {
     try {
@@ -197,7 +306,7 @@ export function createWorkspaceService(options: WorkspaceServiceOptions = {}): W
 
   /**
    * Resolve the two allowed roots for a workspace and pick one. Preferred:
-   * `<project>/.cloudcli/worktrees/<id>`; fallback `<tmpRoot>/worktrees/<pid>/<id>`
+   * `<project>/.worktrees/<id>`; fallback `<tmpRoot>/worktrees/<pid>/<id>`
    * when the project directory is not writable. Anything else is refused.
    */
   const chooseRootPath = async (
@@ -237,46 +346,88 @@ export function createWorkspaceService(options: WorkspaceServiceOptions = {}): W
 
   /** Final traversal guard: the chosen root must stay inside an allowed root. */
   const assertRootAllowed = (rootPath: string, projectPath: string, projectId: string): void => {
-    const preferredRoot = path.resolve(projectPath, WORKTREES_DIRNAME) + path.sep;
-    const legacyRoot = path.resolve(projectPath, '.cloudcli', 'worktrees') + path.sep;
-    const fallbackRoot = path.resolve(tmpRoot, 'worktrees', projectId) + path.sep;
+    const allowedRoots = [
+      path.resolve(projectPath, WORKTREES_DIRNAME),
+      path.resolve(projectPath, '.cloudcli', 'worktrees'),
+      path.resolve(tmpRoot, 'worktrees', projectId),
+    ];
     const resolved = path.resolve(rootPath) + path.sep;
-    if (
-      !resolved.startsWith(preferredRoot) &&
-      !resolved.startsWith(legacyRoot) &&
-      !resolved.startsWith(fallbackRoot)
-    ) {
+    if (!allowedRoots.some((allowed) => resolved.startsWith(`${allowed}${path.sep}`))) {
       throw new CloudError(
         'WORKSPACE_CREATE_FAILED',
         `Workspace root escapes allowed roots: ${rootPath}`,
       );
     }
+
+    // Prefix checks alone are insufficient once a persisted path exists: a
+    // symlink inside `.worktrees/` could otherwise redirect Git operations to
+    // an arbitrary directory. Compare canonical paths whenever resolvable.
+    try {
+      const canonicalRoot = `${realpathSync.native(rootPath)}${path.sep}`;
+      const canonicalAllowed = allowedRoots.flatMap((allowed) => {
+        try {
+          return [`${realpathSync.native(allowed)}${path.sep}`];
+        } catch {
+          return [];
+        }
+      });
+      if (
+        canonicalAllowed.length > 0 &&
+        !canonicalAllowed.some((allowed) => canonicalRoot.startsWith(allowed))
+      ) {
+        throw new CloudError(
+          'WORKSPACE_CREATE_FAILED',
+          `Workspace root resolves outside allowed roots: ${rootPath}`,
+        );
+      }
+    } catch (error) {
+      if (error instanceof CloudError) throw error;
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        throw new CloudError(
+          'WORKSPACE_CREATE_FAILED',
+          `Cannot validate workspace root ${rootPath}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
   };
 
-  /** Ensure `.cloudcli/worktrees/` is gitignored in the project (§5.4). */
+  /** Resolve and validate persisted paths before any filesystem/git access. */
+  const assertWorkspaceRootAllowed = (workspace: AgentWorkspace): string => {
+    const projectPath = resolveProjectPath(workspace);
+    assertRootAllowed(workspace.root_path, projectPath, workspace.project_id);
+    return projectPath;
+  };
+
+  /** Ignore worktrees privately, without modifying the tracked `.gitignore`. */
   const ensureWorktreesGitignored = async (projectPath: string): Promise<void> => {
     try {
-      const gitignorePath = path.join(projectPath, '.gitignore');
+      const gitignorePath = await git.resolveGitPath(projectPath, 'info/exclude');
+      if (!gitignorePath) {
+        throw new Error('git did not resolve info/exclude');
+      }
       let existing = '';
       try {
         existing = await readFile(gitignorePath, 'utf8');
       } catch {
-        // No .gitignore yet — create one below.
+        // No private exclude file yet — create one below.
       }
       const covered = existing
         .split('\n')
         .map((line) => line.trim())
-        .some((line) => line === GITIGNORE_ENTRY || line === WORKTREES_DIRNAME);
+        .some((line) => line === GIT_EXCLUDE_ENTRY || line === WORKTREES_DIRNAME);
       if (covered) {
         return;
       }
-      const block = `# CloudCLI agent workspaces\n${GITIGNORE_ENTRY}\n`;
+      const block = `# CloudCLI agent workspaces\n${GIT_EXCLUDE_ENTRY}\n`;
+      await mkdir(path.dirname(gitignorePath), { recursive: true });
       await writeFile(
         gitignorePath,
         existing.length > 0 ? `${existing.trimEnd()}\n${block}` : block,
       );
     } catch (error) {
-      console.warn('[Workspaces] could not update .gitignore; continuing', {
+      console.warn('[Workspaces] could not update git info/exclude; continuing', {
         error: error instanceof Error ? error.message : String(error),
       });
     }
@@ -288,9 +439,9 @@ export function createWorkspaceService(options: WorkspaceServiceOptions = {}): W
    * - `tmp/cloudcli/` exists, because it is gitignored and therefore never
    *   materialises in a new worktree — tests that `mkdtemp` into it otherwise
    *   fail en masse with ENOENT (see [[tmp-cloudcli-temp-rule]]).
-   * - `node_modules` is symlinked to the primary checkout so agents can run
-   *   typecheck/tests/build without a multi-minute install. Skipped when the
-   *   workspace already has its own (a real install wins over the link).
+   * - `node_modules` is cloned into the workspace with copy-on-write hints.
+   *   It stays immediately usable without granting agents a writable path
+   *   into the primary checkout's dependency tree.
    *
    * Best-effort throughout: a workspace that cannot be pre-warmed is still a
    * valid workspace, so failures are logged and swallowed.
@@ -308,21 +459,45 @@ export function createWorkspaceService(options: WorkspaceServiceOptions = {}): W
       });
     }
 
-    const linkPath = path.join(rootPath, 'node_modules');
+    const workspaceModules = path.join(rootPath, 'node_modules');
     const targetPath = path.join(projectPath, 'node_modules');
     try {
-      if (path.resolve(linkPath) === path.resolve(targetPath)) {
-        return; // Workspace is the primary checkout; nothing to link.
+      if (path.resolve(workspaceModules) === path.resolve(targetPath)) {
+        return; // Workspace is the primary checkout; nothing to clone.
       }
       if (!(await pathExists(targetPath))) {
         return; // Primary has no install to share.
       }
-      if (await pathExists(linkPath)) {
-        return; // Already present (real dir or prior link).
+      if (await pathExists(workspaceModules)) {
+        return; // Already present (real install or prior clone).
       }
-      await symlink(targetPath, linkPath, 'dir');
+
+      const sourceRoot = path.resolve(targetPath);
+      const copyDependencyEntry = async (source: string, destination: string): Promise<void> => {
+        const info = await lstat(source);
+        if (info.isDirectory()) {
+          await mkdir(destination, { recursive: true });
+          for (const entry of await readdir(source)) {
+            await copyDependencyEntry(path.join(source, entry), path.join(destination, entry));
+          }
+          return;
+        }
+        if (info.isFile()) {
+          await copyFile(source, destination, fsConstants.COPYFILE_FICLONE);
+          return;
+        }
+        if (info.isSymbolicLink()) {
+          const target = await readlink(source);
+          const resolvedTarget = path.resolve(path.dirname(source), target);
+          if (resolvedTarget === sourceRoot || resolvedTarget.startsWith(`${sourceRoot}${path.sep}`)) {
+            await symlink(target, destination);
+          }
+        }
+      };
+      await copyDependencyEntry(targetPath, workspaceModules);
     } catch (error) {
-      console.warn('[Workspaces] could not link node_modules into workspace; continuing', {
+      await rm(workspaceModules, { recursive: true, force: true }).catch(() => undefined);
+      console.warn('[Workspaces] could not clone node_modules into workspace; continuing', {
         rootPath,
         error: error instanceof Error ? error.message : String(error),
       });
@@ -426,9 +601,7 @@ export function createWorkspaceService(options: WorkspaceServiceOptions = {}): W
       assertRootAllowed(rootPath, projectPath, input.projectId);
 
       if (mode === 'sandbox_copy') {
-        await copySandboxTree(projectPath, rootPath);
-        await prepareWorkspaceScratch(projectPath, rootPath);
-        const workspace = workspaceDb.insert({
+        workspaceDb.insert({
           workspace_id: workspaceId,
           project_id: input.projectId,
           run_id: input.runId ?? null,
@@ -439,10 +612,24 @@ export function createWorkspaceService(options: WorkspaceServiceOptions = {}): W
           base_sha: null,
           feature_branch: '',
           head_sha: null,
-          status: 'active',
+          status: 'error',
+          last_error: 'workspace provisioning in progress',
         });
-        emit('workspace.created', workspace);
-        return workspace;
+        try {
+          await copySandboxTree(projectPath, rootPath);
+          await prepareWorkspaceScratch(projectPath, rootPath);
+          workspaceDb.setStatus(workspaceId, 'active');
+          const workspace = requireWorkspace(workspaceId);
+          emit('workspace.created', workspace);
+          return workspace;
+        } catch (error) {
+          const message = `sandbox provisioning failed: ${
+            error instanceof Error ? error.message : String(error)
+          }`;
+          workspaceDb.setStatus(workspaceId, 'error', message);
+          emit('workspace.error', requireWorkspace(workspaceId));
+          throw new CloudError('WORKSPACE_CREATE_FAILED', message);
+        }
       }
 
       const baseBranch =
@@ -459,20 +646,8 @@ export function createWorkspaceService(options: WorkspaceServiceOptions = {}): W
       const featureBranch =
         input.branchName ?? `feat/${slugify(input.taskId ?? input.runId ?? workspaceId)}`;
 
-      const add = (await git.branchExists(projectPath, featureBranch))
-        ? await git.worktreeAddExisting(projectPath, rootPath, featureBranch)
-        : await git.worktreeAdd(projectPath, rootPath, featureBranch, baseSha);
-      if (add.code !== 0) {
-        await rm(rootPath, { recursive: true, force: true });
-        throw new CloudError(
-          'WORKSPACE_CREATE_FAILED',
-          `git worktree add failed: ${add.stderr.trim().slice(0, 500)}`,
-        );
-      }
       await ensureWorktreesGitignored(projectPath);
-      await prepareWorkspaceScratch(projectPath, rootPath);
-
-      const workspace = workspaceDb.insert({
+      workspaceDb.insert({
         workspace_id: workspaceId,
         project_id: input.projectId,
         run_id: input.runId ?? null,
@@ -482,13 +657,34 @@ export function createWorkspaceService(options: WorkspaceServiceOptions = {}): W
         base_branch: baseBranch,
         base_sha: baseSha,
         feature_branch: featureBranch,
-        head_sha: baseSha,
-        status: 'active',
+        head_sha: null,
+        status: 'error',
+        last_error: 'workspace provisioning in progress',
       });
-      emit('workspace.created', workspace);
-      return workspace;
+      try {
+        const add = (await git.branchExists(projectPath, featureBranch))
+          ? await git.worktreeAddExisting(projectPath, rootPath, featureBranch)
+          : await git.worktreeAdd(projectPath, rootPath, featureBranch, baseSha);
+        if (add.code !== 0) {
+          throw new Error(`git worktree add failed: ${add.stderr.trim().slice(0, 500)}`);
+        }
+        await prepareWorkspaceScratch(projectPath, rootPath);
+        workspaceDb.setHeadSha(workspaceId, await git.revParse(rootPath, 'HEAD'));
+        workspaceDb.setStatus(workspaceId, 'active');
+        const workspace = requireWorkspace(workspaceId);
+        emit('workspace.created', workspace);
+        return workspace;
+      } catch (error) {
+        const message = `git workspace provisioning failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`;
+        workspaceDb.setStatus(workspaceId, 'error', message);
+        emit('workspace.error', requireWorkspace(workspaceId));
+        throw new CloudError('WORKSPACE_CREATE_FAILED', message);
+      }
       },
       projectPath,
+      lockOptions,
     );
   };
 
@@ -499,6 +695,7 @@ export function createWorkspaceService(options: WorkspaceServiceOptions = {}): W
 
   const refreshStatus = async (workspaceId: string): Promise<WorkspaceStatus> => {
     const workspace = requireWorkspace(workspaceId);
+    assertWorkspaceRootAllowed(workspace);
     const empty: WorkspaceStatus = {
       workspace_id: workspaceId,
       status: workspace.status,
@@ -544,6 +741,7 @@ export function createWorkspaceService(options: WorkspaceServiceOptions = {}): W
 
   const getDiff = async (workspaceId: string, opts?: GetDiffOptions): Promise<DiffResult> => {
     const workspace = requireWorkspace(workspaceId);
+    assertWorkspaceRootAllowed(workspace);
     if (workspace.mode === 'sandbox_copy') {
       return { files: [], summary: { additions: 0, deletions: 0 } };
     }
@@ -583,7 +781,7 @@ export function createWorkspaceService(options: WorkspaceServiceOptions = {}): W
         `Workspace ${workspaceId} is not mergeable in status "${workspace.status}"`,
       );
     }
-    const projectPath = resolveProjectPath(workspace);
+    const projectPath = assertWorkspaceRootAllowed(workspace);
     return withProjectLock(
       workspace.project_id,
       async () => {
@@ -638,13 +836,17 @@ export function createWorkspaceService(options: WorkspaceServiceOptions = {}): W
       return { merged: true, strategy, status: merged.status, merge_sha: mergeSha };
       },
       projectPath,
+      lockOptions,
     );
   };
 
   const discard = async (workspaceId: string, opts?: DiscardOptions): Promise<void> => {
     const workspace = requireWorkspace(workspaceId);
     const projectPath =
-      workspace.mode === 'git_worktree' ? resolveProjectPath(workspace) : null;
+      workspace.mode === 'git_worktree' ? assertWorkspaceRootAllowed(workspace) : null;
+    if (workspace.mode === 'sandbox_copy') {
+      assertWorkspaceRootAllowed(workspace);
+    }
     await withProjectLock(
       workspace.project_id,
       async () => {
@@ -662,6 +864,7 @@ export function createWorkspaceService(options: WorkspaceServiceOptions = {}): W
       emit('workspace.discarded', requireWorkspace(workspaceId));
       },
       projectPath ?? resolveProjectPath(workspace),
+      lockOptions,
     );
   };
 
@@ -669,7 +872,10 @@ export function createWorkspaceService(options: WorkspaceServiceOptions = {}): W
   const cleanup = async (workspaceId: string): Promise<void> => {
     const workspace = requireWorkspace(workspaceId);
     const projectPath =
-      workspace.mode === 'git_worktree' ? resolveProjectPath(workspace) : null;
+      workspace.mode === 'git_worktree' ? assertWorkspaceRootAllowed(workspace) : null;
+    if (workspace.mode === 'sandbox_copy') {
+      assertWorkspaceRootAllowed(workspace);
+    }
     await withProjectLock(
       workspace.project_id,
       async () => {
@@ -683,10 +889,15 @@ export function createWorkspaceService(options: WorkspaceServiceOptions = {}): W
       emit('workspace.cleaned', requireWorkspace(workspaceId));
       },
       projectPath ?? resolveProjectPath(workspace),
+      lockOptions,
     );
   };
 
-  const resolveCwd = (workspaceId: string): string => requireWorkspace(workspaceId).root_path;
+  const resolveCwd = (workspaceId: string): string => {
+    const workspace = requireWorkspace(workspaceId);
+    assertWorkspaceRootAllowed(workspace);
+    return workspace.root_path;
+  };
 
   const bindRun = (workspaceId: string, runId: string | null): AgentWorkspace => {
     requireWorkspace(workspaceId);
@@ -709,6 +920,21 @@ export function createWorkspaceService(options: WorkspaceServiceOptions = {}): W
     const orphaned: AgentWorkspace[] = [];
 
     for (const workspace of rows) {
+      try {
+        assertWorkspaceRootAllowed(workspace);
+      } catch (error) {
+        workspaceDb.setStatus(
+          workspace.workspace_id,
+          'orphan',
+          `workspace path is outside allowed roots: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+        const updated = requireWorkspace(workspace.workspace_id);
+        emit('workspace.orphaned', updated);
+        orphaned.push(updated);
+        continue;
+      }
       let missing = !(await pathExists(workspace.root_path));
       if (!missing && workspace.mode === 'git_worktree') {
         let listed = worktreesByProject.get(workspace.project_id);

@@ -37,7 +37,7 @@ function openAlert(provider: string, notificationId = `note-${provider}`): AuthH
 }
 
 test('REAUTH_HINTS covers every known provider', () => {
-  for (const provider of ['claude', 'codex', 'cursor', 'opencode', 'grok', 'kimi', 'agy', 'pi']) {
+  for (const provider of ['claude', 'codex', 'cursor', 'opencode', 'grok', 'kimi', 'pi']) {
     assert.ok(REAUTH_HINTS[provider], `missing reauth hint for ${provider}`);
   }
 });

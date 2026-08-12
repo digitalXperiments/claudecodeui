@@ -32,7 +32,6 @@ const PROVIDER_BINARIES: Record<string, string> = {
   opencode: 'opencode',
   grok: 'grok',
   kimi: 'kimi',
-  agy: 'agy',
   pi: 'pi',
 };
 

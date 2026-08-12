@@ -10,6 +10,9 @@ import {
   buildTrelloTasksSectionInput,
   ensureTrelloTasksSection,
   ensureMissionControlSeedSections,
+  isSeedSuppressed,
+  MC_SEED_KEYS,
+  suppressSeedByTitle,
   TRELLO_TASKS_SECTION_TITLE,
 } from '@/modules/mission-control/mission-control-seed.service.js';
 import type { TrelloSeedBoardConfig } from '@/modules/mission-control/mission-control-seed.config.js';
@@ -127,6 +130,29 @@ test('Trello Tasks seed creates once and is idempotent when configured', async (
 
       const all = missionControlDb.listSections().filter((s) => s.title === TRELLO_TASKS_SECTION_TITLE);
       assert.equal(all.length, 1);
+    });
+  });
+});
+
+test('deleting Trello Tasks stays deleted across re-ensure', async () => {
+  await withIsolatedDatabase(async () => {
+    await withTrelloSeedConfig(FAKE_BOARD, async () => {
+      const first = ensureTrelloTasksSection();
+      assert.equal(first.created, true);
+      assert.ok(first.section);
+
+      suppressSeedByTitle(first.section!.title);
+      assert.equal(missionControlDb.deleteSection(first.section!.section_id), true);
+      assert.equal(isSeedSuppressed(MC_SEED_KEYS.trelloTasks), true);
+
+      const again = ensureTrelloTasksSection();
+      assert.equal(again.created, false);
+      assert.equal(again.suppressed, true);
+      assert.equal(again.section, null);
+      assert.equal(
+        missionControlDb.listSections().filter((s) => s.title === TRELLO_TASKS_SECTION_TITLE).length,
+        0,
+      );
     });
   });
 });

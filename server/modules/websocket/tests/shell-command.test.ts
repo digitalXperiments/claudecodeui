@@ -97,15 +97,6 @@ test('opencode mirrors resolveOpenCodePermissionOptions', () => {
   assert.ok(acceptEdits.includes('opencode'));
 });
 
-test('agy mirrors agy-cli.js flag mapping', () => {
-  assert.equal(build({ provider: 'agy', permissionMode: 'plan' }), 'agy --mode plan');
-  assert.equal(build({ provider: 'agy', permissionMode: 'acceptEdits' }), 'agy --mode accept-edits');
-  assert.equal(
-    build({ provider: 'agy', permissionMode: 'bypassPermissions' }),
-    'agy --dangerously-skip-permissions',
-  );
-});
-
 test('pi restricts tools in plan mode only', () => {
   assert.equal(
     build({ provider: 'pi', permissionMode: 'plan' }),
@@ -132,7 +123,7 @@ test('plain shells ignore the permission mode', () => {
 });
 
 test('identifies every provider-backed shell with an existing session', () => {
-  for (const provider of ['claude', 'cursor', 'codex', 'opencode', 'grok', 'kimi', 'agy', 'pi']) {
+  for (const provider of ['claude', 'cursor', 'codex', 'opencode', 'grok', 'kimi', 'pi']) {
     assert.equal(
       isAgentShellRequestWithExistingSession({
         provider,

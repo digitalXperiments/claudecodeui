@@ -148,4 +148,10 @@ export type WorkspaceServiceOptions = {
   onEvent?: WorkspaceEventHandler; // default: no-op
   /** Root for the tmp fallback (`<tmpRoot>/worktrees/<project_id>/<workspace_id>`). */
   tmpRoot?: string; // default: <cwd>/tmp/cloudcli
+  /** Maximum time to wait for another process's project workspace lock. */
+  lockWaitMs?: number;
+  /** A lock heartbeat older than this can be recovered after a crash. */
+  lockStaleMs?: number;
+  /** Delay between cross-process lock acquisition attempts. */
+  lockRetryMs?: number;
 };

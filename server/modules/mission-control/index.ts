@@ -58,9 +58,19 @@ export {
   ensureSwipeDigestSection,
   ensureTrelloTasksSection,
   ensureXArticlesSection,
+  suppressSeedByTitle,
+  clearSeedSuppressionByTitle,
+  isSeedSuppressed,
+  seedKeyForSectionTitle,
+  MC_SEED_KEYS,
+  MC_SEED_SUPPRESSIONS_KEY,
   TRELLO_TASKS_SECTION_TITLE,
   buildTrelloTasksSectionInput,
   getTrelloSeedConfigPath,
+} from '@/modules/mission-control/mission-control-seed.service.js';
+export type {
+  EnsureSectionResult,
+  McSeedKey,
 } from '@/modules/mission-control/mission-control-seed.service.js';
 export type { TrelloSeedBoardConfig } from '@/modules/mission-control/mission-control-seed.config.js';
 export * from '@/modules/mission-control/mission-control.types.js';

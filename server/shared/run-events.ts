@@ -68,6 +68,8 @@ export type CloudErrorCode =
   | 'SECRET_RESOLVE_FAILED'
   | 'INTERRUPT_NOT_FOUND'
   | 'INTERRUPT_ALREADY_RESOLVED'
+  | 'INTERRUPT_ACTION_REQUIRES_WAIT'
+  | 'INTERRUPT_EXPIRED'
   | 'PACK_BUDGET_EXCEEDED'
   | 'PLAYBOOK_NO_CANDIDATE'
   | 'SHIP_PR_FAILED'
@@ -145,4 +147,12 @@ export type SystemWsEvent =
   | { kind: 'interrupt_created' | 'interrupt_updated'; interrupt: unknown }
   | { kind: 'workspace_updated'; workspace: unknown }
   | { kind: 'secret_rotated'; secret_id: string }
-  | { kind: 'notification_created' };
+  | { kind: 'notification_created' }
+  | {
+      kind: 'swarm_updated';
+      swarm_id: string;
+      project_id: string;
+      status: string;
+      version: number;
+      updated_at: string;
+    };

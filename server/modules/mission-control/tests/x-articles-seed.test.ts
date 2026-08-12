@@ -7,8 +7,13 @@ import test from 'node:test';
 import { closeConnection, initializeDatabase } from '@/modules/database/index.js';
 import { missionControlDb } from '@/modules/mission-control/mission-control.repository.js';
 import {
+  clearSeedSuppressionByTitle,
   ensureArticleStudioSections,
+  ensureSwipeDigestSection,
   ensureXArticlesSection,
+  isSeedSuppressed,
+  MC_SEED_KEYS,
+  suppressSeedByTitle,
 } from '@/modules/mission-control/mission-control-seed.service.js';
 import { ensureArticleStudioWorkspace } from '@/modules/mission-control/article-studio.service.js';
 import { ARTICLE_STUDIO_MARKER } from '@/modules/mission-control/article-studio.templates.js';
@@ -156,13 +161,76 @@ test('a section pointed at a stale project is re-bound to the studio', async () 
 
     const rebound = ensureXArticlesSection(first.projectId);
     assert.equal(rebound.updated, true);
-    assert.equal(rebound.section.scope, 'project');
-    assert.equal(rebound.section.project_id, first.projectId);
+    assert.ok(rebound.section);
+    assert.equal(rebound.section!.scope, 'project');
+    assert.equal(rebound.section!.project_id, first.projectId);
 
     // User tuning survives the re-bind.
-    assert.equal(rebound.section.provider, 'grok');
-    assert.equal(rebound.section.schedule_cron, '0 7 * * 3');
-    assert.equal(rebound.section.enabled, false);
+    assert.equal(rebound.section!.provider, 'grok');
+    assert.equal(rebound.section!.schedule_cron, '0 7 * * 3');
+    assert.equal(rebound.section!.enabled, false);
+  });
+});
+
+test('deleting a seeded article section is sticky across re-ensure', async () => {
+  await withIsolatedDatabase(async (workspace) => {
+    const first = await ensureArticleStudioSections(workspace);
+    assert.equal(first.sections.length, 2);
+
+    const xArticles = first.sections.find((s) => s.title === X_ARTICLES_SECTION_TITLE)!;
+    const swipe = first.sections.find((s) => s.title === SWIPE_DIGEST_SECTION_TITLE)!;
+
+    // Mimic DELETE /sections/:id for both built-ins.
+    suppressSeedByTitle(xArticles.title);
+    suppressSeedByTitle(swipe.title);
+    assert.equal(missionControlDb.deleteSection(xArticles.section_id), true);
+    assert.equal(missionControlDb.deleteSection(swipe.section_id), true);
+
+    assert.equal(isSeedSuppressed(MC_SEED_KEYS.xArticles), true);
+    assert.equal(isSeedSuppressed(MC_SEED_KEYS.swipeDigest), true);
+
+    // Boot-time ensure must not resurrect them.
+    const again = await ensureArticleStudioSections(workspace);
+    assert.equal(again.sections.length, 0);
+    assert.equal(
+      missionControlDb.listSections().filter((s) => s.title === X_ARTICLES_SECTION_TITLE).length,
+      0,
+    );
+    assert.equal(
+      missionControlDb.listSections().filter((s) => s.title === SWIPE_DIGEST_SECTION_TITLE).length,
+      0,
+    );
+
+    const xResult = ensureXArticlesSection(again.projectId);
+    assert.equal(xResult.created, false);
+    assert.equal(xResult.suppressed, true);
+    assert.equal(xResult.section, null);
+
+    const swipeResult = ensureSwipeDigestSection(again.projectId);
+    assert.equal(swipeResult.created, false);
+    assert.equal(swipeResult.suppressed, true);
+    assert.equal(swipeResult.section, null);
+  });
+});
+
+test('manually re-creating a suppressed seed lifts the tombstone', async () => {
+  await withIsolatedDatabase(async (workspace) => {
+    const first = await ensureArticleStudioSections(workspace);
+    const section = first.sections.find((s) => s.title === X_ARTICLES_SECTION_TITLE)!;
+
+    suppressSeedByTitle(section.title);
+    missionControlDb.deleteSection(section.section_id);
+    assert.equal(isSeedSuppressed(MC_SEED_KEYS.xArticles), true);
+
+    // User clicks + and recreates with the same title (routes clear the flag).
+    clearSeedSuppressionByTitle(X_ARTICLES_SECTION_TITLE);
+    assert.equal(isSeedSuppressed(MC_SEED_KEYS.xArticles), false);
+
+    const restored = ensureXArticlesSection(first.projectId);
+    assert.equal(restored.created, true);
+    assert.equal(restored.suppressed, false);
+    assert.ok(restored.section);
+    assert.equal(restored.section!.title, X_ARTICLES_SECTION_TITLE);
   });
 });
 
