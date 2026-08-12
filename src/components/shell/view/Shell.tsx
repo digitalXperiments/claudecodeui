@@ -57,6 +57,7 @@ export default function Shell({
   const {
     terminalContainerRef,
     terminalRef,
+    fitAddonRef,
     wsRef,
     isConnected,
     isInitialized,
@@ -159,22 +160,41 @@ export default function Shell({
   }, [isConnected]);
 
   useEffect(() => {
-    if (!isActive || !isInitialized || !isConnected) {
+    if (!isActive || !isInitialized) {
       return;
     }
 
-    const focusTerminal = () => {
-      terminalRef.current?.focus();
+    // After CSS-hide, container was 0×0; fit once visible so cols/rows track layout.
+    const fitAndFocus = () => {
+      const fitAddon = fitAddonRef.current;
+      const terminal = terminalRef.current;
+      const container = terminalContainerRef.current;
+      if (fitAddon && terminal && container) {
+        const { width, height } = container.getBoundingClientRect();
+        if (width >= 2 && height >= 2) {
+          fitAddon.fit();
+          if (isConnected) {
+            sendSocketMessage(wsRef.current, {
+              type: 'resize',
+              cols: terminal.cols,
+              rows: terminal.rows,
+            });
+          }
+        }
+      }
+      if (isConnected) {
+        terminal?.focus();
+      }
     };
 
-    const animationFrameId = window.requestAnimationFrame(focusTerminal);
-    const timeoutId = window.setTimeout(focusTerminal, 0);
+    const animationFrameId = window.requestAnimationFrame(fitAndFocus);
+    const timeoutId = window.setTimeout(fitAndFocus, 0);
 
     return () => {
       window.cancelAnimationFrame(animationFrameId);
       window.clearTimeout(timeoutId);
     };
-  }, [isActive, isConnected, isInitialized, terminalRef]);
+  }, [isActive, isConnected, isInitialized, fitAddonRef, terminalContainerRef, terminalRef, wsRef]);
 
   const sendInput = useCallback(
     (data: string) => {

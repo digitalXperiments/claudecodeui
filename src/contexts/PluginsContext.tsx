@@ -1,5 +1,6 @@
-import { createContext, useCallback, useContext, useEffect, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
+import { useAuth } from '../components/auth/context/AuthContext';
 import { authenticatedFetch } from '../utils/api';
 
 export type Plugin = {
@@ -42,6 +43,7 @@ export function usePlugins() {
 }
 
 export function PluginsProvider({ children }: { children: ReactNode }) {
+  const { user, token, isLoading: isAuthLoading } = useAuth();
   const [plugins, setPlugins] = useState<Plugin[]>([]);
   const [loading, setLoading] = useState(true);
   const [pluginsError, setPluginsError] = useState<string | null>(null);
@@ -72,9 +74,21 @@ export function PluginsProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  // Protected endpoint — wait for auth to settle, then fetch only when
+  // authenticated. Firing on cold unauth loads of / and /login caused 401s.
   useEffect(() => {
+    if (isAuthLoading) {
+      return;
+    }
+    if (!user || !token) {
+      setPlugins([]);
+      setPluginsError(null);
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
     void refreshPlugins();
-  }, [refreshPlugins]);
+  }, [isAuthLoading, refreshPlugins, token, user]);
 
   const installPlugin = useCallback(async (url: string) => {
     try {
@@ -149,8 +163,22 @@ export function PluginsProvider({ children }: { children: ReactNode }) {
     }
   }, [refreshPlugins]);
 
+  const value = useMemo<PluginsContextValue>(
+    () => ({
+      plugins,
+      loading,
+      pluginsError,
+      refreshPlugins,
+      installPlugin,
+      uninstallPlugin,
+      updatePlugin,
+      togglePlugin,
+    }),
+    [plugins, loading, pluginsError, refreshPlugins, installPlugin, uninstallPlugin, updatePlugin, togglePlugin],
+  );
+
   return (
-    <PluginsContext.Provider value={{ plugins, loading, pluginsError, refreshPlugins, installPlugin, uninstallPlugin, updatePlugin, togglePlugin }}>
+    <PluginsContext.Provider value={value}>
       {children}
     </PluginsContext.Provider>
   );

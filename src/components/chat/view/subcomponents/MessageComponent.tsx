@@ -45,6 +45,60 @@ type InteractiveOption = {
 
 const COPY_HIDDEN_TOOL_NAMES = new Set(['Bash', 'Edit', 'Write', 'ApplyPatch']);
 
+/**
+ * Custom compare so stream ticks only re-render the message whose content
+ * actually changed. `normalizedToChatMessages` rebuilds new object identities
+ * for every row on each store notify; default shallow memo always fails.
+ */
+function areMessagePropsEqual(prev: MessageComponentProps, next: MessageComponentProps): boolean {
+  if (prev.showRawParameters !== next.showRawParameters) return false;
+  if (prev.showThinking !== next.showThinking) return false;
+  if (prev.provider !== next.provider) return false;
+  if (prev.createDiff !== next.createDiff) return false;
+  if (prev.onFileOpen !== next.onFileOpen) return false;
+  if (prev.onShowSettings !== next.onShowSettings) return false;
+  if (prev.onGrantToolPermission !== next.onGrantToolPermission) return false;
+  if (prev.selectedProject?.projectId !== next.selectedProject?.projectId) return false;
+
+  const pm = prev.message;
+  const nm = next.message;
+  if (pm === nm) {
+    // still need prevMessage for grouping
+  } else {
+    if (pm.id !== nm.id) return false;
+    if (pm.type !== nm.type) return false;
+    if (pm.content !== nm.content) return false;
+    if (pm.timestamp !== nm.timestamp) return false;
+    if (pm.displayText !== nm.displayText) return false;
+    if (pm.isToolUse !== nm.isToolUse) return false;
+    if (pm.isThinking !== nm.isThinking) return false;
+    if (pm.isStreaming !== nm.isStreaming) return false;
+    if (pm.isInteractivePrompt !== nm.isInteractivePrompt) return false;
+    if (pm.isTaskNotification !== nm.isTaskNotification) return false;
+    if (pm.taskStatus !== nm.taskStatus) return false;
+    if (pm.toolName !== nm.toolName) return false;
+    if (pm.toolId !== nm.toolId) return false;
+    if (pm.toolInput !== nm.toolInput) return false;
+    if (pm.isSubagentContainer !== nm.isSubagentContainer) return false;
+    if (pm.subagentState !== nm.subagentState) return false;
+    if (pm.images !== nm.images) {
+      if (!pm.images || !nm.images || pm.images.length !== nm.images.length) return false;
+    }
+    const ptr = pm.toolResult;
+    const ntr = nm.toolResult;
+    if (ptr !== ntr) {
+      if (!ptr || !ntr) return false;
+      if (ptr.content !== ntr.content || ptr.isError !== ntr.isError) return false;
+    }
+  }
+
+  const pp = prev.prevMessage;
+  const np = next.prevMessage;
+  if (pp === np) return true;
+  if (!pp || !np) return pp === np;
+  return pp.id === np.id && pp.type === np.type;
+}
+
 const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, showRawParameters, showThinking, selectedProject, provider }: MessageComponentProps) => {
   const { t } = useTranslation('chat');
   const isGrouped = prevMessage && prevMessage.type === message.type &&
@@ -406,7 +460,7 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
       )}
     </div>
   );
-});
+}, areMessagePropsEqual);
 
 export default MessageComponent;
 

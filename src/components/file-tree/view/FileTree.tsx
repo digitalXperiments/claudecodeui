@@ -122,7 +122,10 @@ export default function FileTree({ selectedProject, onFileOpen }: FileTreeProps)
     [t],
   );
 
-  if (loading) {
+  // Soft loading: only swap the whole tree for a skeleton when we have nothing
+  // to show yet (project switch / first open). Refresh keeps the previous tree
+  // and only spins the header refresh icon via the `loading` prop.
+  if (loading && files.length === 0) {
     return <FileTreeLoadingState />;
   }
 

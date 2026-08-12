@@ -303,10 +303,19 @@ export function useChatSessionState({
 
   const rewindMessages = useCallback((count: number) => setViewHiddenCount(count), []);
 
+  // Ignore scroll events caused by our own stick-to-bottom writes so the
+  // 50–100px near-bottom threshold does not thrash isUserScrolledUp mid-stream.
+  const isProgrammaticScrollRef = useRef(false);
+
   const scrollToBottom = useCallback(() => {
     const container = scrollContainerRef.current;
     if (!container) return;
+    isProgrammaticScrollRef.current = true;
     container.scrollTop = container.scrollHeight;
+    // Clear on next frame after the browser has applied scrollTop.
+    requestAnimationFrame(() => {
+      isProgrammaticScrollRef.current = false;
+    });
   }, []);
 
   const scrollToBottomAndReset = useCallback(() => {
@@ -318,11 +327,20 @@ export function useChatSessionState({
     }
   }, [allMessagesLoaded, scrollToBottom]);
 
+  // Hysteresis: enter "near bottom" within 100px; only leave after > 150px so
+  // stick-to-bottom does not fight the user at the threshold edge.
   const isNearBottom = useCallback(() => {
     const container = scrollContainerRef.current;
     if (!container) return false;
     const { scrollTop, scrollHeight, clientHeight } = container;
-    return scrollHeight - scrollTop - clientHeight < 50;
+    return scrollHeight - scrollTop - clientHeight < 100;
+  }, []);
+
+  const isClearlyScrolledUp = useCallback(() => {
+    const container = scrollContainerRef.current;
+    if (!container) return false;
+    const { scrollTop, scrollHeight, clientHeight } = container;
+    return scrollHeight - scrollTop - clientHeight > 150;
   }, []);
 
   const loadOlderMessages = useCallback(
@@ -379,8 +397,14 @@ export function useChatSessionState({
     const container = scrollContainerRef.current;
     if (!container) return;
 
-    const nearBottom = isNearBottom();
-    setIsUserScrolledUp(!nearBottom);
+    // Programmatic stick-to-bottom must not flip isUserScrolledUp.
+    if (!isProgrammaticScrollRef.current) {
+      if (isNearBottom()) {
+        setIsUserScrolledUp(false);
+      } else if (isClearlyScrolledUp()) {
+        setIsUserScrolledUp(true);
+      }
+    }
 
     const scrolledNearTop = container.scrollTop < 100;
 
@@ -409,7 +433,7 @@ export function useChatSessionState({
       const didLoad = await loadOlderMessages(container);
       if (didLoad) topLoadLockRef.current = true;
     }
-  }, [hasMoreMessages, isNearBottom, loadOlderMessages]);
+  }, [hasMoreMessages, isNearBottom, isClearlyScrolledUp, loadOlderMessages]);
 
   useLayoutEffect(() => {
     if (!pendingScrollRestoreRef.current || !scrollContainerRef.current) return;
@@ -747,14 +771,19 @@ export function useChatSessionState({
     scrollPositionRef.current = { height: container.scrollHeight, top: container.scrollTop };
   });
 
+  // Stick-to-bottom on both new rows and in-place stream content growth.
+  const lastMessageStickKey = chatMessages.length === 0
+    ? ''
+    : `${chatMessages.length}:${String(chatMessages[chatMessages.length - 1]?.id ?? '')}:${String(chatMessages[chatMessages.length - 1]?.content ?? '').length}`;
+
   useEffect(() => {
     if (!scrollContainerRef.current || chatMessages.length === 0) return;
     if (isLoadingMoreRef.current || isLoadingMoreMessages || pendingScrollRestoreRef.current) return;
     if (searchScrollActiveRef.current) return;
 
     if (!isUserScrolledUp) {
-      setTimeout(() => scrollToBottom(), 50);
-      return;
+      const frame = requestAnimationFrame(() => scrollToBottom());
+      return () => cancelAnimationFrame(frame);
     }
 
     const container = scrollContainerRef.current;
@@ -763,7 +792,7 @@ export function useChatSessionState({
     const newHeight = container.scrollHeight;
     const heightDiff = newHeight - prevHeight;
     if (heightDiff > 0 && prevTop > 0) container.scrollTop = prevTop + heightDiff;
-  }, [chatMessages.length, isLoadingMoreMessages, isUserScrolledUp, scrollToBottom]);
+  }, [lastMessageStickKey, chatMessages.length, isLoadingMoreMessages, isUserScrolledUp, scrollToBottom]);
 
   useEffect(() => {
     const container = scrollContainerRef.current;
