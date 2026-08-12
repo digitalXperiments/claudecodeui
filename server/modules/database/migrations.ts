@@ -705,6 +705,14 @@ const ensureRunSpineBridgeSchema = (db: Database): void => {
     const columns = getTableInfo(db, 'user_credentials').map((column) => column.name);
     addColumnToTableIfNotExists(db, 'user_credentials', columns, 'secret_id', 'TEXT');
   }
+  // Cache read/write token split, so cost estimation can price a cache hit
+  // far cheaper (and a cache write, which is NOT cheap, correctly) instead of
+  // folding both into the plain input total.
+  if (tableExists(db, 'agent_runs')) {
+    const columns = getTableInfo(db, 'agent_runs').map((column) => column.name);
+    addColumnToTableIfNotExists(db, 'agent_runs', columns, 'token_cache_read', 'INTEGER');
+    addColumnToTableIfNotExists(db, 'agent_runs', columns, 'token_cache_write', 'INTEGER');
+  }
 };
 
 /** Additive graph_json / step_states_json for workflow graphs on existing DBs. */

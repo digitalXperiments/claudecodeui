@@ -536,6 +536,8 @@ CREATE TABLE IF NOT EXISTS agent_runs (
     token_input         INTEGER,
     token_output        INTEGER,
     token_total         INTEGER,
+    token_cache_read    INTEGER,
+    token_cache_write   INTEGER,
     cost_usd_estimate   REAL,
     started_at          DATETIME,
     first_token_at      DATETIME,

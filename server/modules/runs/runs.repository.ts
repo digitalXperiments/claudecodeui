@@ -70,6 +70,8 @@ type RunRow = {
   token_input: number | null;
   token_output: number | null;
   token_total: number | null;
+  token_cache_read: number | null;
+  token_cache_write: number | null;
   cost_usd_estimate: number | null;
   started_at: string | null;
   first_token_at: string | null;
@@ -129,6 +131,8 @@ function mapRun(row: RunRow): AgentRun {
     token_input: row.token_input,
     token_output: row.token_output,
     token_total: row.token_total,
+    token_cache_read: row.token_cache_read,
+    token_cache_write: row.token_cache_write,
     cost_usd_estimate: row.cost_usd_estimate,
     started_at: row.started_at,
     first_token_at: row.first_token_at,
@@ -398,6 +402,8 @@ export const runsDb = {
         token_input = COALESCE(?, token_input),
         token_output = COALESCE(?, token_output),
         token_total = COALESCE(?, token_total),
+        token_cache_read = COALESCE(?, token_cache_read),
+        token_cache_write = COALESCE(?, token_cache_write),
         cost_usd_estimate = COALESCE(?, cost_usd_estimate),
         updated_at = ?
       WHERE run_id = ?`,
@@ -405,6 +411,8 @@ export const runsDb = {
       usage.input ?? null,
       usage.output ?? null,
       usage.total ?? null,
+      usage.cacheReadTokens ?? null,
+      usage.cacheCreationTokens ?? null,
       usage.costUsdEstimate ?? null,
       nowIso(),
       runId,

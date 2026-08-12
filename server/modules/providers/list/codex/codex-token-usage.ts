@@ -29,6 +29,8 @@ export type CodexTokenUsage = {
     output: number;
   };
   model?: string;
+  /** Subset of billedInputTokens that was a cache hit. Codex has no separate cache-write concept. */
+  cacheReadTokens?: number;
 };
 
 const readNumber = (value: unknown): number => {
@@ -146,5 +148,6 @@ export function buildCodexTokenUsage(options: {
     outputTokens: output,
     breakdown: { input, output },
     ...(model ? { model } : {}),
+    cacheReadTokens: total?.cachedInputTokens ?? last?.cachedInputTokens ?? 0,
   };
 }

@@ -48,6 +48,10 @@ export type ProviderUsageSnapshot = {
   output: number;
   /** Concrete resolved model, when the disk record carries one (e.g. Claude's session JSONL). */
   model?: string | null;
+  /** Subset of `input` that was a cheap cache re-read, when the provider reports it. */
+  cacheReadTokens?: number | null;
+  /** Subset of `input` that primed the cache — priced above the base rate, not below. */
+  cacheCreationTokens?: number | null;
   /**
    * A provider-reported real cost for this snapshot (e.g. OpenCode's own
    * `session.cost`) — takes precedence over any $/token estimate.
@@ -81,7 +85,18 @@ export function readTokenBudgetUsage(tokenBudget: unknown): ProviderUsageSnapsho
   const input = readCount(budget.billedInputTokens) ?? readCount(budget.inputTokens);
   const output = readCount(budget.billedOutputTokens) ?? readCount(budget.outputTokens);
   if (input == null && output == null) return null;
-  return { input: input ?? 0, output: output ?? 0 };
+  // Cache split, when the caller already normalized it onto these standard
+  // field names (Claude's builders do) — a subset of `input`, not additional
+  // tokens. Providers with differently-named raw fields normalize onto these
+  // same names in their own reader before this function ever sees them.
+  const cacheReadTokens = readCount(budget.cacheReadTokens);
+  const cacheCreationTokens = readCount(budget.cacheCreationTokens);
+  return {
+    input: input ?? 0,
+    output: output ?? 0,
+    ...(cacheReadTokens != null ? { cacheReadTokens } : {}),
+    ...(cacheCreationTokens != null ? { cacheCreationTokens } : {}),
+  };
 }
 
 /**
@@ -91,7 +106,12 @@ export function readTokenBudgetUsage(tokenBudget: unknown): ProviderUsageSnapsho
  * skip a redundant write on the many no-op snapshots a chatty provider sends.
  */
 export function mergeRunUsage(
-  current: { token_input: number | null; token_output: number | null },
+  current: {
+    token_input: number | null;
+    token_output: number | null;
+    token_cache_read?: number | null;
+    token_cache_write?: number | null;
+  },
   snapshot: ProviderUsageSnapshot,
   mode: UsageAccumulationMode,
 ): TokenUsage | null {
@@ -109,5 +129,23 @@ export function mergeRunUsage(
     current.token_output != null;
   if (unchanged) return null;
 
-  return { input, output, total: input + output };
+  const merged: TokenUsage = { input, output, total: input + output };
+  // Cache counts are a subset of `input` — merge with the same accumulation
+  // rule so they never end up inconsistent with the input total they're
+  // drawn from.
+  if (snapshot.cacheReadTokens != null) {
+    const currentCacheRead = current.token_cache_read ?? 0;
+    merged.cacheReadTokens =
+      mode === 'delta'
+        ? currentCacheRead + snapshot.cacheReadTokens
+        : Math.max(currentCacheRead, snapshot.cacheReadTokens);
+  }
+  if (snapshot.cacheCreationTokens != null) {
+    const currentCacheWrite = current.token_cache_write ?? 0;
+    merged.cacheCreationTokens =
+      mode === 'delta'
+        ? currentCacheWrite + snapshot.cacheCreationTokens
+        : Math.max(currentCacheWrite, snapshot.cacheCreationTokens);
+  }
+  return merged;
 }

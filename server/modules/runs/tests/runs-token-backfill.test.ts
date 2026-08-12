@@ -1042,3 +1042,82 @@ test('a live token_budget event computes cost alongside resolving the model', as
     await temp.restore();
   }
 });
+
+test('a live token_budget event with a cache split prices the cache read cheap and stores the split', async () => {
+  const temp = await useTempDatabase();
+  try {
+    seedSession({ sessionId: 'sess-live-cache', provider: 'claude', createdAt: '2026-07-12T00:00:00.000Z' });
+    const run = runService.create({
+      source: 'chat',
+      provider: 'claude',
+      model: 'claude-sonnet-5',
+      appSessionId: 'sess-live-cache',
+    });
+    // Pin inside the introductory rate window — recordProviderUsage prices
+    // off run.created_at, and this must not silently start asserting the
+    // wrong number once real wall-clock time passes 2026-09-01.
+    getConnection()
+      .prepare(`UPDATE agent_runs SET created_at = ? WHERE run_id = ?`)
+      .run('2026-07-12T00:00:00.000Z', run.run_id);
+
+    recordNormalizedRunEvent(
+      run.run_id,
+      tokenBudgetMessage('claude', {
+        billedInputTokens: 1_000_000,
+        billedOutputTokens: 0,
+        cacheReadTokens: 900_000,
+        cacheCreationTokens: 0,
+        model: 'claude-sonnet-5',
+      }),
+      'chat',
+    );
+
+    const updated = runService.get(run.run_id);
+    assert.equal(updated?.token_cache_read, 900_000);
+    // 100k plain @ $2/M + 900k cache-read @ $0.2/M = 0.2 + 0.18 = 0.38 — far
+    // below the $2 it would cost with no cache credit at all.
+    assert.equal(updated?.cost_usd_estimate, 0.38);
+  } finally {
+    await temp.restore();
+  }
+});
+
+test('readHistoricalSessionUsage recovers the cache split from a real claude session JSONL', async () => {
+  const temp = await useTempDatabase();
+  try {
+    const jsonlPath = path.join(temp.directory, 'claude-session.jsonl');
+    const lines = [
+      {
+        type: 'assistant',
+        message: {
+          model: 'claude-opus-5',
+          usage: {
+            input_tokens: 50_000,
+            cache_read_input_tokens: 900_000,
+            cache_creation_input_tokens: 50_000,
+            output_tokens: 2_000,
+          },
+        },
+      },
+    ];
+    await writeFile(jsonlPath, lines.map((line) => JSON.stringify(line)).join('\n'));
+
+    const session: BackfillSessionRow = {
+      session_id: 'sess-claude-cache-real',
+      provider: 'claude',
+      provider_session_id: 'sess-claude-cache-real',
+      project_path: null,
+      runtime_project_path: null,
+      jsonl_path: jsonlPath,
+      created_at: '2026-07-01T00:00:00.000Z',
+    };
+    const snapshot = await readHistoricalSessionUsage(session);
+    assert.ok(snapshot);
+    // Claude's own reader sums input_tokens + both cache fields into `input`.
+    assert.equal(snapshot!.input, 50_000 + 900_000 + 50_000);
+    assert.equal(snapshot!.cacheReadTokens, 900_000);
+    assert.equal(snapshot!.cacheCreationTokens, 50_000);
+  } finally {
+    await temp.restore();
+  }
+});

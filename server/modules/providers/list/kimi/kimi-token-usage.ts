@@ -35,17 +35,25 @@ export type KimiSessionTokenUsage = {
   model: string | null;
   provider: 'kimi';
   breakdown: { input: number; output: number };
+  /** Subset of inputTokens that was a cheap cache re-read. */
+  cacheReadTokens: number;
+  /** Subset of inputTokens that primed the cache — priced above base rate, not below. */
+  cacheCreationTokens: number;
 };
 
-function readUsageNumbers(usage: Record<string, unknown>): { input: number; output: number } {
-  const input =
-    Number(usage.inputOther || 0) +
-    Number(usage.inputCacheRead || 0) +
-    Number(usage.inputCacheCreation || 0);
+function readUsageNumbers(
+  usage: Record<string, unknown>,
+): { input: number; output: number; cacheRead: number; cacheCreation: number } {
+  const cacheRead = Number(usage.inputCacheRead || 0) || 0;
+  const cacheCreation = Number(usage.inputCacheCreation || 0) || 0;
+  // Subset of input, not additional — same rule as Claude/Codex/Grok.
+  const input = Number(usage.inputOther || 0) + cacheRead + cacheCreation;
   const output = Number(usage.output || 0);
   return {
     input: Number.isFinite(input) ? input : 0,
     output: Number.isFinite(output) ? output : 0,
+    cacheRead,
+    cacheCreation,
   };
 }
 
@@ -111,6 +119,8 @@ export function readKimiSessionTokenUsage(sessionDir: string): KimiSessionTokenU
   let lastInput = 0;
   let lastOutput = 0;
   let model: string | null = null;
+  let cacheReadSum = 0;
+  let cacheCreationSum = 0;
 
   try {
     const wireContent = fsSync.readFileSync(wirePath, 'utf8');
@@ -121,11 +131,15 @@ export function readKimiSessionTokenUsage(sessionDir: string): KimiSessionTokenU
         if (entry?.type !== 'usage.record' || !entry.usage || typeof entry.usage !== 'object') {
           continue;
         }
-        const { input, output } = readUsageNumbers(entry.usage as Record<string, unknown>);
+        const { input, output, cacheRead, cacheCreation } = readUsageNumbers(
+          entry.usage as Record<string, unknown>,
+        );
         inputSum += input;
         outputSum += output;
         lastInput = input;
         lastOutput = output;
+        cacheReadSum += cacheRead;
+        cacheCreationSum += cacheCreation;
         const entryModel = readOptionalString(entry.model);
         if (entryModel) {
           model = entryModel;
@@ -165,6 +179,8 @@ export function readKimiSessionTokenUsage(sessionDir: string): KimiSessionTokenU
     cumulativeUsed,
     model,
     provider: 'kimi',
+    cacheReadTokens: cacheReadSum,
+    cacheCreationTokens: cacheCreationSum,
     breakdown: {
       input: contextUsed > 0 ? contextUsed : inputSum,
       output: lastOutput,

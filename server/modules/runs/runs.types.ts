@@ -31,6 +31,10 @@ export type AgentRun = {
   token_input: number | null;
   token_output: number | null;
   token_total: number | null;
+  /** Cheap re-read of a previously-cached prompt prefix (folded into token_input). */
+  token_cache_read: number | null;
+  /** Priming the cache for later reads — priced ABOVE the base input rate, not below. */
+  token_cache_write: number | null;
   cost_usd_estimate: number | null;
   started_at: string | null;
   first_token_at: string | null;
@@ -80,6 +84,10 @@ export type TokenUsage = {
   input?: number | null;
   output?: number | null;
   total?: number | null;
+  /** Subset of `input` that was a cheap cache re-read, when the provider reports it. */
+  cacheReadTokens?: number | null;
+  /** Subset of `input` that primed the cache — priced above the base rate, not below. */
+  cacheCreationTokens?: number | null;
   costUsdEstimate?: number | null;
 };
 

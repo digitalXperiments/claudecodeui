@@ -174,6 +174,10 @@ export type GrokSessionTokenUsage = {
   provider: 'grok';
   /** Breakdown aligned with *context* (not lifetime bill). */
   breakdown: { input: number; output: number };
+  /** Subset of billedInputTokens that was a cheap cache re-read. */
+  cacheReadTokens: number;
+  /** Subset of billedInputTokens that primed the cache — priced above base rate, not below. */
+  cacheCreationTokens: number;
 };
 
 export function readGrokSessionTokenUsage(sessionDir: string): GrokSessionTokenUsage {
@@ -198,6 +202,8 @@ export function readGrokSessionTokenUsage(sessionDir: string): GrokSessionTokenU
   let cumulativeUsed = 0;
   let lastTurnInputTokens = 0;
   let lastTurnOutputTokens = 0;
+  let cacheReadTokens = 0;
+  let cacheCreationTokens = 0;
 
   try {
     const updatesContent = fsSync.readFileSync(path.join(sessionDir, 'updates.jsonl'), 'utf8');
@@ -218,6 +224,10 @@ export function readGrokSessionTokenUsage(sessionDir: string): GrokSessionTokenU
           cumulativeUsed += turnTotal > 0 ? turnTotal : turnIn + turnOut;
           lastTurnInputTokens = turnIn;
           lastTurnOutputTokens = turnOut;
+          // Subset of turnIn, not additional — verified against a live
+          // session file (cachedReadTokens < inputTokens).
+          cacheReadTokens += Number(usage.cachedReadTokens || 0) || 0;
+          cacheCreationTokens += Number(usage.cacheCreationTokens || 0) || 0;
         }
       } catch {
         // skip bad lines
@@ -260,6 +270,8 @@ export function readGrokSessionTokenUsage(sessionDir: string): GrokSessionTokenU
       input: contextUsed > 0 ? contextUsed : billedInputTokens,
       output: lastTurnOutputTokens,
     },
+    cacheReadTokens,
+    cacheCreationTokens,
   };
 }
 

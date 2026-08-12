@@ -553,7 +553,15 @@ function recordProviderUsage(runId: string, message: NormalizedMessage): void {
   // Price at the run's own start time, not wall-clock now — a long-running
   // run must keep the rate that was in effect when it started even if a
   // price change lands mid-session.
-  const cost = estimateCostUsd(provider, effectiveModel, merged.input, merged.output, run.created_at);
+  const cost = estimateCostUsd(
+    provider,
+    effectiveModel,
+    merged.input,
+    merged.output,
+    run.created_at,
+    merged.cacheReadTokens,
+    merged.cacheCreationTokens,
+  );
   if (cost != null) merged.costUsdEstimate = cost;
   runsDb.attachUsage(runId, merged);
 }

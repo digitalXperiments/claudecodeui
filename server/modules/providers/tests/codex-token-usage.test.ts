@@ -37,6 +37,7 @@ test('Codex usage separates current context from cumulative session usage', () =
     outputTokens: 1_321,
     breakdown: { input: 156_989, output: 1_321 },
     model: 'gpt-5.6-luna',
+    cacheReadTokens: 1_550_000,
   });
 });
 

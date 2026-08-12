@@ -183,7 +183,12 @@ function findLatestRunForSession(sessionId: string): AgentRun | null {
  * Returns null when the row would not change.
  */
 export function mergeBackfillUsage(
-  current: { token_input: number | null; token_output: number | null },
+  current: {
+    token_input: number | null;
+    token_output: number | null;
+    token_cache_read?: number | null;
+    token_cache_write?: number | null;
+  },
   snapshot: ProviderUsageSnapshot,
   costUsdEstimate?: number | null,
 ): TokenUsage | null {
@@ -197,6 +202,12 @@ export function mergeBackfillUsage(
   if (unchanged) return null;
   const merged: TokenUsage = { input, output, total: input + output };
   if (costUsdEstimate != null) merged.costUsdEstimate = costUsdEstimate;
+  if (snapshot.cacheReadTokens != null) {
+    merged.cacheReadTokens = Math.max(current.token_cache_read ?? 0, snapshot.cacheReadTokens);
+  }
+  if (snapshot.cacheCreationTokens != null) {
+    merged.cacheCreationTokens = Math.max(current.token_cache_write ?? 0, snapshot.cacheCreationTokens);
+  }
   return merged;
 }
 
@@ -213,7 +224,15 @@ function resolveSnapshotCost(
   atIso: string,
 ): number | null {
   if (snapshot.costUsdEstimate != null) return snapshot.costUsdEstimate;
-  return estimateCostUsd(provider, snapshot.model, snapshot.input, snapshot.output, atIso);
+  return estimateCostUsd(
+    provider,
+    snapshot.model,
+    snapshot.input,
+    snapshot.output,
+    atIso,
+    snapshot.cacheReadTokens,
+    snapshot.cacheCreationTokens,
+  );
 }
 
 function applyUsageToRun(run: AgentRun, snapshot: ProviderUsageSnapshot, costUsdEstimate: number | null): boolean {
@@ -270,6 +289,8 @@ function createSyntheticHistoryRun(
     output: snapshot.output,
     total: snapshot.input + snapshot.output,
     ...(costUsdEstimate != null ? { costUsdEstimate } : {}),
+    ...(snapshot.cacheReadTokens != null ? { cacheReadTokens: snapshot.cacheReadTokens } : {}),
+    ...(snapshot.cacheCreationTokens != null ? { cacheCreationTokens: snapshot.cacheCreationTokens } : {}),
   });
   const updated = runsDb.getById(run.run_id);
   if (!updated) {
@@ -462,7 +483,14 @@ function readOpenCodeHistoricalUsage(providerSessionId: string): ProviderUsageSn
     // OpenCode already computed and billed at its own real rate — trust its
     // number over any estimate from our own pricing table.
     const cost = typeof row.cost === 'number' && Number.isFinite(row.cost) && row.cost >= 0 ? row.cost : null;
-    return { input, output, model: parseOpenCodeModelId(row.model), costUsdEstimate: cost };
+    return {
+      input,
+      output,
+      model: parseOpenCodeModelId(row.model),
+      costUsdEstimate: cost,
+      cacheReadTokens: Number(row.cacheReadTokens || 0),
+      cacheCreationTokens: Number(row.cacheWriteTokens || 0),
+    };
   } catch {
     return null;
   } finally {
@@ -700,6 +728,8 @@ export async function resolveUnresolvedModels(
             output: current.token_output ?? 0,
             model: snapshot?.model ?? current.model,
             costUsdEstimate: snapshot?.costUsdEstimate,
+            cacheReadTokens: snapshot?.cacheReadTokens ?? current.token_cache_read,
+            cacheCreationTokens: snapshot?.cacheCreationTokens ?? current.token_cache_write,
           },
           normalizeSessionTimestamp(row.created_at) ?? current.created_at,
         );
@@ -744,7 +774,8 @@ export function backfillMissingCosts(
   const db = getConnection();
   const rows = db
     .prepare(
-      `SELECT run_id, provider, model, token_input, token_output, token_total, created_at
+      `SELECT run_id, provider, model, token_input, token_output, token_total,
+              token_cache_read, token_cache_write, created_at
        FROM agent_runs
        WHERE token_total IS NOT NULL
          AND model IS NOT NULL AND model != ''
@@ -759,6 +790,8 @@ export function backfillMissingCosts(
     token_input: number | null;
     token_output: number | null;
     token_total: number | null;
+    token_cache_read: number | null;
+    token_cache_write: number | null;
     created_at: string;
   }>;
 
@@ -767,7 +800,15 @@ export function backfillMissingCosts(
     // Price at the rate in effect when the run actually happened, not today's
     // rate — a provider price change must never retroactively reprice an old
     // run just because it's only now getting its first cost estimate.
-    const cost = estimateCostUsd(row.provider, row.model, row.token_input, row.token_output, row.created_at);
+    const cost = estimateCostUsd(
+      row.provider,
+      row.model,
+      row.token_input,
+      row.token_output,
+      row.created_at,
+      row.token_cache_read,
+      row.token_cache_write,
+    );
     if (cost == null) continue;
     runsDb.attachUsage(row.run_id, {
       input: row.token_input,
