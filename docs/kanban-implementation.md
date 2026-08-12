@@ -38,7 +38,7 @@ task **dependency graph** as the backbone.
 | Start-a-run (WS path) | `server/modules/websocket/services/chat-websocket.service.ts:141-220` `handleChatSend` → `spawnFn(command, runtimeOptions, run.writer)` | refactor to expose a headless starter |
 | Session create | `server/modules/providers/services/sessions.service.ts:123` `createAppSession(provider, projectPath)` | reuse verbatim |
 | Run completion | `chat-run-registry.service.ts` `completeRun`/`completeRunIfCurrent`; terminal `{kind:'complete', success, exitCode}` from `server/shared/utils.ts:365-381` | the automation trigger |
-| Per-provider permission syntax | claude `allowedTools[]`/`disallowedTools[]`; grok `--allow`/`--deny Bash(glob)`; cursor `-f`; codex sandbox/approval; opencode agent/env; kimi ACP; agy `--mode`/`--dangerously-skip-permissions` | store provider-native; don't invent |
+| Per-provider permission syntax | claude `allowedTools[]`/`disallowedTools[]`; grok `--allow`/`--deny Bash(glob)`; cursor `-f`; codex sandbox/approval; opencode agent/env; kimi ACP | store provider-native; don't invent |
 | Frontend tab | `AppTab` (`src/types/app.ts:27`) + `VALID_TABS` (`src/hooks/useProjectsState.ts:334`) + `MainContentTabSwitcher.tsx:34-68` + content switch in `MainContent.tsx` (~:206) | 4 edits to add a primary view |
 | Reusable stream UI | `ChatMessagesPane.tsx` fed by `src/stores/useSessionStore.ts` (keyed by sessionId) | embed in task detail |
 | Permission editor | `src/components/settings/.../agents-settings/sections/content/PermissionsContent.tsx` | reuse for allow/deny |
@@ -201,8 +201,8 @@ This is the riskiest refactor; do it in isolation.
   drag into a `runOnEnter` column, and a 1-minute cron.
 - Commit.
 
-### Phase 6 — All 7 providers + polish
-- Extend the runner to all providers via the same `spawnFns` map (grok/kimi/agy
+### Phase 6 — All providers + polish
+- Extend the runner to all providers via the same `spawnFns` map (grok/kimi
   included — native has no api-key/route restriction). Per-provider permission
   editors already exist in `PermissionsContent`; wire the right one per assignee.
 - Board-wide **permission matrix** view (agents × tasks) as optional polish.
