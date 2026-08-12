@@ -68,14 +68,18 @@ const PRICING: Record<string, ProviderPricingTable> = {
     'grok-4.1-fast': { inputPerMillion: 0.2, outputPerMillion: 0.5 },
   },
   kimi: {
-    // K3 has no separately published rate yet — priced at the closest
-    // published tier (K2.6) as a placeholder; replace once Moonshot
-    // publishes K3's own rate.
-    'kimi-code/k3': { inputPerMillion: 0.95, outputPerMillion: 4.0 },
-    k3: { inputPerMillion: 0.95, outputPerMillion: 4.0 },
+    'kimi-code/k3': { inputPerMillion: 3.0, outputPerMillion: 15.0 },
+    'kimi-code/k3-256k': { inputPerMillion: 3.0, outputPerMillion: 15.0 },
+    k3: { inputPerMillion: 3.0, outputPerMillion: 15.0 },
     'kimi-k2.7-code': { inputPerMillion: 0.95, outputPerMillion: 4.0 },
     'kimi-k2.6': { inputPerMillion: 0.95, outputPerMillion: 4.0 },
     'kimi-k2.5': { inputPerMillion: 0.6, outputPerMillion: 3.0 },
+    // "Kimi Code" for-coding tier (K2.5-based, 256K context) — API pricing
+    // separate from the membership plan cost.
+    'kimi-code/kimi-for-coding': { inputPerMillion: 0.6, outputPerMillion: 2.5 },
+    'kimi-for-coding': { inputPerMillion: 0.6, outputPerMillion: 2.5 },
+    // No verified rate found for the "highspeed" for-coding variant — leave
+    // unpriced (returns null) rather than guessing; add once published.
   },
   // Models routed through OpenCode's own harness (glm/deepseek/grok/kimi
   // aliases as OpenCode reports them) — only used as a live-path estimate;
