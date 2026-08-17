@@ -655,16 +655,40 @@ async function createAcpSession(workingDir, resumeSessionId, spawnArgs, envOverr
   };
 }
 
+/**
+ * Long Grok turns (Xhigh + many tools) routinely exceed IDLE_TIMEOUT_MS.
+ * Killing the ACP child mid-prompt is what users see as the session
+ * "abruptly ending" with the last tool stuck on Running.
+ */
+function shouldDeferGrokIdleCleanup(handle) {
+  return Boolean(handle && handle.inFlightPrompt);
+}
+
+function clearIdleCleanup(handle) {
+  if (handle?.idleTimer) {
+    clearTimeout(handle.idleTimer);
+    handle.idleTimer = null;
+  }
+}
+
 function scheduleIdleCleanup(handle, key) {
   if (handle.idleTimer) {
     clearTimeout(handle.idleTimer);
   }
   handle.idleTimer = setTimeout(() => {
+    // A long agentic turn can outlive the idle window; killing the child
+    // mid-prompt fails the run while Grok is still working. Not idle —
+    // check again later. Mirrors opencode-cli.js.
+    if (shouldDeferGrokIdleCleanup(handle)) {
+      scheduleIdleCleanup(handle, key);
+      return;
+    }
     if (acpSessions.get(key) === handle) {
       acpSessions.delete(key);
     }
     closeHandle(handle);
   }, IDLE_TIMEOUT_MS);
+  handle.idleTimer.unref?.();
 }
 
 // SIGTERM, escalating to SIGKILL, on a child that ignores or survives it (e.g.
@@ -847,7 +871,9 @@ async function spawnGrok(command, options = {}, ws) {
     capturedSessionId = handle.grokSessionId;
   }
 
-  scheduleIdleCleanup(handle, capturedSessionId || processKey);
+  // Arm idle cleanup only after this turn. Starting the 30-minute clock at
+  // send races any turn that runs longer than IDLE_TIMEOUT_MS.
+  clearIdleCleanup(handle);
 
   const finalSessionId = capturedSessionId || handle.grokSessionId;
 
@@ -1139,6 +1165,7 @@ async function spawnGrok(command, options = {}, ws) {
       prompt: [{ type: 'text', text: promptText }],
     });
     handle.inFlightPrompt = false;
+    scheduleIdleCleanup(handle, capturedSessionId || processKey);
 
     const completion = emitGrokPromptCompletion(ws, {
       sessionId: finalSessionId,
@@ -1194,6 +1221,7 @@ async function spawnGrok(command, options = {}, ws) {
     }
   } catch (error) {
     handle.inFlightPrompt = false;
+    scheduleIdleCleanup(handle, capturedSessionId || processKey);
 
     const installed = await providerAuthService.isProviderInstalled('grok');
     const errorContent = !installed
@@ -1245,4 +1273,5 @@ export {
   describeGrokPermissionDenial,
   resolveGrokPromptCompletion,
   emitGrokPromptCompletion,
+  shouldDeferGrokIdleCleanup,
 };

@@ -5,6 +5,7 @@ import Database from 'better-sqlite3';
 
 import { sessionsDb } from '@/modules/database/index.js';
 import type { IProviderSessionSynchronizer } from '@/shared/interfaces.js';
+import type { LLMProvider } from '@/shared/types.js';
 import {
   getOpenCodeDatabasePath,
   normalizeProviderTimestamp,
@@ -28,11 +29,31 @@ type SynchronizeRowsResult = {
   firstSessionId: string | null;
 };
 
+export type OpenCodeSessionSynchronizerOptions = {
+  provider?: LLMProvider;
+  databasePath?: string;
+  databaseFileName?: string;
+  fallbackTitle?: string;
+  logLabel?: string;
+};
+
 /**
  * Session indexer for OpenCode's SQLite-backed session store.
  */
 export class OpenCodeSessionSynchronizer implements IProviderSessionSynchronizer {
-  private readonly provider = 'opencode' as const;
+  private readonly provider: LLMProvider;
+  private readonly databasePath: string;
+  private readonly databaseFileName: string;
+  private readonly fallbackTitle: string;
+  private readonly logLabel: string;
+
+  constructor(options: OpenCodeSessionSynchronizerOptions = {}) {
+    this.provider = options.provider ?? 'opencode';
+    this.databasePath = options.databasePath ?? getOpenCodeDatabasePath();
+    this.databaseFileName = options.databaseFileName ?? 'opencode.db';
+    this.fallbackTitle = options.fallbackTitle ?? 'Untitled OpenCode Session';
+    this.logLabel = options.logLabel ?? 'OpenCodeProvider';
+  }
 
   /**
    * Scans OpenCode's shared opencode.db and upserts active sessions into DB.
@@ -46,7 +67,7 @@ export class OpenCodeSessionSynchronizer implements IProviderSessionSynchronizer
    * Handles watcher changes for opencode.db.
    */
   async synchronizeFile(filePath: string): Promise<string | null> {
-    if (path.basename(filePath) !== 'opencode.db') {
+    if (path.basename(filePath) !== this.databaseFileName) {
       return null;
     }
 
@@ -55,7 +76,7 @@ export class OpenCodeSessionSynchronizer implements IProviderSessionSynchronizer
   }
 
   private synchronizeRows(since?: Date, limit?: number): SynchronizeRowsResult {
-    const dbPath = getOpenCodeDatabasePath();
+    const dbPath = this.databasePath;
     if (!fsSync.existsSync(dbPath)) {
       return { processed: 0, firstSessionId: null };
     }
@@ -98,7 +119,7 @@ export class OpenCodeSessionSynchronizer implements IProviderSessionSynchronizer
       return { processed, firstSessionId };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      console.warn('[OpenCodeProvider] Failed to synchronize sessions:', message);
+      console.warn(`[${this.logLabel}] Failed to synchronize sessions:`, message);
       return { processed: 0, firstSessionId: null };
     } finally {
       db.close();
@@ -112,8 +133,8 @@ export class OpenCodeSessionSynchronizer implements IProviderSessionSynchronizer
       return null;
     }
 
-    const fallbackTitle = 'Untitled OpenCode Session';
-    const pendingAppSession = sessionsDb.getSessionByProviderSessionId(sessionId)
+    const fallbackTitle = this.fallbackTitle;
+    const pendingAppSession = sessionsDb.getSessionByProviderSessionId(sessionId, this.provider)
       ?? sessionsDb.getSessionById(sessionId)
       ?? sessionsDb.findLatestPendingAppSession(this.provider, projectPath);
     if (pendingAppSession && !pendingAppSession.provider_session_id) {
@@ -126,7 +147,7 @@ export class OpenCodeSessionSynchronizer implements IProviderSessionSynchronizer
 
     // App-created sessions are keyed by an app id, so disk-discovered provider
     // ids must be resolved through the provider-id mapping first.
-    const existingSession = sessionsDb.getSessionByProviderSessionId(sessionId)
+    const existingSession = sessionsDb.getSessionByProviderSessionId(sessionId, this.provider)
       ?? sessionsDb.getSessionById(sessionId);
     const existingName = existingSession?.custom_name;
 

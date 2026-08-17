@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useDropzone } from 'react-dropzone';
 import {
   CheckCircle2,
+  CopyPlus,
   FileText,
   FileUp,
   FolderUp,
@@ -30,6 +31,7 @@ import {
   Input,
 } from '../../../shared/view/ui';
 import { useProjectSkills } from '../hooks/useProjectSkills';
+import { useProjectsOptions } from '../hooks/useProjectsOptions';
 import {
   buildQueuedSkillFolders,
   buildSkillCreateEntries,
@@ -41,6 +43,7 @@ import {
 import { splitSkillMarkdown, type SkillWizardDraft } from '../lib/skillWizardPrompt';
 import type { ProjectSkill, SkillsProject, SkillsProvider } from '../types';
 
+import ApplySkillToProjectsDialog from './ApplySkillToProjectsDialog';
 import SkillEditorDialog from './SkillEditorDialog';
 import SkillWizardDialog from './SkillWizardDialog';
 
@@ -59,8 +62,11 @@ const PROVIDER_NAMES: Record<SkillsProvider, string> = {
   codex: 'Codex',
   cursor: 'Cursor',
   opencode: 'OpenCode',
+  kilo: 'Kilo Code',
+  cline: 'Cline',
   grok: 'Grok',
   kimi: 'Kimi',
+  qwencode: 'Qwen Code',
   pi: 'Pi',
 };
 
@@ -106,10 +112,12 @@ export default function ProjectSkills({ currentProjects }: ProjectSkillsProps) {
     saveStatus,
     addSkills,
     removeSkill,
+    copySkillToProjects,
     getSkillContent,
     saveSkillContent,
     refreshSkills,
   } = useProjectSkills({ workspacePath: selectedPath });
+  const { projects: projectOptions } = useProjectsOptions();
   const { enabledProviders } = useAgentVisibility();
 
   const [queuedFiles, setQueuedFiles] = useState<QueuedSkillFile[]>([]);
@@ -123,6 +131,8 @@ export default function ProjectSkills({ currentProjects }: ProjectSkillsProps) {
   const [isWizardOpen, setIsWizardOpen] = useState(false);
   const [wizardMounted, setWizardMounted] = useState(false);
   const [removingDirectory, setRemovingDirectory] = useState<string | null>(null);
+  const [applyTarget, setApplyTarget] = useState<ProjectSkill | null>(null);
+  const [justCopiedCount, setJustCopiedCount] = useState<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -373,8 +383,8 @@ export default function ProjectSkills({ currentProjects }: ProjectSkillsProps) {
         <div className="min-w-0 space-y-1">
           <h3 className="text-lg font-medium text-foreground">Project Skills</h3>
           <p className="text-sm text-muted-foreground">
-            Author a skill once and install it into every agent&apos;s project skill folder, so any agent you run in this
-            project can use it.
+            Author a skill once and install it into every agent&apos;s project skill folder. Apply an existing skill to
+            other projects without leaving this tab.
           </p>
         </div>
       </div>
@@ -478,7 +488,14 @@ export default function ProjectSkills({ currentProjects }: ProjectSkillsProps) {
             </div>
           )}
 
-          {justInstalled && saveStatus === 'success' && (
+          {justCopiedCount != null && saveStatus === 'success' && (
+            <div className="inline-flex items-center gap-2 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-3 py-1 text-xs font-medium text-emerald-700 dark:text-emerald-300">
+              <CheckCircle2 className="h-4 w-4" />
+              Applied to {justCopiedCount} project{justCopiedCount === 1 ? '' : 's'}.
+            </div>
+          )}
+
+          {justInstalled && saveStatus === 'success' && justCopiedCount == null && (
             <div className="inline-flex items-center gap-2 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-3 py-1 text-xs font-medium text-emerald-700 dark:text-emerald-300">
               <CheckCircle2 className="h-4 w-4" />
               Project skill installed for all agents.
@@ -520,6 +537,19 @@ export default function ProjectSkills({ currentProjects }: ProjectSkillsProps) {
                       <div className="text-xs text-muted-foreground">{skill.directoryName}</div>
                     </div>
                     <div className="flex flex-shrink-0 items-center gap-1">
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-8 w-8 p-0 text-muted-foreground hover:text-foreground"
+                        aria-label={`Apply ${skill.name} to other projects`}
+                        onClick={() => {
+                          setJustCopiedCount(null);
+                          setApplyTarget(skill);
+                        }}
+                      >
+                        <CopyPlus className="h-4 w-4" />
+                      </Button>
                       <Button
                         type="button"
                         variant="ghost"
@@ -635,10 +665,39 @@ export default function ProjectSkills({ currentProjects }: ProjectSkillsProps) {
         skill={editorState?.skill ?? null}
         loadContent={getSkillContent}
         saveContent={saveSkillContent}
+        allowScopeSelection
+        defaultScope="projects"
+        defaultProjects={selectedPath ? [selectedPath] : []}
         initialDraft={editorState?.mode === 'create' ? editorDraft ?? undefined : undefined}
-        createSkill={async (entries) => {
-          await addSkills(entries);
+        createSkill={async (entries, options) => {
+          const targets = options?.scope === 'all'
+            ? projectOptions.map((project) => project.fullPath)
+            : options?.projects?.length
+              ? options.projects
+              : selectedPath
+                ? [selectedPath]
+                : [];
+          await addSkills(entries, { projects: targets });
+          setJustCopiedCount(targets.length > 1 ? targets.length : null);
           setJustInstalled(true);
+        }}
+      />
+
+      <ApplySkillToProjectsDialog
+        open={applyTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setApplyTarget(null);
+          }
+        }}
+        skill={applyTarget}
+        sourceWorkspacePath={selectedPath}
+        onApply={async (projects) => {
+          if (!applyTarget) {
+            return;
+          }
+          const result = await copySkillToProjects(applyTarget.directoryName, projects);
+          setJustCopiedCount(result.projects.length);
         }}
       />
 

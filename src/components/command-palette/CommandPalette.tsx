@@ -1,17 +1,37 @@
 import * as React from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
+  Activity,
+  Archive,
   ArrowDownToLine,
   ArrowUpFromLine,
+  BarChart3,
   ChevronRight,
+  CircleAlert,
+  ClipboardCopy,
+  FileCode2,
   FileText,
+  Folder,
+  FolderPlus,
+  Gauge,
   GitCommit,
   GitMerge,
+  History,
   MessageSquare,
   MessageSquarePlus,
+  MonitorPlay,
+  Moon,
+  Network,
+  Palette,
+  PanelLeft,
+  Radar,
   RefreshCw,
+  Search,
   Settings,
+  SquareKanban,
+  Sun,
   SunMoon,
+  Terminal,
   X,
 } from 'lucide-react';
 
@@ -28,8 +48,13 @@ import {
 } from '../../shared/view/ui';
 import { useTheme } from '../../contexts/ThemeContext';
 import { usePaletteOps } from '../../contexts/PaletteOpsContext';
+import { usePlugins } from '../../contexts/PluginsContext';
+import { useAppFeatures } from '../../hooks/useAppFeatures';
+import { useUiPreferences } from '../../hooks/useUiPreferences';
+import { copyTextToClipboard } from '../../utils/clipboard';
 import { SETTINGS_MAIN_TABS } from '../settings/constants/constants';
 import type { AppTab, Project } from '../../types/app';
+import type { SidebarSearchMode } from '../sidebar/types/types';
 
 import { useSessionsSource } from './sources/useSessionsSource';
 import { useFilesSource } from './sources/useFilesSource';
@@ -37,8 +62,9 @@ import { useCommitsSource } from './sources/useCommitsSource';
 import { useSessionMessageSearch } from './sources/useSessionMessageSearch';
 import { useBranchesSource } from './sources/useBranchesSource';
 import { useGitActions } from './sources/useGitActions';
+import { useGlobalSkillsSource, useProjectSkillsSource } from './sources/useSkillsSource';
 
-type Page = 'actions' | 'files' | 'sessions' | 'commits' | 'branches';
+type Page = 'actions' | 'files' | 'sessions' | 'commits' | 'branches' | 'projects' | 'skills';
 
 const PAGE_LABELS: Record<Page, string> = {
   actions: 'Actions',
@@ -46,35 +72,57 @@ const PAGE_LABELS: Record<Page, string> = {
   sessions: 'Sessions',
   commits: 'Commits',
   branches: 'Branches',
+  projects: 'Projects',
+  skills: 'Skills',
 };
 
 type CommandPaletteProps = {
+  projects: Project[];
   selectedProject: Project | null;
   onStartNewChat: (project: Project) => void;
   onOpenSettings: (tab?: string) => void;
   onShowTab?: (tab: AppTab) => void;
+  onSelectProject?: (project: Project) => void;
 };
 
-const NAV_TABS: Array<{ id: AppTab; label: string; keywords: string }> = [
-  { id: 'chat', label: 'Go to Chat', keywords: 'chat messages conversation' },
-  { id: 'files', label: 'Go to Files', keywords: 'files file tree explorer' },
-  { id: 'shell', label: 'Go to Shell', keywords: 'shell terminal console' },
-  { id: 'git', label: 'Go to Git', keywords: 'git diff branches' },
-  { id: 'tasks', label: 'Go to Tasks', keywords: 'tasks taskmaster' },
+const NAV_TABS: Array<{ id: AppTab; label: string; keywords: string; icon: React.ComponentType<{ className?: string }> }> = [
+  { id: 'chat', label: 'Go to Chat', keywords: 'chat messages conversation', icon: MessageSquare },
+  { id: 'shell', label: 'Go to Shell', keywords: 'shell terminal console', icon: Terminal },
+  { id: 'files', label: 'Go to Files', keywords: 'files file tree explorer', icon: Folder },
+  { id: 'git', label: 'Go to Git', keywords: 'git diff branches', icon: GitMerge },
+  { id: 'operations', label: 'Go to Operations', keywords: 'operations runs spend', icon: Gauge },
+  { id: 'tasks', label: 'Go to Tasks', keywords: 'tasks taskmaster', icon: SquareKanban },
+  { id: 'browser', label: 'Go to Browser', keywords: 'browser playwright', icon: MonitorPlay },
+];
+
+const SIDEBAR_MODES: Array<{ id: SidebarSearchMode; label: string; keywords: string; icon: React.ComponentType<{ className?: string }> }> = [
+  { id: 'projects', label: 'Sidebar: Projects', keywords: 'projects list folders', icon: Folder },
+  { id: 'recent', label: 'Sidebar: Recent conversations', keywords: 'recent history conversations', icon: History },
+  { id: 'running', label: 'Sidebar: Running sessions', keywords: 'running active processing', icon: Activity },
+  { id: 'conversations', label: 'Sidebar: Search conversations', keywords: 'search messages transcript', icon: Search },
+  { id: 'archived', label: 'Sidebar: Archive', keywords: 'archive archived', icon: Archive },
 ];
 
 export default function CommandPalette({
+  projects,
   selectedProject,
   onStartNewChat,
   onOpenSettings,
   onShowTab,
+  onSelectProject,
 }: CommandPaletteProps) {
   const [open, setOpen] = React.useState(false);
   const [search, setSearch] = React.useState('');
   const [pages, setPages] = React.useState<Page[]>([]);
-  const { toggleDarkMode } = useTheme();
+  const { toggleDarkMode, setThemeMode } = useTheme() as {
+    toggleDarkMode: () => void;
+    setThemeMode: (mode: 'light' | 'dark' | 'system') => void;
+  };
   const navigate = useNavigate();
   const ops = usePaletteOps();
+  const { features } = useAppFeatures();
+  const { plugins } = usePlugins();
+  const { preferences, setPreference } = useUiPreferences();
 
   const page = pages.at(-1);
 
@@ -97,12 +145,15 @@ export default function CommandPalette({
   }, [open]);
 
   const projectId = selectedProject?.projectId;
+  const workspacePath = selectedProject?.fullPath || selectedProject?.path;
 
   const showActions = !page || page === 'actions';
   const showSessions = !page || page === 'sessions';
   const showFiles = !page || page === 'files';
   const showCommits = !page || page === 'commits';
   const showBranches = !page || page === 'branches' || page === 'actions';
+  const showProjects = !page || page === 'projects';
+  const showSkills = !page || page === 'skills';
 
   const sessions = useSessionsSource(projectId, open && showSessions);
   const messageMatches = useSessionMessageSearch(projectId, search, open && showSessions);
@@ -110,6 +161,8 @@ export default function CommandPalette({
   const commits = useCommitsSource(projectId, open && showCommits);
   const branches = useBranchesSource(projectId, open && showBranches);
   const git = useGitActions(projectId);
+  const projectSkills = useProjectSkillsSource(workspacePath, open && showSkills);
+  const globalSkills = useGlobalSkillsSource(open && showSkills);
 
   const sessionRows = React.useMemo(() => {
     if (!showSessions) return [];
@@ -133,6 +186,8 @@ export default function CommandPalette({
     }
     return Array.from(byId.values());
   }, [sessions, messageMatches, showSessions]);
+
+  const skillRows = React.useMemo(() => [...projectSkills, ...globalSkills], [projectSkills, globalSkills]);
 
   const run = React.useCallback((fn: () => void) => {
     setOpen(false);
@@ -162,6 +217,13 @@ export default function CommandPalette({
   const commitsShown = page === 'commits' ? commits : commits.slice(0, browseLimit);
   const sessionsShown = page === 'sessions' ? sessionRows : sessionRows.slice(0, browseLimit);
   const branchesShown = page === 'branches' ? branches : branches.slice(0, browseLimit);
+  const projectsShown = page === 'projects' ? projects : projects.slice(0, browseLimit);
+  const skillsShown = page === 'skills' ? skillRows : skillRows.slice(0, browseLimit);
+
+  const goProject = (project: Project) => {
+    (onSelectProject ?? ops.selectProject)(project);
+    onShowTab?.('chat');
+  };
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
@@ -185,17 +247,17 @@ export default function CommandPalette({
             </div>
           )}
           <CommandInput
-            placeholder={page ? `Search ${PAGE_LABELS[page].toLowerCase()}…` : 'Type to search anything…'}
+            placeholder={page ? `Search ${PAGE_LABELS[page].toLowerCase()}…` : 'Search or jump anywhere…'}
             value={search}
             onValueChange={setSearch}
           />
-          <CommandList>
+          <CommandList className="max-h-[min(28rem,60vh)]">
             <CommandEmpty>No results.</CommandEmpty>
 
             {showActions && (
               <CommandGroup heading="Actions">
                 <CommandItem
-                  value="Start new chat"
+                  value="Start new chat session"
                   disabled={startNewChatDisabled}
                   onSelect={() => {
                     if (!selectedProject) return;
@@ -208,13 +270,61 @@ export default function CommandPalette({
                     <span className="text-xs text-muted-foreground">Select a project first</span>
                   )}
                 </CommandItem>
+                <CommandItem value="New project create workspace" onSelect={() => run(() => ops.openNewProject())}>
+                  <FolderPlus className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
+                  <span className="flex-1">New project</span>
+                </CommandItem>
                 <CommandItem value="Open settings" onSelect={() => run(() => onOpenSettings())}>
                   <Settings className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
                   <span className="flex-1">Open settings</span>
                 </CommandItem>
-                <CommandItem value="Toggle theme dark light mode" onSelect={() => run(toggleDarkMode)}>
-                  <SunMoon className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
-                  <span className="flex-1">Toggle theme</span>
+                <CommandItem value="Refresh reload projects" onSelect={() => run(() => { void ops.refreshProjects(); })}>
+                  <RefreshCw className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
+                  <span className="flex-1">Refresh projects</span>
+                </CommandItem>
+                <CommandItem value="Toggle sidebar collapse" onSelect={() => run(() => ops.toggleSidebarCollapsed())}>
+                  <PanelLeft className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
+                  <span className="flex-1">Toggle sidebar</span>
+                </CommandItem>
+                {selectedProject && (
+                  <CommandItem
+                    value={`Copy project path ${selectedProject.fullPath}`}
+                    onSelect={() => run(() => { void copyTextToClipboard(selectedProject.fullPath); })}
+                  >
+                    <ClipboardCopy className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
+                    <span className="flex-1">Copy project path</span>
+                  </CommandItem>
+                )}
+              </CommandGroup>
+            )}
+
+            {showActions && (
+              <CommandGroup heading="Open">
+                <CommandItem value="Open Needs You interrupts permissions" onSelect={() => run(() => ops.openNeedsYou())}>
+                  <CircleAlert className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
+                  <span className="flex-1">Needs you</span>
+                </CommandItem>
+                <CommandItem value="Open Mission Control inbox" onSelect={() => run(() => ops.openMissionControl())}>
+                  <Radar className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
+                  <span className="flex-1">Mission Control</span>
+                </CommandItem>
+                {features.kanbanEnabled && (
+                  <CommandItem value="Open Kanban board" onSelect={() => run(() => ops.openKanban())}>
+                    <SquareKanban className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
+                    <span className="flex-1">Kanban</span>
+                  </CommandItem>
+                )}
+                <CommandItem value="Open Agent Swarm" onSelect={() => run(() => ops.openAgentSwarm())}>
+                  <Network className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
+                  <span className="flex-1">Agent Swarm</span>
+                </CommandItem>
+                <CommandItem value="Open Studio prototype design" onSelect={() => run(() => ops.openStudio())}>
+                  <Palette className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
+                  <span className="flex-1">Studio</span>
+                </CommandItem>
+                <CommandItem value="Open Usage Stats spend" onSelect={() => run(() => ops.openStats())}>
+                  <BarChart3 className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
+                  <span className="flex-1">Usage Stats</span>
                 </CommandItem>
               </CommandGroup>
             )}
@@ -227,9 +337,55 @@ export default function CommandPalette({
                     value={`${tab.label} ${tab.keywords}`}
                     onSelect={() => run(() => onShowTab?.(tab.id))}
                   >
+                    <tab.icon className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
                     <span className="flex-1">{tab.label}</span>
                   </CommandItem>
                 ))}
+                {plugins.filter((plugin) => plugin.enabled).map((plugin) => (
+                  <CommandItem
+                    key={plugin.name}
+                    value={`Go to plugin ${plugin.displayName} ${plugin.name}`}
+                    onSelect={() => run(() => onShowTab?.(`plugin:${plugin.name}`))}
+                  >
+                    <span className="flex-1">Go to {plugin.displayName}</span>
+                  </CommandItem>
+                ))}
+              </CommandGroup>
+            )}
+
+            {showActions && (
+              <CommandGroup heading="Sidebar">
+                {SIDEBAR_MODES.map((mode) => (
+                  <CommandItem
+                    key={mode.id}
+                    value={`${mode.label} ${mode.keywords}`}
+                    onSelect={() => run(() => ops.setSidebarSearchMode(mode.id))}
+                  >
+                    <mode.icon className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
+                    <span className="flex-1">{mode.label}</span>
+                  </CommandItem>
+                ))}
+              </CommandGroup>
+            )}
+
+            {showProjects && projectsShown.length > 0 && (
+              <CommandGroup heading="Projects">
+                {projectsShown.map((project) => (
+                  <CommandItem
+                    key={project.projectId}
+                    value={`${project.displayName} ${project.fullPath} project`}
+                    onSelect={() => run(() => goProject(project))}
+                  >
+                    <Folder className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
+                    <span className="flex-1 truncate">{project.displayName}</span>
+                    {project.projectId === selectedProject?.projectId && (
+                      <span className="text-xs text-muted-foreground">current</span>
+                    )}
+                  </CommandItem>
+                ))}
+                {!page && projects.length > browseLimit && (
+                  <BrowseAllItem label={`Browse all projects (${projects.length})`} onSelect={() => pushPage('projects')} />
+                )}
               </CommandGroup>
             )}
 
@@ -260,6 +416,43 @@ export default function CommandPalette({
             )}
 
             {showActions && (
+              <CommandGroup heading="Appearance">
+                <CommandItem value="Theme light" onSelect={() => run(() => setThemeMode('light'))}>
+                  <Sun className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
+                  <span className="flex-1">Theme: Light</span>
+                </CommandItem>
+                <CommandItem value="Theme dark" onSelect={() => run(() => setThemeMode('dark'))}>
+                  <Moon className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
+                  <span className="flex-1">Theme: Dark</span>
+                </CommandItem>
+                <CommandItem value="Theme system os" onSelect={() => run(() => setThemeMode('system'))}>
+                  <SunMoon className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
+                  <span className="flex-1">Theme: System</span>
+                </CommandItem>
+                <CommandItem value="Toggle theme dark light mode" onSelect={() => run(toggleDarkMode)}>
+                  <SunMoon className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
+                  <span className="flex-1">Toggle theme</span>
+                </CommandItem>
+                <CommandItem
+                  value="Toggle thinking traces"
+                  onSelect={() => run(() => setPreference('showThinking', !preferences.showThinking))}
+                >
+                  <span className="flex-1">
+                    {preferences.showThinking ? 'Hide thinking traces' : 'Show thinking traces'}
+                  </span>
+                </CommandItem>
+                <CommandItem
+                  value="Toggle send by ctrl enter"
+                  onSelect={() => run(() => setPreference('sendByCtrlEnter', !preferences.sendByCtrlEnter))}
+                >
+                  <span className="flex-1">
+                    {preferences.sendByCtrlEnter ? 'Send with Enter' : 'Send with Ctrl+Enter'}
+                  </span>
+                </CommandItem>
+              </CommandGroup>
+            )}
+
+            {showActions && (
               <CommandGroup heading="Settings">
                 {SETTINGS_MAIN_TABS.map(({ id, label, keywords, icon: Icon }) => (
                   <CommandItem
@@ -271,6 +464,30 @@ export default function CommandPalette({
                     <span className="flex-1">Settings: {label}</span>
                   </CommandItem>
                 ))}
+              </CommandGroup>
+            )}
+
+            {showSkills && skillsShown.length > 0 && (
+              <CommandGroup heading="Skills">
+                {skillsShown.map((skill) => (
+                  <CommandItem
+                    key={skill.id}
+                    value={`${skill.name} ${skill.description} ${skill.scope} skill`}
+                    onSelect={() => run(() => onOpenSettings('skills'))}
+                  >
+                    <FileCode2 className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
+                    <div className="flex min-w-0 flex-1 flex-col">
+                      <span className="truncate">{skill.name}</span>
+                      {skill.description && (
+                        <span className="truncate text-xs text-muted-foreground">{skill.description}</span>
+                      )}
+                    </div>
+                    <span className="text-xs text-muted-foreground">{skill.scope}</span>
+                  </CommandItem>
+                ))}
+                {!page && skillRows.length > browseLimit && (
+                  <BrowseAllItem label={`Browse all skills (${skillRows.length})`} onSelect={() => pushPage('skills')} />
+                )}
               </CommandGroup>
             )}
 

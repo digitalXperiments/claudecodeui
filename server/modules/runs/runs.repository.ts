@@ -507,6 +507,24 @@ export const runsDb = {
     return result.changes;
   },
 
+  usageForSession(sessionId: string): { tokens: number; costUsd: number; runCount: number } {
+    const db = getConnection();
+    const row = db.prepare(
+      `SELECT
+         COUNT(*) AS run_count,
+         COALESCE(SUM(COALESCE(token_total, token_input + token_output, 0)), 0) AS tokens,
+         COALESCE(SUM(cost_usd_estimate), 0) AS cost
+       FROM agent_runs
+       WHERE app_session_id = ?
+         AND source != 'history'`,
+    ).get(sessionId) as { run_count: number; tokens: number; cost: number } | undefined;
+    return {
+      tokens: Number(row?.tokens ?? 0),
+      costUsd: Number(row?.cost ?? 0),
+      runCount: Number(row?.run_count ?? 0),
+    };
+  },
+
   /**
    * Last activity timestamp per run (max event ts, else started_at, else created_at).
    * Used for stuck detection without N+1 queries on list.
@@ -741,51 +759,144 @@ export const runsDb = {
     // through julianday() instead: it parses both shapes, keeps sub-second
     // precision, and so selects the same logical window as the runs predicate.
     const sessionsWhere: string[] = [];
+    const sessionsParams: unknown[] = [];
     if (filter.from) {
       where.push(`created_at >= ?`);
       params.push(filter.from);
       sessionsWhere.push(`julianday(created_at) >= julianday(?)`);
+      sessionsParams.push(filter.from);
     }
     if (filter.to) {
       where.push(`created_at <= ?`);
       params.push(filter.to);
       sessionsWhere.push(`julianday(created_at) <= julianday(?)`);
+      sessionsParams.push(filter.to);
+    }
+    if (filter.provider !== undefined) {
+      if (filter.provider === '__unknown__') {
+        where.push(`provider IS NULL`);
+        sessionsWhere.push(`provider IS NULL`);
+      } else {
+        where.push(`provider = ?`);
+        params.push(filter.provider);
+        sessionsWhere.push(`provider = ?`);
+        sessionsParams.push(filter.provider);
+      }
     }
     const whereSql = where.length > 0 ? ` WHERE ${where.join(' AND ')}` : '';
     const sessionsWhereSql =
       sessionsWhere.length > 0 ? ` WHERE ${sessionsWhere.join(' AND ')}` : '';
 
-    // Historical token backfill (server/modules/runs/runs-token-backfill.ts)
-    // inserts a synthetic `source = 'history'` run per recovered session so
-    // its tokens land in the same SUM(token_total) every dimension below
-    // already reads — that is the point of the feature. But it is a
-    // bookkeeping row, not a real agent invocation: it always has
-    // status='succeeded' and zero duration by construction (created_at ==
-    // finished_at), which would otherwise inflate totalRuns, skew
-    // successRate/avgDurationMs, and pollute the byStatus/byHour timelines.
-    // Token and cost sums stay unconditional (COALESCE(SUM(token_total)...),
-    // COALESCE(SUM(cost_usd_estimate)...)) — a history row's tokens AND the
-    // dollars they actually cost are both real spend that happened, exactly
-    // what this feature exists to surface. Only run/duration counts are
-    // conditional on `source != 'history'`, since a history row is a
-    // bookkeeping artifact, not a real agent invocation, to grade a
-    // success-rate or average-duration against.
-    const NOT_HISTORY_CASE = `CASE WHEN COALESCE(source, '') != 'history' THEN 1 ELSE 0 END`;
-    const operationalDurationSql = `CASE WHEN COALESCE(source, '') != 'history' THEN (${RUN_DURATION_MS_SQL}) ELSE 0 END`;
+    // Synthetic `source = 'history'` rows are import bookkeeping, not runs.
+    // Mixing their session-level token/cost snapshots into run-level totals
+    // while excluding them from the run denominator makes derived KPIs
+    // internally inconsistent (for example cost coverage can exceed 100%)
+    // and makes a boot-time backfill visibly change existing statistics.
+    // Keep every agent_runs aggregate on the same operational row set.
+    const operationalWhereSql = whereSql
+      ? `${whereSql} AND COALESCE(source, '') != 'history'`
+      : ` WHERE COALESCE(source, '') != 'history'`;
+
+    // Codex, Grok, Kimi and OpenCode report conversation-to-date counters.
+    // CloudCLI creates a new run for each prompt, so summing those snapshots
+    // directly re-counts every earlier turn once per later run. Normalize them
+    // to per-run deltas with the preceding snapshot from the same conversation.
+    // The window is deliberately evaluated before the date filter: otherwise
+    // the first run inside a 7D/30D range would include spend from before it.
+    const statsRunsCte = `
+      WITH usage_snapshots AS (
+        SELECT agent_runs.*,
+          LAG(token_input) OVER session_runs AS previous_token_input,
+          LAG(token_output) OVER session_runs AS previous_token_output,
+          LAG(token_total) OVER session_runs AS previous_token_total,
+          LAG(token_cache_read) OVER session_runs AS previous_cache_read,
+          LAG(token_cache_write) OVER session_runs AS previous_cache_write,
+          LAG(cost_usd_estimate) OVER session_runs AS previous_cost
+        FROM agent_runs
+        WHERE COALESCE(source, '') != 'history'
+        WINDOW session_runs AS (
+          PARTITION BY provider, app_session_id
+          ORDER BY created_at ASC, run_id ASC
+        )
+      ), normalized_runs AS (
+        SELECT usage_snapshots.*,
+          CASE
+            WHEN provider IN ('codex', 'grok', 'kimi', 'opencode', 'kilo') AND app_session_id IS NOT NULL
+              THEN CASE
+                WHEN previous_token_input IS NULL OR COALESCE(token_input, 0) < previous_token_input
+                  THEN COALESCE(token_input, 0)
+                ELSE COALESCE(token_input, 0) - previous_token_input
+              END
+            ELSE COALESCE(token_input, 0)
+          END AS stats_input_tokens,
+          CASE
+            WHEN provider IN ('codex', 'grok', 'kimi', 'opencode', 'kilo') AND app_session_id IS NOT NULL
+              THEN CASE
+                WHEN previous_token_output IS NULL OR COALESCE(token_output, 0) < previous_token_output
+                  THEN COALESCE(token_output, 0)
+                ELSE COALESCE(token_output, 0) - previous_token_output
+              END
+            ELSE COALESCE(token_output, 0)
+          END AS stats_output_tokens,
+          CASE
+            WHEN provider IN ('codex', 'grok', 'kimi', 'opencode', 'kilo') AND app_session_id IS NOT NULL
+              THEN CASE
+                WHEN previous_token_total IS NULL OR COALESCE(token_total, 0) < previous_token_total
+                  THEN COALESCE(token_total, 0)
+                ELSE COALESCE(token_total, 0) - previous_token_total
+              END
+            ELSE COALESCE(token_total, COALESCE(token_input, 0) + COALESCE(token_output, 0), 0)
+          END AS stats_total_tokens,
+          CASE
+            WHEN provider IN ('codex', 'grok', 'kimi', 'opencode', 'kilo') AND app_session_id IS NOT NULL
+              THEN CASE
+                WHEN previous_cache_read IS NULL OR COALESCE(token_cache_read, 0) < previous_cache_read
+                  THEN COALESCE(token_cache_read, 0)
+                ELSE COALESCE(token_cache_read, 0) - previous_cache_read
+              END
+            ELSE COALESCE(token_cache_read, 0)
+          END AS stats_cache_read_tokens,
+          CASE
+            WHEN provider IN ('codex', 'grok', 'kimi', 'opencode', 'kilo') AND app_session_id IS NOT NULL
+              THEN CASE
+                WHEN previous_cache_write IS NULL OR COALESCE(token_cache_write, 0) < previous_cache_write
+                  THEN COALESCE(token_cache_write, 0)
+                ELSE COALESCE(token_cache_write, 0) - previous_cache_write
+              END
+            ELSE COALESCE(token_cache_write, 0)
+          END AS stats_cache_write_tokens,
+          CASE
+            WHEN cost_usd_estimate IS NULL THEN NULL
+            WHEN provider IN ('codex', 'grok', 'kimi', 'opencode', 'kilo') AND app_session_id IS NOT NULL
+              THEN CASE
+                WHEN previous_cost IS NULL OR cost_usd_estimate < previous_cost
+                  THEN cost_usd_estimate
+                ELSE cost_usd_estimate - previous_cost
+              END
+            ELSE cost_usd_estimate
+          END AS stats_cost
+        FROM usage_snapshots
+      ), stats_runs AS (
+        SELECT *
+        FROM normalized_runs${whereSql}
+      )`;
 
     const overviewRow = db
       .prepare(
-        `SELECT
-           COALESCE(SUM(${NOT_HISTORY_CASE}), 0) AS runs,
+        `${statsRunsCte}
+         SELECT
+           COUNT(*) AS runs,
            COUNT(token_total) AS runs_with_tokens,
-           COALESCE(SUM(token_total), 0) AS tokens,
-           COALESCE(SUM(token_input), 0) AS input_tokens,
-           COALESCE(SUM(token_output), 0) AS output_tokens,
+           COALESCE(SUM(stats_total_tokens), 0) AS tokens,
+           COALESCE(SUM(stats_input_tokens), 0) AS input_tokens,
+           COALESCE(SUM(stats_output_tokens), 0) AS output_tokens,
+           COALESCE(SUM(stats_cache_read_tokens), 0) AS cache_read_tokens,
+           COALESCE(SUM(stats_cache_write_tokens), 0) AS cache_write_tokens,
            COUNT(cost_usd_estimate) AS runs_with_cost,
-           SUM(cost_usd_estimate) AS cost,
-           COALESCE(SUM(${operationalDurationSql}), 0) AS duration_ms,
+           SUM(stats_cost) AS cost,
+           COALESCE(SUM(${RUN_DURATION_MS_SQL}), 0) AS duration_ms,
            COUNT(DISTINCT app_session_id) AS active_conversations
-         FROM agent_runs${whereSql}`,
+         FROM stats_runs`,
       )
       .get(...(params as never[])) as {
       runs: number;
@@ -793,15 +904,13 @@ export const runsDb = {
       tokens: number;
       input_tokens: number;
       output_tokens: number;
+      cache_read_tokens: number;
+      cache_write_tokens: number;
       runs_with_cost: number;
       cost: number | null;
       duration_ms: number;
       active_conversations: number;
     };
-
-    const operationalWhereSql = whereSql
-      ? `${whereSql} AND COALESCE(source, '') != 'history'`
-      : ` WHERE COALESCE(source, '') != 'history'`;
 
     const byStatusRows = db
       .prepare(`SELECT status, COUNT(*) AS cnt FROM agent_runs${operationalWhereSql} GROUP BY status`)
@@ -813,15 +922,16 @@ export const runsDb = {
 
     const dailyRows = db
       .prepare(
-        `SELECT
+        `${statsRunsCte}
+         SELECT
            date(created_at) AS day,
-           COALESCE(SUM(${NOT_HISTORY_CASE}), 0) AS runs,
-           COALESCE(SUM(token_total), 0) AS tokens,
-           COALESCE(SUM(token_input), 0) AS input_tokens,
-           COALESCE(SUM(token_output), 0) AS output_tokens,
-           COALESCE(SUM(cost_usd_estimate), 0) AS cost,
-           COALESCE(SUM(${operationalDurationSql}), 0) AS duration_ms
-         FROM agent_runs${whereSql}
+           COUNT(*) AS runs,
+           COALESCE(SUM(stats_total_tokens), 0) AS tokens,
+           COALESCE(SUM(stats_input_tokens), 0) AS input_tokens,
+           COALESCE(SUM(stats_output_tokens), 0) AS output_tokens,
+           COALESCE(SUM(stats_cost), 0) AS cost,
+           COALESCE(SUM(${RUN_DURATION_MS_SQL}), 0) AS duration_ms
+         FROM stats_runs
          GROUP BY day
          ORDER BY day ASC`,
       )
@@ -837,15 +947,16 @@ export const runsDb = {
 
     const providerRows = db
       .prepare(
-        `SELECT
+        `${statsRunsCte}
+         SELECT
            provider,
-           COALESCE(SUM(${NOT_HISTORY_CASE}), 0) AS runs,
-           COALESCE(SUM(token_total), 0) AS tokens,
-           COALESCE(SUM(token_input), 0) AS input_tokens,
-           COALESCE(SUM(token_output), 0) AS output_tokens,
-           SUM(cost_usd_estimate) AS cost,
-           COALESCE(SUM(${operationalDurationSql}), 0) AS duration_ms
-         FROM agent_runs${whereSql}
+           COUNT(*) AS runs,
+           COALESCE(SUM(stats_total_tokens), 0) AS tokens,
+           COALESCE(SUM(stats_input_tokens), 0) AS input_tokens,
+           COALESCE(SUM(stats_output_tokens), 0) AS output_tokens,
+           SUM(stats_cost) AS cost,
+           COALESCE(SUM(${RUN_DURATION_MS_SQL}), 0) AS duration_ms
+         FROM stats_runs
          GROUP BY provider
          ORDER BY tokens DESC, runs DESC`,
       )
@@ -861,16 +972,17 @@ export const runsDb = {
 
     const modelRows = db
       .prepare(
-        `SELECT
+        `${statsRunsCte}
+         SELECT
            provider,
            model,
-           COALESCE(SUM(${NOT_HISTORY_CASE}), 0) AS runs,
-           COALESCE(SUM(token_total), 0) AS tokens,
-           COALESCE(SUM(token_input), 0) AS input_tokens,
-           COALESCE(SUM(token_output), 0) AS output_tokens,
-           SUM(cost_usd_estimate) AS cost,
-           COALESCE(SUM(${operationalDurationSql}), 0) AS duration_ms
-         FROM agent_runs${whereSql}
+           COUNT(*) AS runs,
+           COALESCE(SUM(stats_total_tokens), 0) AS tokens,
+           COALESCE(SUM(stats_input_tokens), 0) AS input_tokens,
+           COALESCE(SUM(stats_output_tokens), 0) AS output_tokens,
+           SUM(stats_cost) AS cost,
+           COALESCE(SUM(${RUN_DURATION_MS_SQL}), 0) AS duration_ms
+         FROM stats_runs
          GROUP BY provider, model
          ORDER BY tokens DESC, runs DESC
          LIMIT ${MAX_MODEL_ROWS}`,
@@ -888,11 +1000,12 @@ export const runsDb = {
 
     const sourceRows = db
       .prepare(
-        `SELECT
+        `${statsRunsCte}
+         SELECT
            source,
-           COALESCE(SUM(${NOT_HISTORY_CASE}), 0) AS runs,
-           COALESCE(SUM(token_total), 0) AS tokens
-         FROM agent_runs${whereSql}
+           COUNT(*) AS runs,
+           COALESCE(SUM(stats_total_tokens), 0) AS tokens
+         FROM stats_runs
          GROUP BY source
          ORDER BY runs DESC`,
       )
@@ -910,7 +1023,7 @@ export const runsDb = {
     // range, matched through the format-tolerant predicate built above).
     const conversationOverviewRow = db
       .prepare(`SELECT COUNT(*) AS cnt FROM sessions${sessionsWhereSql}`)
-      .get(...(params as never[])) as { cnt: number };
+      .get(...(sessionsParams as never[])) as { cnt: number };
 
     const conversationDailyRows = db
       .prepare(
@@ -918,7 +1031,7 @@ export const runsDb = {
          FROM sessions${sessionsWhereSql}
          GROUP BY day`,
       )
-      .all(...(params as never[])) as Array<{ day: string; cnt: number }>;
+      .all(...(sessionsParams as never[])) as Array<{ day: string; cnt: number }>;
 
     const conversationProviderRows = db
       .prepare(
@@ -926,10 +1039,10 @@ export const runsDb = {
          FROM sessions${sessionsWhereSql}
          GROUP BY provider`,
       )
-      .all(...(params as never[])) as Array<{ provider: string | null; cnt: number }>;
+      .all(...(sessionsParams as never[])) as Array<{ provider: string | null; cnt: number }>;
 
     const firstRunRow = db
-      .prepare(`SELECT MIN(created_at) AS first_run_at FROM agent_runs`)
+      .prepare(`SELECT MIN(created_at) AS first_run_at FROM agent_runs WHERE COALESCE(source, '') != 'history'`)
       .get() as { first_run_at: string | null };
 
     // --- Assemble -----------------------------------------------------------
@@ -1031,6 +1144,8 @@ export const runsDb = {
         totalTokens,
         inputTokens: Number(overviewRow.input_tokens) || 0,
         outputTokens: Number(overviewRow.output_tokens) || 0,
+        cacheReadTokens: Number(overviewRow.cache_read_tokens) || 0,
+        cacheWriteTokens: Number(overviewRow.cache_write_tokens) || 0,
         totalCostUsd: overviewRow.cost == null ? null : Number(overviewRow.cost) || 0,
         runsWithCost,
         totalDurationMs,

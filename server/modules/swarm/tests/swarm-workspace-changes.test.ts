@@ -26,6 +26,22 @@ test('workspace mutation snapshots detect source edits in a non-git sandbox copy
   }
 });
 
+test('workspace mutation snapshots detect Studio prototype writes under .cloudcli/studio', async () => {
+  const root = await makeScratchDir('swarm-workspace-change-');
+  try {
+    await writeFile(path.join(root, 'README.md'), 'unchanged\n');
+    const proto = path.join(root, '.cloudcli', 'studio', 'proto_1', 'prototype.html');
+    await mkdir(path.dirname(proto), { recursive: true });
+    await writeFile(proto, '<html>draft</html>\n');
+    const before = await captureWorkspaceMutationSnapshot(root);
+    await writeFile(proto, '<html>real landing page</html>\n');
+    const after = await captureWorkspaceMutationSnapshot(root);
+    assert.equal(workspaceMutationDetected(before, after), true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('workspace mutation snapshots ignore generated build and tmp activity', async () => {
   const root = await makeScratchDir('swarm-workspace-change-');
   try {

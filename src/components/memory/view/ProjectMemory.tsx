@@ -15,19 +15,17 @@ import { useObsidianSettings } from '../hooks/useObsidianSettings';
 import { useProjectMemory } from '../hooks/useProjectMemory';
 import type { MemoryCurationSuggestion, MemoryProject } from '../types';
 
+import ProjectMemoryProjectSelector, {
+  type ProjectMemoryProjectOption,
+} from './ProjectMemoryProjectSelector';
+
 type ProjectMemoryProps = {
   currentProjects: MemoryProject[];
 };
 
-type ProjectTarget = {
-  projectId: string;
-  displayName: string;
-  path: string;
-};
-
-const createProjectTargets = (projects: MemoryProject[]): ProjectTarget[] => {
+const createProjectTargets = (projects: MemoryProject[]): ProjectMemoryProjectOption[] => {
   const seen = new Set<string>();
-  return projects.reduce<ProjectTarget[]>((acc, project) => {
+  return projects.reduce<ProjectMemoryProjectOption[]>((acc, project) => {
     const projectPath = project.fullPath || project.path || '';
     if (!projectPath || seen.has(projectPath)) {
       return acc;
@@ -350,16 +348,11 @@ export default function ProjectMemory({ currentProjects }: ProjectMemoryProps) {
         ) : (
           <>
             {projectTargets.length > 1 && (
-              <select
-                value={selectedPath ?? ''}
-                onChange={(event) => setSelectedPath(event.target.value)}
-                aria-label="Select project"
-                className="h-9 min-w-0 rounded-md border border-border bg-background px-3 text-sm text-foreground sm:max-w-xs"
-              >
-                {projectTargets.map((project) => (
-                  <option key={project.path} value={project.path}>{project.displayName}</option>
-                ))}
-              </select>
+              <ProjectMemoryProjectSelector
+                projects={projectTargets}
+                selectedPath={selectedPath ?? ''}
+                onSelect={setSelectedPath}
+              />
             )}
 
             {selectedProject && (

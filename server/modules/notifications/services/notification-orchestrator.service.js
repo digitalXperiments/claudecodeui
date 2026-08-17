@@ -18,6 +18,10 @@ const PROVIDER_LABELS = {
   claude: 'Claude',
   cursor: 'Cursor',
   codex: 'Codex',
+  opencode: 'OpenCode',
+  kilo: 'Kilo Code',
+  cline: 'Cline',
+  qwencode: 'Qwen Code',
   system: 'System'
 };
 
@@ -118,7 +122,7 @@ function resolveSessionRow(sessionId, provider) {
     return appSessionRow;
   }
 
-  const providerSessionRow = sessionsDb.getSessionByProviderSessionId(sessionId);
+  const providerSessionRow = sessionsDb.getSessionByProviderSessionId(sessionId, provider);
   if (rowMatchesProvider(providerSessionRow, provider)) {
     return providerSessionRow;
   }

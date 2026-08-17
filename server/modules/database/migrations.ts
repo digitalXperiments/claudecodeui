@@ -22,6 +22,7 @@ import {
   INTERRUPTS_TABLE_SCHEMA_SQL,
   USER_NOTIFICATION_PREFERENCES_TABLE_SCHEMA_SQL,
   VAPID_KEYS_TABLE_SCHEMA_SQL,
+  EVALS_SCHEMA_SQL,
 } from '@/modules/database/schema.js';
 
 const SQLITE_UUID_SQL = `
@@ -441,6 +442,29 @@ const addContinuedFromSessionId = (db: Database): void => {
 };
 
 /**
+ * Separates internal automation transcripts from user-facing chat sessions.
+ * Legacy sessions are interactive by default; headless callers opt in when
+ * allocating new rows.
+ */
+const addInternalSessionVisibility = (db: Database): void => {
+  const sessionsTableInfo = getTableInfo(db, 'sessions');
+  const columnNames = sessionsTableInfo.map((column) => column.name);
+
+  addColumnToTableIfNotExists(db, 'sessions', columnNames, 'is_internal', 'BOOLEAN NOT NULL DEFAULT 0');
+  if (tableExists(db, 'agent_runs')) {
+    db.exec(`
+      UPDATE sessions
+      SET is_internal = 1
+      WHERE session_id IN (
+        SELECT app_session_id
+        FROM agent_runs
+        WHERE source = 'swarm' AND app_session_id IS NOT NULL
+      )
+    `);
+  }
+};
+
+/**
  * Keeps the provider's actual working directory after the logical project
  * path was introduced. Existing rows initially use the same path for both;
  * workspace-aware session rehoming can then replace only the logical path.
@@ -769,12 +793,14 @@ export const runMigrations = (db: Database) => {
     ensureSessionsRuntimeProjectPath(db);
     addProviderSessionIdMapping(db);
     addContinuedFromSessionId(db);
+    addInternalSessionVisibility(db);
     ensureProjectsForSessionPaths(db);
 
     db.exec('CREATE INDEX IF NOT EXISTS idx_session_ids_lookup ON sessions(session_id)');
     db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_provider_session_id ON sessions(provider_session_id)');
     db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_project_path ON sessions(project_path)');
     db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_is_archived ON sessions(isArchived)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_is_internal ON sessions(is_internal)');
     db.exec('CREATE INDEX IF NOT EXISTS idx_projects_is_starred ON projects(isStarred)');
     db.exec('CREATE INDEX IF NOT EXISTS idx_projects_is_archived ON projects(isArchived)');
 
@@ -824,6 +850,7 @@ export const runMigrations = (db: Database) => {
     ensureSwarmAgentSchema(db);
     ensureRunSpineBridgeSchema(db);
     ensureAutomationGraphSchema(db);
+    db.exec(EVALS_SCHEMA_SQL);
 
     console.log('Database migrations completed successfully');
   } catch (error: any) {
@@ -884,6 +911,8 @@ function ensureSwarmAgentSchema(db: Database): void {
   addColumnToTableIfNotExists(db, 'swarm_runs', runCols, 'blackboard_json', "TEXT DEFAULT '[]'");
   addColumnToTableIfNotExists(db, 'swarm_runs', runCols, 'skills_json', "TEXT DEFAULT '[]'");
   addColumnToTableIfNotExists(db, 'swarm_runs', runCols, 'config_json', 'TEXT');
+  addColumnToTableIfNotExists(db, 'swarm_runs', runCols, 'goal_card_json', 'TEXT');
+  addColumnToTableIfNotExists(db, 'swarm_runs', runCols, 'attachments_json', "TEXT DEFAULT '[]'");
   addColumnToTableIfNotExists(db, 'swarm_runs', runCols, 'workspace_id', 'TEXT');
   addColumnToTableIfNotExists(db, 'swarm_runs', runCols, 'pr_url', 'TEXT');
   addColumnToTableIfNotExists(db, 'swarm_runs', runCols, 'feature_branch', 'TEXT');

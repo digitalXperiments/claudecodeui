@@ -9,9 +9,14 @@ async function parse<T>(response: Response): Promise<T> {
 
 export const interruptsApi = {
   async list(): Promise<{ interrupts: Interrupt[]; count: number }> {
-    const response = await authenticatedFetch('/api/interrupts?status=open&limit=100');
+    const response = await authenticatedFetch('/api/interrupts?status=open&limit=100&attentionOnly=true');
     const payload = await parse<{ interrupts?: Interrupt[]; count?: number }>(response);
     return { interrupts: payload.interrupts ?? [], count: payload.count ?? 0 };
+  },
+  async count(): Promise<number> {
+    const response = await authenticatedFetch('/api/interrupts/count?attentionOnly=true');
+    const payload = await parse<{ count?: number }>(response);
+    return payload.count ?? 0;
   },
   async action(id: string, actionKey: string): Promise<void> {
     const response = await authenticatedFetch(`/api/interrupts/${encodeURIComponent(id)}/actions/${encodeURIComponent(actionKey)}`, { method: 'POST' });
@@ -23,4 +28,3 @@ export const interruptsApi = {
     await parse(response);
   },
 };
-

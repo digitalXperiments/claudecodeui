@@ -81,7 +81,10 @@ function parseAssistantUsage(usage: Record<string, unknown>): {
   };
 }
 
-export function readClaudeSessionTokenUsage(jsonlPath: string): ClaudeSessionTokenUsage {
+function readClaudeTokenUsage(
+  jsonlPath: string,
+  bounds?: { fromMs: number; toMs: number },
+): ClaudeSessionTokenUsage {
   let latestInput = 0;
   let latestOutput = 0;
   let latestCacheRead = 0;
@@ -89,6 +92,8 @@ export function readClaudeSessionTokenUsage(jsonlPath: string): ClaudeSessionTok
   let model: string | null = null;
   let inputSum = 0;
   let outputSum = 0;
+  let cacheReadSum = 0;
+  let cacheCreationSum = 0;
 
   let fileContent = '';
   try {
@@ -102,14 +107,23 @@ export function readClaudeSessionTokenUsage(jsonlPath: string): ClaudeSessionTok
     try {
       const entry = JSON.parse(line) as {
         type?: string;
+        timestamp?: string;
         message?: { usage?: Record<string, unknown>; model?: string };
       };
       if (entry.type !== 'assistant' || !entry.message?.usage) {
         continue;
       }
+      if (bounds) {
+        const timestampMs = typeof entry.timestamp === 'string' ? Date.parse(entry.timestamp) : NaN;
+        if (!Number.isFinite(timestampMs) || timestampMs < bounds.fromMs || timestampMs > bounds.toMs) {
+          continue;
+        }
+      }
       const parsed = parseAssistantUsage(entry.message.usage);
       inputSum += parsed.input;
       outputSum += parsed.output;
+      cacheReadSum += parsed.cacheRead;
+      cacheCreationSum += parsed.cacheCreation;
       latestInput = parsed.input;
       latestOutput = parsed.output;
       latestCacheRead = parsed.cacheRead;
@@ -149,8 +163,11 @@ export function readClaudeSessionTokenUsage(jsonlPath: string): ClaudeSessionTok
     billedInputTokens: inputSum,
     billedOutputTokens: outputSum,
     cumulativeUsed,
-    cacheReadTokens: latestCacheRead,
-    cacheCreationTokens: latestCacheCreation,
+    // These are spend breakdowns and therefore must cover the same set of
+    // responses as inputTokens. Keeping only the last response made every
+    // earlier cache hit look like full-price fresh input during cost repair.
+    cacheReadTokens: cacheReadSum,
+    cacheCreationTokens: cacheCreationSum,
     cacheTokens,
     model,
     provider: 'claude',
@@ -159,6 +176,29 @@ export function readClaudeSessionTokenUsage(jsonlPath: string): ClaudeSessionTok
       output: latestOutput,
     },
   };
+}
+
+export function readClaudeSessionTokenUsage(jsonlPath: string): ClaudeSessionTokenUsage {
+  return readClaudeTokenUsage(jsonlPath);
+}
+
+/**
+ * Authoritative usage for one completed CloudCLI run within a resumed Claude
+ * session. Claude's JSONL records the final billed usage for every assistant
+ * API response, so slicing it by the run's timestamps repairs both duplicate
+ * live snapshots and responses (for example nested agent work) that were not
+ * forwarded over the live SDK stream.
+ */
+export function readClaudeRunTokenUsage(
+  jsonlPath: string,
+  fromIso: string,
+  toIso: string,
+): ClaudeSessionTokenUsage | null {
+  const fromMs = Date.parse(fromIso);
+  const toMs = Date.parse(toIso);
+  if (!Number.isFinite(fromMs) || !Number.isFinite(toMs) || toMs < fromMs) return null;
+  const usage = readClaudeTokenUsage(jsonlPath, { fromMs, toMs });
+  return usage.cumulativeUsed > 0 ? usage : null;
 }
 
 /** Build a live token_budget payload from a single SDK/assistant usage object. */

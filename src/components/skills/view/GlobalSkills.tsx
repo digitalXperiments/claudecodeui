@@ -39,8 +39,11 @@ const PROVIDER_NAMES: Record<SkillsProvider, string> = {
   codex: 'Codex',
   cursor: 'Cursor',
   opencode: 'OpenCode',
+  kilo: 'Kilo Code',
+  cline: 'Cline',
   grok: 'Grok',
   kimi: 'Kimi',
+  qwencode: 'Qwen Code',
   pi: 'Pi',
 };
 

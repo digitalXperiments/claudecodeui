@@ -159,6 +159,30 @@ export const missionControlApi = {
     return parseJson(res);
   },
 
+  async workThis(
+    itemId: string,
+    projectId?: string,
+  ): Promise<{
+    item: McItem;
+    sessionId: string;
+    provider: string;
+    projectId: string;
+    projectPath: string;
+    prompt: string;
+    matchReason: string;
+    candidates: Array<{ projectId: string; projectPath: string; name: string; score: number; reason: string }>;
+    pendingCount: number;
+  }> {
+    const res = await authenticatedFetch(
+      `/api/mission-control/items/${encodeURIComponent(itemId)}/work`,
+      {
+        method: 'POST',
+        body: JSON.stringify(projectId ? { projectId } : {}),
+      },
+    );
+    return parseJson(res);
+  },
+
   async applyAction(
     itemId: string,
     actionId: string,

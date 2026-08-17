@@ -78,7 +78,8 @@ export type CloudErrorCode =
   | 'AUTOMATION_TIMEOUT'
   | 'SWARM_NOT_AWAITING_PLAN_APPROVAL'
   | 'SWARM_STILL_RUNNING'
-  | 'SWARM_STEP_NOT_FOUND';
+  | 'SWARM_STEP_NOT_FOUND'
+  | 'SWARM_SPEND_CAP';
 
 export class CloudError extends Error {
   readonly code: CloudErrorCode;

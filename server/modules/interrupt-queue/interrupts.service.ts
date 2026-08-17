@@ -73,11 +73,11 @@ export const interruptsService = {
   list(filter: InterruptListFilter = {}): Interrupt[] {
     return interruptsDb.list(filter);
   },
-  countOpen(projectId?: string): number {
-    return interruptsDb.countOpen(projectId);
+  countOpen(projectId?: string, attentionOnly = false): number {
+    return interruptsDb.countOpen(projectId, attentionOnly);
   },
-  countUnread(projectId?: string): number {
-    return interruptsDb.countUnread(projectId);
+  countUnread(projectId?: string, attentionOnly = false): number {
+    return interruptsDb.countUnread(projectId, attentionOnly);
   },
   /** Batch viewport mark-as-read. Read ≠ resolved: items stay actionable. */
   markRead(ids: string[]): { updated: number; unread: number } {
@@ -109,7 +109,7 @@ export const interruptsService = {
     emitInterrupt('interrupt_created', interrupt);
     void import('@/modules/automation/index.js')
       .then(({ automationService }) => {
-        void automationService.fire({
+        automationService.fireDetached({
           type: 'interrupt_created',
           projectId: interrupt.project_id,
           payload: {
@@ -393,6 +393,31 @@ export const interruptsService = {
         continue;
       }
 
+      if (interrupt.kind === 'approval_pending') {
+        const itemId =
+          typeof interrupt.meta.itemId === 'string'
+            ? interrupt.meta.itemId
+            : typeof interrupt.meta.item_id === 'string'
+              ? interrupt.meta.item_id
+              : null;
+        if (itemId) {
+          const itemState = interruptsDb.missionControlItemState(itemId);
+          if (itemState === 'missing' || itemState === 'settled') {
+            settle(
+              interrupt,
+              interruptsDb.resolve(
+                interrupt.interrupt_id,
+                'resolved',
+                'system',
+                itemState === 'missing' ? 'mc_item_missing' : 'mc_item_terminal',
+              ),
+              false,
+            );
+            continue;
+          }
+        }
+      }
+
       if (interrupt.run_id) {
         if (!runExists) {
           settle(interrupt, interruptsDb.resolve(interrupt.interrupt_id, 'resolved', 'system', 'run_missing'), false);
@@ -433,6 +458,7 @@ export const interruptsService = {
       status: ['open'],
       projectId: projectId ?? undefined,
       limit: 50,
+      attentionOnly: true,
     });
     return { interrupts, generatedAt: new Date().toISOString() };
   },

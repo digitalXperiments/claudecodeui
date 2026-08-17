@@ -1,17 +1,21 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { rm, mkdir, writeFile } from 'node:fs/promises';
+import { rm, mkdir, writeFile, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
 
 import { makeScratchDir } from '@/shared/scratch.js';
+import { getGlobalImageAssetsDir } from '@/shared/image-attachments.js';
 import { agentRunProfilesDb, closeConnection, initializeDatabase, projectsDb } from '@/modules/database/index.js';
 import {
   acceptanceEvidenceMatches,
   configureSwarmAbortFns,
   configureSwarmRuntimes,
+  looksLikeReviewApproval,
   parseMemberFindings,
+  parseOrchestratorPlan,
   parseSynthesis,
+  stepRequiresSourceChanges,
 } from '@/modules/swarm/swarm-agent.service.js';
 import {
   pickReassignmentSeatForTest,
@@ -296,6 +300,49 @@ test('acceptanceEvidenceMatches accepts numbered, verbatim, and paraphrased echo
   );
 });
 
+test('reviewer and explorer steps never require a source diff', () => {
+  assert.equal(stepRequiresSourceChanges('reviewer', true), false);
+  assert.equal(stepRequiresSourceChanges('explorer', true), false);
+  assert.equal(stepRequiresSourceChanges('tester', undefined), false);
+  assert.equal(stepRequiresSourceChanges('implementer', true), true);
+  assert.equal(stepRequiresSourceChanges('implementer', undefined), false);
+  assert.equal(stepRequiresSourceChanges('implementer', false), false);
+});
+
+test('looksLikeReviewApproval recognizes SHIP and rejects NO-SHIP', () => {
+  assert.equal(looksLikeReviewApproval('SHIP. Independently reviewed the dirty tree.'), true);
+  assert.equal(looksLikeReviewApproval('LGTM — ready to merge'), true);
+  assert.equal(looksLikeReviewApproval('NO-SHIP. Two HIGH defects remain.'), false);
+});
+
+test('parseOrchestratorPlan strips requiresChanges from reviewer steps', () => {
+  const parsed = parseOrchestratorPlan(
+    JSON.stringify({
+      summary: 'Implement then review',
+      strategy: 'One writer, one check',
+      steps: [
+        {
+          id: 'impl',
+          title: 'Implement',
+          kind: 'implementer',
+          prompt: 'Write the change',
+          requiresChanges: true,
+        },
+        {
+          id: 'rev',
+          title: 'Review',
+          kind: 'reviewer',
+          prompt: 'Review the tree',
+          requiresChanges: true,
+        },
+      ],
+    }),
+    [],
+  );
+  assert.equal(parsed.steps.find((step) => step.id === 'impl')?.requiresChanges, true);
+  assert.equal(parsed.steps.find((step) => step.id === 'rev')?.requiresChanges, false);
+});
+
 test('parseSynthesis extracts action items', () => {
   const parsed = parseSynthesis(
     JSON.stringify({
@@ -357,6 +404,55 @@ test('swarm start with agents roster stores per-agent provider and effort', asyn
     await waitFor(() => swarmDb.get(started.swarm_id)?.status === 'succeeded');
     const all = swarmService.list(null, 10);
     assert.ok(all.some((s) => s.swarm_id === started.swarm_id));
+  });
+});
+
+test('swarm start persists goal attachments and drops paths outside the upload store', async () => {
+  await withDatabase(async (root) => {
+    installFastPipeline({ requireApproval: false });
+    const projectPath = path.join(root, 'project');
+    await mkdir(projectPath, { recursive: true });
+    const projectId = projectsDb.createProjectPath(projectPath).project!.project_id;
+
+    const assetsDir = getGlobalImageAssetsDir();
+    await mkdir(assetsDir, { recursive: true });
+    const fileName = `swarm-prd-${Date.now()}.md`;
+    const assetPath = path.join(assetsDir, fileName);
+    await writeFile(assetPath, '# PRD\n\nShip swarm goal attachments.\n');
+
+    try {
+      const started = swarmService.start({
+        projectId,
+        goal: 'Implement the attached PRD',
+        agents: [
+          {
+            kind: 'orchestrator',
+            label: 'Lead',
+            provider: 'claude',
+            permissionMode: 'bypassPermissions',
+          },
+        ],
+        attachments: [
+          { path: assetPath, name: 'prd.md', mimeType: 'text/markdown', size: 32 },
+          { path: '/etc/passwd', name: 'evil.txt' },
+          { path: path.join(root, 'outside.pdf'), name: 'outside.pdf' },
+        ],
+        requireApproval: false,
+      });
+
+      assert.equal(started.attachments.length, 1);
+      assert.equal(started.attachments[0].name, 'prd.md');
+      assert.equal(started.attachments[0].mimeType, 'text/markdown');
+      assert.ok(started.attachments[0].path.includes(fileName));
+
+      const reloaded = swarmDb.get(started.swarm_id);
+      assert.equal(reloaded?.attachments.length, 1);
+      assert.equal(reloaded?.attachments[0].name, 'prd.md');
+
+      await waitFor(() => swarmDb.get(started.swarm_id)?.status === 'succeeded');
+    } finally {
+      await unlink(assetPath).catch(() => undefined);
+    }
   });
 });
 
@@ -872,6 +968,8 @@ test('swarm withUsage rollup aggregates tokens and cost across member runs', asy
     assert.equal(withUsage.usage!.totalTokens, 150 * members.length);
     assert.equal(withUsage.usage!.memberRuns.length, members.length);
     assert.ok(withUsage.usage!.memberRuns[0]!.tokens >= 150);
+    assert.ok((withUsage.usage!.totalDurationMs ?? 0) >= 0);
+    assert.ok(withUsage.usage!.memberRuns[0]!.stepId !== undefined);
   });
 });
 
@@ -1128,6 +1226,274 @@ test('a reviewer/agent that honestly reports unmet acceptance criteria is "needs
   });
 });
 
+test('reviewer changes dispatch an implementer correction and then an independent re-review', async () => {
+  await withDatabase(async (root) => {
+    setSwarmTestExecutor(null);
+    const projectPath = path.join(root, 'repo');
+    await mkdir(projectPath, { recursive: true });
+    await initGitRepo(projectPath);
+    const projectId = projectsDb.createProjectPath(projectPath).project!.project_id;
+    let reviewerRuns = 0;
+    let correctionRuns = 0;
+    let replanRuns = 0;
+
+    configureSwarmRuntimes({
+      claude: async (prompt, options, writer) => {
+        const sink = writer as { setSessionId(id: string): void; send(message: unknown): void };
+        sink.setSessionId(`native-${Math.random().toString(36).slice(2)}`);
+        let output: string;
+        if (prompt.includes('"strategy"')) {
+          output = JSON.stringify({
+            summary: 'Implement and review',
+            strategy: 'One writer followed by one reviewer',
+            steps: [
+              {
+                id: 'implement-buggy',
+                title: 'Implement source',
+                kind: 'implementer',
+                assignTo: 'Builder',
+                wave: 1,
+                dependsOn: [],
+                requiresChanges: true,
+                acceptanceCriteria: ['Source implementation exists'],
+                prompt: 'Create app.txt.',
+              },
+              {
+                id: 'review-source',
+                title: 'Review source',
+                kind: 'reviewer',
+                assignTo: 'Reviewer',
+                wave: 2,
+                dependsOn: ['implement-buggy'],
+                acceptanceCriteria: ['The implementation is release-ready'],
+                prompt: 'Review app.txt and request changes if it contains buggy.',
+              },
+            ],
+          });
+        } else if (prompt.includes('SUPERVISOR TICK') || prompt.includes('Replan failed steps')) {
+          replanRuns += 1;
+          // Deliberately return the wrong role. Policy must coerce a reviewer
+          // verdict onto an implementer until a real diff lands.
+          output = JSON.stringify({
+            action: 'dispatch',
+            kind: 'reviewer',
+            assignTo: 'Reviewer',
+            title: 'Apply requested fixes',
+            prompt: 'Replace buggy with fixed in app.txt.',
+            reason: 'Reviewer asked for changes',
+          });
+        } else if (prompt.includes('"completed"')) {
+          output = JSON.stringify({
+            summary: 'Implementation corrected and independently re-reviewed.',
+            completed: ['Implement source', 'Review source'],
+            remaining: [],
+            recommendations: [],
+            risks: [],
+          });
+        } else if (
+          prompt.includes('Implement the changes requested by the reviewer')
+          || prompt.includes('Implement the changes requested by reviewer step')
+        ) {
+          correctionRuns += 1;
+          await writeFile(path.join(String(options.cwd ?? ''), 'app.txt'), 'fixed\n');
+          output = JSON.stringify({
+            summary: 'Applied the requested fix.',
+            findings: [],
+            changedFiles: ['app.txt'],
+            verification: ['read app.txt'],
+            acceptance: [{ criterion: '1', met: true, evidence: 'The implementation is now release-ready' }],
+            recommendations: [],
+            risks: [],
+            severity: 'info',
+          });
+        } else if (prompt.includes('Review app.txt')) {
+          reviewerRuns += 1;
+          const met = reviewerRuns > 1;
+          output = JSON.stringify({
+            summary: met ? 'Approved after correction.' : 'Changes requested: app.txt is buggy.',
+            findings: met ? [] : ['app.txt still contains buggy'],
+            changedFiles: [],
+            verification: ['read app.txt'],
+            acceptance: [{ criterion: '1', met, evidence: met ? 'fixed content verified' : 'buggy content found' }],
+            recommendations: met ? [] : ['Replace buggy with fixed'],
+            risks: met ? [] : ['release blocker'],
+            severity: met ? 'info' : 'critical',
+          });
+        } else {
+          await writeFile(path.join(String(options.cwd ?? ''), 'app.txt'), 'buggy\n');
+          output = JSON.stringify({
+            summary: 'Created the initial implementation.',
+            findings: [],
+            changedFiles: ['app.txt'],
+            verification: ['read app.txt'],
+            acceptance: [{ criterion: '1', met: true, evidence: 'Source implementation exists' }],
+            recommendations: [],
+            risks: [],
+            severity: 'info',
+          });
+        }
+        sink.send({ kind: 'stream_delta', provider: 'claude', sessionId: null, content: output });
+        sink.send({ kind: 'complete', provider: 'claude', sessionId: null, exitCode: 0, success: true });
+      },
+    });
+
+    const started = swarmService.start({
+      projectId,
+      goal: 'Implement source and resolve reviewer feedback automatically',
+      agents: [
+        { kind: 'orchestrator', label: 'Lead', provider: 'claude' },
+        { kind: 'implementer', label: 'Builder', provider: 'claude' },
+        { kind: 'reviewer', label: 'Reviewer', provider: 'claude' },
+      ],
+      requireApproval: false,
+      requirePlanApproval: false,
+      validateBeforePr: false,
+      stepMaxAttempts: 3,
+      maxReplanRounds: 2,
+    });
+    await waitFor(() => ['succeeded', 'failed', 'aborted'].includes(swarmService.get(started.swarm_id)?.status ?? ''), 10_000);
+    const done = swarmService.get(started.swarm_id)!;
+    assert.equal(
+      done.status,
+      'succeeded',
+      JSON.stringify({
+        status: done.status,
+        lastError: done.last_error,
+        ticks: done.goalCard?.ticksUsed,
+        decisions: done.goalCard?.decisions,
+        steps: done.plan?.steps.map((step) => `${step.id}:${step.kind}:${step.status}`),
+      }),
+    );
+    assert.equal(reviewerRuns, 2, 'reviewer should run once before and once after correction');
+    assert.equal(correctionRuns, 1, 'changes requested should dispatch exactly one implementer correction');
+    assert.equal(replanRuns, 2, 'supervisor ticks once to implement and once to re-review');
+    assert.ok(
+      (done.members ?? []).some((member) => member.kind === 'implementer' && member.step_id?.startsWith('supervise-')),
+      'the correction must run as an implementer even if the orchestrator returned a reviewer step',
+    );
+    assert.ok(done.plan?.steps.some((step) => step.kind === 'reviewer' && step.id.startsWith('supervise-') && step.status === 'succeeded'));
+    assert.equal(done.goalCard?.mode, 'supervisor');
+    assert.ok((done.goalCard?.decisions.length ?? 0) >= 2);
+    assert.equal(done.status, 'succeeded');
+  });
+});
+
+test('resume from failure preserves the workspace and skips completed planning', async () => {
+  await withDatabase(async (root) => {
+    setSwarmTestExecutor(null);
+    const projectPath = path.join(root, 'repo');
+    await mkdir(projectPath, { recursive: true });
+    await initGitRepo(projectPath);
+    const projectId = projectsDb.createProjectPath(projectPath).project!.project_id;
+    let recovering = false;
+    let planRuns = 0;
+    let workerRuns = 0;
+
+    configureSwarmRuntimes({
+      claude: async (prompt, _options, writer) => {
+        const sink = writer as { setSessionId(id: string): void; send(message: unknown): void };
+        sink.setSessionId(`native-${Math.random().toString(36).slice(2)}`);
+        if (prompt.includes('"strategy"')) {
+          planRuns += 1;
+          sink.send({ kind: 'stream_delta', provider: 'claude', sessionId: null, content: JSON.stringify({
+            summary: 'One durable step',
+            strategy: 'Run once and resume if it fails',
+            steps: [{
+              id: 'durable-step',
+              title: 'Durable implementation',
+              kind: 'implementer',
+              assignTo: 'Builder',
+              wave: 1,
+              dependsOn: [],
+              prompt: 'Complete the durable step.',
+            }],
+          }) });
+          sink.send({ kind: 'complete', provider: 'claude', sessionId: null, exitCode: 0, success: true });
+          return;
+        }
+        if (prompt.includes('SUPERVISOR TICK') || prompt.includes('Replan failed steps')) {
+          sink.send({
+            kind: 'stream_delta',
+            provider: 'claude',
+            sessionId: null,
+            content: JSON.stringify(
+              recovering
+                ? {
+                    action: 'dispatch',
+                    kind: 'implementer',
+                    title: 'Resume durable step',
+                    prompt: 'Complete the durable step.',
+                    reason: 'Continue from the checkpoint',
+                  }
+                : { action: 'blocked', reason: 'simulated provider failure' },
+            ),
+          });
+          sink.send({ kind: 'complete', provider: 'claude', sessionId: null, exitCode: 0, success: true });
+          return;
+        }
+        if (prompt.includes('"completed"')) {
+          sink.send({ kind: 'stream_delta', provider: 'claude', sessionId: null, content: JSON.stringify({
+            summary: recovering ? 'Recovered from the checkpoint.' : 'Still unresolved.',
+            completed: recovering ? ['Durable implementation'] : [],
+            remaining: recovering ? [] : ['Durable implementation'],
+            recommendations: [],
+            risks: [],
+          }) });
+          sink.send({ kind: 'complete', provider: 'claude', sessionId: null, exitCode: 0, success: true });
+          return;
+        }
+        workerRuns += 1;
+        if (!recovering) {
+          sink.send({ kind: 'complete', provider: 'claude', sessionId: null, exitCode: 1, success: false, error: 'simulated provider failure' });
+          return;
+        }
+        sink.send({ kind: 'stream_delta', provider: 'claude', sessionId: null, content: JSON.stringify({
+          summary: 'Completed after resume.',
+          findings: [],
+          changedFiles: [],
+          verification: ['checkpoint state inspected'],
+          acceptance: [],
+          recommendations: [],
+          risks: [],
+          severity: 'info',
+        }) });
+        sink.send({ kind: 'complete', provider: 'claude', sessionId: null, exitCode: 0, success: true });
+      },
+    });
+
+    const started = swarmService.start({
+      projectId,
+      goal: 'Resume a failed swarm without repeating completed phases',
+      agents: [
+        { kind: 'orchestrator', label: 'Lead', provider: 'claude' },
+        { kind: 'implementer', label: 'Builder', provider: 'claude' },
+      ],
+      requireApproval: false,
+      requirePlanApproval: false,
+      validateBeforePr: false,
+      stepMaxAttempts: 1,
+      maxReplanRounds: 1,
+    });
+    await waitFor(() => swarmService.get(started.swarm_id)?.status === 'failed', 10_000);
+    const failed = swarmService.get(started.swarm_id)!;
+    const workspaceId = failed.workspace_id;
+    assert.equal(planRuns, 1);
+    assert.equal(workerRuns, 1);
+
+    recovering = true;
+    const resumed = await swarmService.resumeFromFailure(started.swarm_id);
+    assert.equal(resumed.status, 'running');
+    await waitFor(() => ['succeeded', 'failed', 'aborted'].includes(swarmService.get(started.swarm_id)?.status ?? ''), 10_000);
+    const done = swarmService.get(started.swarm_id)!;
+    assert.equal(done.status, 'succeeded', done.last_error ?? done.status);
+    assert.equal(done.workspace_id, workspaceId, 'resume must reuse the original isolated workspace');
+    assert.equal(planRuns, 1, 'the persisted plan must not be regenerated');
+    assert.ok(workerRuns >= 2, `expected the failed attempt plus a resumed worker, got ${workerRuns}`);
+    assert.equal(done.goalCard?.mode, 'supervisor');
+    assert.ok(done.blackboard.some((message) => message.content.includes('[resume] continuing from the last failure checkpoint')));
+  });
+});
+
 test('autonomous mode keeps replanning across multiple rounds instead of giving up after one', async () => {
   await withDatabase(async (root) => {
     setSwarmTestExecutor(null);
@@ -1159,15 +1525,15 @@ test('autonomous mode keeps replanning across multiple rounds instead of giving 
               prompt: 'Update app.txt.',
             }],
           });
-        } else if (prompt.includes('Replan failed steps')) {
+        } else if (prompt.includes('SUPERVISOR TICK') || prompt.includes('Replan failed steps')) {
           replanRounds += 1;
           output = JSON.stringify({
-            steps: [{
-              title: `Retry edit source (round ${replanRounds})`,
-              kind: 'implementer',
-              assignTo: 'Builder',
-              prompt: 'Try again; write app.txt so it compiles.',
-            }],
+            action: 'dispatch',
+            kind: 'implementer',
+            assignTo: 'Builder',
+            title: `Retry edit source (round ${replanRounds})`,
+            prompt: 'Try again; write app.txt so it compiles.',
+            reason: 'Keep implementing until the file compiles',
           });
         } else if (prompt.includes('"completed"')) {
           output = JSON.stringify({
@@ -1215,24 +1581,26 @@ test('autonomous mode keeps replanning across multiple rounds instead of giving 
       stepMaxAttempts: 1,
       maxReplanRounds: 2,
     });
-    await waitFor(() => swarmService.get(started.swarm_id)?.status === 'succeeded', 10_000);
+    await waitFor(() => ['succeeded', 'failed', 'aborted'].includes(swarmService.get(started.swarm_id)?.status ?? ''), 10_000);
     const done = swarmService.get(started.swarm_id)!;
-    assert.equal(workerAttempts, 3, 'expected the initial attempt plus two replan-round attempts');
-    assert.equal(replanRounds, 2, 'expected exactly two replan rounds, not one');
+    assert.equal(
+      done.status,
+      'succeeded',
+      JSON.stringify({
+        status: done.status,
+        lastError: done.last_error,
+        ticks: done.goalCard?.ticksUsed,
+        decisions: done.goalCard?.decisions,
+        steps: done.plan?.steps.map((step) => `${step.id}:${step.kind}:${step.status}`),
+      }),
+    );
+    assert.equal(workerAttempts, 3, 'expected the initial attempt plus two supervisor-tick attempts');
+    assert.equal(replanRounds, 2, 'expected exactly two supervisor ticks, not one');
 
     const steps = done.plan?.steps ?? [];
-    // Every replan round's default id must be unique — a collision would let
-    // a later round's "succeeded" write get clobbered by an unrelated
-    // "recovered" write, or silently drop a step.
     assert.equal(new Set(steps.map((s) => s.id)).size, steps.length);
-    assert.equal(steps.length, 3);
-    assert.equal(steps.find((s) => s.id === 'edit-source')?.status, 'needs_changes');
-    assert.equal(steps.filter((s) => s.status === 'recovered').length, 1);
-    assert.equal(steps.filter((s) => s.status === 'succeeded').length, 1);
-    // The recovery chain resolved end-to-end even though the *original* step
-    // never flips to "recovered" itself — it's excluded transitively via the
-    // recovered-set indirection, which is what actually makes the swarm
-    // succeed.
+    assert.ok(steps.some((step) => step.id.startsWith('supervise-') && step.status === 'succeeded'));
+    assert.equal(done.goalCard?.mode, 'supervisor');
     assert.equal(done.status, 'succeeded');
   });
 });
@@ -1571,10 +1939,14 @@ test('a step that fails every attempt exhausts the budget and escalates to a rep
       claude: async (prompt, _options, writer) => {
         const sink = writer as { setSessionId(id: string): void; send(message: unknown): void };
         sink.setSessionId(`native-${Math.random().toString(36).slice(2)}`);
-        if (prompt.includes('Replan failed steps')) {
+        if (prompt.includes('SUPERVISOR TICK') || prompt.includes('Replan failed steps')) {
           replanCalls += 1;
-          // No recovery available.
-          sink.send({ kind: 'stream_delta', provider: 'claude', sessionId: null, content: JSON.stringify({ steps: [] }) });
+          sink.send({
+            kind: 'stream_delta',
+            provider: 'claude',
+            sessionId: null,
+            content: JSON.stringify({ action: 'blocked', reason: 'unrecoverable worker failure' }),
+          });
           sink.send({ kind: 'complete', provider: 'claude', sessionId: null, exitCode: 0, success: true });
           return;
         }
@@ -1615,7 +1987,7 @@ test('a step that fails every attempt exhausts the budget and escalates to a rep
     );
     const done = swarmService.get(started.swarm_id)!;
 
-    // Exactly the attempt budget, then one orchestrator replan.
+    // Exactly the attempt budget, then one orchestrator supervisor tick.
     assert.equal(workerCalls, 2);
     assert.equal(replanCalls, 1);
     const board = done.blackboard.map((m) => m.content);
@@ -1623,12 +1995,12 @@ test('a step that fails every attempt exhausts the budget and escalates to a rep
       board.some((c) => c.includes('[retry] step w1 exhausted its 2 attempt(s)')),
       board.join('\n'),
     );
-    const replanAttempt = swarmDb
+    const superviseAttempt = swarmDb
       .listAttempts(started.swarm_id)
-      .find((attempt) => attempt.phase === 'replan');
-    assert.ok(replanAttempt?.run_id, 'replan must have a canonical child run');
-    assert.notEqual(replanAttempt!.run_id, 'replan-failed-steps');
-    assert.ok(runService.get(replanAttempt!.run_id!), 'replan child run must be persisted');
+      .find((attempt) => attempt.phase === 'supervise');
+    assert.ok(superviseAttempt?.run_id, 'supervisor tick must have a canonical child run');
+    assert.ok(runService.get(superviseAttempt!.run_id!), 'supervisor child run must be persisted');
+    assert.equal(done.goalCard?.mode, 'supervisor');
   });
 });
 

@@ -69,6 +69,8 @@ test('runSwarmAgent persists its title and passes it to Grok as sessionSummary',
     const session = sessionsDb.getSessionById(outcome.appSessionId);
     assert.equal(session?.custom_name, title);
     assert.equal(session?.provider_session_id, 'grok-native-session');
+    assert.equal(session?.is_internal, 1);
+    assert.equal(sessionsDb.getAllSessions().some((row) => row.session_id === outcome.appSessionId), false);
   } finally {
     configureSwarmRuntimes({});
     closeConnection();

@@ -159,12 +159,14 @@ type SidebarContentProps = {
   currentVersion: string;
   onShowVersionModal: () => void;
   onShowSettings: () => void;
-  onShowNotifications?: () => void;
-  unreadNotificationCount?: number;
+  onShowNeedsYou?: () => void;
+  needsYouCount?: number;
   onShowMissionControl?: () => void;
   missionControlPendingCount?: number;
   onShowKanban?: () => void;
   onShowAgentSwarm?: () => void;
+  onShowStudio?: () => void;
+  studioActive?: boolean;
   onShowStats?: () => void;
   projectListProps: SidebarProjectListProps;
   /** User-resizable desktop width for the Projects column. */
@@ -211,12 +213,14 @@ export default function SidebarContent({
   currentVersion: _currentVersion,
   onShowVersionModal,
   onShowSettings,
-  onShowNotifications,
-  unreadNotificationCount = 0,
+  onShowNeedsYou,
+  needsYouCount = 0,
   onShowMissionControl,
   missionControlPendingCount = 0,
   onShowKanban,
   onShowAgentSwarm,
+  onShowStudio,
+  studioActive = false,
   onShowStats,
   projectListProps,
   projectsPanelWidth,
@@ -677,13 +681,15 @@ export default function SidebarContent({
         }
       }}
       runningSessionsCount={runningSessionsCount}
-      onShowKanban={onShowKanban ?? (() => {})}
+      onShowKanban={onShowKanban}
       onShowAgentSwarm={onShowAgentSwarm ?? (() => {})}
+      onShowStudio={onShowStudio ?? (() => {})}
+      studioActive={studioActive}
       onShowMissionControl={onShowMissionControl ?? (() => {})}
       missionControlPendingCount={missionControlPendingCount}
       onShowStats={onShowStats ?? (() => {})}
-      onShowNotifications={onShowNotifications ?? (() => {})}
-      unreadNotificationCount={unreadNotificationCount}
+      onShowNeedsYou={onShowNeedsYou ?? (() => {})}
+      needsYouCount={needsYouCount}
       onShowSettings={onShowSettings}
       updateAvailable={updateAvailable}
       restartRequired={restartRequired}

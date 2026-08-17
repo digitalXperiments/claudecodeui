@@ -40,10 +40,14 @@ interface ChatMessagesPaneProps {
   setCodexModel: (model: string) => void;
   opencodeModel: string;
   setOpenCodeModel: (model: string) => void;
+  kiloModel: string;
+  setKiloModel: (model: string) => void;
   grokModel: string;
   setGrokModel: (model: string) => void;
   kimiModel: string;
   setKimiModel: (model: string) => void;
+  qwencodeModel: string;
+  setQwenCodeModel: (model: string) => void;
   piModel: string;
   setPiModel: (model: string) => void;
   providerModelCatalog: Partial<Record<LLMProvider, ProviderModelsDefinition>>;
@@ -94,10 +98,14 @@ function ChatMessagesPane({
   setCodexModel,
   opencodeModel,
   setOpenCodeModel,
+  kiloModel,
+  setKiloModel,
   grokModel,
   setGrokModel,
   kimiModel,
   setKimiModel,
+  qwencodeModel,
+  setQwenCodeModel,
   piModel,
   setPiModel,
   providerModelCatalog,
@@ -199,10 +207,14 @@ function ChatMessagesPane({
           setCodexModel={setCodexModel}
           opencodeModel={opencodeModel}
           setOpenCodeModel={setOpenCodeModel}
+          kiloModel={kiloModel}
+          setKiloModel={setKiloModel}
           grokModel={grokModel}
           setGrokModel={setGrokModel}
           kimiModel={kimiModel}
           setKimiModel={setKimiModel}
+          qwencodeModel={qwencodeModel}
+          setQwenCodeModel={setQwenCodeModel}
           piModel={piModel}
           setPiModel={setPiModel}
           providerModelCatalog={providerModelCatalog}

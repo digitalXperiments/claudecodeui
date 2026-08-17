@@ -38,7 +38,7 @@ test('watch paths exclude disabled providers (and re-include them when re-armed)
   const all = getEnabledProviderWatchPaths(new Set());
   assert.deepEqual(
     all.map((entry) => entry.provider).sort(),
-    ['claude', 'codex', 'cursor', 'opencode', 'pi'],
+    ['claude', 'cline', 'codex', 'cursor', 'kilo', 'kimi', 'opencode', 'pi', 'qwencode'],
   );
 
   // Recomputing with a disabled set is what a watcher re-arm does: the

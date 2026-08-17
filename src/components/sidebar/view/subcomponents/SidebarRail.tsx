@@ -3,8 +3,8 @@ import {
   AlertTriangle,
   Archive,
   BarChart3,
-  Bell,
   Bug,
+  CircleAlert,
   Folder,
   History,
   PanelLeftClose,
@@ -15,6 +15,7 @@ import {
   Network,
   Sparkles,
   SquareKanban,
+  Palette,
 } from 'lucide-react';
 import type { TFunction } from 'i18next';
 
@@ -39,13 +40,15 @@ type SidebarRailProps = {
   isCollapsed: boolean;
   onToggleCollapse: () => void;
   runningSessionsCount: number;
-  onShowKanban: () => void;
+  onShowKanban?: () => void;
   onShowAgentSwarm: () => void;
+  onShowStudio: () => void;
+  studioActive?: boolean;
   onShowMissionControl: () => void;
   missionControlPendingCount: number;
   onShowStats: () => void;
-  onShowNotifications: () => void;
-  unreadNotificationCount: number;
+  onShowNeedsYou: () => void;
+  needsYouCount: number;
   onShowSettings: () => void;
   updateAvailable: boolean;
   restartRequired: boolean;
@@ -107,11 +110,13 @@ export default function SidebarRail({
   runningSessionsCount,
   onShowKanban,
   onShowAgentSwarm,
+  onShowStudio,
+  studioActive = false,
   onShowMissionControl,
   missionControlPendingCount,
   onShowStats,
-  onShowNotifications,
-  unreadNotificationCount,
+  onShowNeedsYou,
+  needsYouCount,
   onShowSettings,
   updateAvailable,
   restartRequired,
@@ -176,15 +181,25 @@ export default function SidebarRail({
 
       <div className="nav-divider my-1 w-8" />
 
-      <RailButton title={t('actions.kanban', { defaultValue: 'Kanban' })} onClick={onShowKanban}>
-        <SquareKanban className="h-[18px] w-[18px]" />
-      </RailButton>
+      {onShowKanban ? (
+        <RailButton title={t('actions.kanban', { defaultValue: 'Kanban' })} onClick={onShowKanban}>
+          <SquareKanban className="h-[18px] w-[18px]" />
+        </RailButton>
+      ) : null}
 
       <RailButton
         title={t('actions.agentSwarm', { defaultValue: 'Agent Swarm' })}
         onClick={onShowAgentSwarm}
       >
         <Network className="h-[18px] w-[18px]" />
+      </RailButton>
+
+      <RailButton
+        active={studioActive}
+        title={t('actions.studio', { defaultValue: 'Studio' })}
+        onClick={onShowStudio}
+      >
+        <Palette className="h-[18px] w-[18px]" />
       </RailButton>
 
       <RailButton
@@ -203,11 +218,11 @@ export default function SidebarRail({
       </RailButton>
 
       <RailButton
-        title={t('actions.notifications', { defaultValue: 'Notifications' })}
-        onClick={onShowNotifications}
-        badge={unreadNotificationCount > 0 ? unreadNotificationCount : false}
+        title={t('actions.needsYou', { defaultValue: 'Needs you' })}
+        onClick={onShowNeedsYou}
+        badge={needsYouCount > 0 ? needsYouCount : false}
       >
-        <Bell className="h-[18px] w-[18px]" />
+        <CircleAlert className="h-[18px] w-[18px]" />
       </RailButton>
 
       <RailButton title={t('actions.settings')} onClick={onShowSettings}>

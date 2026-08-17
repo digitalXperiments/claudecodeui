@@ -11,6 +11,7 @@ import {
   FileDown,
   Loader2,
   Network,
+  Paperclip,
   Plus,
   RefreshCw,
   Search,
@@ -28,6 +29,9 @@ import { useWebSocket } from '../../../contexts/WebSocketContext';
 import { Button } from '../../../shared/view/ui';
 import type { Project, ProviderModelOption } from '../../../types/app';
 import { agentProfilesApi } from '../../settings/api/agentProfilesApi';
+import ImageAttachment from '../../chat/view/subcomponents/ImageAttachment';
+import FileAttachmentChip from '../../chat/view/subcomponents/FileAttachmentChip';
+import LiveSpendMeter from '../../chat/view/subcomponents/LiveSpendMeter';
 import {
   clampEffort,
   clampPermissionMode,
@@ -38,10 +42,53 @@ import {
   SWARM_PERMISSION_LABELS,
   SWARM_PROVIDERS,
   type SwarmAgentSpec,
+  type SwarmAttachment,
+  type SwarmGoalCard,
   type SwarmRun,
   type SwarmValidationSummary,
   type SwarmWorkspaceStatus,
 } from '../types';
+
+/** Max goal-context files per swarm (mirrors server cap). */
+const MAX_SWARM_ATTACHMENTS = 10;
+const MAX_ATTACHMENT_SIZE = 25 * 1024 * 1024;
+
+const IMAGE_ATTACHMENT_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg'];
+const DOCUMENT_ATTACHMENT_EXTENSIONS = [
+  '.pdf', '.txt', '.md', '.markdown', '.csv', '.tsv', '.json', '.xml',
+  '.html', '.htm', '.rtf', '.log', '.yaml', '.yml',
+  '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.odt', '.ods', '.odp',
+];
+
+function formatDurationMs(ms: number | null | undefined): string | null {
+  if (ms == null || !Number.isFinite(ms) || ms < 0) return null;
+  const totalSeconds = Math.round(ms / 1000);
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes < 60) return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const remMin = minutes % 60;
+  return remMin > 0 ? `${hours}h ${remMin}m` : `${hours}h`;
+}
+
+function getFileExtension(name: string): string {
+  const lastDot = name.lastIndexOf('.');
+  return lastDot >= 0 ? name.slice(lastDot).toLowerCase() : '';
+}
+
+function isImageFile(file: File): boolean {
+  if (file.type && file.type.startsWith('image/')) return true;
+  return IMAGE_ATTACHMENT_EXTENSIONS.includes(getFileExtension(file.name || ''));
+}
+
+function isAllowedAttachment(file: File): boolean {
+  if (isImageFile(file)) return true;
+  if (file.type && !file.type.startsWith('image/')) {
+    // Document mime types are validated server-side; accept known extensions client-side.
+  }
+  return DOCUMENT_ATTACHMENT_EXTENSIONS.includes(getFileExtension(file.name || ''));
+}
 
 function apiErrorMessage(payload: unknown): string | null {
   if (typeof payload === 'string' && payload.trim()) return payload.trim();
@@ -131,6 +178,8 @@ function allowsSwarmAction(swarm: SwarmRun, action: string): boolean {
       return !ARCHIVE_BLOCKING_SWARM_STATUSES.has(swarm.status);
     case 'retry-step':
       return ['failed', 'awaiting_approval'].includes(swarm.status);
+    case 'resume':
+      return swarm.status === 'failed' && !swarm.archived_at;
     default:
       return false;
   }
@@ -153,7 +202,7 @@ function statusBadgeClass(status: string): string {
   ) {
     return 'bg-amber-500/15 text-amber-800 ring-amber-500/25 dark:text-amber-300';
   }
-  if (['planning', 'running', 'handing_off', 'queued'].includes(status)) {
+  if (['planning', 'running', 'handing_off', 'queued', 'supervising'].includes(status)) {
     return 'bg-sky-500/15 text-sky-700 ring-sky-500/25 dark:text-sky-300';
   }
   return 'bg-muted text-muted-foreground ring-border';
@@ -162,6 +211,7 @@ function statusBadgeClass(status: string): string {
 /** Human-readable label for a step/member/attempt status badge. */
 function statusLabel(status: string): string {
   if (status === 'needs_changes') return 'Changes requested';
+  if (status === 'supervising') return 'Supervising';
   return status;
 }
 
@@ -184,6 +234,78 @@ function validationChipClass(status: string): string {
 function validationOverallStatus(validation: SwarmValidationSummary): string {
   if (!validation.passed) return 'failed';
   return validation.degraded ? 'degraded' : 'passed';
+}
+
+function GoalCardPanel({ card, running }: { card: SwarmGoalCard; running: boolean }) {
+  const supervising = card.mode === 'supervisor' && running;
+  const lastDecision = card.decisions.at(-1);
+  const blockers = card.lastReview?.blockers ?? [];
+  return (
+    <div className="rounded-lg border border-sky-500/25 bg-sky-500/5 px-3 py-2.5">
+      <div className="mb-1.5 flex flex-wrap items-center gap-2">
+        <div className="text-[11px] font-semibold uppercase tracking-wide text-sky-700 dark:text-sky-300">
+          {supervising ? 'Orchestrator supervising' : 'Goal card'}
+        </div>
+        <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-medium ring-1 ring-inset ${statusBadgeClass(supervising ? 'supervising' : card.status)}`}>
+          {supervising ? 'Supervising' : card.status}
+        </span>
+        <span className="text-[10px] text-muted-foreground">
+          tick {card.ticksUsed}/{card.tickBudget}
+          {card.fingerprint?.head ? ` · ${card.fingerprint.head.slice(0, 8)}` : ''}
+          {card.fingerprint?.dirty ? ' · dirty' : ''}
+        </span>
+      </div>
+      {lastDecision ? (
+        <p className="text-[11px] text-foreground">
+          {lastDecision.action === 'dispatch' && lastDecision.kind
+            ? `Next: ${lastDecision.kind}${lastDecision.title ? ` — ${lastDecision.title}` : ''}. `
+            : lastDecision.action === 'done'
+              ? 'Goal accepted. '
+              : lastDecision.action === 'blocked'
+                ? 'Blocked. '
+                : ''}
+          {lastDecision.reason}
+        </p>
+      ) : (
+        <p className="text-[11px] text-muted-foreground">
+          The orchestrator will stay on shift after the first review or failed step.
+        </p>
+      )}
+      {card.lastReview ? (
+        <p className="mt-1 text-[10px] text-muted-foreground">
+          Last review: {card.lastReview.verdict}
+          {card.lastReview.seatLabel ? ` by ${card.lastReview.seatLabel}` : ''}
+          {blockers.length ? ` · ${blockers.length} blocker${blockers.length === 1 ? '' : 's'}` : ''}
+          {card.repeatBlockerCount > 1 ? ` · same blockers ×${card.repeatBlockerCount}` : ''}
+        </p>
+      ) : null}
+      {blockers.length > 0 ? (
+        <ul className="mt-1.5 space-y-0.5 text-[10px] text-muted-foreground">
+          {blockers.slice(0, 5).map((packet, index) => (
+            <li key={`${packet.ask}-${index}`}>
+              <span className="font-medium text-foreground">[{packet.severity}]</span>
+              {packet.file ? ` ${packet.file} —` : ''} {packet.ask}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {card.decisions.length > 0 ? (
+        <ol className="mt-2 space-y-1 border-t border-sky-500/15 pt-1.5 text-[10px] text-muted-foreground">
+          {card.decisions.slice(-6).map((decision) => (
+            <li key={`${decision.tick}-${decision.at}`}>
+              <span className="font-medium text-foreground">Tick {decision.tick}</span>
+              {' · '}
+              {decision.action}
+              {decision.kind ? ` ${decision.kind}` : ''}
+              {decision.coerced ? ' (policy)' : ''}
+              {' — '}
+              {decision.reason}
+            </li>
+          ))}
+        </ol>
+      ) : null}
+    </div>
+  );
 }
 
 /** True when a failed swarm died at the pre-PR validation gate. */
@@ -226,6 +348,10 @@ function blackboardBadge(content: string): BlackboardBadge | null {
   const policy = content.match(/^\[policy\]\s*/i);
   if (policy) {
     return { tone: 'neutral', label: 'policy', rest: content.slice(policy[0].length) };
+  }
+  const supervisor = content.match(/^\[supervisor\]\s*/i);
+  if (supervisor) {
+    return { tone: 'neutral', label: 'supervisor', rest: content.slice(supervisor[0].length) };
   }
   return null;
 }
@@ -316,6 +442,9 @@ export default function AgentSwarmView({
   // Create form
   const [projectId, setProjectId] = useState(selectedProject?.projectId ?? '');
   const [goal, setGoal] = useState('');
+  /** Local files staged for upload with the goal (PRDs, screenshots, …). */
+  const [attachedFiles, setAttachedFiles] = useState<File[]>([]);
+  const attachmentInputRef = useRef<HTMLInputElement>(null);
   const [selectedSkills, setSelectedSkills] = useState<string[]>([]);
   const [skillOptions, setSkillOptions] = useState<SkillOption[]>([]);
   const [skillsLoading, setSkillsLoading] = useState(false);
@@ -808,6 +937,62 @@ export default function AgentSwarmView({
     );
   };
 
+  const addAttachments = (fileList: FileList | File[] | null) => {
+    if (!fileList) return;
+    const incoming = Array.from(fileList);
+    const rejected: string[] = [];
+    const accepted: File[] = [];
+    for (const file of incoming) {
+      if (file.size > MAX_ATTACHMENT_SIZE) {
+        rejected.push(`${file.name} (over 25MB)`);
+        continue;
+      }
+      if (!isAllowedAttachment(file) && !(file.type && file.type.startsWith('image/'))) {
+        rejected.push(`${file.name} (unsupported type)`);
+        continue;
+      }
+      accepted.push(file);
+    }
+    if (rejected.length) {
+      setError(`Skipped attachments: ${rejected.join('; ')}`);
+    }
+    if (accepted.length) {
+      setAttachedFiles((prev) => [...prev, ...accepted].slice(0, MAX_SWARM_ATTACHMENTS));
+    }
+  };
+
+  const removeAttachment = (index: number) => {
+    setAttachedFiles((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  const uploadAttachments = async (files: File[]): Promise<SwarmAttachment[]> => {
+    if (files.length === 0) return [];
+    const formData = new FormData();
+    files.forEach((file) => formData.append('images', file));
+    const response = await authenticatedFetch('/api/assets/images', {
+      method: 'POST',
+      headers: {},
+      body: formData,
+    });
+    if (!response.ok) {
+      let serverMessage = '';
+      try {
+        const errorBody = await response.json();
+        if (errorBody && typeof errorBody.error === 'string') {
+          serverMessage = errorBody.error;
+        }
+      } catch {
+        /* non-JSON */
+      }
+      if (response.status === 401 || response.status === 403) {
+        throw new Error('Your session has expired — please log in again.');
+      }
+      throw new Error(serverMessage || `Attachment upload failed (HTTP ${response.status})`);
+    }
+    const result = (await response.json()) as { images?: SwarmAttachment[] };
+    return Array.isArray(result.images) ? result.images : [];
+  };
+
   const start = async () => {
     if (startingRef.current) return;
     if (!projectId.trim()) {
@@ -847,11 +1032,20 @@ export default function AgentSwarmView({
           modelsByProvider[seat.provider || 'claude'] ?? [],
         ),
       }));
+
+      // Upload staged files first so the swarm start payload only carries
+      // server-validated asset paths (same store as chat attachments).
+      let uploadedAttachments: SwarmAttachment[] = [];
+      if (attachedFiles.length > 0) {
+        uploadedAttachments = await uploadAttachments(attachedFiles);
+      }
+
       const fingerprint = JSON.stringify({
         projectId,
         goal: goal.trim(),
         agents: ordered,
         skills: selectedSkills,
+        attachments: uploadedAttachments.map((a) => a.path),
         requirePlanApproval,
         autoRoster,
         validateBeforePr,
@@ -882,6 +1076,7 @@ export default function AgentSwarmView({
           goal: goal.trim(),
           agents: ordered,
           skills: selectedSkills,
+          attachments: uploadedAttachments,
           requireApproval: false,
           requirePlanApproval,
           // Only the simplified path opts in; advanced keeps today's manual
@@ -903,6 +1098,7 @@ export default function AgentSwarmView({
         setHistoryFilter('active');
         setTab('history');
         setGoal('');
+        setAttachedFiles([]);
       }
       await refresh();
     } catch (caught) {
@@ -915,11 +1111,13 @@ export default function AgentSwarmView({
 
   const act = async (
     swarmId: string,
-    action: 'approve' | 'reject' | 'approve-plan' | 'reject-plan' | 'abort',
+    action: 'approve' | 'reject' | 'approve-plan' | 'reject-plan' | 'abort' | 'resume',
   ) => {
     const confirmation =
       action === 'abort'
         ? 'Abort this swarm? Running provider processes will be stopped and unfinished work may be lost.'
+        : action === 'resume'
+          ? 'Resume this swarm from its last durable failure checkpoint? Completed work and the existing workspace will be preserved.'
         : action === 'reject-plan'
           ? 'Reject this plan and end the swarm? Worker agents will not run.'
           : action === 'reject'
@@ -1219,6 +1417,80 @@ export default function AgentSwarmView({
                     value={goal}
                     onChange={(e) => setGoal(e.target.value)}
                   />
+                </div>
+                <div>
+                  <div className="flex items-center justify-between gap-2">
+                    <div>
+                      <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                        Attachments
+                      </span>
+                      <p className="mt-0.5 text-[11px] text-muted-foreground">
+                        Optional PRD, design docs, screenshots, or other context (max{' '}
+                        {MAX_SWARM_ATTACHMENTS}, 25MB each). Agents receive these with the goal.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-border/60 bg-background px-2.5 py-1.5 text-xs font-medium text-foreground transition hover:bg-muted/50"
+                      onClick={() => attachmentInputRef.current?.click()}
+                      disabled={attachedFiles.length >= MAX_SWARM_ATTACHMENTS}
+                    >
+                      <Paperclip className="h-3.5 w-3.5" />
+                      Add files
+                    </button>
+                    <input
+                      ref={attachmentInputRef}
+                      type="file"
+                      className="hidden"
+                      multiple
+                      accept={[
+                        ...IMAGE_ATTACHMENT_EXTENSIONS,
+                        ...DOCUMENT_ATTACHMENT_EXTENSIONS,
+                        'image/*',
+                      ].join(',')}
+                      onChange={(e) => {
+                        addAttachments(e.target.files);
+                        e.target.value = '';
+                      }}
+                    />
+                  </div>
+                  {attachedFiles.length > 0 ? (
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      {attachedFiles.map((file, index) =>
+                        isImageFile(file) ? (
+                          <ImageAttachment
+                            key={`${file.name}-${file.size}-${index}`}
+                            file={file}
+                            onRemove={() => removeAttachment(index)}
+                          />
+                        ) : (
+                          <FileAttachmentChip
+                            key={`${file.name}-${file.size}-${index}`}
+                            file={file}
+                            onRemove={() => removeAttachment(index)}
+                          />
+                        ),
+                      )}
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg border border-dashed border-border/70 bg-muted/20 px-3 py-4 text-xs text-muted-foreground transition hover:border-primary/40 hover:bg-muted/40 hover:text-foreground"
+                      onClick={() => attachmentInputRef.current?.click()}
+                      onDragOver={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                      }}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        addAttachments(e.dataTransfer.files);
+                      }}
+                    >
+                      <Paperclip className="h-3.5 w-3.5" />
+                      Drop a PRD or images here, or click to browse
+                    </button>
+                  )}
                 </div>
               </div>
             </section>
@@ -1870,6 +2142,7 @@ export default function AgentSwarmView({
                     swarm.cancelRequestedAt ?? swarm.cancel_requested_at,
                   );
                   const canAbort = allowsSwarmAction(swarm, 'abort');
+                  const canResume = allowsSwarmAction(swarm, 'resume');
                   const canArchive = allowsSwarmAction(swarm, 'archive');
                   const canDelete = allowsSwarmAction(swarm, 'delete');
                   const swarmBusy = Boolean(busyBySwarm[swarm.swarm_id]);
@@ -1945,6 +2218,20 @@ export default function AgentSwarmView({
                                 <span>{projectName(swarm.project_id)}</span>
                                 <span className="text-border">·</span>
                                 <span>{new Date(swarm.created_at).toLocaleString()}</span>
+                                {swarm.usage?.totalDurationMs != null ? (
+                                  <>
+                                    <span className="text-border">·</span>
+                                    <span title="Wall-clock runtime">
+                                      {formatDurationMs(swarm.usage.totalDurationMs)}
+                                    </span>
+                                  </>
+                                ) : null}
+                                {swarm.usage && swarm.usage.totalCostUsd > 0 ? (
+                                  <>
+                                    <span className="text-border">·</span>
+                                    <span>${swarm.usage.totalCostUsd.toFixed(2)}</span>
+                                  </>
+                                ) : null}
                                 {swarm.approval_status ? (
                                   <>
                                     <span className="text-border">·</span>
@@ -1955,6 +2242,16 @@ export default function AgentSwarmView({
                                   <>
                                     <span className="text-border">·</span>
                                     <span className="text-primary">PR ready</span>
+                                  </>
+                                ) : null}
+                                {swarm.attachments && swarm.attachments.length > 0 ? (
+                                  <>
+                                    <span className="text-border">·</span>
+                                    <span className="inline-flex items-center gap-0.5">
+                                      <Paperclip className="h-2.5 w-2.5" />
+                                      {swarm.attachments.length} file
+                                      {swarm.attachments.length === 1 ? '' : 's'}
+                                    </span>
                                   </>
                                 ) : null}
                               </div>
@@ -2053,6 +2350,40 @@ export default function AgentSwarmView({
                             ) : null}
                           </div>
 
+                          {(swarm.attachments ?? []).length > 0 ? (
+                            <div>
+                              <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                                Goal attachments
+                              </div>
+                              <div className="flex flex-wrap gap-1.5">
+                                {swarm.attachments!.map((attachment, index) => {
+                                  const label =
+                                    attachment.name ||
+                                    attachment.path.split(/[\\/]/).pop() ||
+                                    `file-${index + 1}`;
+                                  return (
+                                    <span
+                                      key={`${attachment.path}-${index}`}
+                                      className="inline-flex max-w-full items-center gap-1 rounded-full border border-border/60 bg-background px-2.5 py-1 text-[10px] shadow-sm"
+                                      title={
+                                        attachment.workspacePath
+                                          ? `${label} → ${attachment.workspacePath}`
+                                          : attachment.path
+                                      }
+                                    >
+                                      <Paperclip className="h-2.5 w-2.5 shrink-0 text-muted-foreground" />
+                                      <span className="truncate font-medium text-foreground">
+                                        {label}
+                                      </span>
+                                    </span>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          ) : null}
+
+                          {swarm.goalCard ? <GoalCardPanel card={swarm.goalCard} running={swarm.status === 'running'} /> : null}
+
                           {swarm.last_error ? (
                             <div
                               role="alert"
@@ -2088,7 +2419,17 @@ export default function AgentSwarmView({
                                 </p>
                               ) : null}
                               <ul className="mt-2 space-y-1.5">
-                                {(swarm.plan.steps ?? []).map((step) => (
+                                {(swarm.plan.steps ?? []).map((step) => {
+                                  const stepRuns = (swarm.usage?.memberRuns ?? []).filter(
+                                    (run) => run.stepId === step.id,
+                                  );
+                                  const stepDuration = stepRuns.reduce(
+                                    (sum, run) => sum + (run.durationMs ?? 0),
+                                    0,
+                                  );
+                                  const stepCost = stepRuns.reduce((sum, run) => sum + (run.costUsd ?? 0), 0);
+                                  const stepTokens = stepRuns.reduce((sum, run) => sum + (run.tokens ?? 0), 0);
+                                  return (
                                   <li
                                     key={step.id}
                                     className="flex items-start gap-2 rounded-lg border border-border/40 bg-background/80 px-2.5 py-1.5"
@@ -2112,6 +2453,14 @@ export default function AgentSwarmView({
                                         {step.difficulty ? ` · ${step.difficulty}` : ''}
                                         {step.wave != null ? ` · wave ${step.wave}` : ''}
                                         {step.status ? ` · ${step.status}` : ''}
+                                        {stepDuration > 0
+                                          ? ` · ${formatDurationMs(stepDuration)}`
+                                          : ''}
+                                        {stepCost > 0
+                                          ? ` · $${stepCost.toFixed(4)}`
+                                          : stepTokens > 0
+                                            ? ` · ${stepTokens.toLocaleString()} tok`
+                                            : ''}
                                       </span>
                                     </span>
                                     {(step.status === 'failed' || step.status === 'needs_changes') &&
@@ -2128,7 +2477,8 @@ export default function AgentSwarmView({
                                       </Button>
                                     ) : null}
                                   </li>
-                                ))}
+                                  );
+                                })}
                               </ul>
                             </div>
                           ) : swarm.status === 'planning' ? (
@@ -2166,6 +2516,30 @@ export default function AgentSwarmView({
                                         {m.model ? ` / ${m.model}` : ''}
                                         {m.effort ? ` · ${m.effort}` : ''}
                                       </span>
+                                      {(() => {
+                                        const run = swarm.usage?.memberRuns.find(
+                                          (entry) => entry.memberId === m.member_id,
+                                        );
+                                        const duration =
+                                          run?.durationMs
+                                          ?? (m.created_at && m.finished_at
+                                            ? new Date(m.finished_at).getTime()
+                                              - new Date(m.created_at).getTime()
+                                            : null);
+                                        const bits = [
+                                          duration != null && duration > 0
+                                            ? formatDurationMs(duration)
+                                            : null,
+                                          run && run.costUsd > 0
+                                            ? `$${run.costUsd.toFixed(4)}`
+                                            : null,
+                                        ].filter(Boolean);
+                                        return bits.length > 0 ? (
+                                          <span className="text-[10px] text-muted-foreground">
+                                            {bits.join(' · ')}
+                                          </span>
+                                        ) : null;
+                                      })()}
                                     </div>
                                     {m.findings_summary ? (
                                       <p className="mt-1.5 whitespace-pre-wrap text-muted-foreground">
@@ -2183,13 +2557,22 @@ export default function AgentSwarmView({
                           ) : null}
 
                           {/* Usage / cost */}
-                          {swarm.usage && swarm.usage.memberRuns.some((r) => r.tokens > 0 || r.costUsd > 0) ? (
+                          {swarm.usage && swarm.usage.memberRuns.some((r) => r.tokens > 0 || r.costUsd > 0 || (r.durationMs ?? 0) > 0) ? (
                             <div>
-                              <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                              <div className="mb-1.5 flex items-center justify-between gap-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
                                 Usage
+                                <LiveSpendMeter spentUsd={swarm.usage.totalCostUsd} />
                               </div>
                               <div className="space-y-2 rounded-lg border border-border/40 bg-background/80 p-2.5">
                                 <div className="flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                                  <span className="text-muted-foreground">Runtime</span>
+                                  <span className="font-medium text-foreground">
+                                    {formatDurationMs(swarm.usage.totalDurationMs) ?? '—'}
+                                  </span>
+                                  <span className="text-muted-foreground">Work time</span>
+                                  <span className="font-medium text-foreground">
+                                    {formatDurationMs(swarm.usage.billedDurationMs) ?? '—'}
+                                  </span>
                                   <span className="text-muted-foreground">Total tokens</span>
                                   <span className="font-medium text-foreground">
                                     {swarm.usage.totalTokens.toLocaleString()}
@@ -2611,6 +2994,17 @@ export default function AgentSwarmView({
                               </span>
                             ) : null}
                             <div className="flex gap-1">
+                              {canResume ? (
+                                <Button
+                                  size="sm"
+                                  className="h-7 rounded-md text-[11px]"
+                                  disabled={swarmBusy}
+                                  onClick={() => void act(swarm.swarm_id, 'resume')}
+                                >
+                                  <RefreshCw className="mr-1 h-3 w-3" />
+                                  Resume from failure
+                                </Button>
+                              ) : null}
                               {canAbort ? (
                                 <Button
                                   size="sm"

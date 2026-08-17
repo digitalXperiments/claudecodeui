@@ -38,7 +38,7 @@ test('disk-discovered sessions are keyed by the provider id for both columns', a
     assert.equal(row?.session_id, 'provider-abc');
     assert.equal(row?.provider_session_id, 'provider-abc');
 
-    const byProviderId = sessionsDb.getSessionByProviderSessionId('provider-abc');
+    const byProviderId = sessionsDb.getSessionByProviderSessionId('provider-abc', 'claude');
     assert.equal(byProviderId?.session_id, 'provider-abc');
   });
 });
@@ -103,7 +103,7 @@ test('legacy provider-keyed rows stay resolvable through both lookups', async ()
     sessionsDb.createSession('legacy-1', 'opencode', '/workspace/demo');
 
     assert.equal(sessionsDb.getSessionById('legacy-1')?.provider, 'opencode');
-    assert.equal(sessionsDb.getSessionByProviderSessionId('legacy-1')?.session_id, 'legacy-1');
+    assert.equal(sessionsDb.getSessionByProviderSessionId('legacy-1', 'opencode')?.session_id, 'legacy-1');
   });
 });
 
@@ -141,5 +141,34 @@ test('assignProviderSessionId never merges or deletes another provider\'s row', 
     assert.equal(appRow?.provider_session_id, 'shared-id');
     assert.equal(appRow?.jsonl_path, null);
     assert.equal(appRow?.custom_name, null);
+  });
+});
+
+test('provider-session lookup cannot return another provider with the same native id', async () => {
+  await withIsolatedDatabase(() => {
+    sessionsDb.createSession('shared-native', 'claude', '/workspace/article-studio', 'Claude worker');
+    sessionsDb.createAppSession('codex-app', 'codex', '/workspace/cloudcli');
+    sessionsDb.assignProviderSessionId('codex-app', 'shared-native');
+
+    assert.equal(
+      sessionsDb.getSessionByProviderSessionId('shared-native', 'claude')?.session_id,
+      'shared-native',
+    );
+    assert.equal(
+      sessionsDb.getSessionByProviderSessionId('shared-native', 'codex')?.session_id,
+      'codex-app',
+    );
+  });
+});
+
+test('internal sessions are excluded from interactive session lists', async () => {
+  await withIsolatedDatabase(() => {
+    sessionsDb.createAppSession('chat-session', 'codex', '/workspace/cloudcli');
+    sessionsDb.createAppSession('swarm-worker', 'claude', '/workspace/article-studio', {
+      internal: true,
+    });
+
+    assert.equal(sessionsDb.getSessionById('swarm-worker')?.is_internal, 1);
+    assert.deepEqual(sessionsDb.getAllSessions().map((row) => row.session_id), ['chat-session']);
   });
 });

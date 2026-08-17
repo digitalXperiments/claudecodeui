@@ -6,6 +6,7 @@ export const FALLBACK_PROVIDER_EFFORT_VALUES: Partial<Record<LLMProvider, readon
   claude: ['low', 'medium', 'high', 'xhigh', 'max'],
   codex: ['low', 'medium', 'high', 'xhigh'],
   opencode: ['none', 'low', 'medium', 'high', 'xhigh', 'max'],
+  kilo: ['low', 'medium', 'high'],
   pi: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
 };
 

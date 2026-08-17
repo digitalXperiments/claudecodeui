@@ -96,6 +96,54 @@ export type SwarmPlan = {
   generatedAt: string;
 };
 
+export type SwarmWorktreeFingerprint = {
+  head: string | null;
+  dirty: boolean;
+  signature: string;
+};
+
+export type SwarmCritiquePacket = {
+  file: string | null;
+  severity: 'critical' | 'warning' | 'info' | string;
+  ask: string;
+  evidence: string;
+};
+
+export type SwarmSupervisorDecision = {
+  tick: number;
+  at: string;
+  action: 'dispatch' | 'done' | 'blocked' | string;
+  kind: string | null;
+  title: string | null;
+  reason: string;
+  policy: string;
+  coerced: boolean;
+  stepId: string | null;
+};
+
+export type SwarmGoalCard = {
+  status: string;
+  mode: 'plan' | 'supervisor' | string;
+  fingerprint: SwarmWorktreeFingerprint | null;
+  lastWriter: string | null;
+  lastWriterKind: string | null;
+  lastReview: {
+    verdict: 'approved' | 'changes_requested' | 'failed' | string;
+    blockers: SwarmCritiquePacket[];
+    blockerHash: string;
+    shaReviewed: string | null;
+    fingerprint: string | null;
+    seatLabel: string | null;
+    stepId: string | null;
+    vague: boolean;
+  } | null;
+  repeatBlockerCount: number;
+  ticksUsed: number;
+  tickBudget: number;
+  decisions: SwarmSupervisorDecision[];
+  updatedAt: string;
+};
+
 export type SwarmMessage = {
   id: string;
   from: string;
@@ -174,6 +222,16 @@ export type SwarmArtifact = {
   created_at: string;
 };
 
+/** Goal-context file uploaded with the swarm (PRD, screenshot, design doc, …). */
+export type SwarmAttachment = {
+  path: string;
+  name?: string;
+  mimeType?: string;
+  size?: number;
+  /** Workspace-relative path after the pipeline copies the file into the worktree. */
+  workspacePath?: string | null;
+};
+
 export type SwarmRun = {
   swarm_id: string;
   project_id: string;
@@ -186,12 +244,16 @@ export type SwarmRun = {
   plan: SwarmPlan | null;
   blackboard: SwarmMessage[];
   skills: string[];
+  goalCard?: SwarmGoalCard | null;
+  /** Files attached to the goal at create time. */
+  attachments?: SwarmAttachment[];
   config?: {
     requireApproval?: boolean;
     requirePlanApproval?: boolean;
     stepTimeoutMs?: number | null;
     maxConcurrency?: number | null;
     parallelWriters?: boolean;
+    autonomous?: boolean;
   } | null;
   workspace_id?: string | null;
   /** Persisted workspace state when supplied by newer API responses. */
@@ -220,9 +282,12 @@ export type SwarmRun = {
   usage?: {
     totalTokens: number;
     totalCostUsd: number;
+    totalDurationMs?: number | null;
+    billedDurationMs?: number | null;
     memberRuns: Array<{
       memberId: string;
       runId: string | null;
+      stepId?: string | null;
       label: string | null;
       tokens: number;
       costUsd: number;
@@ -236,6 +301,8 @@ export const SWARM_PROVIDERS = [
   'codex',
   'cursor',
   'opencode',
+  'kilo',
+  'cline',
   'grok',
   'kimi',
   'pi',
@@ -248,6 +315,8 @@ export const SWARM_PROVIDER_EFFORTS: Record<string, string[]> = {
   claude: ['low', 'medium', 'high', 'xhigh', 'max'],
   codex: ['low', 'medium', 'high', 'xhigh'],
   opencode: ['none', 'low', 'medium', 'high', 'xhigh', 'max'],
+  kilo: ['low', 'medium', 'high'],
+  cline: [],
   grok: ['low', 'medium', 'high'],
 };
 
@@ -277,6 +346,8 @@ export const SWARM_PROVIDER_PERMISSION_MODES: Record<string, string[]> = {
   cursor: ['default', 'bypassPermissions'],
   codex: ['default', 'auto', 'bypassPermissions'],
   opencode: ['default', 'acceptEdits', 'auto', 'plan'],
+  kilo: ['default', 'acceptEdits', 'auto', 'bypassPermissions', 'plan'],
+  cline: ['default', 'auto', 'bypassPermissions'],
   grok: ['default', 'acceptEdits', 'auto', 'bypassPermissions', 'plan'],
   kimi: ['default', 'plan', 'auto', 'bypassPermissions'],
   pi: ['plan', 'bypassPermissions'],
@@ -287,6 +358,8 @@ export const SWARM_PROVIDER_DEFAULT_PERMISSION: Record<string, string> = {
   cursor: 'default',
   codex: 'default',
   opencode: 'default',
+  kilo: 'default',
+  cline: 'default',
   grok: 'default',
   kimi: 'bypassPermissions',
   pi: 'bypassPermissions',

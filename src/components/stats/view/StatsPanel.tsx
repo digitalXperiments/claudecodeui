@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
   AlertCircle,
@@ -102,12 +102,18 @@ export default function StatsPanel({ isOpen, onClose }: StatsPanelProps) {
   const [stats, setStats] = useState<GlobalRunStats | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [providerFilter, setProviderFilter] = useState<string | null>(null);
+  const [dayFilter, setDayFilter] = useState<string | null>(null);
+  const rangeBeforeDayFilter = useRef<StatsRangeKey>('30d');
 
-  const load = useCallback(async (range: ResolvedStatsRange) => {
+  const load = useCallback(async (range: ResolvedStatsRange, provider?: string | null) => {
     setLoading(true);
     setError(null);
     try {
-      const result = await statsApi.global(range);
+      const result = await statsApi.global({
+        ...range,
+        ...(provider ? { provider } : {}),
+      });
       setStats(result);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load stats');
@@ -124,26 +130,69 @@ export default function StatsPanel({ isOpen, onClose }: StatsPanelProps) {
         ? resolveStatsRange('custom', customFrom, customTo)
         : resolveStatsRange(rangeKey);
     setAppliedRange(range);
-    void load(range);
+    void load(range, providerFilter);
     // Only react to the open transition; range changes apply via the control.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen]);
 
   const applyRange = useCallback(
-    (key: StatsRangeKey, from: string, to: string) => {
+    (key: StatsRangeKey, from: string, to: string, provider: string | null = providerFilter) => {
       const range = resolveStatsRange(key, from, to);
       setAppliedRange(range);
-      void load(range);
+      void load(range, provider);
     },
-    [load],
+    [load, providerFilter],
   );
 
   const handleRangeKeyChange = (key: StatsRangeKey) => {
     setRangeKey(key);
+    setDayFilter(null);
     // Custom waits for Apply; presets apply immediately.
     if (key !== 'custom') {
       applyRange(key, customFrom, customTo);
     }
+  };
+
+  const handleProviderSelect = (row: BreakdownRow) => {
+    const next = providerFilter === row.key ? null : row.key;
+    setProviderFilter(next);
+    void load(appliedRange, next);
+  };
+
+  const clearProviderFilter = () => {
+    setProviderFilter(null);
+    void load(appliedRange, null);
+  };
+
+  const restoreRangeBeforeDay = () => {
+    const key = rangeBeforeDayFilter.current;
+    setRangeKey(key);
+    if (key === 'custom') {
+      applyRange('custom', customFrom, customTo);
+    } else {
+      applyRange(key, customFrom, customTo);
+    }
+  };
+
+  const handleDaySelect = (day: string) => {
+    if (dayFilter === day) {
+      setDayFilter(null);
+      restoreRangeBeforeDay();
+      return;
+    }
+    if (dayFilter == null) {
+      rangeBeforeDayFilter.current = rangeKey === 'custom' ? '30d' : rangeKey;
+    }
+    setDayFilter(day);
+    setRangeKey('custom');
+    setCustomFrom(day);
+    setCustomTo(day);
+    applyRange('custom', day, day);
+  };
+
+  const clearDayFilter = () => {
+    setDayFilter(null);
+    restoreRangeBeforeDay();
   };
 
   const denseDays = useMemo(
@@ -226,7 +275,7 @@ export default function StatsPanel({ isOpen, onClose }: StatsPanelProps) {
             <Button
               variant="ghost"
               size="sm"
-              onClick={() => void load(appliedRange)}
+              onClick={() => void load(appliedRange, providerFilter)}
               disabled={loading}
               className="h-10 w-10 touch-manipulation p-0 md:h-9 md:w-9"
               title="Refresh"
@@ -254,9 +303,56 @@ export default function StatsPanel({ isOpen, onClose }: StatsPanelProps) {
             customTo={customTo}
             onCustomFromChange={setCustomFrom}
             onCustomToChange={setCustomTo}
-            onApplyCustom={() => applyRange('custom', customFrom, customTo)}
+            onApplyCustom={() => {
+              setDayFilter(
+                customFrom && customTo && customFrom === customTo ? customFrom : null,
+              );
+              applyRange('custom', customFrom, customTo);
+            }}
             disabled={loading}
           />
+          {providerFilter || dayFilter ? (
+            <div className="mt-2 flex flex-wrap items-center gap-1.5">
+              <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                Filters
+              </span>
+              {providerFilter ? (
+                <button
+                  type="button"
+                  onClick={clearProviderFilter}
+                  className="inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-foreground hover:bg-primary/15"
+                >
+                  Provider: {providerFilter === '__unknown__' ? 'Unknown' : providerFilter}
+                  <X className="h-3 w-3" />
+                </button>
+              ) : null}
+              {dayFilter ? (
+                <button
+                  type="button"
+                  onClick={clearDayFilter}
+                  className="inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-foreground hover:bg-primary/15"
+                >
+                  Day: {dayFilter} UTC
+                  <X className="h-3 w-3" />
+                </button>
+              ) : null}
+              {providerFilter && dayFilter ? (
+                <button
+                  type="button"
+                  className="text-[11px] text-muted-foreground underline-offset-2 hover:underline"
+                  onClick={() => {
+                    setProviderFilter(null);
+                    setDayFilter(null);
+                    const key = rangeBeforeDayFilter.current;
+                    setRangeKey(key);
+                    applyRange(key, customFrom, customTo, null);
+                  }}
+                >
+                  Clear all
+                </button>
+              ) : null}
+            </div>
+          ) : null}
         </div>
 
         {error ? (
@@ -266,7 +362,7 @@ export default function StatsPanel({ isOpen, onClose }: StatsPanelProps) {
             <button
               type="button"
               className="shrink-0 touch-manipulation text-xs underline"
-              onClick={() => void load(appliedRange)}
+              onClick={() => void load(appliedRange, providerFilter)}
             >
               Retry
             </button>
@@ -325,7 +421,7 @@ export default function StatsPanel({ isOpen, onClose }: StatsPanelProps) {
                   label="Total tokens"
                   value={formatTokens(overview.totalTokens)}
                   title={`${formatTokensExact(overview.totalTokens)} tokens (reported by ${overview.runsWithTokens} of ${overview.totalRuns} runs)`}
-                  sub={`${formatTokens(overview.inputTokens)} in · ${formatTokens(overview.outputTokens)} out`}
+                  sub={`${formatTokens(overview.inputTokens)} in · ${formatTokens(overview.outputTokens)} out · ${formatTokens(overview.cacheReadTokens)} cached`}
                 />
                 <KpiCard
                   icon={<DollarSign className="h-3 w-3" />}
@@ -383,7 +479,11 @@ export default function StatsPanel({ isOpen, onClose }: StatsPanelProps) {
 
               {/* Usage over time */}
               <div className="rounded-xl border border-border bg-card p-3 shadow-sm sm:p-4">
-                <UsageOverTimeChart days={denseDays} />
+                <UsageOverTimeChart
+                  days={denseDays}
+                  selectedDay={dayFilter}
+                  onSelectDay={handleDaySelect}
+                />
               </div>
 
               {/* Provider + model breakdowns */}
@@ -394,6 +494,8 @@ export default function StatsPanel({ isOpen, onClose }: StatsPanelProps) {
                     rows={providerRows}
                     totalTokens={overview.totalTokens}
                     emptyText="No provider data in this range."
+                    selectedKey={providerFilter}
+                    onSelect={handleProviderSelect}
                   />
                 </div>
                 <div className="rounded-xl border border-border bg-card p-3 shadow-sm sm:p-4">
@@ -402,6 +504,15 @@ export default function StatsPanel({ isOpen, onClose }: StatsPanelProps) {
                     rows={modelRows}
                     totalTokens={overview.totalTokens}
                     emptyText="No model data in this range."
+                    onSelect={(row) => {
+                      const key = row.sublabel ?? (row.isUnknown ? '__unknown__' : null);
+                      if (!key) return;
+                      handleProviderSelect({
+                        ...row,
+                        key,
+                        label: key === '__unknown__' ? 'Unknown provider' : key,
+                      });
+                    }}
                   />
                 </div>
               </div>

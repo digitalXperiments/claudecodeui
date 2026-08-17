@@ -345,6 +345,65 @@ test('provider token_budget events land in agent_runs and roll up into globalSta
   }
 });
 
+test('globalStats converts conversation-cumulative provider snapshots into per-run deltas', async () => {
+  const db = await useTempDatabase();
+  try {
+    seedSession('session-cumulative', 'codex', '2026-07-01T00:00:00.000Z');
+    seedRun({
+      provider: 'codex',
+      appSessionId: 'session-cumulative',
+      createdAt: '2026-07-01T10:00:00.000Z',
+      tokens: { input: 900, output: 100, total: 1_000, costUsd: 1 },
+    });
+    seedRun({
+      provider: 'codex',
+      appSessionId: 'session-cumulative',
+      createdAt: '2026-07-02T10:00:00.000Z',
+      tokens: { input: 1_350, output: 150, total: 1_500, costUsd: 1.5 },
+    });
+    // A lower snapshot is a provider counter reset, not a negative delta.
+    seedRun({
+      provider: 'codex',
+      appSessionId: 'session-cumulative',
+      createdAt: '2026-07-03T10:00:00.000Z',
+      tokens: { input: 180, output: 20, total: 200, costUsd: 0.2 },
+    });
+
+    // Claude snapshots are per-run and must continue to add normally even
+    // when multiple runs share the same conversation.
+    seedSession('session-delta', 'claude', '2026-07-01T00:00:00.000Z');
+    seedRun({
+      provider: 'claude',
+      appSessionId: 'session-delta',
+      createdAt: '2026-07-01T11:00:00.000Z',
+      tokens: { input: 250, output: 50, total: 300, costUsd: 0.3 },
+    });
+    seedRun({
+      provider: 'claude',
+      appSessionId: 'session-delta',
+      createdAt: '2026-07-02T11:00:00.000Z',
+      tokens: { input: 400, output: 100, total: 500, costUsd: 0.5 },
+    });
+
+    const all = runService.globalStats({});
+    assert.equal(all.overview.totalTokens, 1_500 + 200 + 300 + 500);
+    assert.equal(all.overview.totalCostUsd, 1.5 + 0.2 + 0.3 + 0.5);
+    assert.equal(all.providers.find((row) => row.provider === 'codex')?.tokens, 1_700);
+
+    // The July 2 window still subtracts July 1's cumulative baseline because
+    // the window function is evaluated before the date predicate.
+    const july2 = runService.globalStats({
+      from: '2026-07-02T00:00:00.000Z',
+      to: '2026-07-02T23:59:59.999Z',
+    });
+    assert.equal(july2.overview.totalTokens, 500 + 500);
+    assert.equal(july2.providers.find((row) => row.provider === 'codex')?.tokens, 500);
+    assert.equal(july2.overview.totalCostUsd, 0.5 + 0.5);
+  } finally {
+    await db.restore();
+  }
+});
+
 test('token_budget messages without usable usage leave the run untouched', async () => {
   const db = await useTempDatabase();
   try {
@@ -635,6 +694,53 @@ test('globalStats honours from/to bounds inclusively on created_at', async () =>
     assert.deepEqual(empty.providers, []);
     assert.deepEqual(empty.models, []);
     assert.equal(empty.byHourUtc.length, 24);
+  } finally {
+    await db.restore();
+  }
+});
+
+test('globalStats honours provider filter including unknown attribution', async () => {
+  const db = await useTempDatabase();
+  try {
+    seedRun({
+      provider: 'claude',
+      tokens: { total: 100 },
+      createdAt: '2026-07-02T12:00:00.000Z',
+      startedAt: '2026-07-02T12:00:00.000Z',
+      finishedAt: '2026-07-02T12:00:05.000Z',
+    });
+    seedRun({
+      provider: 'grok',
+      tokens: { total: 200 },
+      createdAt: '2026-07-02T13:00:00.000Z',
+      startedAt: '2026-07-02T13:00:00.000Z',
+      finishedAt: '2026-07-02T13:00:05.000Z',
+    });
+    const unknownId = seedRun({
+      provider: 'claude',
+      tokens: { total: 50 },
+      createdAt: '2026-07-02T14:00:00.000Z',
+      startedAt: '2026-07-02T14:00:00.000Z',
+      finishedAt: '2026-07-02T14:00:05.000Z',
+    });
+    getConnection().prepare(`UPDATE agent_runs SET provider = NULL WHERE run_id = ?`).run(unknownId);
+    seedSession('session-claude', 'claude', '2026-07-02T12:00:00.000Z');
+    seedSession('session-grok', 'grok', '2026-07-02T13:00:00.000Z');
+
+    const claude = runService.globalStats({ provider: 'claude' });
+    assert.equal(claude.overview.totalRuns, 1);
+    assert.equal(claude.overview.totalTokens, 100);
+    assert.equal(claude.overview.conversationCount, 1);
+    assert.deepEqual(
+      claude.providers.map((row) => row.provider),
+      ['claude'],
+    );
+
+    const unknown = runService.globalStats({ provider: '__unknown__' });
+    assert.equal(unknown.overview.totalRuns, 1);
+    assert.equal(unknown.overview.totalTokens, 50);
+    assert.equal(unknown.providers.length, 1);
+    assert.equal(unknown.providers[0].provider, null);
   } finally {
     await db.restore();
   }

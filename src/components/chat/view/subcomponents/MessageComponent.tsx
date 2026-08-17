@@ -210,6 +210,8 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
                           ? t('messageTypes.codex')
                           : provider === 'opencode'
                               ? t('messageTypes.opencode', { defaultValue: 'OpenCode' })
+                              : provider === 'kilo'
+                                ? t('messageTypes.kilo', { defaultValue: 'Kilo Code' })
                               : provider === 'grok'
                                 ? t('messageTypes.grok', { defaultValue: 'Grok Build' })
                                 : provider === 'kimi'
@@ -461,4 +463,3 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
 }, areMessagePropsEqual);
 
 export default MessageComponent;
-

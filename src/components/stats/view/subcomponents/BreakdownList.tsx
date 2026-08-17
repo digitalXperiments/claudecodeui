@@ -25,6 +25,10 @@ type BreakdownListProps = {
   emptyText: string;
   /** Rows shown before the "show more" toggle. */
   maxRows?: number;
+  /** Currently applied filter key (Looker-style cross-filter). */
+  selectedKey?: string | null;
+  /** Click a row to filter the dashboard; click again to clear. */
+  onSelect?: (row: BreakdownRow) => void;
 };
 
 const BAR_COLORS = [
@@ -49,6 +53,8 @@ export default function BreakdownList({
   totalTokens,
   emptyText,
   maxRows = 8,
+  selectedKey,
+  onSelect,
 }: BreakdownListProps) {
   const [expanded, setExpanded] = useState(false);
 
@@ -83,11 +89,37 @@ export default function BreakdownList({
             if (row.costUsd != null && row.costUsd > 0) {
               detailParts.push(formatCost(row.costUsd));
             }
+            const isSelected = selectedKey != null && selectedKey === row.key;
+            const isDimmed = selectedKey != null && selectedKey !== row.key;
+            const interactive = Boolean(onSelect);
             return (
               <div
                 key={row.key}
-                className="rounded-lg px-2 py-1.5 hover:bg-accent/40"
-                title={`${row.label} — ${detailParts.join(' · ')}`}
+                role={interactive ? 'button' : undefined}
+                tabIndex={interactive ? 0 : undefined}
+                onClick={interactive ? () => onSelect?.(row) : undefined}
+                onKeyDown={
+                  interactive
+                    ? (event) => {
+                        if (event.key === 'Enter' || event.key === ' ') {
+                          event.preventDefault();
+                          onSelect?.(row);
+                        }
+                      }
+                    : undefined
+                }
+                className={cn(
+                  'rounded-lg px-2 py-1.5',
+                  interactive && 'cursor-pointer hover:bg-accent/40',
+                  isSelected && 'bg-primary/10 ring-1 ring-primary/30',
+                  isDimmed && 'opacity-50',
+                )}
+                title={
+                  interactive
+                    ? `${isSelected ? 'Clear filter: ' : 'Filter dashboard to '}${row.label}`
+                    : `${row.label} — ${detailParts.join(' · ')}`
+                }
+                aria-pressed={interactive ? isSelected : undefined}
               >
                 <div className="flex items-baseline justify-between gap-2">
                   <div className="flex min-w-0 items-baseline gap-1.5">

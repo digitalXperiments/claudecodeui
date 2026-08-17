@@ -40,6 +40,8 @@ type SkillUploadDialogProps = {
   description: string;
   /** Show the "All projects / Selected projects" scope picker. */
   allowScopeSelection?: boolean;
+  defaultScope?: GlobalSkillScope;
+  defaultProjects?: string[];
 };
 
 const MAX_QUEUED_SKILLS = 20;
@@ -56,12 +58,14 @@ export default function SkillUploadDialog({
   title,
   description,
   allowScopeSelection = false,
+  defaultScope = 'all',
+  defaultProjects,
 }: SkillUploadDialogProps) {
   const [queuedFiles, setQueuedFiles] = useState<QueuedSkillFile[]>([]);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [scope, setScope] = useState<GlobalSkillScope>('all');
-  const [selectedProjects, setSelectedProjects] = useState<string[]>([]);
+  const [scope, setScope] = useState<GlobalSkillScope>(defaultScope);
+  const [selectedProjects, setSelectedProjects] = useState<string[]>(defaultProjects ?? []);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -146,10 +150,10 @@ export default function SkillUploadDialog({
   const handleOpenChange = useCallback((nextOpen: boolean) => {
     setQueuedFiles([]);
     setSubmitError(null);
-    setScope('all');
-    setSelectedProjects([]);
+    setScope(allowScopeSelection ? defaultScope : 'all');
+    setSelectedProjects(allowScopeSelection && defaultScope === 'projects' ? (defaultProjects ?? []) : []);
     onOpenChange(nextOpen);
-  }, [onOpenChange]);
+  }, [allowScopeSelection, defaultProjects, defaultScope, onOpenChange]);
 
   const canInstall = useMemo(() => {
     if (queuedFiles.length === 0) {
@@ -172,8 +176,8 @@ export default function SkillUploadDialog({
 
     try {
       const entries = await buildSkillCreateEntries(queuedFiles);
-      const options = allowScopeSelection && scope === 'projects'
-        ? { scope, projects: selectedProjects }
+      const options = allowScopeSelection
+        ? { scope, projects: scope === 'projects' ? selectedProjects : undefined }
         : undefined;
       await onInstall(entries, options);
       setQueuedFiles([]);

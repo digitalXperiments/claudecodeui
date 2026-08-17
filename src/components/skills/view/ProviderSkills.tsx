@@ -50,8 +50,11 @@ const PROVIDER_NAMES: Record<SkillsProvider, string> = {
   codex: 'Codex',
   cursor: 'Cursor',
   opencode: 'OpenCode',
+  kilo: 'Kilo Code',
+  cline: 'Cline',
   grok: 'Grok Build',
   kimi: 'Kimi',
+  qwencode: 'Qwen Code',
   pi: 'Pi',
 };
 
@@ -59,8 +62,11 @@ const PROVIDER_SKILL_PATHS: Record<Exclude<SkillsProvider, 'opencode'>, string> 
   claude: '~/.claude/skills/<skill-name>/SKILL.md',
   codex: '~/.agents/skills/<skill-name>/SKILL.md',
   cursor: '~/.cursor/skills/<skill-name>/SKILL.md',
+  kilo: '~/.kilocode/skills/<skill-name>/SKILL.md',
+  cline: '~/.cline/data/skills/<skill-name>/SKILL.md',
   grok: '~/.grok/skills/<skill-name>/SKILL.md',
   kimi: '~/.kimi-code/skills/<skill-name>/SKILL.md',
+  qwencode: '~/.qwen/skills/<skill-name>/SKILL.md',
   pi: '~/.pi/agent/skills/<skill-name>/SKILL.md',
 };
 

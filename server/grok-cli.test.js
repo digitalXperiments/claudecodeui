@@ -5,6 +5,7 @@ import {
   describeGrokPermissionDenial,
   emitGrokPromptCompletion,
   resolveGrokPromptCompletion,
+  shouldDeferGrokIdleCleanup,
 } from './grok-cli.js';
 
 const createWriter = (messages) => ({
@@ -67,6 +68,12 @@ test('a normal Grok end_turn remains successful', () => {
     }),
     { exitCode: 0, aborted: false, errorContent: null },
   );
+});
+
+test('idle cleanup is deferred while a Grok prompt is in flight', () => {
+  assert.equal(shouldDeferGrokIdleCleanup({ inFlightPrompt: true }), true);
+  assert.equal(shouldDeferGrokIdleCleanup({ inFlightPrompt: false }), false);
+  assert.equal(shouldDeferGrokIdleCleanup(null), false);
 });
 
 test('unanswered unattended Grok permission produces an actionable timeout cause', () => {

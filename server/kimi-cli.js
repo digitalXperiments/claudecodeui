@@ -13,6 +13,7 @@ import {
   readKimiSessionTokenUsage,
 } from './modules/providers/list/kimi/kimi-token-usage.js';
 import { createCompleteMessage, createNormalizedMessage } from './shared/utils.js';
+import { createAcpPermissionCancellation, findAcpPermissionOption } from './shared/acp-rpc.js';
 
 // cross-spawn resolves .cmd shims/PATHEXT on Windows and delegates to
 // child_process.spawn everywhere else.
@@ -70,12 +71,17 @@ function createJsonRpcClient(child) {
   let nextId = 1;
   const rl = readline.createInterface({ input: child.stdout });
   const notificationHandlers = new Set();
+  let closed = false;
+  let closeError = null;
 
   // A spawn/runtime failure on the child (e.g. ENOENT if `kimi` isn't on
   // PATH, or it crashes mid-session) must reject every in-flight request
   // rather than leave callers hanging or let Node's unhandled 'error' event
   // on the ChildProcess crash the whole server process.
   const rejectAllPending = (error) => {
+    if (closed && closeError) return;
+    closed = true;
+    closeError = error instanceof Error ? error : new Error(String(error));
     for (const [id, waiter] of pending.entries()) {
       pending.delete(id);
       waiter.reject(error);
@@ -83,12 +89,28 @@ function createJsonRpcClient(child) {
   };
   child.on('error', rejectAllPending);
   child.on('exit', () => rejectAllPending(new Error('Kimi ACP process exited')));
+  child.on('close', () => rejectAllPending(new Error('Kimi ACP connection closed')));
   // Writing to stdin after the child has already exited raises EPIPE on the
   // stream itself, not on `child`'s 'error' event above. Unhandled, that
   // crashes the whole Node process and drops every session, not just this one.
-  child.stdin.on('error', (error) => {
-    console.error('[kimi-cli] stdin write failed (process likely exited):', error?.message || error);
-  });
+  child.stdin.on('error', rejectAllPending);
+
+  const write = (payload) => {
+    if (closed || child.stdin.destroyed || child.stdin.writableEnded) {
+      throw closeError || new Error('Kimi ACP connection is closed');
+    }
+    child.stdin.write(`${JSON.stringify(payload)}\n`);
+  };
+
+  const dispatch = (handler, message, isRequest) => {
+    try {
+      Promise.resolve(handler(message, isRequest)).catch((error) => {
+        console.error('[kimi-cli] ACP message handler failed:', error?.message || error);
+      });
+    } catch (error) {
+      console.error('[kimi-cli] ACP message handler failed:', error?.message || error);
+    }
+  };
 
   rl.on('line', (line) => {
     const trimmed = line.trim();
@@ -108,7 +130,7 @@ function createJsonRpcClient(child) {
     if (typeof message.id !== 'undefined' && typeof message.method === 'string') {
       // A REQUEST from the agent to us (e.g. session/request_permission).
       for (const handler of notificationHandlers) {
-        handler(message, true);
+        dispatch(handler, message, true);
       }
       return;
     }
@@ -117,7 +139,7 @@ function createJsonRpcClient(child) {
       // A NOTIFICATION (e.g. session/update, or our own session/cancel echoed
       // back is never sent to us - this is purely agent-originated).
       for (const handler of notificationHandlers) {
-        handler(message, false);
+        dispatch(handler, message, false);
       }
       return;
     }
@@ -165,22 +187,30 @@ function createJsonRpcClient(child) {
             }
           }, timeoutMs);
         }
-        child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`);
+        try {
+          write({ jsonrpc: '2.0', id, method, params });
+        } catch (error) {
+          pending.delete(id);
+          if (timer) clearTimeout(timer);
+          reject(error);
+        }
       });
     },
     notify(method, params) {
-      child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', method, params })}\n`);
+      try { write({ jsonrpc: '2.0', method, params }); return true; } catch { return false; }
     },
     respond(id, result) {
-      child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, result })}\n`);
+      try { write({ jsonrpc: '2.0', id, result }); return true; } catch { return false; }
     },
     onMessage(handler) {
       notificationHandlers.add(handler);
       return () => notificationHandlers.delete(handler);
     },
     close() {
+      closed = true;
+      closeError ||= new Error('Kimi ACP connection closed');
       rl.close();
-      pending.forEach((waiter) => waiter.reject(new Error('ACP connection closed')));
+      pending.forEach((waiter) => waiter.reject(closeError));
       pending.clear();
     },
   };
@@ -210,7 +240,7 @@ async function createAcpSession(workingDir, resumeSessionId) {
   try {
     await rpc.request('initialize', {
       protocolVersion: 1,
-      clientCapabilities: { fs: { readTextFile: false, writeTextFile: false } },
+      clientCapabilities: { fs: { readTextFile: true, writeTextFile: true } },
     }, SETUP_TIMEOUT_MS);
 
     if (resumeSessionId) {
@@ -262,6 +292,7 @@ async function createAcpSession(workingDir, resumeSessionId) {
     currentModel: null,
     idleTimer: null,
     inFlightPromptId: null,
+    aborted: false,
   };
 }
 
@@ -270,6 +301,10 @@ function scheduleIdleCleanup(handle, key) {
     clearTimeout(handle.idleTimer);
   }
   handle.idleTimer = setTimeout(() => {
+    if (handle.inFlightPromptId) {
+      scheduleIdleCleanup(handle, key);
+      return;
+    }
     if (acpSessions.get(key) === handle) {
       acpSessions.delete(key);
     }
@@ -283,7 +318,7 @@ function scheduleIdleCleanup(handle, key) {
       // stuck grok process holding an MCP auth lock that a later grok
       // invocation blocked on). Escalate to SIGKILL if it's still alive a
       // grace period later.
-      setTimeout(() => {
+      const killTimer = setTimeout(() => {
         if (handle.child.exitCode === null && handle.child.signalCode === null) {
           try {
             handle.child.kill('SIGKILL');
@@ -292,10 +327,12 @@ function scheduleIdleCleanup(handle, key) {
           }
         }
       }, 5000);
+      killTimer.unref?.();
     } catch {
       // Already gone.
     }
   }, IDLE_TIMEOUT_MS);
+  handle.idleTimer.unref?.();
 }
 
 async function spawnKimi(command, options = {}, ws) {
@@ -412,7 +449,7 @@ async function spawnKimi(command, options = {}, ws) {
   // stream partial JSON args don't produce duplicate/garbled chat messages.
   const toolCallsStarted = new Set();
 
-  const unsubscribe = handle.rpc.onMessage(async (message, isRequest) => {
+  const onAcpMessage = async (message, isRequest) => {
     if (isRequest && message.method === 'session/request_permission') {
       const toolCall = message.params?.toolCall || {};
       const requestId = createRequestId();
@@ -455,17 +492,17 @@ async function spawnKimi(command, options = {}, ws) {
       }
 
       const options_ = message.params?.options || [];
-      let optionId = options_.find((o) => o.kind === 'reject_once')?.optionId || 'reject';
+      let optionId = findAcpPermissionOption(options_, ['reject_once', 'reject_always', 'reject']);
       if (decision && decision.allow) {
         const wantsAlways = Boolean(decision.rememberEntry);
-        optionId = (wantsAlways
-          ? options_.find((o) => o.kind === 'allow_always')?.optionId
-          : options_.find((o) => o.kind === 'allow_once')?.optionId)
-          || options_[0]?.optionId
-          || 'approve_once';
+        optionId = findAcpPermissionOption(options_, wantsAlways
+          ? ['allow_always', 'approve_always', 'allow_once', 'approve_once']
+          : ['allow_once', 'approve_once', 'allow_always', 'approve_always']);
       }
 
-      handle.rpc.respond(message.id, { outcome: { outcome: 'selected', optionId } });
+      handle.rpc.respond(message.id, optionId
+        ? { outcome: { outcome: 'selected', optionId } }
+        : createAcpPermissionCancellation());
       return;
     }
 
@@ -492,29 +529,53 @@ async function spawnKimi(command, options = {}, ws) {
 
     const kind = update.sessionUpdate;
 
-    if (kind === 'tool_call_update' && update.rawInput) {
+    if (kind === 'tool_call_update' && update.rawInput && update.status !== 'completed' && update.status !== 'failed') {
       if (toolCallsStarted.has(update.toolCallId)) {
         return;
       }
-      toolCallsStarted.add(update.toolCallId);
     }
 
     const normalized = sessionsService.normalizeMessage('kimi', update, finalSessionId);
     for (const msg of normalized) {
       ws.send(msg);
     }
-  });
+  };
+  let unsubscribe = handle.rpc.onMessage(onAcpMessage);
 
   try {
+    handle.aborted = false;
     // Image and file attachments ride along as an <images_input> path list
     // appended to the prompt; the session history reader strips the tag back
     // out for display.
     const promptText = command && command.trim() ? appendImagesInputTag(command, options.images) : '';
     handle.inFlightPromptId = true;
-    const result = await handle.rpc.request('session/prompt', {
-      sessionId: handle.kimiSessionId,
-      prompt: [{ type: 'text', text: promptText }],
-    });
+    let result;
+    try {
+      result = await handle.rpc.request('session/prompt', {
+        sessionId: handle.kimiSessionId,
+        prompt: [{ type: 'text', text: promptText }],
+      });
+    } catch (promptError) {
+      const crashed = /process exited|connection closed/i.test(promptError?.message || '');
+      if (!crashed || handle.aborted) throw promptError;
+
+      console.warn(`[kimi-cli] session=${finalSessionId} ACP child died mid-prompt — respawning once and retrying`);
+      unsubscribe();
+      const key = capturedSessionId || processKey;
+      if (acpSessions.get(key) === handle) acpSessions.delete(key);
+      try { handle.rpc.close(); } catch { /* already closed */ }
+      try { handle.child.kill('SIGTERM'); } catch { /* already gone */ }
+      const fresh = await createAcpSession(workingDir, finalSessionId);
+      handle = fresh;
+      acpSessions.set(key, fresh);
+      fresh.child.stderr.on('data', (data) => console.error('Kimi ACP stderr:', data.toString()));
+      unsubscribe = handle.rpc.onMessage(onAcpMessage);
+      handle.inFlightPromptId = true;
+      result = await handle.rpc.request('session/prompt', {
+        sessionId: handle.kimiSessionId,
+        prompt: [{ type: 'text', text: promptText }],
+      });
+    }
     handle.inFlightPromptId = null;
 
     ws.send(createCompleteMessage({ provider: 'kimi', sessionId: finalSessionId, exitCode: 0 }));
@@ -581,6 +642,7 @@ async function spawnKimi(command, options = {}, ws) {
 function abortKimiSession(sessionId) {
   const handle = acpSessions.get(sessionId);
   if (handle && handle.inFlightPromptId) {
+    handle.aborted = true;
     handle.rpc.notify('session/cancel', { sessionId: handle.kimiSessionId });
     return true;
   }

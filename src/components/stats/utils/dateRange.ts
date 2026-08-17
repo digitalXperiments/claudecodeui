@@ -6,7 +6,7 @@
 
 import { parseUtcDay } from './format';
 
-export type StatsRangeKey = '7d' | '30d' | '90d' | 'all' | 'custom';
+export type StatsRangeKey = 'today' | 'yesterday' | '7d' | '30d' | '90d' | 'all' | 'custom';
 
 export type ResolvedStatsRange = {
   from?: string;
@@ -14,6 +14,8 @@ export type ResolvedStatsRange = {
 };
 
 export const STATS_RANGE_OPTIONS: Array<{ key: StatsRangeKey; label: string }> = [
+  { key: 'today', label: 'Today' },
+  { key: 'yesterday', label: 'Yesterday' },
   { key: '7d', label: '7D' },
   { key: '30d', label: '30D' },
   { key: '90d', label: '90D' },
@@ -37,6 +39,14 @@ export function resolveStatsRange(
   now: Date = new Date(),
 ): ResolvedStatsRange {
   if (key === 'all') return {};
+  if (key === 'today' || key === 'yesterday') {
+    const start = startOfUtcDay(now);
+    if (key === 'yesterday') start.setUTCDate(start.getUTCDate() - 1);
+    return {
+      from: start.toISOString(),
+      to: new Date(start.getTime() + 86_399_999).toISOString(),
+    };
+  }
   if (key === 'custom') {
     let fromDay = customFrom ? parseUtcDay(customFrom) : null;
     let toDay = customTo ? parseUtcDay(customTo) : null;
@@ -60,6 +70,8 @@ export function resolveStatsRange(
 
 /** Short human label for the active range ("Aug 4 – Aug 11, 2026", "All time"). */
 export function describeStatsRange(key: StatsRangeKey, range: ResolvedStatsRange): string {
+  if (key === 'today') return 'Today (UTC)';
+  if (key === 'yesterday') return 'Yesterday (UTC)';
   if (key === 'all' || (!range.from && !range.to)) return 'All time';
   const fmt = (iso: string) =>
     new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });

@@ -182,6 +182,12 @@ test('classification: command tiers (read-only, installs, network, destructive, 
       { seat: 'explorer', command: 'ls -la && git log -5', tier: 'approve' },
       // One risky segment poisons a compound command.
       { seat: 'explorer', command: 'ls -la && curl https://example.com', tier: 'deny' },
+      // git worktree list is inspection; add/remove still leave the sandbox.
+      { seat: 'orchestrator', command: 'git worktree list', tier: 'approve' },
+      { seat: 'orchestrator', command: 'git worktree list --porcelain', tier: 'approve' },
+      { seat: 'explorer', command: 'git worktree add ../other branch', tier: 'deny' },
+      { seat: 'implementer', command: 'git worktree add ../other branch', tier: 'escalate' },
+      { seat: 'implementer', command: 'git worktree remove ../other', tier: 'escalate' },
     ];
     for (const entry of cases) {
       const result = classifyPermissionRequest({
@@ -224,6 +230,8 @@ test('classification: shell wrappers are classified by their payload, not the sh
       { seat: 'reviewer', command: `/bin/zsh -lc 'pnpm -F @app/web lint'`, tier: 'approve' },
       { seat: 'reviewer', command: `/bin/zsh -lc "npm run build"`, tier: 'approve' },
       { seat: 'explorer', command: `/bin/zsh -lc "find src -maxdepth 4 -type f | sort && rg -n 'todo' src"`, tier: 'approve' },
+      { seat: 'explorer', command: `/bin/zsh -lc 'git -C "/Users/example/repo" status --short'`, tier: 'approve' },
+      { seat: 'explorer', command: `/bin/zsh -lc 'for d in .worktrees/*; do git -C "$d" status --short; done'`, tier: 'approve' },
       { seat: 'implementer', command: `bash -c "npm run typecheck"`, tier: 'approve' },
       { seat: 'implementer', command: `env NODE_ENV=test npm test`, tier: 'approve' },
       // Real risk inside a wrapper is still caught.
@@ -233,6 +241,8 @@ test('classification: shell wrappers are classified by their payload, not the sh
       { seat: 'explorer', command: `/bin/zsh -lc "ls -la && curl https://example.com"`, tier: 'deny' },
       { seat: 'implementer', command: `zsh -lc "sudo make install"`, tier: 'escalate' },
       { seat: 'implementer', command: `zsh -lc 'cat .env'`, tier: 'escalate' },
+      { seat: 'reviewer', command: `/bin/zsh -lc 'for f in src/*; do rm "$f"; done'`, tier: 'deny' },
+      { seat: 'reviewer', command: `/bin/zsh -lc 'while rm stale.txt; do true; done'`, tier: 'deny' },
       // Nested wrappers unwrap too.
       { seat: 'reviewer', command: `/bin/zsh -lc "bash -c 'rm -rf /'"`, tier: 'deny' },
       // A shell with no inspectable payload stays risky.
@@ -268,6 +278,31 @@ test('classification: shell wrappers are classified by their payload, not the sh
     // pnpm exec of an untrusted binary is not laundered by `exec`.
     assert.equal(classifyCommand('pnpm exec rm -rf /', ws, ws).category, 'risky');
     assert.equal(classifyCommand('pnpm dlx some-package', ws, ws).category, 'risky');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('classification: Grok orchestrator git reconnaissance is read-only', async () => {
+  const root = await makeScratchDir('swarm-classify-orch-');
+  try {
+    const ws = path.join(root, 'ws');
+    await mkdir(ws, { recursive: true });
+    // Exact compound command that aborted a Grok orchestrator plan turn:
+    // `git worktree` used to be wholesale-risky, so list poisoned the whole
+    // command, the broker denied it, and Grok cancelled the planning run.
+    const command = 'ls -la && git status && git log --oneline -20 && echo "---" && ls -la .. 2>/dev/null; echo "---WORKTREES---"; git worktree list; echo "---BRANCHES---"; git branch -a';
+    const wrapped = `/bin/zsh -lc ${JSON.stringify(command)}`;
+    for (const candidate of [command, wrapped]) {
+      const result = classifyPermissionRequest({
+        seatKind: 'orchestrator',
+        workspaceRoot: ws,
+        toolName: 'run_terminal_command',
+        command: candidate,
+        cwd: ws,
+      });
+      assert.equal(result.tier, 'approve', `${candidate} → ${result.tier} (${result.reason})`);
+    }
   } finally {
     await rm(root, { recursive: true, force: true });
   }

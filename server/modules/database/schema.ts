@@ -141,6 +141,10 @@ CREATE TABLE IF NOT EXISTS sessions (
     -- separate when the run executes inside an isolated agent worktree.
     runtime_project_path TEXT,
     jsonl_path TEXT,
+    -- Internal automation sessions (swarm workers, adjudicators, etc.) are
+    -- durable for run recovery but must never appear on the interactive chat
+    -- surface or be subscribable by a browser client.
+    is_internal BOOLEAN NOT NULL DEFAULT 0,
     isArchived BOOLEAN DEFAULT 0,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -671,6 +675,8 @@ CREATE TABLE IF NOT EXISTS swarm_runs (
     blackboard_json  TEXT DEFAULT '[]',
     skills_json      TEXT DEFAULT '[]',
     config_json      TEXT,
+    goal_card_json   TEXT,
+    attachments_json TEXT DEFAULT '[]',
     workspace_id     TEXT,
     pr_url           TEXT,
     feature_branch   TEXT,
@@ -798,6 +804,111 @@ CREATE TABLE IF NOT EXISTS project_run_budgets (
 );
 `;
 
+/**
+ * Eval Center — versioned suites, cases and graders plus run-linked results.
+ *
+ * Suite definitions are deliberately separate from agent_runs: the run spine
+ * records execution, while these tables describe how an execution is judged.
+ * Trials bridge the two by referencing both the subject run and an optional
+ * evaluator run (for model-judge graders).
+ */
+export const EVALS_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS eval_suites (
+  suite_id           TEXT PRIMARY KEY NOT NULL,
+  project_id         TEXT,
+  name               TEXT NOT NULL,
+  description        TEXT NOT NULL DEFAULT '',
+  objective          TEXT NOT NULL DEFAULT '',
+  scope              TEXT NOT NULL,
+  trigger            TEXT NOT NULL,
+  status             TEXT NOT NULL DEFAULT 'draft',
+  source             TEXT NOT NULL DEFAULT 'manual',
+  version            INTEGER NOT NULL DEFAULT 1,
+  generator_provider TEXT,
+  generator_model    TEXT,
+  generator_run_id   TEXT,
+  action_policy_json TEXT NOT NULL DEFAULT '{}',
+  tags_json          TEXT NOT NULL DEFAULT '[]',
+  created_at         DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at         DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (project_id) REFERENCES projects(project_id) ON DELETE SET NULL,
+  FOREIGN KEY (generator_run_id) REFERENCES agent_runs(run_id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_eval_suites_project ON eval_suites(project_id, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_eval_suites_status_scope ON eval_suites(status, scope);
+
+CREATE TABLE IF NOT EXISTS eval_cases (
+  case_id               TEXT PRIMARY KEY NOT NULL,
+  suite_id              TEXT NOT NULL,
+  name                  TEXT NOT NULL,
+  description           TEXT NOT NULL DEFAULT '',
+  prompt                TEXT NOT NULL,
+  difficulty            TEXT NOT NULL DEFAULT 'medium',
+  expected_outcome_json TEXT NOT NULL DEFAULT '{}',
+  tags_json              TEXT NOT NULL DEFAULT '[]',
+  metadata_json          TEXT NOT NULL DEFAULT '{}',
+  sort_order             INTEGER NOT NULL DEFAULT 0,
+  enabled                INTEGER NOT NULL DEFAULT 1,
+  created_at             DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at             DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (suite_id) REFERENCES eval_suites(suite_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_eval_cases_suite ON eval_cases(suite_id, sort_order, created_at);
+
+CREATE TABLE IF NOT EXISTS eval_graders (
+  grader_id   TEXT PRIMARY KEY NOT NULL,
+  suite_id    TEXT NOT NULL,
+  case_id     TEXT,
+  name        TEXT NOT NULL,
+  type        TEXT NOT NULL,
+  config_json TEXT NOT NULL DEFAULT '{}',
+  required    INTEGER NOT NULL DEFAULT 1,
+  weight      REAL NOT NULL DEFAULT 1,
+  sort_order  INTEGER NOT NULL DEFAULT 0,
+  created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (suite_id) REFERENCES eval_suites(suite_id) ON DELETE CASCADE,
+  FOREIGN KEY (case_id) REFERENCES eval_cases(case_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_eval_graders_suite ON eval_graders(suite_id, case_id, sort_order);
+
+CREATE TABLE IF NOT EXISTS eval_trials (
+  trial_id        TEXT PRIMARY KEY NOT NULL,
+  suite_id        TEXT NOT NULL,
+  case_id         TEXT NOT NULL,
+  subject_run_id  TEXT,
+  evaluator_run_id TEXT,
+  status          TEXT NOT NULL DEFAULT 'queued',
+  score           REAL,
+  decision        TEXT,
+  error_summary   TEXT,
+  started_at      DATETIME,
+  finished_at     DATETIME,
+  created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+  meta_json       TEXT NOT NULL DEFAULT '{}',
+  FOREIGN KEY (suite_id) REFERENCES eval_suites(suite_id) ON DELETE CASCADE,
+  FOREIGN KEY (case_id) REFERENCES eval_cases(case_id) ON DELETE CASCADE,
+  FOREIGN KEY (subject_run_id) REFERENCES agent_runs(run_id) ON DELETE SET NULL,
+  FOREIGN KEY (evaluator_run_id) REFERENCES agent_runs(run_id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_eval_trials_suite ON eval_trials(suite_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_eval_trials_subject ON eval_trials(subject_run_id);
+
+CREATE TABLE IF NOT EXISTS eval_grades (
+  grade_id      TEXT PRIMARY KEY NOT NULL,
+  trial_id      TEXT NOT NULL,
+  grader_id     TEXT NOT NULL,
+  status        TEXT NOT NULL,
+  score         REAL,
+  label         TEXT,
+  evidence_json TEXT NOT NULL DEFAULT '{}',
+  created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (trial_id) REFERENCES eval_trials(trial_id) ON DELETE CASCADE,
+  FOREIGN KEY (grader_id) REFERENCES eval_graders(grader_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_eval_grades_trial ON eval_grades(trial_id, created_at);
+`;
+
 export const RUN_SPINE_SCHEMA_SQL = `
 ${AGENT_WORKSPACES_TABLE_SCHEMA_SQL}
 ${AGENT_RUNS_TABLE_SCHEMA_SQL}
@@ -870,4 +981,5 @@ ${MISSION_CONTROL_SCHEMA_SQL}
 ${WEBHOOKS_SCHEMA_SQL}
 
 ${RUN_SPINE_SCHEMA_SQL}
+${EVALS_SCHEMA_SQL}
 `;

@@ -6,9 +6,14 @@ import test from 'node:test';
 import { makeScratchDir } from './shared/scratch.js';
 import { resolveToolApproval } from './claude-sdk.js';
 import {
+  disposeKiloSessions,
   disposeOpenCodeSessions,
   getActiveOpenCodeSessions,
+  resolveKiloPermissionPolicy,
   resolveOpenCodePermissionPolicy,
+  resolveQwenPermissionPolicy,
+  spawnQwenCode,
+  spawnKilo,
   spawnOpenCode,
 } from './opencode-cli.js';
 
@@ -32,10 +37,15 @@ const capturePath = process.env.OPENCODE_ARGS_CAPTURE;
 const capture = {
   args: process.argv.slice(2),
   permissionEnv: process.env.OPENCODE_PERMISSION ?? null,
+  kiloPermissionEnv: process.env.KILO_PERMISSION ?? null,
   configOptions: [],
   prompts: [],
   permissionDecision: undefined,
 };
+if (process.argv.includes('models')) {
+  process.stdout.write('kilo/stealth/claude-sonnet-4.6\\n');
+  process.exit(0);
+}
 const writeCapture = () => {
   if (capturePath) fs.writeFileSync(capturePath, JSON.stringify(capture));
 };
@@ -78,7 +88,13 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
   if (msg.method === 'session/new' || msg.method === 'session/load') {
     capture.sessionMethods = (capture.sessionMethods || []).concat(msg.method);
     writeCapture();
-    send({ jsonrpc: '2.0', id: msg.id, result: { sessionId: 'open-live-1', configOptions: [] } });
+    // OPENCODE_FAKE_MODES simulates a CLI whose default agent is named
+    // differently (Kilo's "code" vs OpenCode's "build").
+    const fakeModes = (process.env.OPENCODE_FAKE_MODES || '').split(',').map((v) => v.trim()).filter(Boolean);
+    const configOptions = fakeModes.length
+      ? [{ id: 'mode', category: 'mode', type: 'select', currentValue: fakeModes[0], options: fakeModes.map((v) => ({ value: v, name: v })) }]
+      : [];
+    send({ jsonrpc: '2.0', id: msg.id, result: { sessionId: 'open-live-1', configOptions } });
     return;
   }
 
@@ -90,6 +106,13 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
       return;
     }
     send({ jsonrpc: '2.0', id: msg.id, result: { configOptions: [] } });
+    return;
+  }
+
+  if (msg.method === 'session/set_model' || msg.method === 'session/set_mode') {
+    capture.configOptions.push({ method: msg.method, value: msg.params.modelId || msg.params.modeId });
+    writeCapture();
+    send({ jsonrpc: '2.0', id: msg.id, result: {} });
     return;
   }
 
@@ -160,6 +183,12 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
   const commandPath = path.join(binDir, 'opencode');
   await writeFile(commandPath, '#!/bin/sh\nnode "$(dirname "$0")/opencode.cjs" "$@"\n', 'utf8');
   await chmod(commandPath, 0o755);
+  const kiloCommandPath = path.join(binDir, 'kilo');
+  await writeFile(kiloCommandPath, '#!/bin/sh\nnode "$(dirname "$0")/opencode.cjs" "$@"\n', 'utf8');
+  await chmod(kiloCommandPath, 0o755);
+  const qwenCommandPath = path.join(binDir, 'qwen');
+  await writeFile(qwenCommandPath, '#!/bin/sh\nnode "$(dirname "$0")/opencode.cjs" "$@"\n', 'utf8');
+  await chmod(qwenCommandPath, 0o755);
 }
 
 /** Runs `body` with the fake agent first on PATH. */
@@ -171,6 +200,7 @@ async function withFakeAgent(prefix, body) {
   const previousPathExt = process.env[pathExtKey];
   const previousArgsCapture = process.env.OPENCODE_ARGS_CAPTURE;
   const previousRejectedConfig = process.env.OPENCODE_REJECT_CONFIG_ID;
+  const previousFakeModes = process.env.OPENCODE_FAKE_MODES;
 
   try {
     await createFakeOpenCodeAcpAgent(tempRoot);
@@ -183,6 +213,7 @@ async function withFakeAgent(prefix, body) {
     await body(tempRoot);
   } finally {
     disposeOpenCodeSessions();
+    disposeKiloSessions();
     if (previousPath === undefined) delete process.env[pathKey];
     else process.env[pathKey] = previousPath;
     if (previousPathExt === undefined) delete process.env[pathExtKey];
@@ -191,6 +222,8 @@ async function withFakeAgent(prefix, body) {
     else process.env.OPENCODE_ARGS_CAPTURE = previousArgsCapture;
     if (previousRejectedConfig === undefined) delete process.env.OPENCODE_REJECT_CONFIG_ID;
     else process.env.OPENCODE_REJECT_CONFIG_ID = previousRejectedConfig;
+    if (previousFakeModes === undefined) delete process.env.OPENCODE_FAKE_MODES;
+    else process.env.OPENCODE_FAKE_MODES = previousFakeModes;
     await rm(tempRoot, { recursive: true, force: true });
   }
 }
@@ -241,6 +274,58 @@ test('spawnOpenCode streams ACP updates and emits session_created first', { conc
     assert.deepEqual(capture.args, ['acp', '--cwd', tempRoot]);
     // No permission mode requested → the relaying "ask" policy is the default.
     assert.equal(capture.permissionEnv, JSON.stringify({ edit: 'ask', bash: 'ask', webfetch: 'ask', external_directory: 'ask' }));
+    assert.ok(capture.configOptions.some((option) => option.configId === 'mode' && option.value === 'build'));
+  });
+});
+
+test('spawnKilo uses the Kilo ACP command, permission env, and provider identity', { concurrency: false }, async () => {
+  await withFakeAgent('kilo-cli-acp-', async (tempRoot) => {
+    const argsCapturePath = path.join(tempRoot, 'capture.json');
+    process.env.OPENCODE_ARGS_CAPTURE = argsCapturePath;
+    const messages = [];
+
+    await spawnKilo('Hi', { cwd: tempRoot }, createWriter(messages));
+
+    const sessionCreated = messages.find((message) => message.kind === 'session_created');
+    const complete = messages.find((message) => message.kind === 'complete');
+    const delta = messages.find((message) => message.kind === 'stream_delta');
+    const capture = JSON.parse(await readFile(argsCapturePath, 'utf8'));
+
+    assert.equal(sessionCreated?.provider, 'kilo');
+    assert.equal(complete?.provider, 'kilo');
+    assert.equal(delta?.provider, 'kilo');
+    assert.deepEqual(capture.args, ['acp', '--cwd', tempRoot]);
+    assert.equal(
+      capture.kiloPermissionEnv,
+      JSON.stringify({ edit: 'ask', bash: 'ask', webfetch: 'ask', external_directory: 'ask' }),
+    );
+  });
+});
+
+test('spawnKilo requests the `code` agent current Kilo releases advertise', { concurrency: false }, async () => {
+  await withFakeAgent('kilo-cli-modes-', async (tempRoot) => {
+    const argsCapturePath = path.join(tempRoot, 'capture.json');
+    process.env.OPENCODE_ARGS_CAPTURE = argsCapturePath;
+    // The mode list a current `kilo acp` advertises (7.4.x): no `build`.
+    process.env.OPENCODE_FAKE_MODES = 'code,ask,debug,orchestrator,plan';
+
+    await spawnKilo('Hi', { cwd: tempRoot }, createWriter([]));
+
+    const capture = JSON.parse(await readFile(argsCapturePath, 'utf8'));
+    assert.ok(capture.configOptions.some((option) => option.configId === 'mode' && option.value === 'code'));
+  });
+});
+
+test('a CLI that names its default agent differently gets an advertised fallback mode', { concurrency: false }, async () => {
+  await withFakeAgent('kilo-cli-mode-fallback-', async (tempRoot) => {
+    const argsCapturePath = path.join(tempRoot, 'capture.json');
+    process.env.OPENCODE_ARGS_CAPTURE = argsCapturePath;
+    // Older Kilo builds exposed OpenCode's `build` agent instead of `code`.
+    process.env.OPENCODE_FAKE_MODES = 'build,plan';
+
+    await spawnKilo('Hi', { cwd: tempRoot }, createWriter([]));
+
+    const capture = JSON.parse(await readFile(argsCapturePath, 'utf8'));
     assert.ok(capture.configOptions.some((option) => option.configId === 'mode' && option.value === 'build'));
   });
 });
@@ -407,6 +492,29 @@ test('an unattended empty turn gets one same-session final-report nudge', { conc
   });
 });
 
+test('resolveKiloPermissionPolicy maps UI permission modes onto Kilo ACP controls', () => {
+  const relayed = JSON.stringify({ edit: 'ask', bash: 'ask', webfetch: 'ask', external_directory: 'ask' });
+
+  assert.deepEqual(resolveKiloPermissionPolicy('plan'), {
+    mode: 'plan',
+    autoApprove: false,
+    env: { KILO_PERMISSION: relayed },
+  });
+  // Kilo's full-access default agent is `code` (OpenCode's is `build`).
+  assert.deepEqual(resolveKiloPermissionPolicy('auto'), { mode: 'code', autoApprove: true, env: {} });
+  assert.deepEqual(resolveKiloPermissionPolicy('bypassPermissions'), { mode: 'code', autoApprove: true, env: {} });
+  assert.deepEqual(resolveKiloPermissionPolicy('acceptEdits'), {
+    mode: 'code',
+    autoApprove: false,
+    env: { KILO_PERMISSION: JSON.stringify({ edit: 'allow', bash: 'ask', webfetch: 'ask', external_directory: 'ask' }) },
+  });
+  assert.deepEqual(resolveKiloPermissionPolicy('default'), {
+    mode: 'code',
+    autoApprove: false,
+    env: { KILO_PERMISSION: relayed },
+  });
+});
+
 test('resolveOpenCodePermissionPolicy maps UI permission modes onto ACP controls', () => {
   const relayed = JSON.stringify({ edit: 'ask', bash: 'ask', webfetch: 'ask', external_directory: 'ask' });
 
@@ -428,4 +536,22 @@ test('resolveOpenCodePermissionPolicy maps UI permission modes onto ACP controls
     autoApprove: false,
     env: { OPENCODE_PERMISSION: relayed },
   });
+});
+
+test('spawnQwenCode uses the official qwen --acp entry point and ACP model control', { concurrency: false }, async () => {
+  await withFakeAgent('qwencode-cli-acp-', async (tempRoot) => {
+    const argsCapturePath = path.join(tempRoot, 'qwen-capture.json');
+    process.env.OPENCODE_ARGS_CAPTURE = argsCapturePath;
+    const messages = [];
+    await spawnQwenCode('Hi', { cwd: tempRoot, model: 'qwen3-coder-plus', permissionMode: 'bypassPermissions', unattended: true }, createWriter(messages));
+    const capture = JSON.parse(await readFile(argsCapturePath, 'utf8'));
+    assert.deepEqual(capture.args, ['--acp']);
+    assert.ok(capture.configOptions.some((option) => option.method === 'session/set_model'));
+    assert.equal(messages.find((message) => message.kind === 'complete')?.provider, 'qwencode');
+  });
+});
+
+test('resolveQwenPermissionPolicy maps bypass to yolo and keeps plan interactive', () => {
+  assert.equal(resolveQwenPermissionPolicy('bypassPermissions').mode, 'yolo');
+  assert.equal(resolveQwenPermissionPolicy('plan').autoApprove, false);
 });

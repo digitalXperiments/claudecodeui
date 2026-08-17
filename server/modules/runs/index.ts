@@ -9,26 +9,6 @@ export {
   stopRunMaintenance,
 } from '@/modules/runs/runs-maintenance.service.js';
 export {
-  backfillHistoricalRunTokens,
-  backfillMissingCosts,
-  listSessionsNeedingTokenBackfill,
-  mergeBackfillUsage,
-  normalizeSessionTimestamp,
-  readHistoricalSessionUsage,
-  resetHistoricalTokenBackfillLatch,
-  resolveUnresolvedModels,
-  scheduleHistoricalTokenBackfill,
-  TOKEN_BACKFILL_META_KEY,
-} from '@/modules/runs/runs-token-backfill.js';
-export type {
-  BackfillHistoricalTokensOptions,
-  BackfillHistoricalTokensResult,
-  BackfillMissingCostsResult,
-  BackfillSessionRow,
-  HistoricalUsageReader,
-  ResolveUnresolvedModelsResult,
-} from '@/modules/runs/runs-token-backfill.js';
-export {
   estimateCostUsd,
   PRICING_LAST_VERIFIED,
   resolveModelPriceRate,

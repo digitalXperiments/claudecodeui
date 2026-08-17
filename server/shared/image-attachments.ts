@@ -9,7 +9,7 @@ import path from 'node:path';
  * folder and referenced by absolute path everywhere else:
  * - Claude/Pi: paths are read back into base64 image content blocks.
  * - Codex: paths become `local_image` input items.
- * - Cursor/OpenCode: paths are appended to the prompt inside an
+ * - Cursor/OpenCode/Kilo: paths are appended to the prompt inside an
  *   `<images_input>` tag, which is stripped again when history is read.
  *
  * The chat UI loads them through the dedicated `/api/assets/images/:filename`

@@ -489,6 +489,16 @@ function extractTokenBudget(sdkMessage) {
     return null;
   }
 
+  // Result messages carry a run-level aggregate. The stream has already
+  // emitted one usage snapshot for each assistant API response, so treating
+  // this aggregate as one more response double-counts a large portion of the
+  // run (the production inflation was consistently ~1.5x on long runs).
+  // Completed runs are reconciled from Claude's authoritative JSONL by the
+  // runs maintenance path, which also captures work not forwarded live.
+  if (sdkMessage.type === 'result') {
+    return null;
+  }
+
   const messageUsage = sdkMessage.message?.usage || sdkMessage.usage;
   const model =
     (typeof sdkMessage.message?.model === 'string' && sdkMessage.message.model) ||
@@ -1410,5 +1420,6 @@ export {
   waitForToolApproval,
   resolveApprovalTimeoutMs,
   extractPermissionPaths,
+  extractTokenBudget,
   createRequestId
 };

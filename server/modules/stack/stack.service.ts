@@ -30,8 +30,11 @@ const PROVIDER_BINARIES: Record<string, string> = {
   codex: 'codex',
   cursor: 'cursor-agent',
   opencode: 'opencode',
+  kilo: 'kilo',
+  cline: 'cline',
   grok: 'grok',
   kimi: 'kimi',
+  qwencode: 'qwen',
   pi: 'pi',
 };
 

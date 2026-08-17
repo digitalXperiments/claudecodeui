@@ -65,6 +65,7 @@ function AppContentInner() {
   } = useSessionProtection();
 
   const {
+    projects,
     selectedProject,
     selectedSession,
     activeTab,
@@ -82,8 +83,11 @@ function AppContentInner() {
     handleSessionArchive,
     handleSessionPermanentDelete,
     handleNewSession,
+    handleProjectSelect,
     handleSessionSelect,
     loadMoreProjectSessions,
+    studioActive,
+    leaveStudio,
   } = useProjectsState({
     sessionId,
     navigate,
@@ -313,14 +317,19 @@ function AppContentInner() {
           onDeleteSession={handleSessionPermanentDelete}
           onNewSession={handleNewSession}
           onLoadMoreSessions={loadMoreProjectSessions}
+          projects={projects}
+          studioActive={studioActive}
+          onLeaveStudio={leaveStudio}
         />
       </div>
 
       <CommandPalette
+        projects={projects}
         selectedProject={selectedProject}
         onStartNewChat={handleNewSession}
-        onOpenSettings={() => openSettings()}
+        onOpenSettings={openSettings}
         onShowTab={setActiveTab}
+        onSelectProject={handleProjectSelect}
       />
     </div>
   );

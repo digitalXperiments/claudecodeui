@@ -97,7 +97,10 @@ export const sessionsService = {
     startedAt: number;
     lastSeq: number;
   }> {
-    return chatRunRegistry.listRunningRuns();
+    return chatRunRegistry.listRunningRuns().filter(({ sessionId }) => {
+      const row = sessionsDb.getSessionById(sessionId);
+      return Boolean(row && !row.is_internal);
+    });
   },
 
   /**
@@ -120,7 +123,11 @@ export const sessionsService = {
    * for the lifetime of the conversation. The provider-native id is mapped to
    * this row later, when the provider runtime announces it mid-run.
    */
-  createAppSession(provider: LLMProvider, projectPath: string): CreateAppSessionResult {
+  createAppSession(
+    provider: LLMProvider,
+    projectPath: string,
+    options: { internal?: boolean } = {},
+  ): CreateAppSessionResult {
     const normalizedProjectPath = projectPath.trim();
     if (!normalizedProjectPath) {
       throw new AppError('projectPath is required.', {
@@ -131,7 +138,7 @@ export const sessionsService = {
 
     const sessionId = randomUUID();
     const logicalProjectPath = projectsDb.resolveProjectPathForRuntimePath(normalizedProjectPath);
-    sessionsDb.createAppSession(sessionId, provider, normalizedProjectPath);
+    sessionsDb.createAppSession(sessionId, provider, normalizedProjectPath, options);
 
     return {
       sessionId,
@@ -155,6 +162,13 @@ export const sessionsService = {
   ): Promise<FetchHistoryResult> {
     const session = sessionsDb.getSessionById(sessionId);
     if (!session) {
+      throw new AppError(`Session "${sessionId}" was not found.`, {
+        code: 'SESSION_NOT_FOUND',
+        statusCode: 404,
+      });
+    }
+
+    if (session.is_internal) {
       throw new AppError(`Session "${sessionId}" was not found.`, {
         code: 'SESSION_NOT_FOUND',
         statusCode: 404,

@@ -10,6 +10,7 @@ const PROVIDER_INPUT_LABELS: Record<string, string> = {
   cursor: 'Cursor',
   codex: 'Codex',
   opencode: 'OpenCode',
+  kilo: 'Kilo Code',
   grok: 'Grok Build',
   kimi: 'Kimi',
   pi: 'Pi',

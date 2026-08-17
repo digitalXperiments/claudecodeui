@@ -111,6 +111,8 @@ test('upgraded databases receive durable swarm and interrupt control-plane schem
       'lease_expires_at',
       'idempotency_key',
       'last_error',
+      'goal_card_json',
+      'attachments_json',
     ]) {
       assert.ok(swarmColumns.has(expected), `missing swarm_runs.${expected}`);
     }

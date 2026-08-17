@@ -12,6 +12,8 @@ import {
 import { WS_OPEN_STATE, connectedClients } from '@/modules/websocket/index.js';
 import type { LLMProvider } from '@/shared/types.js';
 import { generateDisplayName } from '@/modules/projects/index.js';
+import { getKiloDataDirectory } from '@/shared/utils.js';
+import { getClineDataDirectory } from '@/shared/utils.js';
 
 type WatcherEventType = 'add' | 'change';
 
@@ -31,6 +33,22 @@ const PROVIDER_WATCH_PATHS: Array<{ provider: LLMProvider; rootPath: string }> =
   {
     provider: 'opencode',
     rootPath: path.join(os.homedir(), '.local', 'share', 'opencode'),
+  },
+  {
+    provider: 'kilo',
+    rootPath: getKiloDataDirectory(),
+  },
+  {
+    provider: 'cline',
+    rootPath: getClineDataDirectory(),
+  },
+  {
+    provider: 'kimi',
+    rootPath: path.join(os.homedir(), '.kimi-code', 'sessions'),
+  },
+  {
+    provider: 'qwencode',
+    rootPath: path.join(process.env.QWEN_RUNTIME_DIR || process.env.QWEN_HOME || path.join(os.homedir(), '.qwen'), 'projects'),
   },
   {
     provider: 'pi',
@@ -74,8 +92,16 @@ let watcherRescheduleAfterRefresh = false;
  * Filters watcher events to provider-specific session artifact file types.
  */
 function isWatcherTargetFile(provider: LLMProvider, filePath: string): boolean {
-  if (provider === 'opencode') {
-    return path.basename(filePath) === 'opencode.db';
+  if (provider === 'opencode' || provider === 'kilo') {
+    return path.basename(filePath) === `${provider}.db`;
+  }
+
+  if (provider === 'cline') {
+    return path.basename(filePath) === 'task_metadata.json' || path.basename(filePath) === 'api_conversation_history.json';
+  }
+
+  if (provider === 'kimi') {
+    return path.basename(filePath) === 'state.json' || filePath.endsWith('wire.jsonl');
   }
 
   return filePath.endsWith('.jsonl');
@@ -133,7 +159,7 @@ function queuePendingWatcherUpdate(
   pendingWatcherUpdate.providers.add(provider);
   pendingWatcherUpdate.changeTypes.add(eventType);
   if (updatedSessionId) {
-    pendingWatcherUpdate.updatedSessionIds.add(updatedSessionId);
+    pendingWatcherUpdate.updatedSessionIds.add(`${provider}\0${updatedSessionId}`);
   }
 
   schedulePendingWatcherFlush();
@@ -147,10 +173,13 @@ function queuePendingWatcherUpdate(
  * project-list refetch when a transcript file changes on disk. Returns `null`
  * when the id cannot be resolved to an indexed session row.
  */
-async function buildSessionUpsertedEvent(updatedProviderSessionId: string): Promise<string | null> {
-  const row = sessionsDb.getSessionByProviderSessionId(updatedProviderSessionId)
+async function buildSessionUpsertedEvent(
+  provider: LLMProvider,
+  updatedProviderSessionId: string,
+): Promise<string | null> {
+  const row = sessionsDb.getSessionByProviderSessionId(updatedProviderSessionId, provider)
     ?? sessionsDb.getSessionById(updatedProviderSessionId);
-  if (!row || row.isArchived) {
+  if (!row || row.provider !== provider || row.isArchived || row.is_internal) {
     return null;
   }
 
@@ -206,8 +235,12 @@ async function flushPendingWatcherUpdate(): Promise<void> {
     // session can never clobber unrelated client state, so the frontend needs
     // no "suppress updates while a run is active" protection logic.
     const events: string[] = [];
-    for (const updatedSessionId of queuedUpdate.updatedSessionIds) {
-      const event = await buildSessionUpsertedEvent(updatedSessionId);
+    for (const encodedUpdate of queuedUpdate.updatedSessionIds) {
+      const separator = encodedUpdate.indexOf('\0');
+      if (separator <= 0) continue;
+      const provider = encodedUpdate.slice(0, separator) as LLMProvider;
+      const updatedSessionId = encodedUpdate.slice(separator + 1);
+      const event = await buildSessionUpsertedEvent(provider, updatedSessionId);
       if (event) {
         events.push(event);
       }

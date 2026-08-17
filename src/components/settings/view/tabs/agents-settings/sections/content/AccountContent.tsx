@@ -1,5 +1,6 @@
 import { LogIn, RefreshCw } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+
 import { Badge, Button } from '../../../../../../../shared/view/ui';
 import SessionProviderLogo from '../../../../../../llm-logo-provider/SessionProviderLogo';
 import type { AgentProvider, AuthStatus } from '../../../../../types/types';
@@ -55,6 +56,24 @@ const agentConfig: Record<AgentProvider, AgentVisualConfig> = {
     subtextClass: 'text-zinc-700 dark:text-zinc-300',
     buttonClass: 'bg-zinc-900 hover:bg-zinc-800 active:bg-zinc-950 dark:bg-zinc-700 dark:hover:bg-zinc-600',
   },
+  kilo: {
+    name: 'Kilo Code',
+    description: 'Kilo Code CLI assistant',
+    bgClass: 'bg-orange-50 dark:bg-orange-900/20',
+    borderClass: 'border-orange-200 dark:border-orange-800',
+    textClass: 'text-orange-900 dark:text-orange-100',
+    subtextClass: 'text-orange-700 dark:text-orange-300',
+    buttonClass: 'bg-orange-600 hover:bg-orange-700 active:bg-orange-800',
+  },
+  cline: {
+    name: 'Cline',
+    description: 'Cline CLI assistant over ACP',
+    bgClass: 'bg-cyan-50 dark:bg-cyan-900/20',
+    borderClass: 'border-cyan-200 dark:border-cyan-800',
+    textClass: 'text-cyan-900 dark:text-cyan-100',
+    subtextClass: 'text-cyan-700 dark:text-cyan-300',
+    buttonClass: 'bg-cyan-600 hover:bg-cyan-700 active:bg-cyan-800',
+  },
   grok: {
     name: 'Grok Build',
     description: "xAI's Grok Build CLI assistant",
@@ -72,6 +91,15 @@ const agentConfig: Record<AgentProvider, AgentVisualConfig> = {
     textClass: 'text-emerald-900 dark:text-emerald-100',
     subtextClass: 'text-emerald-700 dark:text-emerald-300',
     buttonClass: 'bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800',
+  },
+  qwencode: {
+    name: 'Qwen Code',
+    description: 'Qwen Code CLI assistant over ACP',
+    bgClass: 'bg-sky-50 dark:bg-sky-900/20',
+    borderClass: 'border-sky-200 dark:border-sky-800',
+    textClass: 'text-sky-900 dark:text-sky-100',
+    subtextClass: 'text-sky-700 dark:text-sky-300',
+    buttonClass: 'bg-sky-600 hover:bg-sky-700 active:bg-sky-800',
   },
   pi: {
     name: 'Pi',

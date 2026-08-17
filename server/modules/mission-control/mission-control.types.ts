@@ -5,8 +5,11 @@ export const MC_PROVIDERS = [
   'codex',
   'cursor',
   'opencode',
+  'kilo',
+  'cline',
   'grok',
   'kimi',
+  'qwencode',
   'pi',
 ] as const satisfies readonly LLMProvider[];
 
@@ -47,18 +50,38 @@ export const MC_DELETE_ACTION: McAction = {
   terminal: true,
 };
 
+export const MC_WORK_ACTION: McAction = {
+  id: 'work',
+  label: 'Work this',
+  kind: 'work',
+  style: 'secondary',
+  terminal: false,
+};
+
 export const DEFAULT_MC_ACTIONS: McAction[] = [
   { id: 'approve', label: 'Approve', kind: 'approve', style: 'primary', terminal: true },
+  MC_WORK_ACTION,
   { id: 'deny', label: 'Deny', kind: 'dismiss', style: 'secondary', terminal: true },
   MC_DELETE_ACTION,
 ];
 
 /** Ensure the system Delete action is present (older items / custom action lists). */
 export function withSystemItemActions(actions: McAction[]): McAction[] {
-  if (actions.some((a) => a.id === 'delete' || a.kind === 'delete')) {
-    return actions;
+  const withDelete = actions.some((a) => a.id === 'delete' || a.kind === 'delete')
+    ? actions
+    : [...actions, MC_DELETE_ACTION];
+  if (withDelete.some((a) => a.id === 'work' || a.kind === 'work')) {
+    return withDelete;
   }
-  return [...actions, MC_DELETE_ACTION];
+  const deleteIndex = withDelete.findIndex((a) => a.id === 'delete' || a.kind === 'delete');
+  if (deleteIndex === -1) {
+    return [...withDelete, MC_WORK_ACTION];
+  }
+  return [
+    ...withDelete.slice(0, deleteIndex),
+    MC_WORK_ACTION,
+    ...withDelete.slice(deleteIndex),
+  ];
 }
 
 export type McSection = {

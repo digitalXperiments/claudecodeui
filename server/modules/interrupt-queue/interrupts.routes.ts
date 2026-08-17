@@ -15,6 +15,10 @@ function actor(req: express.Request): string | null {
   return user?.id != null ? String(user.id) : user?.userId != null ? String(user.userId) : null;
 }
 
+function boolean(value: unknown): boolean {
+  return value === true || value === 'true' || value === '1';
+}
+
 function mapError(error: unknown): never {
   if (error instanceof CloudError) {
     // 410 Gone for expired approval gates: approve/deny on a stale interrupt
@@ -29,26 +33,29 @@ function mapError(error: unknown): never {
 router.get('/', asyncHandler(async (req, res) => {
   const rawStatus = text(req.query.status);
   const status = rawStatus ? rawStatus.split(',').map((value) => value.trim()) as never : undefined;
+  const attentionOnly = boolean(req.query.attentionOnly);
   const interrupts = interruptsService.list({
     projectId: text(req.query.projectId),
     status,
     limit: Number(req.query.limit) || 50,
+    attentionOnly,
   });
   const projectId = text(req.query.projectId);
   res.json({
     success: true,
     interrupts,
-    count: interruptsService.countOpen(projectId),
-    unread: interruptsService.countUnread(projectId),
+    count: interruptsService.countOpen(projectId, attentionOnly),
+    unread: interruptsService.countUnread(projectId, attentionOnly),
   });
 }));
 
 router.get('/count', asyncHandler(async (req, res) => {
   const projectId = text(req.query.projectId);
+  const attentionOnly = boolean(req.query.attentionOnly);
   res.json({
     success: true,
-    count: interruptsService.countOpen(projectId),
-    unread: interruptsService.countUnread(projectId),
+    count: interruptsService.countOpen(projectId, attentionOnly),
+    unread: interruptsService.countUnread(projectId, attentionOnly),
   });
 }));
 

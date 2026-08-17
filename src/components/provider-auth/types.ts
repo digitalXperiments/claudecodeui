@@ -10,15 +10,18 @@ export type ProviderAuthStatus = {
 
 export type ProviderAuthStatusMap = Record<LLMProvider, ProviderAuthStatus>;
 
-export const CLI_PROVIDERS: LLMProvider[] = ['claude', 'cursor', 'codex', 'opencode', 'grok', 'kimi', 'pi'];
+export const CLI_PROVIDERS: LLMProvider[] = ['claude', 'cursor', 'codex', 'opencode', 'kilo', 'cline', 'grok', 'kimi', 'qwencode', 'pi'];
 
 export const PROVIDER_AUTH_STATUS_ENDPOINTS: Record<LLMProvider, string> = {
   claude: '/api/providers/claude/auth/status',
   cursor: '/api/providers/cursor/auth/status',
   codex: '/api/providers/codex/auth/status',
   opencode: '/api/providers/opencode/auth/status',
+  kilo: '/api/providers/kilo/auth/status',
+  cline: '/api/providers/cline/auth/status',
   grok: '/api/providers/grok/auth/status',
   kimi: '/api/providers/kimi/auth/status',
+  qwencode: '/api/providers/qwencode/auth/status',
   pi: '/api/providers/pi/auth/status',
 };
 
@@ -27,7 +30,10 @@ export const createInitialProviderAuthStatusMap = (loading = true): ProviderAuth
   cursor: { authenticated: false, email: null, method: null, error: null, loading },
   codex: { authenticated: false, email: null, method: null, error: null, loading },
   opencode: { authenticated: false, email: null, method: null, error: null, loading },
+  kilo: { authenticated: false, email: null, method: null, error: null, loading },
+  cline: { authenticated: false, email: null, method: null, error: null, loading },
   grok: { authenticated: false, email: null, method: null, error: null, loading },
   kimi: { authenticated: false, email: null, method: null, error: null, loading },
+  qwencode: { authenticated: false, email: null, method: null, error: null, loading },
   pi: { authenticated: false, email: null, method: null, error: null, loading },
 });

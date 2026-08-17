@@ -3,6 +3,7 @@ import crossSpawn from 'cross-spawn';
 
 import type { IProviderModels } from '@/shared/interfaces.js';
 import type {
+  LLMProvider,
   ProviderChangeActiveModelInput,
   ProviderCurrentActiveModel,
   ProviderModelOption,
@@ -16,6 +17,7 @@ import {
   readOptionalString,
   writeProviderSessionActiveModelChange,
 } from '@/shared/utils.js';
+import { resolveAcpCliCommand } from '@/shared/acp-cli-path.js';
 
 export const OPENCODE_FALLBACK_MODELS: ProviderModelsDefinition = {
   OPTIONS: [
@@ -51,6 +53,13 @@ export const OPENCODE_FALLBACK_MODELS: ProviderModelsDefinition = {
     },
   ],
   DEFAULT: 'anthropic/claude-sonnet-4-5',
+};
+
+export type OpenCodeProviderModelsOptions = {
+  provider?: LLMProvider;
+  command?: string;
+  databasePath?: string;
+  fallbackModels?: ProviderModelsDefinition;
 };
 
 const OPEN_CODE_MODELS_TIMEOUT_MS = 20_000;
@@ -272,8 +281,11 @@ const readOpenCodeVerboseModelId = (model: OpenCodeVerboseModel): string | null 
   return `${upstreamProvider}/${id}`;
 };
 
-const labelForOpenCodeModelId = (id: string): string => {
-  const fallbackLabel = OPENCODE_FALLBACK_MODELS.OPTIONS.find((option) => option.value === id)?.label;
+const labelForOpenCodeModelId = (
+  id: string,
+  fallbackModels: ProviderModelsDefinition = OPENCODE_FALLBACK_MODELS,
+): string => {
+  const fallbackLabel = fallbackModels.OPTIONS.find((option) => option.value === id)?.label;
   if (fallbackLabel) {
     return fallbackLabel;
   }
@@ -313,7 +325,10 @@ const readOpenCodeEffortValues = (
   return effortValues;
 };
 
-const mapOpenCodeVerboseModel = (model: OpenCodeVerboseModel): ProviderModelOption | null => {
+const mapOpenCodeVerboseModel = (
+  model: OpenCodeVerboseModel,
+  fallbackModels: ProviderModelsDefinition,
+): ProviderModelOption | null => {
   const value = readOpenCodeVerboseModelId(model);
   if (!value || !isSupportedOpenCodeModelId(value) || !isAgentCompatibleOpenCodeModel(model)) {
     return null;
@@ -323,7 +338,7 @@ const mapOpenCodeVerboseModel = (model: OpenCodeVerboseModel): ProviderModelOpti
 
   return {
     value,
-    label: readOptionalString(model.name) ?? labelForOpenCodeModelId(value),
+    label: readOptionalString(model.name) ?? labelForOpenCodeModelId(value, fallbackModels),
     description: descriptionForOpenCodeModelId(value),
     effort: effortValues.length > 0
       ? {
@@ -333,18 +348,21 @@ const mapOpenCodeVerboseModel = (model: OpenCodeVerboseModel): ProviderModelOpti
   };
 };
 
-export const buildOpenCodeDefinitionFromIds = (ids: string[]): ProviderModelsDefinition => {
+export const buildOpenCodeDefinitionFromIds = (
+  ids: string[],
+  fallbackModels: ProviderModelsDefinition = OPENCODE_FALLBACK_MODELS,
+): ProviderModelsDefinition => {
   const options: ProviderModelOption[] = ids
     .filter(isSupportedOpenCodeModelId)
     .map((value) => ({
       value,
-      label: labelForOpenCodeModelId(value),
+      label: labelForOpenCodeModelId(value, fallbackModels),
       description: descriptionForOpenCodeModelId(value),
     }));
 
-  const defaultValue = options.find((option) => option.value === OPENCODE_FALLBACK_MODELS.DEFAULT)?.value
+  const defaultValue = options.find((option) => option.value === fallbackModels.DEFAULT)?.value
     ?? options[0]?.value
-    ?? OPENCODE_FALLBACK_MODELS.DEFAULT;
+    ?? fallbackModels.DEFAULT;
 
   return {
     OPTIONS: options,
@@ -354,12 +372,13 @@ export const buildOpenCodeDefinitionFromIds = (ids: string[]): ProviderModelsDef
 
 export const buildOpenCodeDefinitionFromVerboseModels = (
   models: OpenCodeVerboseModel[],
+  fallbackModels: ProviderModelsDefinition = OPENCODE_FALLBACK_MODELS,
 ): ProviderModelsDefinition => {
   const options: ProviderModelOption[] = [];
   const seenValues = new Set<string>();
 
   for (const model of models) {
-    const mappedModel = mapOpenCodeVerboseModel(model);
+    const mappedModel = mapOpenCodeVerboseModel(model, fallbackModels);
     if (!mappedModel || seenValues.has(mappedModel.value)) {
       continue;
     }
@@ -369,12 +388,12 @@ export const buildOpenCodeDefinitionFromVerboseModels = (
   }
 
   if (options.length === 0) {
-    return OPENCODE_FALLBACK_MODELS;
+    return fallbackModels;
   }
 
-  const defaultValue = options.find((option) => option.value === OPENCODE_FALLBACK_MODELS.DEFAULT)?.value
+  const defaultValue = options.find((option) => option.value === fallbackModels.DEFAULT)?.value
     ?? options[0]?.value
-    ?? OPENCODE_FALLBACK_MODELS.DEFAULT;
+    ?? fallbackModels.DEFAULT;
 
   return {
     OPTIONS: options,
@@ -408,8 +427,10 @@ const parseOpenCodeSessionModelValue = (rawModel: unknown): string | null => {
     ?? null;
 };
 
-const runOpenCodeModelsCommand = (): Promise<string> => new Promise((resolve, reject) => {
-  const openCodeProcess = spawnFunction('opencode', ['models', '--verbose'], {
+const runOpenCodeModelsCommand = (command: string): Promise<string> => new Promise((resolve, reject) => {
+  // Resolve through PATH plus the installer's `~/.<name>/bin` location: a
+  // GUI-launched server never sources the shell profile that puts it on PATH.
+  const openCodeProcess = spawnFunction(resolveAcpCliCommand(command), ['models', '--verbose'], {
     cwd: process.cwd(),
     env: { ...process.env },
   });
@@ -422,7 +443,7 @@ const runOpenCodeModelsCommand = (): Promise<string> => new Promise((resolve, re
     openCodeProcess.kill('SIGTERM');
     if (!settled) {
       settled = true;
-      reject(new Error('opencode models timed out'));
+      reject(new Error(`${command} models timed out`));
     }
   }, OPEN_CODE_MODELS_TIMEOUT_MS);
 
@@ -456,7 +477,7 @@ const runOpenCodeModelsCommand = (): Promise<string> => new Promise((resolve, re
 
   openCodeProcess.on('close', (code) => {
     if (code !== 0) {
-      finish(new Error(stderr.trim() || `opencode models exited with code ${code}`), '');
+      finish(new Error(stderr.trim() || `${command} models exited with code ${code}`), '');
       return;
     }
 
@@ -465,22 +486,34 @@ const runOpenCodeModelsCommand = (): Promise<string> => new Promise((resolve, re
 });
 
 export class OpenCodeProviderModels implements IProviderModels {
+  private readonly provider: LLMProvider;
+  private readonly command: string;
+  private readonly databasePath: string;
+  private readonly fallbackModels: ProviderModelsDefinition;
+
+  constructor(options: OpenCodeProviderModelsOptions = {}) {
+    this.provider = options.provider ?? 'opencode';
+    this.command = options.command ?? 'opencode';
+    this.databasePath = options.databasePath ?? getOpenCodeDatabasePath();
+    this.fallbackModels = options.fallbackModels ?? OPENCODE_FALLBACK_MODELS;
+  }
+
   async getSupportedModels(): Promise<ProviderModelsDefinition> {
     try {
-      const stdout = await runOpenCodeModelsCommand();
+      const stdout = await runOpenCodeModelsCommand(this.command);
       const verboseModels = parseOpenCodeVerboseModelsStdout(stdout);
       if (verboseModels.length > 0) {
-        return buildOpenCodeDefinitionFromVerboseModels(verboseModels);
+        return buildOpenCodeDefinitionFromVerboseModels(verboseModels, this.fallbackModels);
       }
 
       const ids = parseOpenCodeModelsStdout(stdout);
       if (ids.length === 0) {
-        return OPENCODE_FALLBACK_MODELS;
+        return this.fallbackModels;
       }
 
-      return buildOpenCodeDefinitionFromIds(ids);
+      return buildOpenCodeDefinitionFromIds(ids, this.fallbackModels);
     } catch {
-      return OPENCODE_FALLBACK_MODELS;
+      return this.fallbackModels;
     }
   }
 
@@ -490,7 +523,7 @@ export class OpenCodeProviderModels implements IProviderModels {
     }
 
     try {
-      const dbPath = getOpenCodeDatabasePath();
+      const dbPath = this.databasePath;
       const db = new Database(dbPath, { readonly: true, fileMustExist: true });
 
       try {
@@ -534,6 +567,6 @@ export class OpenCodeProviderModels implements IProviderModels {
   async changeActiveModel(
     input: ProviderChangeActiveModelInput,
   ): Promise<ProviderSessionActiveModelChange> {
-    return writeProviderSessionActiveModelChange('opencode', input);
+    return writeProviderSessionActiveModelChange(this.provider, input);
   }
 }

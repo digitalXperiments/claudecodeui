@@ -1,6 +1,9 @@
-import { useCallback, useState } from 'react';
-import { authenticatedFetch } from '../../../utils/api';
+import { useCallback, useRef, useState } from 'react';
+
+import { shouldNotifyProviderUsageAuthChanged } from '../../chat/hooks/providerUsageController';
 import type { LLMProvider } from '../../../types/app';
+import { authenticatedFetch } from '../../../utils/api';
+import { PROVIDER_USAGE_AUTH_CHANGED_EVENT } from '../../../utils/providerUsagePreferences';
 import {
   CLI_PROVIDERS,
   PROVIDER_AUTH_STATUS_ENDPOINTS,
@@ -30,6 +33,13 @@ const toErrorMessage = (error: unknown): string => (
   error instanceof Error ? error.message : FALLBACK_UNKNOWN_ERROR
 );
 
+const notifyProviderUsageAuthChanged = (provider: LLMProvider, authenticated: boolean): void => {
+  if (typeof window === 'undefined') return;
+  window.dispatchEvent(new CustomEvent(PROVIDER_USAGE_AUTH_CHANGED_EVENT, {
+    detail: { provider, authenticated },
+  }));
+};
+
 const toProviderAuthStatus = (
   payload: ProviderAuthStatusPayload,
   fallbackError: string | null = null,
@@ -51,6 +61,7 @@ export function useProviderAuthStatus(
   const [providerAuthStatus, setProviderAuthStatus] = useState<ProviderAuthStatusMap>(() => (
     createInitialProviderAuthStatusMap(initialLoading)
   ));
+  const observedAuthRef = useRef<Partial<Record<LLMProvider, boolean>>>({});
 
   const setProviderLoading = useCallback((provider: LLMProvider) => {
     setProviderAuthStatus((previous) => ({
@@ -64,10 +75,21 @@ export function useProviderAuthStatus(
   }, []);
 
   const setProviderStatus = useCallback((provider: LLMProvider, status: ProviderAuthStatus) => {
+    const previousObserved = observedAuthRef.current[provider];
+    const shouldNotify = shouldNotifyProviderUsageAuthChanged(
+      previousObserved,
+      status.authenticated,
+    );
+    observedAuthRef.current[provider] = status.authenticated;
+
     setProviderAuthStatus((previous) => ({
       ...previous,
       [provider]: status,
     }));
+
+    if (shouldNotify) {
+      notifyProviderUsageAuthChanged(provider, status.authenticated);
+    }
   }, []);
 
   const checkProviderAuthStatus = useCallback(async (provider: LLMProvider): Promise<ProviderAuthStatus> => {

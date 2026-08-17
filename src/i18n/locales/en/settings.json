@@ -86,10 +86,12 @@
     "title": "Quick Settings",
     "sections": {
       "appearance": "Appearance",
+      "providerUsage": "Provider Usage",
       "toolDisplay": "Tool Display",
       "inputSettings": "Input Settings"
     },
     "darkMode": "Dark Mode",
+    "collapseProviderUsage": "Minimize usage widget",
     "showRawParameters": "Show raw parameters",
     "showThinking": "Show thinking",
     "sendByCtrlEnter": "Send by Ctrl+Enter",
@@ -121,6 +123,8 @@
   "mainTabs": {
     "label": "Settings",
     "agents": "Agents",
+    "studio": "Studio",
+    "evals": "Eval Center",
     "mcpServers": "MCP",
     "skills": "Skills",
     "globalSkills": "Global Skills",
@@ -182,6 +186,29 @@
       "description": "How projects are ordered in the sidebar",
       "alphabetical": "Alphabetical",
       "recentActivity": "Recent Activity"
+    },
+    "providerUsage": {
+      "title": "Provider usage",
+      "collapsedLabel": "Minimize provider usage widget",
+      "collapsedDescription": "Keep provider usage as a small floating button until you open it."
+    },
+    "surfaces": {
+      "title": "Surfaces",
+      "kanban": {
+        "label": "Kanban board",
+        "description": "Show the Kanban rail button, panel, and Mission Control → board bridge. Off hides it completely."
+      }
+    },
+    "spend": {
+      "title": "Live spend governor",
+      "soft": {
+        "label": "Soft cap (USD)",
+        "description": "Downgrade the next swarm seat (Opus → Sonnet → Haiku) once this swarm or chat crosses the cap. Empty = off."
+      },
+      "hard": {
+        "label": "Hard cap (USD)",
+        "description": "Pause the swarm and put a Needs you card up. Empty = off."
+      }
     },
     "codeEditor": {
       "title": "Code Editor",
@@ -377,6 +404,9 @@
       },
       "opencode": {
         "description": "OpenCode CLI assistant"
+      },
+      "kilo": {
+        "description": "Kilo Code AI coding agent"
       }
     },
     "connectionStatus": "Connection Status",
@@ -389,6 +419,17 @@
       "reLoginButton": "Re-login"
     },
     "error": "Error: {{error}}",
+    "list": {
+      "searchPlaceholder": "Search agents",
+      "filterAll": "All {{count}}",
+      "filterConnected": "Connected",
+      "filterInChat": "In chat",
+      "empty": "No agents match this filter.",
+      "inChat": "In chat",
+      "hidden": "Hidden",
+      "auth": "auth",
+      "offline": "offline"
+    },
     "visibility": {
       "label": "Show {{agent}} in chat",
       "description": "When disabled, {{agent}} and its models are hidden from the chat model picker.",
@@ -510,7 +551,8 @@
       "claude": "Model Context Protocol servers provide additional tools and data sources to Claude",
       "cursor": "Model Context Protocol servers provide additional tools and data sources to Cursor",
       "codex": "Model Context Protocol servers provide additional tools and data sources to Codex",
-      "opencode": "Model Context Protocol servers provide additional tools and data sources to OpenCode"
+      "opencode": "Model Context Protocol servers provide additional tools and data sources to OpenCode",
+      "kilo": "Model Context Protocol servers provide additional tools and data sources to Kilo Code"
     },
     "addButton": "Add MCP Server",
     "empty": "No MCP servers configured",

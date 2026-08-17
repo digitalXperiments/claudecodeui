@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   createRequestId,
   extractPermissionPaths,
+  extractTokenBudget,
   resolveApprovalTimeoutMs,
   resolveToolApproval,
   waitForToolApproval,
@@ -68,6 +69,32 @@ test('extractPermissionPaths pulls common path shapes from tool input', () => {
   assert.deepEqual(extractPermissionPaths({ paths: ['/a', '/b'], files: ['/c'] }), ['/a', '/b', '/c']);
   // Codex applyPatchApproval shape.
   assert.deepEqual(extractPermissionPaths({ changes: { '/repo/x.ts': { kind: 'update' } } }), ['/repo/x.ts']);
+});
+
+test('extractTokenBudget ignores Claude result aggregates after per-response usage', () => {
+  assert.equal(
+    extractTokenBudget({
+      type: 'result',
+      usage: { input_tokens: 50_000, output_tokens: 2_000 },
+      modelUsage: {},
+    }),
+    null,
+  );
+
+  const perResponse = extractTokenBudget({
+    type: 'assistant',
+    message: {
+      model: 'claude-sonnet-5',
+      usage: {
+        input_tokens: 100,
+        cache_read_input_tokens: 900,
+        cache_creation_input_tokens: 50,
+        output_tokens: 25,
+      },
+    },
+  });
+  assert.equal(perResponse?.billedInputTokens, 1_050);
+  assert.equal(perResponse?.billedOutputTokens, 25);
 });
 
 test('bounded waitForToolApproval resolves null on expiry (deny path)', async () => {

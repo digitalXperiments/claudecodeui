@@ -684,6 +684,23 @@ export const automationService = {
     }
     return results;
   },
+  /**
+   * Fire without awaiting, for lifecycle hooks that must not be able to break
+   * their caller. `fire` rejects when the recipe *lookup* itself fails (a
+   * closed or not-yet-migrated database, say) — individual recipe failures are
+   * already contained inside `fire`. Left as a bare `void fire(...)`, that
+   * rejection is unhandled and takes the process down under Node's default
+   * unhandled-rejection policy, so every fire-and-forget caller routes here.
+   */
+  fireDetached(input: FireInput): void {
+    void automationService.fire(input).catch((error) => {
+      console.error('[Automation] detached fire failed', {
+        type: input.type,
+        recipeId: input.recipeId ?? null,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  },
   syncSchedules(): void {
     syncSchedules();
   },
@@ -709,7 +726,7 @@ export function syncSchedules(): void {
       jobs.set(
         recipe.recipe_id,
         new Cron(recipe.trigger.cron!, () => {
-          void automationService.fire({
+          automationService.fireDetached({
             type: 'cron',
             projectId: recipe.project_id,
             recipeId: recipe.recipe_id,

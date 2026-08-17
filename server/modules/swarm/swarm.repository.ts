@@ -4,8 +4,10 @@ import { newSwarmId, newSwarmMemberId } from '@/shared/ids.js';
 import type {
   SwarmAgentSpec,
   SwarmArtifact,
+  SwarmAttachment,
   SwarmConfig,
   SwarmFinding,
+  SwarmGoalCard,
   SwarmHandoff,
   SwarmMember,
   SwarmMessage,
@@ -27,6 +29,8 @@ type SwarmRow = {
   blackboard_json?: string | null;
   skills_json?: string | null;
   config_json?: string | null;
+  goal_card_json?: string | null;
+  attachments_json?: string | null;
   workspace_id?: string | null;
   pr_url?: string | null;
   feature_branch?: string | null;
@@ -98,6 +102,8 @@ type SwarmPatch = Partial<{
   blackboard: SwarmMessage[];
   skills: string[];
   config: SwarmConfig | null;
+  goalCard: SwarmGoalCard | null;
+  attachments: SwarmAttachment[];
   workspaceId: string | null;
   featureBranch: string | null;
   prUrl: string | null;
@@ -224,6 +230,8 @@ function mapSwarm(row: SwarmRow, members?: SwarmMember[]): SwarmRun {
           })),
     skills: parse<string[]>(row.skills_json, []),
     config: parse<SwarmConfig | null>(row.config_json, null),
+    goalCard: parse<SwarmGoalCard | null>(row.goal_card_json, null),
+    attachments: parse<SwarmAttachment[]>(row.attachments_json, []),
     workspace_id: row.workspace_id ?? null,
     feature_branch: row.feature_branch ?? null,
     pr_url: row.pr_url ?? null,
@@ -254,16 +262,17 @@ export const swarmDb = {
     approvalStatus: string | null;
     skills?: string[];
     config?: SwarmConfig | null;
+    attachments?: SwarmAttachment[];
     idempotencyKey?: string | null;
   }): SwarmRun {
     const id = newSwarmId();
-    const result = getConnection()
+    getConnection()
       .prepare(
         `INSERT INTO swarm_runs (
            swarm_id, project_id, parent_run_id, goal, status, roles_json,
            findings_json, approval_status, skills_json, config_json, blackboard_json,
-           idempotency_key
-         ) VALUES (?, ?, ?, ?, ?, ?, '[]', ?, ?, ?, '[]', ?)`,
+           attachments_json, idempotency_key
+         ) VALUES (?, ?, ?, ?, ?, ?, '[]', ?, ?, ?, '[]', ?, ?)`,
       )
       .run(
         id,
@@ -275,6 +284,7 @@ export const swarmDb = {
         input.approvalStatus,
         JSON.stringify(input.skills ?? []),
         input.config ? JSON.stringify(input.config) : null,
+        JSON.stringify(input.attachments ?? []),
         input.idempotencyKey ?? null,
       );
     return this.get(id)!;
@@ -380,6 +390,9 @@ export const swarmDb = {
       patch.blackboard !== undefined ? patch.blackboard : current.blackboard;
     const skills = patch.skills !== undefined ? patch.skills : current.skills;
     const config = patch.config !== undefined ? patch.config : current.config;
+    const goalCard = patch.goalCard !== undefined ? patch.goalCard : current.goalCard;
+    const attachments =
+      patch.attachments !== undefined ? patch.attachments : current.attachments;
     const workspaceId =
       patch.workspaceId !== undefined ? patch.workspaceId : current.workspace_id;
     const featureBranch =
@@ -408,7 +421,8 @@ export const swarmDb = {
       .prepare(
         `UPDATE swarm_runs SET
            status = ?, roles_json = ?, findings_json = ?, synthesis_json = ?, plan_json = ?,
-           blackboard_json = ?, skills_json = ?, config_json = ?,
+           blackboard_json = ?, skills_json = ?, config_json = ?, goal_card_json = ?,
+           attachments_json = ?,
            workspace_id = ?, feature_branch = ?, pr_url = ?,
            approval_status = ?, interrupt_id = ?, archived_at = ?,
            cancel_requested_at = ?, last_error = ?, version = version + 1,
@@ -432,6 +446,8 @@ export const swarmDb = {
         JSON.stringify(blackboard ?? []),
         JSON.stringify(skills ?? []),
         config ? JSON.stringify(config) : null,
+        goalCard ? JSON.stringify(goalCard) : null,
+        JSON.stringify(attachments ?? []),
         workspaceId,
         featureBranch,
         prUrl,

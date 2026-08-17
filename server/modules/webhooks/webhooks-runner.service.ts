@@ -350,7 +350,7 @@ export async function startWebhookDelivery(params: {
 
   // Shared automation adapter: the legacy webhook runner still owns its
   // provider behavior, while recipes can observe the same inbound delivery.
-  void automationService.fire({
+  automationService.fireDetached({
     type: 'webhook_inbound',
     projectId: source.project_id,
     payload: redactPayload({

@@ -8,6 +8,7 @@ import {
   retryItem,
   runSectionProduce,
 } from '@/modules/mission-control/mission-control-runner.service.js';
+import { workThisItem } from '@/modules/mission-control/mission-control-work.service.js';
 import { syncMissionControlSchedules } from '@/modules/mission-control/mission-control-scheduler.service.js';
 import {
   DEFAULT_MC_ACTIONS,
@@ -358,6 +359,26 @@ router.post(
       return;
     }
     res.json({ deleted: false, item, pendingCount });
+  }),
+);
+
+// POST /items/:id/work — open a scoped chat in the matching project
+router.post(
+  '/items/:id/work',
+  asyncHandler(async (req, res) => {
+    const projectId = readOptionalString(req.body?.projectId);
+    const result = workThisItem(paramId(req.params.id), projectId);
+    res.status(201).json({
+      item: result.item,
+      sessionId: result.sessionId,
+      provider: result.provider,
+      projectId: result.projectId,
+      projectPath: result.projectPath,
+      prompt: result.prompt,
+      matchReason: result.matchReason,
+      candidates: result.candidates,
+      pendingCount: missionControlDb.countPending(),
+    });
   }),
 );
 

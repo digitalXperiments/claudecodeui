@@ -83,6 +83,8 @@ export type SidebarProps = {
   isMobile: boolean;
   /** User-resizable desktop width for the Projects column. */
   projectsPanelWidth?: number;
+  studioActive?: boolean;
+  onShowStudio?: () => void;
 };
 
 export type SessionViewModel = {

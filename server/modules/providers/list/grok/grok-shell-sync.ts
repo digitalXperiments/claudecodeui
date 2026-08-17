@@ -113,7 +113,7 @@ export async function syncGrokShellSession(info: {
     // permanently points this session at the other transcript. Ambiguity is
     // skipped: the row stays unbound instead of being bound wrong.
     const candidates = touched.filter((candidate) => {
-      const owner = sessionsDb.getSessionByProviderSessionId(candidate.id);
+      const owner = sessionsDb.getSessionByProviderSessionId(candidate.id, 'grok');
       return !owner || owner.session_id === appRow.session_id;
     });
     if (candidates.length !== 1) {

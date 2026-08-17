@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 
 import { providerRegistry } from '@/modules/providers/provider.registry.js';
 import {
@@ -12,9 +12,13 @@ import type {
   ProjectSkill,
   ProjectSkillContentInput,
   ProjectSkillContentUpdateInput,
+  ProjectSkillCopyInput,
+  ProjectSkillCopyResult,
   ProjectSkillCreateInput,
   ProjectSkillListOptions,
   ProjectSkillRemoveInput,
+  ProviderSkillCreateEntry,
+  ProviderSkillCreateFile,
   SkillContentResult,
 } from '@/shared/types.js';
 import {
@@ -148,6 +152,61 @@ const writeManifest = async (workspacePath: string, manifest: Manifest): Promise
   await writeJsonConfig(getManifestPath(workspacePath), { skills: manifest.skills });
 };
 
+const collectSkillSupportingFiles = async (
+  skillDirectoryPath: string,
+): Promise<ProviderSkillCreateFile[]> => {
+  const files: ProviderSkillCreateFile[] = [];
+
+  const walk = async (directoryPath: string, relativePrefix: string): Promise<void> => {
+    const entries = await readdir(directoryPath, { withFileTypes: true });
+    for (const entry of entries) {
+      const relativePath = relativePrefix ? `${relativePrefix}/${entry.name}` : entry.name;
+      const absolutePath = path.join(directoryPath, entry.name);
+      if (entry.isDirectory()) {
+        await walk(absolutePath, relativePath);
+        continue;
+      }
+      if (!entry.isFile() || relativePath.toLowerCase() === 'skill.md') {
+        continue;
+      }
+      const bytes = await readFile(absolutePath);
+      files.push({
+        relativePath,
+        content: bytes.toString('base64'),
+        encoding: 'base64',
+      });
+    }
+  };
+
+  await walk(skillDirectoryPath, '');
+  return files;
+};
+
+const readManagedSkillEntry = async (
+  workspacePath: string,
+  directoryName: string,
+): Promise<ProviderSkillCreateEntry> => {
+  const skillDirectoryPath = path.join(getManagedRoot(workspacePath), directoryName);
+  const skillPath = path.join(skillDirectoryPath, 'SKILL.md');
+
+  let content: string;
+  try {
+    content = await readFile(skillPath, 'utf8');
+  } catch {
+    throw new AppError(`Project skill "${directoryName}" was not found.`, {
+      code: 'PROJECT_SKILL_NOT_FOUND',
+      statusCode: 404,
+    });
+  }
+
+  const files = await collectSkillSupportingFiles(skillDirectoryPath);
+  return {
+    content,
+    directoryName,
+    files: files.length > 0 ? files : undefined,
+  };
+};
+
 const directoryExists = async (directoryPath: string): Promise<boolean> => {
   try {
     const stats = await stat(directoryPath);
@@ -264,6 +323,46 @@ export const projectSkillsService = {
 
     await writeManifest(workspacePath, manifest);
     return results;
+  },
+
+  /**
+   * Copies one managed project skill (markdown + supporting files) into other
+   * workspaces, installing it for every agent in each destination.
+   */
+  async copyProjectSkill(input: ProjectSkillCopyInput): Promise<ProjectSkillCopyResult> {
+    const sourceWorkspacePath = resolveWorkspacePath(input.workspacePath);
+    const directoryName = requireDirectoryName(input.directoryName);
+    const entry = await readManagedSkillEntry(sourceWorkspacePath, directoryName);
+
+    const requested = Array.isArray(input.projects) ? input.projects : [];
+    const destinations = [...new Set(
+      requested
+        .map((item) => (typeof item === 'string' ? item.trim() : ''))
+        .filter(Boolean)
+        .map((item) => path.resolve(item))
+        .filter((item) => item !== sourceWorkspacePath),
+    )];
+
+    if (destinations.length === 0) {
+      throw new AppError('Pick at least one other project to apply this skill to.', {
+        code: 'PROJECT_SKILL_COPY_TARGETS_REQUIRED',
+        statusCode: 400,
+      });
+    }
+
+    const projects = [];
+    for (const workspacePath of destinations) {
+      const skills = await projectSkillsService.addProjectSkills({
+        workspacePath,
+        entries: [entry],
+      });
+      const skill = skills[0];
+      if (skill) {
+        projects.push({ workspacePath, skill });
+      }
+    }
+
+    return { directoryName, projects };
   },
 
   /**

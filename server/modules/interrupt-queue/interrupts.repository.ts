@@ -28,6 +28,23 @@ const PRIORITIES: Record<string, number> = {
   task_blocked: 55,
 };
 
+/**
+ * The sidebar action center is deliberately narrower than the durable
+ * interrupt ledger. Failures, stuck runs, and task health belong on their
+ * owning operational surfaces; this list is reserved for a human decision or
+ * configuration fix.
+ */
+export const NEEDS_ATTENTION_KINDS = [
+  'permission_pending',
+  'approval_pending',
+  'auth_unhealthy',
+  'mcp_unhealthy',
+  'secret_missing',
+  'workspace_conflict',
+  'spend_cap',
+  'shift_report',
+] as const;
+
 function parseObject(raw: string | null | undefined): Record<string, unknown> {
   if (!raw) return {};
   try {
@@ -131,6 +148,10 @@ export const interruptsDb = {
       where.push('project_id = ?');
       params.push(filter.projectId);
     }
+    if (filter.attentionOnly) {
+      where.push(`kind IN (${NEEDS_ATTENTION_KINDS.map(() => '?').join(', ')})`);
+      params.push(...NEEDS_ATTENTION_KINDS);
+    }
     // Snoozed items re-enter the queue automatically once their UTC deadline passes.
     if (!filter.status || statuses.includes('open')) {
       where.push(`(snooze_until IS NULL OR snooze_until <= CURRENT_TIMESTAMP)`);
@@ -152,16 +173,20 @@ export const interruptsDb = {
     return filterStaleMissionControlApprovals(rows, db).slice(0, limit).map(mapRow);
   },
 
-  countOpen(projectId?: string): number {
+  countOpen(projectId?: string, attentionOnly = false): number {
     const db = getConnection();
-    const activeSql = `status IN ('open', 'snoozed') AND (snooze_until IS NULL OR snooze_until <= CURRENT_TIMESTAMP) AND ${NOT_EXPIRED_SQL}`;
+    const attentionSql = attentionOnly
+      ? ` AND kind IN (${NEEDS_ATTENTION_KINDS.map(() => '?').join(', ')})`
+      : '';
+    const params = attentionOnly ? [...NEEDS_ATTENTION_KINDS] : [];
+    const activeSql = `status IN ('open', 'snoozed') AND (snooze_until IS NULL OR snooze_until <= CURRENT_TIMESTAMP) AND ${NOT_EXPIRED_SQL}${attentionSql}`;
     const rows = projectId
       ? db
           .prepare(`SELECT * FROM interrupts WHERE project_id = ? AND ${activeSql}`)
-          .all(projectId)
+          .all(projectId, ...params)
       : db
           .prepare(`SELECT * FROM interrupts WHERE ${activeSql}`)
-          .all();
+          .all(...params);
     return filterStaleMissionControlApprovals(rows as InterruptRow[], db).length;
   },
 
@@ -169,16 +194,20 @@ export const interruptsDb = {
    * Unread items among the active "Needs you" queue. Read state only affects
    * the badge — items stay actionable until resolved/expired.
    */
-  countUnread(projectId?: string): number {
+  countUnread(projectId?: string, attentionOnly = false): number {
     const db = getConnection();
-    const activeSql = `status IN ('open', 'snoozed') AND (snooze_until IS NULL OR snooze_until <= CURRENT_TIMESTAMP) AND ${NOT_EXPIRED_SQL} AND read_at IS NULL`;
+    const attentionSql = attentionOnly
+      ? ` AND kind IN (${NEEDS_ATTENTION_KINDS.map(() => '?').join(', ')})`
+      : '';
+    const params = attentionOnly ? [...NEEDS_ATTENTION_KINDS] : [];
+    const activeSql = `status IN ('open', 'snoozed') AND (snooze_until IS NULL OR snooze_until <= CURRENT_TIMESTAMP) AND ${NOT_EXPIRED_SQL} AND read_at IS NULL${attentionSql}`;
     const rows = projectId
       ? db
           .prepare(`SELECT * FROM interrupts WHERE project_id = ? AND ${activeSql}`)
-          .all(projectId)
+          .all(projectId, ...params)
       : db
           .prepare(`SELECT * FROM interrupts WHERE ${activeSql}`)
-          .all();
+          .all(...params);
     return filterStaleMissionControlApprovals(rows as InterruptRow[], db).length;
   },
 
@@ -376,6 +405,20 @@ export const interruptsDb = {
       // swarm tables are optional in some deployments; treat as still present
       // so informational pointers are never resolved on a transient error.
       return true;
+    }
+  },
+
+  /** State probe used to retire Mission Control approvals whose item is gone or settled. */
+  missionControlItemState(itemId: string): 'actionable' | 'settled' | 'missing' | 'unknown' {
+    if (!itemId.trim()) return 'missing';
+    try {
+      const row = getConnection()
+        .prepare(`SELECT status FROM mc_items WHERE item_id = ?`)
+        .get(itemId) as { status?: string } | undefined;
+      if (!row) return 'missing';
+      return row.status === 'pending' || row.status === 'failed' ? 'actionable' : 'settled';
+    } catch {
+      return 'unknown';
     }
   },
 };

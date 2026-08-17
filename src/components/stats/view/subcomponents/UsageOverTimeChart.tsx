@@ -11,6 +11,10 @@ import {
 type UsageOverTimeChartProps = {
   /** Dense day sequence (gaps already zero-filled), ascending. */
   days: StatsDayBucket[];
+  /** Applied UTC day filter (YYYY-MM-DD). */
+  selectedDay?: string | null;
+  /** Click a bar to filter the dashboard to that UTC day. */
+  onSelectDay?: (day: string) => void;
 };
 
 const CHART_HEIGHT = 160;
@@ -21,15 +25,21 @@ const BAR_GAP = 2;
  * details in the strip below; every bar also carries a native <title> and the
  * full series is available as a data table for screen readers.
  */
-export default function UsageOverTimeChart({ days }: UsageOverTimeChartProps) {
-  const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
+export default function UsageOverTimeChart({
+  days,
+  selectedDay,
+  onSelectDay,
+}: UsageOverTimeChartProps) {
+  const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
 
   const maxTokens = useMemo(() => Math.max(1, ...days.map((day) => day.tokens)), [days]);
   const hasAnyTokens = days.some((day) => day.tokens > 0);
 
   if (days.length === 0) return null;
 
-  const selected = selectedIndex != null ? days[selectedIndex] : null;
+  const selectedIndex = selectedDay ? days.findIndex((day) => day.day === selectedDay) : -1;
+  const previewIndex = hoveredIndex ?? (selectedIndex >= 0 ? selectedIndex : null);
+  const selected = previewIndex != null ? days[previewIndex] : null;
   const barWidth = 100 / days.length;
 
   // Sparse-axis labels: first, middle, last day.
@@ -72,12 +82,14 @@ export default function UsageOverTimeChart({ days }: UsageOverTimeChartProps) {
               const inputHeight = totalHeight - outputHeight;
               const x = index * barWidth + BAR_GAP / 2 / 10;
               const width = Math.max(0.5, barWidth - BAR_GAP / 10);
-              const isSelected = index === selectedIndex;
+              const isSelected = selectedDay === day.day;
+              const isHovered = hoveredIndex === index;
               return (
                 <g
                   key={day.day}
-                  onMouseEnter={() => setSelectedIndex(index)}
-                  onClick={() => setSelectedIndex(index)}
+                  onMouseEnter={() => setHoveredIndex(index)}
+                  onMouseLeave={() => setHoveredIndex(null)}
+                  onClick={() => onSelectDay?.(day.day)}
                   className="cursor-pointer"
                 >
                   <title>
@@ -90,7 +102,11 @@ export default function UsageOverTimeChart({ days }: UsageOverTimeChartProps) {
                     width={width}
                     height={CHART_HEIGHT}
                     className={
-                      isSelected ? 'fill-accent/60' : 'fill-transparent hover:fill-accent/30'
+                      isSelected
+                        ? 'fill-primary/25'
+                        : isHovered
+                          ? 'fill-accent/40'
+                          : 'fill-transparent'
                     }
                   />
                   {inputHeight > 0 ? (
@@ -139,7 +155,9 @@ export default function UsageOverTimeChart({ days }: UsageOverTimeChartProps) {
                 {selected.costUsd > 0 ? ` · ${formatCost(selected.costUsd)}` : ''}
               </span>
             ) : (
-              <span className="text-muted-foreground/70">Hover or tap a bar for details</span>
+              <span className="text-muted-foreground/70">
+                Click a bar to filter the dashboard to that UTC day
+              </span>
             )}
           </div>
 
@@ -158,7 +176,13 @@ export default function UsageOverTimeChart({ days }: UsageOverTimeChartProps) {
                 </thead>
                 <tbody>
                   {days.map((day) => (
-                    <tr key={day.day} className="border-t border-border/50 tabular-nums">
+                    <tr
+                      key={day.day}
+                      className={`cursor-pointer border-t border-border/50 tabular-nums hover:bg-accent/40 ${
+                        selectedDay === day.day ? 'bg-primary/10' : ''
+                      }`}
+                      onClick={() => onSelectDay?.(day.day)}
+                    >
                       <td className="px-2 py-1">{day.day}</td>
                       <td className="px-2 py-1 text-right">{formatTokensExact(day.inputTokens)}</td>
                       <td className="px-2 py-1 text-right">{formatTokensExact(day.outputTokens)}</td>

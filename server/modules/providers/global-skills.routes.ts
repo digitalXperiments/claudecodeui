@@ -176,8 +176,11 @@ const KNOWN_LLM_PROVIDERS: LLMProvider[] = [
   'codex',
   'cursor',
   'opencode',
+  'kilo',
+  'cline',
   'grok',
   'kimi',
+  'qwencode',
   'pi',
 ];
 

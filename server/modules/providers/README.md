@@ -37,6 +37,12 @@ Current provider ids in this repo are:
 - `codex`
 - `cursor`
 - `opencode`
+- `kilo`
+- `cline`
+- `grok`
+- `kimi`
+- `qwencode`
+- `pi`
 
 Those ids are mirrored in backend unions and frontend provider constants. If
 adding a new provider, update every place that hardcodes this list.
@@ -55,7 +61,8 @@ server/modules/providers/list/<provider>/
   <provider>-session-synchronizer.provider.ts
 ```
 
-The existing provider folders are `claude`, `codex`, `cursor`, and `opencode`.
+The existing provider folders include `claude`, `codex`, `cursor`, `opencode`,
+`kilo`, `cline`, `grok`, `kimi`, `qwencode`, and `pi`.
 
 ## What Each Facet Does
 
@@ -122,6 +129,8 @@ Current MCP formats in this repo are:
 | Codex | `.codex/config.toml` | `user`, `project` | `stdio`, `http` |
 | Cursor | `.cursor/mcp.json` | `user`, `project` | `stdio`, `http` |
 | OpenCode | `~/.config/opencode/opencode.json` or `<workspace>/opencode.json` (`.jsonc` is read when present) | `user`, `project` | `stdio`, `http` |
+| Kilo Code | `~/.config/kilo/kilo.json` or `<workspace>/kilo.json` (`.jsonc` is read when present) | `user`, `project` | `stdio`, `http` |
+| Cline | `~/.cline/data/settings/cline_mcp_settings.json` | `user` | `stdio`, `http` |
 
 5. Implement skills.
 
@@ -142,6 +151,7 @@ Current skill discovery roots are:
 | Codex | `~/.agents/skills`, `~/.codex/skills/.system`, `/etc/codex/skills` | `<workspace>/.agents/skills`, `path.dirname(workspacePath)/.agents/skills`, topmost git root `.agents/skills` | `$` | Overlapping roots are deduplicated before scanning. |
 | Cursor | `~/.cursor/skills` | `<workspace>/.cursor/skills`, `<workspace>/.agents/skills` | `/` | Uses slash-style commands. |
 | OpenCode | `~/.config/opencode/skills`, `~/.claude/skills`, `~/.agents/skills` | Cwd-to-topmost-git-root `.opencode/skills`, `.claude/skills`, and `.agents/skills` | `/` | Reuses OpenCode, Claude, and Agents skill locations. Overlapping roots are deduplicated before scanning. |
+| Kilo Code | `~/.config/kilo/skills`, `~/.kilocode/skills`, `~/.kilo/skills` | Cwd-to-topmost-git-root `.kilo/skill`, `.kilo/skills`, and `.kilocode/skills` | `/` | Uses Kilo's canonical and legacy skill roots. |
 
 Command forms currently used by the providers are:
 
@@ -150,6 +160,7 @@ Command forms currently used by the providers are:
 - Codex skills: `$skill-name`
 - Cursor skills: `/skill-name`
 - OpenCode skills: `/skill-name`
+- Kilo Code skills: `/skill-name`
 
 6. Implement sessions.
 
@@ -187,6 +198,8 @@ Current session sync roots are:
 | Codex | `~/.codex/sessions/**/*.jsonl` | Uses `~/.codex/session_index.jsonl` for title lookup and the last `task_complete` message for a fallback title. |
 | Cursor | `~/.cursor/projects/**/*.jsonl` | Uses sibling `worker.log` to recover `workspacePath`, then derives the session title from the first user prompt. |
 | OpenCode | `~/.local/share/opencode/opencode.db` | Reads active sessions/messages/parts from OpenCode's shared SQLite database and stores `jsonl_path` as `null` so deleting one app session cannot remove the shared DB. |
+| Kilo Code | `~/.local/share/kilo/kilo.db` | Reads Kilo's separate OpenCode-derived SQLite database; it must never be treated as OpenCode data. |
+| Cline | `${CLINE_DATA_DIR:-~/.cline/data}/tasks/<task-id>/` | Reads Cline task metadata and conversation history when the task id is available. Live chats use Cline's ACP mode (`cline --acp`). |
 
 8. Register the provider.
 
@@ -344,5 +357,3 @@ alongside the implementation.
 - Forgetting that Claude plugin skills are discovered differently from normal
   user/project skill folders.
 - Assuming one provider's MCP config file format works for the others.
-
-

@@ -17,6 +17,12 @@ type OpenCodeConfigPath = {
   exists: boolean;
 };
 
+export type OpenCodeMcpProviderOptions = {
+  provider?: 'opencode' | 'kilo';
+  configDirectory?: string;
+  configFileName?: string;
+};
+
 const fileExists = async (filePath: string): Promise<boolean> => {
   try {
     await access(filePath);
@@ -102,15 +108,24 @@ const readOpenCodeConfig = async (filePath: string): Promise<Record<string, unkn
 
 const writeOpenCodeConfig = async (filePath: string, data: Record<string, unknown>): Promise<void> => {
   await mkdir(path.dirname(filePath), { recursive: true });
+  // OpenCode accepts JSONC on read, but writing comments back into a config
+  // file makes downstream tooling that expects JSON (including CloudCLI's
+  // inventory and common editors) fail. Normalize the file after a managed
+  // update while preserving all non-MCP keys.
   await writeFile(filePath, `${JSON.stringify(data, null, 2)}\n`, 'utf8');
 };
 
-const resolveOpenCodeConfigPath = async (scope: McpScope, workspacePath: string): Promise<OpenCodeConfigPath> => {
+const resolveOpenCodeConfigPath = async (
+  scope: McpScope,
+  workspacePath: string,
+  configDirectory: string,
+  configFileName: string,
+): Promise<OpenCodeConfigPath> => {
   const root = scope === 'user'
-    ? path.join(os.homedir(), '.config', 'opencode')
+    ? configDirectory
     : workspacePath;
-  const jsonPath = path.join(root, 'opencode.json');
-  const jsoncPath = path.join(root, 'opencode.jsonc');
+  const jsonPath = path.join(root, `${configFileName}.json`);
+  const jsoncPath = path.join(root, `${configFileName}.jsonc`);
 
   if (await fileExists(jsonPath)) {
     return { filePath: jsonPath, exists: true };
@@ -124,12 +139,26 @@ const resolveOpenCodeConfigPath = async (scope: McpScope, workspacePath: string)
 };
 
 export class OpenCodeMcpProvider extends McpProvider {
-  constructor() {
-    super('opencode', ['user', 'project'], ['stdio', 'http']);
+  private readonly configuredConfigDirectory?: string;
+  private readonly configFileName: string;
+
+  constructor(options: OpenCodeMcpProviderOptions = {}) {
+    super(options.provider ?? 'opencode', ['user', 'project'], ['stdio', 'http']);
+    this.configuredConfigDirectory = options.configDirectory;
+    this.configFileName = options.configFileName ?? 'opencode';
+  }
+
+  private getConfigDirectory(): string {
+    return this.configuredConfigDirectory ?? path.join(os.homedir(), '.config', 'opencode');
   }
 
   protected async readScopedServers(scope: McpScope, workspacePath: string): Promise<Record<string, unknown>> {
-    const { filePath } = await resolveOpenCodeConfigPath(scope, workspacePath);
+    const { filePath } = await resolveOpenCodeConfigPath(
+      scope,
+      workspacePath,
+      this.getConfigDirectory(),
+      this.configFileName,
+    );
     const config = await readOpenCodeConfig(filePath);
     return readObjectRecord(config.mcp) ?? {};
   }
@@ -139,7 +168,12 @@ export class OpenCodeMcpProvider extends McpProvider {
     workspacePath: string,
     servers: Record<string, unknown>,
   ): Promise<void> {
-    const { filePath } = await resolveOpenCodeConfigPath(scope, workspacePath);
+    const { filePath } = await resolveOpenCodeConfigPath(
+      scope,
+      workspacePath,
+      this.getConfigDirectory(),
+      this.configFileName,
+    );
     const config = await readOpenCodeConfig(filePath);
     config.mcp = servers;
     await writeOpenCodeConfig(filePath, config);
@@ -197,7 +231,7 @@ export class OpenCodeMcpProvider extends McpProvider {
       }
 
       return {
-        provider: 'opencode',
+        provider: this.provider,
         name,
         scope,
         transport: 'stdio',
@@ -214,7 +248,7 @@ export class OpenCodeMcpProvider extends McpProvider {
       }
 
       return {
-        provider: 'opencode',
+        provider: this.provider,
         name,
         scope,
         transport: 'http',

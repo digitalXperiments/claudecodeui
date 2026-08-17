@@ -22,7 +22,12 @@ import {
     configureMemoryCurationRuntimes,
 } from '@/modules/providers/index.js';
 import { createWebSocketServer } from '@/modules/websocket/index.js';
-import { interruptsRoutes, interruptsService } from '@/modules/interrupt-queue/index.js';
+import {
+    interruptsRoutes,
+    interruptsService,
+    startInterruptMaintenance,
+    stopInterruptMaintenance,
+} from '@/modules/interrupt-queue/index.js';
 
 import { getConnectableHost } from '../shared/networkHosts.js';
 
@@ -63,7 +68,14 @@ import {
 import { findPiSessionFile } from './modules/providers/list/pi/pi-sessions.provider.js';
 import {
     spawnOpenCode,
+    spawnKilo,
+    spawnCline,
+    spawnQwenCode,
     abortOpenCodeSession,
+    abortKiloSession,
+    abortClineSession,
+    abortQwenCodeSession,
+    readKiloTokenUsage,
 } from './opencode-cli.js';
 import {
     stripAnsiSequences,
@@ -102,6 +114,7 @@ import {
     stopKanbanScheduler,
 } from './modules/kanban/index.js';
 import missionControlRoutes from './modules/mission-control/mission-control.routes.js';
+import { appFeaturesRoutes } from './modules/app-features/index.js';
 import {
     applyItemAction,
     configureMissionControlRuntimes,
@@ -111,6 +124,7 @@ import {
     stopMissionControlScheduler,
 } from './modules/mission-control/index.js';
 import agentProfilesRoutes from './modules/agent-profiles/agent-profiles.routes.js';
+import { evalsRoutes, configureEvalRuntimes } from './modules/evals/index.js';
 import workspacesRoutes from './modules/workspaces/workspaces.routes.js';
 import runsRoutes from './modules/runs/runs.routes.js';
 import secretsRoutes from './modules/secrets/secrets.routes.js';
@@ -118,6 +132,7 @@ import deliveryGraphRoutes from './modules/delivery-graph/delivery-graph.routes.
 import shipRoutes from './modules/ship/ship.routes.js';
 import contextPacksRoutes from './modules/context-packs/context-packs.routes.js';
 import automationRoutes, { startAutomationKernel, stopAutomationKernel } from './modules/automation/index.js';
+import { studioRoutes } from './modules/studio/index.js';
 import swarmRoutes, {
     configureSwarmRuntimes,
     configureSwarmAbortFns,
@@ -137,6 +152,7 @@ import {
     startAuthHealthWatchdog,
     stopAuthHealthWatchdog,
 } from './modules/auth-health/index.js';
+import { providerUsageRoutes } from './modules/provider-usage/index.js';
 import webhooksRoutes from './modules/webhooks/webhooks.routes.js';
 import webhooksIngestRoutes from './modules/webhooks/webhooks-ingest.routes.js';
 import {
@@ -197,6 +213,9 @@ const providerSpawnFns = {
     cursor: spawnCursor,
     codex: queryCodex,
     opencode: spawnOpenCode,
+    kilo: spawnKilo,
+    cline: spawnCline,
+    qwencode: spawnQwenCode,
     grok: spawnGrok,
     kimi: spawnKimi,
     pi: spawnPi,
@@ -216,6 +235,9 @@ configureFailoverApprovalResolver();
 // Mission Control reuses the same provider runtimes for produce/resolve runs.
 configureMissionControlRuntimes(providerSpawnFns);
 
+// Eval Center AI-assisted suite authoring uses the same authenticated provider runtimes.
+configureEvalRuntimes(providerSpawnFns);
+
 // Review swarm: multi-role headless agent runs on the same runtime map.
 configureSwarmRuntimes(providerSpawnFns);
 configureSwarmAbortFns({
@@ -223,6 +245,9 @@ configureSwarmAbortFns({
     cursor: abortCursorSession,
     codex: abortCodexSession,
     opencode: abortOpenCodeSession,
+    kilo: abortKiloSession,
+    cline: abortClineSession,
+    qwencode: abortQwenCodeSession,
     grok: abortGrokSession,
     kimi: abortKimiSession,
     pi: abortPiSession,
@@ -290,6 +315,8 @@ const wss = createWebSocketServer(server, {
             cursor: abortCursorSession,
             codex: abortCodexSession,
             opencode: abortOpenCodeSession,
+            kilo: abortKiloSession,
+            cline: abortClineSession,
             grok: abortGrokSession,
             kimi: abortKimiSession,
             pi: abortPiSession,
@@ -383,6 +410,7 @@ app.use('/api/browser-use-mcp', browserUseMcpRoutes);
 // legacy project handler.
 app.use('/api', authenticateToken, workspacesRoutes);
 app.use('/api/runs', authenticateToken, runsRoutes);
+app.use('/api/evals', authenticateToken, evalsRoutes);
 app.use('/api/secrets', authenticateToken, secretsRoutes);
 app.use('/api/interrupts', authenticateToken, interruptsRoutes);
 app.use('/api', authenticateToken, deliveryGraphRoutes);
@@ -390,6 +418,7 @@ app.use('/api', authenticateToken, shipRoutes);
 app.use('/api', authenticateToken, contextPacksRoutes);
 app.use('/api', authenticateToken, automationRoutes);
 app.use('/api', authenticateToken, swarmRoutes);
+app.use('/api/studio', authenticateToken, studioRoutes);
 app.use('/api', authenticateToken, failoverRoutes);
 app.use('/api', authenticateToken, stackRoutes);
 
@@ -450,6 +479,12 @@ app.use('/api/kanban', authenticateToken, kanbanRoutes);
 
 // Mission Control — global + project produce/resolve queues
 app.use('/api/mission-control', authenticateToken, missionControlRoutes);
+
+// Product flags (Kanban visibility, live spend caps)
+app.use('/api/features', authenticateToken, appFeaturesRoutes);
+
+// Vendor-account quota (provider usage legend)
+app.use('/api/provider-usage', authenticateToken, providerUsageRoutes);
 
 // Named agent run profiles (Settings + Kanban)
 app.use('/api/agent-profiles', authenticateToken, agentProfilesRoutes);
@@ -1317,7 +1352,7 @@ app.get('/api/projects/:projectId/sessions/:sessionId/token-usage', authenticate
             return res.status(400).json({ error: 'Invalid sessionId' });
         }
 
-        // Provider artifacts on disk (JSONL file names, OpenCode sqlite rows)
+        // Provider artifacts on disk (JSONL file names, OpenCode/Kilo sqlite rows)
         // are keyed by the provider-native session id, while the caller sends
         // the app-facing id. Resolve provider and id mapping from the indexed
         // session row so the frontend does not choose provider-specific paths.
@@ -1340,6 +1375,15 @@ app.get('/api/projects/:projectId/sessions/:sessionId/token-usage', authenticate
                 unsupported: true,
                 message: 'Token usage tracking not available for Cursor sessions'
             });
+        }
+
+        if (provider === 'kilo') {
+            const tokenBudget = readKiloTokenUsage(providerNativeSessionId);
+            if (!tokenBudget) {
+                return res.status(404).json({ error: 'Kilo Code session usage not found', sessionId: safeSessionId });
+            }
+
+            return res.json(tokenBudget);
         }
 
         if (provider === 'opencode') {
@@ -1924,6 +1968,12 @@ async function startServer() {
         }
 
         try {
+            startInterruptMaintenance();
+        } catch (error) {
+            console.error('[Interrupts] maintenance start failed:', error.message);
+        }
+
+        try {
             startWebhookRetryScheduler();
         } catch (error) {
             console.error('[Webhooks] retry scheduler start failed:', error.message);
@@ -1997,6 +2047,11 @@ async function startServer() {
                 stopAuthHealthWatchdog();
             } catch (err) {
                 console.error('[auth-health] Error stopping watchdog during shutdown:', err?.message || err);
+            }
+            try {
+                stopInterruptMaintenance();
+            } catch (err) {
+                console.error('[Interrupts] Error stopping maintenance during shutdown:', err?.message || err);
             }
             try {
                 stopWebhookRetryScheduler();

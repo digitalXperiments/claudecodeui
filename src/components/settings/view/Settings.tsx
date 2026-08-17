@@ -7,6 +7,8 @@ import { Button } from '../../../shared/view/ui';
 import SettingsSidebar from '../view/SettingsSidebar';
 import AgentsSettingsTab from '../view/tabs/agents-settings/AgentsSettingsTab';
 import AgentProfilesSettingsTab from '../view/tabs/AgentProfilesSettingsTab';
+import StudioSettingsTab from '../view/tabs/StudioSettingsTab';
+import EvalCenterSettingsTab from '../view/tabs/EvalCenterSettingsTab';
 import SkillsSettingsTab from '../view/tabs/SkillsSettingsTab';
 import McpSettingsTab from '../view/tabs/McpSettingsTab';
 import MemorySettingsTab from '../view/tabs/MemorySettingsTab';
@@ -25,6 +27,15 @@ import AboutTab from '../view/tabs/AboutTab';
 import { useSettingsController } from '../hooks/useSettingsController';
 import { useWebPush } from '../../../hooks/useWebPush';
 import type { SettingsProps } from '../types/types';
+import {
+  PROVIDER_USAGE_COLLAPSE_CHANGED_EVENT,
+  PROVIDER_USAGE_VISIBILITY_CHANGED_EVENT,
+  readProviderUsageLegendCollapsed,
+  readProviderUsageVisibility,
+  writeProviderUsageLegendCollapsed,
+  writeProviderUsageVisible,
+  type ProviderUsageProviderId,
+} from '../../../utils/providerUsagePreferences';
 
 type DesktopNotificationsState = {
   enabled: boolean;
@@ -42,6 +53,21 @@ function Settings({ isOpen, onClose, projects = [], initialTab = 'agents' }: Set
       : ((window as any).cloudcliDesktopNotifications || null)
   ), []);
   const [desktopNotificationsState, setDesktopNotificationsState] = useState<DesktopNotificationsState | null>(null);
+  const [providerUsageLegendCollapsed, setProviderUsageLegendCollapsed] = useState(readProviderUsageLegendCollapsed);
+  const [providerUsageVisibility, setProviderUsageVisibility] = useState(readProviderUsageVisibility);
+
+  useEffect(() => {
+    const syncCollapsed = () => {
+      setProviderUsageLegendCollapsed(readProviderUsageLegendCollapsed());
+    };
+    const syncVisibility = () => setProviderUsageVisibility(readProviderUsageVisibility());
+    window.addEventListener(PROVIDER_USAGE_COLLAPSE_CHANGED_EVENT, syncCollapsed);
+    window.addEventListener(PROVIDER_USAGE_VISIBILITY_CHANGED_EVENT, syncVisibility);
+    return () => {
+      window.removeEventListener(PROVIDER_USAGE_COLLAPSE_CHANGED_EVENT, syncCollapsed);
+      window.removeEventListener(PROVIDER_USAGE_VISIBILITY_CHANGED_EVENT, syncVisibility);
+    };
+  }, []);
   const {
     activeTab,
     setActiveTab,
@@ -60,6 +86,8 @@ function Settings({ isOpen, onClose, projects = [], initialTab = 'agents' }: Set
     setGrokPermissions,
     codexPermissionMode,
     setCodexPermissionMode,
+    kiloPermissionMode,
+    setKiloPermissionMode,
     piPermissionMode,
     setPiPermissionMode,
     providerAuthStatus,
@@ -120,6 +148,16 @@ function Settings({ isOpen, onClose, projects = [], initialTab = 'agents' }: Set
     };
   }, [desktopNotificationsBridge]);
 
+  const handleProviderUsageLegendCollapsedChange = (collapsed: boolean) => {
+    setProviderUsageLegendCollapsed(collapsed);
+    writeProviderUsageLegendCollapsed(collapsed);
+  };
+
+  const handleProviderUsageVisibilityChange = (providerId: ProviderUsageProviderId, visible: boolean) => {
+    setProviderUsageVisibility((current) => ({ ...current, [providerId]: visible }));
+    writeProviderUsageVisible(providerId, visible);
+  };
+
   const handleEnableDesktopNotifications = async () => {
     if (!desktopNotificationsBridge) return;
     const state = await desktopNotificationsBridge.update({ enabled: true });
@@ -153,7 +191,7 @@ function Settings({ isOpen, onClose, projects = [], initialTab = 'agents' }: Set
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="flex h-dvh max-h-dvh w-full flex-col overflow-hidden border-0 bg-background shadow-none md:h-[90vh] md:max-h-[90vh] md:max-w-4xl md:rounded-xl md:border md:border-border md:shadow-2xl">
+      <div className="flex h-dvh max-h-dvh w-full flex-col overflow-hidden border-0 bg-background shadow-none md:h-[90vh] md:max-h-[90vh] md:max-w-6xl md:rounded-xl md:border md:border-border md:shadow-2xl">
         {/* Header */}
         <div className="flex flex-shrink-0 items-center justify-between border-b border-border px-4 py-3 pt-[max(0.75rem,env(safe-area-inset-top))] md:px-5 md:pt-3">
           <h2 className="text-base font-semibold text-foreground">{t('title')}</h2>
@@ -188,6 +226,10 @@ function Settings({ isOpen, onClose, projects = [], initialTab = 'agents' }: Set
                   onCodeEditorShowMinimapChange={(value) => updateCodeEditorSetting('showMinimap', value)}
                   onCodeEditorLineNumbersChange={(value) => updateCodeEditorSetting('lineNumbers', value)}
                   onCodeEditorFontSizeChange={(value) => updateCodeEditorSetting('fontSize', value)}
+                  providerUsageLegendCollapsed={providerUsageLegendCollapsed}
+                  providerUsageVisibility={providerUsageVisibility}
+                  onProviderUsageLegendCollapsedChange={handleProviderUsageLegendCollapsedChange}
+                  onProviderUsageVisibilityChange={handleProviderUsageVisibilityChange}
                 />
               )}
 
@@ -212,6 +254,8 @@ function Settings({ isOpen, onClose, projects = [], initialTab = 'agents' }: Set
                   onGrokPermissionsChange={setGrokPermissions}
                   codexPermissionMode={codexPermissionMode}
                   onCodexPermissionModeChange={setCodexPermissionMode}
+                  kiloPermissionMode={kiloPermissionMode}
+                  onKiloPermissionModeChange={setKiloPermissionMode}
                   piPermissionMode={piPermissionMode}
                   onPiPermissionModeChange={setPiPermissionMode}
                   projects={projects}
@@ -219,6 +263,10 @@ function Settings({ isOpen, onClose, projects = [], initialTab = 'agents' }: Set
               )}
 
               {activeTab === 'agent-profiles' && <AgentProfilesSettingsTab />}
+
+              {activeTab === 'studio' && <StudioSettingsTab />}
+
+              {activeTab === 'evals' && <EvalCenterSettingsTab projects={projects} />}
 
               {activeTab === 'mcp' && <McpSettingsTab projects={projects} />}
 

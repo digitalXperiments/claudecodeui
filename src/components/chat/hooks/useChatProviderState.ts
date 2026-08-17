@@ -31,12 +31,15 @@ const FALLBACK_DEFAULT_MODEL: Record<LLMProvider, string> = {
   cursor: 'gpt-5.3-codex',
   codex: 'gpt-5.4',
   opencode: 'anthropic/claude-sonnet-4-5',
+  kilo: 'kilo/stealth/claude-sonnet-4.6',
+  cline: 'anthropic/claude-sonnet-4.6',
   grok: 'grok-4.5',
   kimi: 'kimi-code/kimi-for-coding',
+  qwencode: 'qwen3-coder-plus',
   pi: 'anthropic/claude-sonnet-4-20250514',
 };
 
-const PROVIDERS: LLMProvider[] = ['claude', 'cursor', 'codex', 'opencode', 'grok', 'kimi', 'pi'];
+const PROVIDERS: LLMProvider[] = ['claude', 'cursor', 'codex', 'opencode', 'kilo', 'cline', 'grok', 'kimi', 'qwencode', 'pi'];
 const CODEX_FAST_MODE_STORAGE_KEY = 'codex-fast-mode';
 
 const readStoredProvider = (): LLMProvider => {
@@ -70,8 +73,11 @@ const FALLBACK_PERMISSION_MODES: Record<LLMProvider, PermissionMode[]> = {
   cursor: ['default', 'bypassPermissions'],
   codex: ['default', 'auto', 'bypassPermissions'],
   opencode: ['default', 'acceptEdits', 'auto', 'plan'],
+  kilo: ['default', 'acceptEdits', 'auto', 'bypassPermissions', 'plan'],
+  cline: ['default', 'auto', 'bypassPermissions'],
   grok: ['default', 'acceptEdits', 'auto', 'bypassPermissions', 'plan'],
   kimi: ['default', 'plan', 'auto', 'bypassPermissions'],
+  qwencode: ['default', 'plan', 'auto', 'bypassPermissions'],
   pi: ['plan', 'bypassPermissions'],
 };
 
@@ -86,8 +92,11 @@ const FALLBACK_SUPPORTS_IMAGES: Record<LLMProvider, boolean> = {
   cursor: true,
   codex: true,
   opencode: true,
+  kilo: true,
+  cline: true,
   grok: true,
   kimi: true,
+  qwencode: true,
   pi: true,
 };
 
@@ -97,8 +106,11 @@ const FALLBACK_SUPPORTS_FILES: Record<LLMProvider, boolean> = {
   cursor: true,
   codex: true,
   opencode: true,
+  kilo: true,
+  cline: true,
   grok: true,
   kimi: true,
+  qwencode: true,
   pi: true,
 };
 
@@ -174,11 +186,17 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
   const [opencodeModel, setOpenCodeModel] = useState<string>(() => {
     return localStorage.getItem('opencode-model') || FALLBACK_DEFAULT_MODEL.opencode;
   });
+  const [kiloModel, setKiloModel] = useState<string>(() => {
+    return localStorage.getItem('kilo-model') || FALLBACK_DEFAULT_MODEL.kilo;
+  });
   const [grokModel, setGrokModel] = useState<string>(() => {
     return localStorage.getItem('grok-model') || FALLBACK_DEFAULT_MODEL.grok;
   });
   const [kimiModel, setKimiModel] = useState<string>(() => {
     return localStorage.getItem('kimi-model') || FALLBACK_DEFAULT_MODEL.kimi;
+  });
+  const [qwencodeModel, setQwenCodeModel] = useState<string>(() => {
+    return localStorage.getItem('qwencode-model') || FALLBACK_DEFAULT_MODEL.qwencode;
   });
   const [piModel, setPiModel] = useState<string>(() => {
     return localStorage.getItem('pi-model') || FALLBACK_DEFAULT_MODEL.pi;
@@ -241,9 +259,21 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
       return;
     }
 
+    if (targetProvider === 'kilo') {
+      setKiloModel(model);
+      localStorage.setItem('kilo-model', model);
+      return;
+    }
+
     if (targetProvider === 'kimi') {
       setKimiModel(model);
       localStorage.setItem('kimi-model', model);
+      return;
+    }
+
+    if (targetProvider === 'qwencode') {
+      setQwenCodeModel(model);
+      localStorage.setItem('qwencode-model', model);
       return;
     }
 
@@ -481,10 +511,13 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     cursor: cursorModel,
     codex: codexModel,
     opencode: opencodeModel,
+    kilo: kiloModel,
+    cline: opencodeModel,
     grok: grokModel,
     kimi: kimiModel,
+    qwencode: qwencodeModel,
     pi: piModel,
-  }), [claudeModel, cursorModel, codexModel, opencodeModel, grokModel, kimiModel, piModel]);
+  }), [claudeModel, cursorModel, codexModel, opencodeModel, kiloModel, grokModel, kimiModel, qwencodeModel, piModel]);
 
   /** Effective model for the open conversation: its own recorded choice, or the provider default. */
   const currentProviderModel = useMemo(
@@ -569,6 +602,19 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
   }, [providerModelCatalog.grok, grokModel]);
 
   useEffect(() => {
+    const kilo = providerModelCatalog.kilo;
+    if (kilo) {
+      const next = pickStoredOrCurrent('kilo-model', kiloModel, kilo);
+      if (next !== kiloModel) {
+        setKiloModel(next);
+      }
+      if (localStorage.getItem('kilo-model') !== next) {
+        localStorage.setItem('kilo-model', next);
+      }
+    }
+  }, [providerModelCatalog.kilo, kiloModel]);
+
+  useEffect(() => {
     const kimi = providerModelCatalog.kimi;
     if (kimi) {
       const next = pickStoredOrCurrent('kimi-model', kimiModel, kimi);
@@ -580,6 +626,15 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
       }
     }
   }, [providerModelCatalog.kimi, kimiModel]);
+
+  useEffect(() => {
+    const qwen = providerModelCatalog.qwencode;
+    if (qwen) {
+      const next = pickStoredOrCurrent('qwencode-model', qwencodeModel, qwen);
+      if (next !== qwencodeModel) setQwenCodeModel(next);
+      if (localStorage.getItem('qwencode-model') !== next) localStorage.setItem('qwencode-model', next);
+    }
+  }, [providerModelCatalog.qwencode, qwencodeModel]);
 
   useEffect(() => {
     const pi = providerModelCatalog.pi;
@@ -879,10 +934,14 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     currentProviderEffortOptions,
     opencodeModel,
     setOpenCodeModel,
+    kiloModel,
+    setKiloModel,
     grokModel,
     setGrokModel,
     kimiModel,
     setKimiModel,
+    qwencodeModel,
+    setQwenCodeModel,
     piModel,
     setPiModel,
     permissionMode,

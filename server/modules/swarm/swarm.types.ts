@@ -205,7 +205,7 @@ export type SwarmStepAttemptRecord = {
   attempt: number;
   /** Seat label that ran this attempt. */
   seatLabel: string;
-  outcome: 'succeeded' | 'failed' | 'timed_out' | 'stalled';
+  outcome: 'succeeded' | 'needs_changes' | 'failed' | 'timed_out' | 'stalled';
   /** Failure text (truncated) when the attempt did not succeed. */
   error?: string | null;
   /** True when the next attempt went to a different seat. */
@@ -278,9 +278,35 @@ export type SwarmConfig = {
    * `autonomous` is set.
    */
   maxReplanRounds?: number | null;
+  /**
+   * Supervisor ticks after the swarm leaves the initial plan DAG. Each tick is
+   * one orchestrator decision + at most one dispatched worker. Default 8
+   * (cap 12); autonomous default 20 (cap 30).
+   */
+  maxSupervisorTicks?: number | null;
   orchestrator: SwarmAgentSpec;
   agents: SwarmAgentSpec[];
   skills: string[];
+};
+
+/**
+ * One goal-context file attached when the swarm was created (PRD, screenshot,
+ * design doc, …). Paths live in the global upload store (`~/.cloudcli/assets`);
+ * after workspace allocation, a copy may also exist under
+ * `tmp/cloudcli/swarm-attachments/` inside the swarm worktree.
+ */
+export type SwarmAttachment = {
+  /** Absolute path in the global upload store. */
+  path: string;
+  /** Original client filename for display and prompt references. */
+  name?: string;
+  mimeType?: string;
+  size?: number;
+  /**
+   * Workspace-relative path after materialization (e.g.
+   * `tmp/cloudcli/swarm-attachments/prd.md`). Agents should prefer this when set.
+   */
+  workspacePath?: string | null;
 };
 
 export type SwarmRun = {
@@ -297,6 +323,10 @@ export type SwarmRun = {
   blackboard: SwarmMessage[];
   skills: string[];
   config: SwarmConfig | null;
+  /** Live supervisor world-state (null until the first worker finishes). */
+  goalCard: SwarmGoalCard | null;
+  /** Goal-context files (PRDs, images, docs) uploaded with the goal. */
+  attachments: SwarmAttachment[];
   /** Dedicated git worktree (or sandbox) for this swarm. */
   workspace_id: string | null;
   /** Feature branch on the worktree (git_worktree mode). */
@@ -328,9 +358,14 @@ export type SwarmRun = {
 export type SwarmUsageRollup = {
   totalTokens: number;
   totalCostUsd: number;
+  /** Wall-clock from swarm start to finish (or now if still running). */
+  totalDurationMs: number | null;
+  /** Sum of member run durations (work time, may overlap). */
+  billedDurationMs: number | null;
   memberRuns: Array<{
     memberId: string;
     runId: string | null;
+    stepId: string | null;
     label: string | null;
     tokens: number;
     costUsd: number;
@@ -341,6 +376,11 @@ export type SwarmUsageRollup = {
 export type StartSwarmInput = {
   projectId: string;
   goal: string;
+  /**
+   * Goal-context files already uploaded to `/api/assets/images` (PRDs, images,
+   * design docs). Paths must resolve inside the global upload store.
+   */
+  attachments?: SwarmAttachment[];
   /** Full roster including orchestrator, or use `orchestrator` + `agents`. */
   agents?: SwarmAgentSpec[];
   orchestrator?: SwarmAgentSpec | null;
@@ -385,6 +425,8 @@ export type StartSwarmInput = {
   autonomous?: boolean;
   /** Orchestrator replan rounds per wave (default/cap 1; 8/15 when autonomous). */
   maxReplanRounds?: number;
+  /** Supervisor ticks after the plan yields to live dispatch. */
+  maxSupervisorTicks?: number;
   /** Optional request key: repeated starts for one project return the first swarm. */
   idempotencyKey?: string | null;
 };
@@ -426,4 +468,79 @@ export type SwarmExecutionOptions = {
   maxConcurrency: number | null;
 };
 
-export type SwarmStepAttemptPhase = 'plan' | 'step' | 'replan' | 'handoff' | 'validate' | 'publish';
+export type SwarmStepAttemptPhase = 'plan' | 'step' | 'replan' | 'supervise' | 'handoff' | 'validate' | 'publish';
+
+/** Worktree identity used to refuse another review of an unchanged tree. */
+export type SwarmWorktreeFingerprint = {
+  head: string | null;
+  dirty: boolean;
+  signature: string;
+};
+
+export type SwarmCritiqueSeverity = 'critical' | 'warning' | 'info';
+
+/** One concrete change request extracted from a reviewer (or gate) report. */
+export type SwarmCritiquePacket = {
+  file: string | null;
+  severity: SwarmCritiqueSeverity;
+  ask: string;
+  evidence: string;
+};
+
+export type SwarmGoalStatus =
+  | 'unknown'
+  | 'exploring'
+  | 'implementing'
+  | 'in_review'
+  | 'blocked'
+  | 'accepted'
+  | 'validated';
+
+export type SwarmSupervisorAction = 'dispatch' | 'done' | 'blocked';
+
+/** One orchestrator tick while the swarm is in supervisor mode. */
+export type SwarmSupervisorDecision = {
+  tick: number;
+  at: string;
+  action: SwarmSupervisorAction;
+  kind: string | null;
+  title: string | null;
+  reason: string;
+  policy: string;
+  coerced: boolean;
+  stepId: string | null;
+};
+
+export type SwarmGoalCardReview = {
+  verdict: 'approved' | 'changes_requested' | 'failed';
+  blockers: SwarmCritiquePacket[];
+  blockerHash: string;
+  shaReviewed: string | null;
+  fingerprint: string | null;
+  seatLabel: string | null;
+  stepId: string | null;
+  vague: boolean;
+};
+
+/**
+ * Durable world state the supervisor loop reasons over. Survives resume.
+ * `mode: 'supervisor'` means the initial plan DAG has yielded to live dispatch.
+ */
+export type SwarmGoalCard = {
+  status: SwarmGoalStatus;
+  mode: 'plan' | 'supervisor';
+  fingerprint: SwarmWorktreeFingerprint | null;
+  lastWriter: string | null;
+  lastWriterKind: string | null;
+  lastReview: SwarmGoalCardReview | null;
+  /** Last classified worker event — used to resume supervisor mode. */
+  lastEventKind?: string | null;
+  lastEventStepId?: string | null;
+  lastEventSeat?: string | null;
+  lastEventError?: string | null;
+  repeatBlockerCount: number;
+  ticksUsed: number;
+  tickBudget: number;
+  decisions: SwarmSupervisorDecision[];
+  updatedAt: string;
+};

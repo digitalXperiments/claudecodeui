@@ -65,7 +65,7 @@ export type AuthenticatedWebSocketRequest = IncomingMessage & {
  * Use this as the source of truth whenever a function or payload needs to identify
  * a specific LLM integration.
  */
-export type LLMProvider = 'claude' | 'codex' | 'cursor' | 'opencode' | 'grok' | 'kimi' | 'pi';
+export type LLMProvider = 'claude' | 'codex' | 'cursor' | 'opencode' | 'kilo' | 'cline' | 'grok' | 'kimi' | 'qwencode' | 'pi';
 
 /**
  * One selectable model row in a provider model catalog.
@@ -395,6 +395,27 @@ export type ProjectSkillListOptions = {
 export type ProjectSkillCreateInput = {
   workspacePath: string;
   entries: ProviderSkillCreateEntry[];
+};
+
+/**
+ * Copy one managed project skill from `workspacePath` into other workspaces'
+ * project-scope skill folders (canonical + every agent folder in each target).
+ */
+export type ProjectSkillCopyInput = {
+  workspacePath: string;
+  directoryName: string;
+  /** Destination workspace paths. The source workspace is ignored if listed. */
+  projects: string[];
+};
+
+export type ProjectSkillCopyTargetResult = {
+  workspacePath: string;
+  skill: ProjectSkill;
+};
+
+export type ProjectSkillCopyResult = {
+  directoryName: string;
+  projects: ProjectSkillCopyTargetResult[];
 };
 
 export type ProjectSkillRemoveInput = {

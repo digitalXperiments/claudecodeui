@@ -5,11 +5,11 @@
  * unverified cache rates (noted inline below) are not modeled. Treat
  * `cost_usd_estimate` as "roughly what this cost," not an invoice line.
  *
- * OpenCode is a deliberate exception: OpenCode already computes and stores a
+ * OpenCode and Kilo are deliberate exceptions: both already compute and store a
  * real cost per session in its own sqlite `session.cost` column (it knows
  * the exact provider/model rate it billed), so the backfill reads that
  * directly instead of estimating from this table — see
- * `runs-token-backfill.ts` `readOpenCodeHistoricalUsage`.
+ * OpenCode/Kilo provider usage readers.
  *
  * Cache reads are cheap; cache WRITES are not
  * --------------------------------------------
@@ -135,7 +135,7 @@ const PRICING: Record<string, ProviderPricingTable> = {
   },
   // Models routed through OpenCode's own harness (glm/deepseek/grok/kimi
   // aliases as OpenCode reports them) — only used as a live-path estimate;
-  // the historical backfill prefers OpenCode's own real `session.cost`.
+  // the historical backfill prefers the provider's own real `session.cost`.
   opencode: {
     'glm-5.2': [{ inputPerMillion: 1.4, outputPerMillion: 4.4 }],
     'deepseek-v4-pro': [{ inputPerMillion: 0.435, outputPerMillion: 0.87 }],

@@ -2,7 +2,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { SkillsProvider } from '@/modules/providers/shared/skills/skills.provider.js';
-import type { ProviderSkillSource } from '@/shared/types.js';
+import type { LLMProvider, ProviderSkillSource } from '@/shared/types.js';
 import {
   addUniqueProviderSkillSource,
   findTopmostGitRoot,
@@ -20,9 +20,20 @@ const OPENCODE_USER_SKILL_DIRS = [
   ['.agents', 'skills'],
 ];
 
+export type OpenCodeSkillsProviderOptions = {
+  provider?: LLMProvider;
+  projectSkillDirs?: string[][];
+  userSkillDirs?: string[][];
+};
+
 export class OpenCodeSkillsProvider extends SkillsProvider {
-  constructor() {
-    super('opencode');
+  private readonly projectSkillDirs: string[][];
+  private readonly userSkillDirs: string[][];
+
+  constructor(options: OpenCodeSkillsProviderOptions = {}) {
+    super(options.provider ?? 'opencode');
+    this.projectSkillDirs = options.projectSkillDirs ?? OPENCODE_PROJECT_SKILL_DIRS;
+    this.userSkillDirs = options.userSkillDirs ?? OPENCODE_USER_SKILL_DIRS;
   }
 
   protected async getSkillSources(workspacePath: string): Promise<ProviderSkillSource[]> {
@@ -31,7 +42,7 @@ export class OpenCodeSkillsProvider extends SkillsProvider {
     const repoRoot = await findTopmostGitRoot(workspacePath);
 
     for (const projectRoot of this.getProjectSearchRoots(workspacePath, repoRoot)) {
-      for (const skillDir of OPENCODE_PROJECT_SKILL_DIRS) {
+      for (const skillDir of this.projectSkillDirs) {
         // OpenCode intentionally reads Claude and Agents skill folders so users
         // can reuse the same skill libraries across compatible coding agents.
         addUniqueProviderSkillSource(sources, seenRootDirs, {
@@ -42,7 +53,7 @@ export class OpenCodeSkillsProvider extends SkillsProvider {
       }
     }
 
-    for (const skillDir of OPENCODE_USER_SKILL_DIRS) {
+    for (const skillDir of this.userSkillDirs) {
       addUniqueProviderSkillSource(sources, seenRootDirs, {
         scope: 'user',
         rootDir: path.join(os.homedir(), ...skillDir),

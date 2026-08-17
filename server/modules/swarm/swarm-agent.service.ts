@@ -69,8 +69,11 @@ const SWARM_PROVIDERS: LLMProvider[] = [
   'codex',
   'cursor',
   'opencode',
+  'kilo',
+  'cline',
   'grok',
   'kimi',
+  'qwencode',
   'pi',
 ];
 
@@ -94,6 +97,7 @@ function buildHeadlessOptions(
     effort?: string | null;
     permissionMode?: string | null;
     sessionSummary?: string | null;
+    images?: Array<{ path: string; name?: string; mimeType?: string }> | null;
   },
 ): AnyRecord {
   // Default to bypass so unattended swarm agents do not hang on permission UI.
@@ -102,6 +106,7 @@ function buildHeadlessOptions(
   if (opts?.model) options.model = opts.model;
   if (opts?.effort && opts.effort !== 'default') options.effort = opts.effort;
   if (opts?.sessionSummary) options.sessionSummary = opts.sessionSummary;
+  if (opts?.images && opts.images.length > 0) options.images = opts.images;
 
   switch (provider) {
     case 'claude':
@@ -143,9 +148,11 @@ export function collectProjectGitContext(projectPath: string, maxChars = 6000): 
   const diffStat = run(['diff', '--stat', 'HEAD']);
   const stagedStat = run(['diff', '--cached', '--stat']);
   const log = run(['log', '-5', '--oneline']);
+  const worktrees = run(['worktree', 'list']);
 
   const parts = [
     status ? `## git status\n${status}` : '',
+    worktrees ? `## git worktrees\n${worktrees}` : '',
     diffStat ? `## unstaged diff --stat\n${diffStat}` : '',
     stagedStat ? `## staged diff --stat\n${stagedStat}` : '',
     log ? `## recent commits\n${log}` : '',
@@ -194,6 +201,12 @@ export type RunSwarmAgentParams = {
   effort?: string | null;
   permissionMode?: string | null;
   prompt: string;
+  /**
+   * Goal-context attachments (images + documents) from the swarm start. Same
+   * shape as chat `options.images`: vision models get images inline; documents
+   * are path-referenced so the agent can open them with file tools.
+   */
+  images?: Array<{ path: string; name?: string; mimeType?: string }> | null;
   /** Existing spine run id to attach events to (member/parent). */
   runId: string;
   title?: string;
@@ -269,7 +282,7 @@ async function runSwarmAgentInner(params: RunSwarmAgentParams): Promise<SwarmMem
     throw error;
   }
 
-  const created = sessionsService.createAppSession(provider, projectPath);
+  const created = sessionsService.createAppSession(provider, projectPath, { internal: true });
   const appSessionId = created.sessionId;
   const title = params.title?.trim() || null;
   if (title) {
@@ -303,6 +316,7 @@ async function runSwarmAgentInner(params: RunSwarmAgentParams): Promise<SwarmMem
         effort: params.effort,
         permissionMode: params.permissionMode,
         sessionSummary: title,
+        images: params.images,
       }),
       connection: DETACHED_CONNECTION,
       userId: null,
@@ -532,6 +546,49 @@ function normalizeCriterionText(value: string): string {
  *   - exact or substring match after punctuation/whitespace normalization
  *   - >=60% significant-token overlap (paraphrase tolerance)
  */
+/** Roles that inspect the tree; a no-op diff is success, not a contract failure. */
+const READ_ONLY_STEP_KINDS = new Set([
+  'reviewer',
+  'explorer',
+  'tester',
+  'security',
+  'orchestrator',
+]);
+
+export function isReadOnlySwarmStepKind(kind: string | null | undefined): boolean {
+  return READ_ONLY_STEP_KINDS.has((kind ?? '').trim().toLowerCase());
+}
+
+/**
+ * A reviewer/explorer/tester must never be graded on "did you change source".
+ * Writer kinds honor the plan flag; omitted means no mutation contract.
+ */
+export function stepRequiresSourceChanges(
+  kind: string | null | undefined,
+  requested?: boolean | null,
+): boolean {
+  if (isReadOnlySwarmStepKind(kind)) return false;
+  return requested === true;
+}
+
+/**
+ * Reviewers often ship with prose ("SHIP", "LGTM") and skip the JSON
+ * acceptance array. Treat that as an approval, not a failed contract.
+ */
+export function looksLikeReviewApproval(text: string | null | undefined): boolean {
+  if (!text) return false;
+  const sample = text.slice(0, 8_000);
+  if (/\bNO[- ]?SHIP\b/i.test(sample)) return false;
+  if (/\b(changes?\s+requested|must\s+not\s+ship|blocker)\b/i.test(sample) && !/\bSHIP\b/.test(sample)) {
+    return false;
+  }
+  return (
+    /\bSHIP\b/.test(sample)
+    || /\bLGTM\b/i.test(sample)
+    || /\b(approved|approve the (?:work|tree|change)|ready to (?:ship|merge))\b/i.test(sample)
+  );
+}
+
 export function acceptanceEvidenceMatches(
   criterion: string,
   index: number,
@@ -844,7 +901,14 @@ export function parseOrchestratorPlan(text: string, fallbackAgents: Array<{ kind
             scope,
             acceptanceCriteria,
             verificationCommands,
-            requiresChanges: e.requiresChanges === true || e.requires_changes === true,
+            requiresChanges: stepRequiresSourceChanges(
+              kind,
+              e.requiresChanges === true || e.requires_changes === true
+                ? true
+                : e.requiresChanges === false || e.requires_changes === false
+                  ? false
+                  : null,
+            ),
             provider: typeof e.provider === 'string' ? e.provider : null,
             model: typeof e.model === 'string' ? e.model : null,
             effort: typeof e.effort === 'string' ? e.effort : null,

@@ -21,8 +21,8 @@ export class KimiProviderAuth implements IProviderAuth {
    */
   private checkInstalled(): boolean {
     try {
-      spawn.sync('kimi', ['--version'], { stdio: 'ignore', timeout: 5000 });
-      return true;
+      const result = spawn.sync('kimi', ['--version'], { stdio: 'ignore', timeout: 5000 });
+      return !result.error && result.status === 0;
     } catch {
       return false;
     }

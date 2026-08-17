@@ -13,7 +13,7 @@ type DateRangeControlProps = {
 };
 
 /**
- * Preset date-range pills (7/30/90 days, all time) plus an optional custom
+ * Preset date-range pills (today, yesterday, 7/30/90 days, all time) plus an optional custom
  * from/to picker. All widgets on the dashboard consume the same range.
  */
 export default function DateRangeControl({

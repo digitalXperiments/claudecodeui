@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { promisify } from 'node:util';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -130,57 +131,149 @@ function targetToServer(
   };
 }
 
+type RunMcpResult = {
+  stdout: string;
+  stderr: string;
+  timedOut: boolean;
+  skipped: boolean;
+};
+
+async function directoryExists(dir?: string): Promise<boolean> {
+  if (!dir) return true;
+  try {
+    const stat = await fs.stat(dir);
+    return stat.isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * LaunchAgent PATH is complete, but `execFile('grok')` still ENOENTs when
+ * `cwd` is a deleted CloudCLI project. Always resolve a real binary and skip
+ * missing folders — Node reports both failures as `spawn ENOENT`.
+ */
+export function resolveProviderCli(name: 'claude' | 'grok'): string {
+  const home = os.homedir();
+  const candidates = name === 'grok'
+    ? [
+      path.join(home, '.grok', 'bin', 'grok'),
+      path.join(home, '.local', 'bin', 'grok'),
+      '/opt/homebrew/bin/grok',
+      '/usr/local/bin/grok',
+    ]
+    : [
+      process.env.CLAUDE_CLI_PATH,
+      path.join(home, '.local', 'bin', 'claude'),
+      '/opt/homebrew/bin/claude',
+      '/usr/local/bin/claude',
+    ];
+  for (const candidate of candidates) {
+    if (candidate && existsSync(candidate)) return candidate;
+  }
+  return name;
+}
+
 async function runMcpCommand(
-  bin: string,
+  bin: 'claude' | 'grok',
   args: string[],
   options?: { cwd?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number },
-): Promise<string> {
+): Promise<RunMcpResult> {
+  if (options?.cwd && !(await directoryExists(options.cwd))) {
+    console.warn(`[mcp-cli-list] skip ${bin} ${args.join(' ')}: cwd missing ${options.cwd}`);
+    return { stdout: '', stderr: '', timedOut: false, skipped: true };
+  }
+
+  const resolved = resolveProviderCli(bin);
   try {
-    const { stdout, stderr } = await execFileAsync(bin, args, {
+    const { stdout, stderr } = await execFileAsync(resolved, args, {
       timeout: options?.timeoutMs ?? 45_000,
       maxBuffer: 4 * 1024 * 1024,
       env: options?.env ?? process.env,
       cwd: options?.cwd,
     });
-    return `${stdout || ''}\n${stderr || ''}`;
+    return {
+      stdout: stdout || '',
+      stderr: stderr || '',
+      timedOut: false,
+      skipped: false,
+    };
   } catch (error) {
     // CLI often writes health progress to stderr and may exit non-zero when
     // some servers need auth — still parse whatever we got.
-    const err = error as { stdout?: string; stderr?: string; message?: string };
-    const combined = `${err.stdout || ''}\n${err.stderr || ''}`;
-    if (combined.trim()) return combined;
-    console.warn(`[mcp-cli-list] ${bin} ${args.join(' ')} failed:`, err.message);
-    return '';
+    const err = error as {
+      stdout?: string;
+      stderr?: string;
+      message?: string;
+      killed?: boolean;
+      signal?: NodeJS.Signals | null;
+    };
+    const timedOut = err.killed === true || err.signal === 'SIGTERM';
+    if (!err.stdout && !err.stderr) {
+      console.warn(`[mcp-cli-list] ${resolved} ${args.join(' ')} failed:`, err.message);
+    }
+    return {
+      stdout: err.stdout || '',
+      stderr: err.stderr || '',
+      timedOut,
+      skipped: false,
+    };
   }
 }
 
-function extractJsonPayload(raw: string): unknown {
+function tryParseJson(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Doctor prints ANSI log lines (and sometimes a `{...}` snippet inside an
+ * error string) before/after the real payload. Prefer line-started objects
+ * and never walk the string one character at a time.
+ */
+export function extractJsonPayload(raw: string): unknown {
   const text = raw.trim();
   if (!text) return null;
-  // Prefer last JSON object/array in the stream (doctor prints log lines first).
-  const objStart = text.lastIndexOf('\n{');
-  const arrStart = text.lastIndexOf('\n[');
-  const startCandidates = [text.indexOf('{'), text.indexOf('[')].filter((i) => i >= 0);
-  let start = startCandidates.length ? Math.min(...startCandidates) : -1;
-  if (objStart >= 0 || arrStart >= 0) {
-    const last = Math.max(objStart >= 0 ? objStart + 1 : -1, arrStart >= 0 ? arrStart + 1 : -1);
-    if (last >= 0) start = last;
+
+  const direct = tryParseJson(text);
+  if (direct !== null) return direct;
+
+  const starts: number[] = [];
+  if (text.startsWith('{') || text.startsWith('[')) starts.push(0);
+  for (const match of text.matchAll(/\n([\[{])/g)) {
+    if (typeof match.index === 'number') starts.push(match.index + 1);
   }
-  if (start < 0) return null;
-  const slice = text.slice(start);
-  try {
-    return JSON.parse(slice);
-  } catch {
-    // Try progressive trim from the end
-    for (let end = slice.length; end > 2; end -= 1) {
-      try {
-        return JSON.parse(slice.slice(0, end));
-      } catch {
-        // continue
-      }
+  // Last brace on a line is usually the real payload; first `{` may be a log.
+  for (let i = starts.length - 1; i >= 0; i -= 1) {
+    const slice = text.slice(starts[i]);
+    const parsed = tryParseJson(slice);
+    if (parsed !== null) return parsed;
+    const lastClose = Math.max(slice.lastIndexOf('}'), slice.lastIndexOf(']'));
+    if (lastClose > 0) {
+      const trimmed = tryParseJson(slice.slice(0, lastClose + 1));
+      if (trimmed !== null) return trimmed;
     }
   }
   return null;
+}
+
+function parseEntriesFromCommand(
+  result: RunMcpResult,
+  parsers: Array<(raw: string) => CliMcpListEntry[]>,
+): CliMcpListEntry[] {
+  // stdout first — doctor JSON lives there; stderr is noisy HTTP 405 lines.
+  const chunks = [result.stdout, result.stderr, `${result.stdout}\n${result.stderr}`];
+  for (const chunk of chunks) {
+    if (!chunk.trim()) continue;
+    for (const parse of parsers) {
+      const entries = parse(chunk);
+      if (entries.length > 0) return entries;
+    }
+  }
+  return [];
 }
 
 function parseListJson(raw: string): CliMcpListEntry[] {
@@ -211,7 +304,7 @@ function parseListJson(raw: string): CliMcpListEntry[] {
   return entries;
 }
 
-function parseDoctorJson(raw: string): CliMcpListEntry[] {
+export function parseDoctorJson(raw: string): CliMcpListEntry[] {
   const data = extractJsonPayload(raw);
   if (!data || typeof data !== 'object' || Array.isArray(data)) return [];
   const servers = (data as { servers?: unknown }).servers;
@@ -275,8 +368,20 @@ function parseDoctorJson(raw: string): CliMcpListEntry[] {
 }
 
 const listCache = new Map<string, { at: number; entries: CliMcpListEntry[] }>();
-const LIST_CACHE_TTL_MS = 30_000;
-const DOCTOR_CACHE_TTL_MS = 120_000;
+/** In-flight de-dupe so concurrent Settings opens share one CLI fan-out. */
+const listInflight = new Map<string, Promise<CliMcpListEntry[]>>();
+/** Settings UI: prefer a snappy cache hit over re-probing every open. */
+const LIST_CACHE_TTL_MS = 120_000;
+const DOCTOR_CACHE_TTL_MS = 300_000;
+/**
+ * `claude mcp list` health-checks every connector (20+ on this machine ≈ 14s).
+ * A 12s kill dropped the entire buffered stdout → Account = 0.
+ */
+const CLAUDE_LIST_TIMEOUT_MS = 90_000;
+const GROK_LIST_TIMEOUT_MS = 15_000;
+const CLI_DOCTOR_TIMEOUT_MS = 45_000;
+const MAX_GROK_LIST_CWDS = 8;
+const MAX_GROK_DOCTOR_CWDS = 8;
 
 async function readTrustedFolderPaths(): Promise<string[]> {
   const filePath = path.join(os.homedir(), '.grok', 'trusted_folders.toml');
@@ -322,6 +427,109 @@ function mergeEntries(into: Map<string, CliMcpListEntry>, entries: CliMcpListEnt
  *   1. `grok mcp list --json` from home + optional workspace paths
  *   2. `grok mcp doctor --json` from trusted folders (cached) for managed sources
  */
+function scoreDoctorCwd(cwd: string): number {
+  const lower = cwd.toLowerCase();
+  let score = 0;
+  if (/leong/.test(lower)) score += 100;
+  if (/cloudcli|fluxito|warehouse/.test(lower)) score += 30;
+  if (/\/work\//.test(lower)) score += 10;
+  return score;
+}
+
+async function existingDirectories(paths: Iterable<string>): Promise<string[]> {
+  const unique = [...new Set([...paths].map((p) => path.resolve(p)).filter(Boolean))];
+  const existing: string[] = [];
+  await Promise.all(unique.map(async (dir) => {
+    if (await directoryExists(dir)) existing.push(dir);
+  }));
+  return existing;
+}
+
+async function listMcpServersFromCliUncached(
+  provider: LLMProvider,
+  options?: {
+    bypassCache?: boolean;
+    workspacePaths?: string[];
+  },
+): Promise<CliMcpListEntry[]> {
+  const merged = new Map<string, CliMcpListEntry>();
+
+  if (provider === 'claude') {
+    const output = await runMcpCommand('claude', ['mcp', 'list'], {
+      timeoutMs: CLAUDE_LIST_TIMEOUT_MS,
+    });
+    mergeEntries(merged, parseEntriesFromCommand(output, [parseCliMcpListOutput]));
+  } else if (provider === 'grok') {
+    const cwdCandidates = new Set<string>([os.homedir()]);
+    for (const p of options?.workspacePaths ?? []) {
+      if (p?.trim()) cwdCandidates.add(path.resolve(p.trim()));
+    }
+    const listCwds = (await existingDirectories(cwdCandidates))
+      .slice(0, MAX_GROK_LIST_CWDS);
+
+    await Promise.all(
+      listCwds.map(async (cwd) => {
+        const jsonOut = await runMcpCommand('grok', ['mcp', 'list', '--json'], {
+          cwd,
+          timeoutMs: GROK_LIST_TIMEOUT_MS,
+        });
+        let entries = parseEntriesFromCommand(jsonOut, [parseListJson]);
+        if (entries.length === 0) {
+          const textOut = await runMcpCommand('grok', ['mcp', 'list'], {
+            cwd,
+            timeoutMs: GROK_LIST_TIMEOUT_MS,
+          });
+          entries = parseEntriesFromCommand(textOut, [parseCliMcpListOutput]);
+        }
+        mergeEntries(merged, entries);
+      }),
+    );
+
+    // Doctor discovers grok.com managed connectors (missing from `list`).
+    const doctorCandidates = new Set<string>();
+    for (const p of await readTrustedFolderPaths()) {
+      doctorCandidates.add(path.resolve(p));
+    }
+    for (const p of options?.workspacePaths ?? []) {
+      if (p?.trim()) doctorCandidates.add(path.resolve(p.trim()));
+    }
+    doctorCandidates.add(os.homedir());
+
+    const doctorCwdList = (await existingDirectories(doctorCandidates))
+      .sort((a, b) => scoreDoctorCwd(b) - scoreDoctorCwd(a))
+      .slice(0, MAX_GROK_DOCTOR_CWDS);
+    const doctorCacheKey = `grok-doctor::${doctorCwdList.slice().sort().join('|')}`;
+    let doctorEntries: CliMcpListEntry[] | null = null;
+    if (!options?.bypassCache) {
+      const hit = listCache.get(doctorCacheKey);
+      if (hit && Date.now() - hit.at < DOCTOR_CACHE_TTL_MS && hit.entries.length > 0) {
+        doctorEntries = hit.entries;
+      }
+    }
+    if (!doctorEntries) {
+      const doctorMap = new Map<string, CliMcpListEntry>();
+      await Promise.all(
+        doctorCwdList.map(async (cwd) => {
+          const raw = await runMcpCommand('grok', ['mcp', 'doctor', '--json'], {
+            cwd,
+            timeoutMs: CLI_DOCTOR_TIMEOUT_MS,
+          });
+          mergeEntries(doctorMap, parseEntriesFromCommand(raw, [parseDoctorJson]));
+        }),
+      );
+      doctorEntries = [...doctorMap.values()];
+      if (doctorEntries.length > 0) {
+        listCache.set(doctorCacheKey, { at: Date.now(), entries: doctorEntries });
+      }
+    }
+    mergeEntries(merged, doctorEntries);
+  } else {
+    return [];
+  }
+
+  return [...merged.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
 export async function listMcpServersFromCli(
   provider: LLMProvider,
   options?: {
@@ -337,82 +545,37 @@ export async function listMcpServersFromCli(
     if (hit && Date.now() - hit.at < LIST_CACHE_TTL_MS) {
       return hit.entries;
     }
+    const inflight = listInflight.get(cacheKey);
+    if (inflight) {
+      return inflight;
+    }
   }
 
-  const merged = new Map<string, CliMcpListEntry>();
-
-  if (provider === 'claude') {
-    const output = await runMcpCommand('claude', ['mcp', 'list']);
-    mergeEntries(merged, parseCliMcpListOutput(output));
-  } else if (provider === 'grok') {
-    const cwds = new Set<string>();
-    cwds.add(os.homedir());
-    for (const p of options?.workspacePaths ?? []) {
-      if (p?.trim()) cwds.add(path.resolve(p.trim()));
-    }
-    // list --json is fast; run for each cwd (project-scoped entries differ)
-    await Promise.all(
-      [...cwds].slice(0, 12).map(async (cwd) => {
-        const jsonOut = await runMcpCommand('grok', ['mcp', 'list', '--json'], {
-          cwd,
-          timeoutMs: 20_000,
-        });
-        let entries = parseListJson(jsonOut);
-        if (entries.length === 0) {
-          const textOut = await runMcpCommand('grok', ['mcp', 'list'], {
-            cwd,
-            timeoutMs: 20_000,
-          });
-          entries = parseCliMcpListOutput(textOut);
-        }
-        mergeEntries(merged, entries);
-      }),
-    );
-
-    // Doctor discovers grok.com managed connectors (missing from `list`).
-    // Only run from trusted folders + up to a few workspace roots — slow but cached.
-    const doctorCwds = new Set<string>();
-    for (const p of await readTrustedFolderPaths()) {
-      doctorCwds.add(path.resolve(p));
-    }
-    for (const p of options?.workspacePaths ?? []) {
-      if (p?.trim()) doctorCwds.add(path.resolve(p.trim()));
-    }
-    // Always try home once so non-team machines still work
-    if (doctorCwds.size === 0) {
-      doctorCwds.add(os.homedir());
-    }
-
-    const doctorCacheKey = `grok-doctor::${[...doctorCwds].sort().join('|')}`;
-    let doctorEntries: CliMcpListEntry[] | null = null;
-    if (!options?.bypassCache) {
-      const hit = listCache.get(doctorCacheKey);
-      if (hit && Date.now() - hit.at < DOCTOR_CACHE_TTL_MS) {
-        doctorEntries = hit.entries;
+  const promise = listMcpServersFromCliUncached(provider, options)
+    .then((entries) => {
+      if (entries.length > 0) {
+        listCache.set(cacheKey, { at: Date.now(), entries });
+        return entries;
       }
-    }
-    if (!doctorEntries) {
-      doctorEntries = [];
-      const doctorMap = new Map<string, CliMcpListEntry>();
-      // Cap to 4 doctor runs to keep settings load reasonable
-      for (const cwd of [...doctorCwds].slice(0, 4)) {
-        const raw = await runMcpCommand('grok', ['mcp', 'doctor', '--json'], {
-          cwd,
-          timeoutMs: 60_000,
-        });
-        mergeEntries(doctorMap, parseDoctorJson(raw));
-      }
-      doctorEntries = [...doctorMap.values()];
-      listCache.set(doctorCacheKey, { at: Date.now(), entries: doctorEntries });
-    }
-    mergeEntries(merged, doctorEntries);
-  } else {
-    return [];
+      // A timed-out / missing-cwd probe must not replace a good cache with [].
+      const previous = listCache.get(cacheKey);
+      if (previous?.entries.length) return previous.entries;
+      return entries;
+    })
+    .finally(() => {
+      listInflight.delete(cacheKey);
+    });
+
+  if (!options?.bypassCache) {
+    listInflight.set(cacheKey, promise);
   }
+  return promise;
+}
 
-  const entries = [...merged.values()].sort((a, b) => a.name.localeCompare(b.name));
-  listCache.set(cacheKey, { at: Date.now(), entries });
-  return entries;
+/** Drop CLI list/doctor caches (used after catalog mutations + explicit Refresh). */
+export function clearMcpCliListCache(): void {
+  listCache.clear();
+  listInflight.clear();
 }
 
 /**

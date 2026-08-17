@@ -1,9 +1,11 @@
 import { EventEmitter } from 'node:events';
+import os from 'node:os';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { WebSocket } from 'ws';
 
+import { resolveAcpCliCommand } from '@/shared/acp-cli-path.js';
 import {
   buildShellCommand,
   isAgentShellRequestWithExistingSession,
@@ -97,6 +99,21 @@ test('opencode mirrors resolveOpenCodePermissionOptions', () => {
   assert.ok(acceptEdits.includes('opencode'));
 });
 
+test('kilo maps ACP permission modes onto KILO_PERMISSION or --auto', () => {
+  // The shell command resolves the kilo binary (PATH first, then ~/.kilo/bin)
+  // so a PTY without the user's shell profile still finds it.
+  const kiloBin = os.platform() === 'win32' ? 'kilo' : `'${resolveAcpCliCommand('kilo')}'`;
+  assert.equal(build({ provider: 'kilo', permissionMode: 'auto' }), `${kiloBin} --auto`);
+  assert.equal(build({ provider: 'kilo', permissionMode: 'bypassPermissions' }), `${kiloBin} --auto`);
+  const acceptEdits = build({ provider: 'kilo', permissionMode: 'acceptEdits' });
+  assert.ok(acceptEdits.includes('KILO_PERMISSION'));
+  assert.ok(acceptEdits.includes('kilo'));
+  assert.equal(
+    build({ provider: 'kilo', hasSession: true, sessionId: 'k1', permissionMode: 'plan' }),
+    `KILO_PERMISSION='{"edit":"ask","bash":"ask","webfetch":"ask","external_directory":"ask"}' ${kiloBin} --session "k1"`,
+  );
+});
+
 test('pi restricts tools in plan mode only', () => {
   assert.equal(
     build({ provider: 'pi', permissionMode: 'plan' }),
@@ -123,7 +140,7 @@ test('plain shells ignore the permission mode', () => {
 });
 
 test('identifies every provider-backed shell with an existing session', () => {
-  for (const provider of ['claude', 'cursor', 'codex', 'opencode', 'grok', 'kimi', 'pi']) {
+  for (const provider of ['claude', 'cursor', 'codex', 'opencode', 'kilo', 'grok', 'kimi', 'pi']) {
     assert.equal(
       isAgentShellRequestWithExistingSession({
         provider,

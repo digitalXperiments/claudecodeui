@@ -38,6 +38,10 @@ type SkillEditorDialogProps = {
   ) => Promise<unknown>;
   /** Show the "All projects / Selected projects" scope picker in create mode. */
   allowScopeSelection?: boolean;
+  /** Initial scope when opening create mode with allowScopeSelection. */
+  defaultScope?: GlobalSkillScope;
+  /** Initial project paths when defaultScope is `projects`. */
+  defaultProjects?: string[];
   /** Show provider fan-out matrix (CloudCLI catalog skills). */
   allowProviderSelection?: boolean;
   /**
@@ -87,6 +91,8 @@ export default function SkillEditorDialog({
   saveContent,
   createSkill,
   allowScopeSelection = false,
+  defaultScope = 'all',
+  defaultProjects,
   allowProviderSelection = false,
   initialDraft,
 }: SkillEditorDialogProps) {
@@ -117,8 +123,8 @@ export default function SkillEditorDialog({
       setDescription(initialDraft?.description ?? '');
       setContent(initialDraft?.body ?? CREATE_BODY_SKELETON);
       setOriginalContent('');
-      setScope('all');
-      setSelectedProjects([]);
+      setScope(allowScopeSelection ? defaultScope : 'all');
+      setSelectedProjects(allowScopeSelection && defaultScope === 'projects' ? (defaultProjects ?? []) : []);
       setIsLoadingContent(false);
       return;
     }
@@ -156,17 +162,17 @@ export default function SkillEditorDialog({
     return () => {
       cancelled = true;
     };
-  }, [open, mode, skill, loadContent, initialDraft?.name, initialDraft?.description, initialDraft?.body]);
+  }, [open, mode, skill, loadContent, initialDraft?.name, initialDraft?.description, initialDraft?.body, allowScopeSelection, defaultScope, defaultProjects]);
 
   const isDirty = useMemo(() => {
     if (mode === 'create') {
       return name.trim() !== (initialDraft?.name ?? '').trim()
         || content !== (initialDraft?.body ?? CREATE_BODY_SKELETON)
-        || scope !== 'all'
-        || selectedProjects.length > 0;
+        || scope !== (allowScopeSelection ? defaultScope : 'all')
+        || selectedProjects.join('\0') !== (allowScopeSelection && defaultScope === 'projects' ? (defaultProjects ?? []).join('\0') : '');
     }
     return content !== originalContent;
-  }, [mode, name, content, originalContent, scope, selectedProjects, initialDraft?.name, initialDraft?.body]);
+  }, [mode, name, content, originalContent, scope, selectedProjects, initialDraft?.name, initialDraft?.body, allowScopeSelection, defaultScope, defaultProjects]);
 
   const canCreate = useMemo(() => {
     if (mode !== 'create') {

@@ -156,6 +156,10 @@ const ONE_SHOT_CONFIGS: Partial<Record<LLMProvider, OneShotSpawnConfig>> = {
     command: 'opencode',
     buildArgs: (prompt, projectPath) => ['run', '--dir', projectPath, '--format', 'default', prompt],
   },
+  kilo: {
+    command: 'kilo',
+    buildArgs: (prompt, projectPath) => ['run', '--dir', projectPath, '--format', 'default', prompt],
+  },
 };
 
 const spawnOneShot = (

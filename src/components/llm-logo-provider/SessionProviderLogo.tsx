@@ -1,11 +1,20 @@
+import React from 'react';
+
 import type { LLMProvider } from '../../types/app';
+
 import ClaudeLogo from './ClaudeLogo';
 import CodexLogo from './CodexLogo';
 import CursorLogo from './CursorLogo';
 import OpenCodeLogo from './OpenCodeLogo';
+import KiloLogo from './KiloLogo';
+import ClineLogo from './ClineLogo';
 import GrokLogo from './GrokLogo';
 import KimiLogo from './KimiLogo';
 import PiLogo from './PiLogo';
+
+function QwenCodeLogo({ className }: { className?: string }) {
+  return <span className={`inline-flex items-center justify-center rounded bg-sky-500 px-0.5 text-[9px] font-bold text-white ${className ?? ''}`}>Q</span>;
+}
 
 type SessionProviderLogoProps = {
   provider?: LLMProvider | string | null;
@@ -28,6 +37,14 @@ export default function SessionProviderLogo({
     return <OpenCodeLogo className={className} />;
   }
 
+  if (provider === 'kilo') {
+    return <KiloLogo className={className} />;
+  }
+
+  if (provider === 'cline') {
+    return <ClineLogo className={className} />;
+  }
+
   if (provider === 'grok') {
     return <GrokLogo className={className} />;
   }
@@ -38,6 +55,10 @@ export default function SessionProviderLogo({
 
   if (provider === 'pi') {
     return <PiLogo className={className} />;
+  }
+
+  if (provider === 'qwencode') {
+    return <QwenCodeLogo className={className} />;
   }
 
   return <ClaudeLogo className={className} />;

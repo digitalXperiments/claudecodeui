@@ -188,7 +188,7 @@ type StackFormState = {
   projectSkills: string;
 };
 
-const PROVIDER_OPTIONS = ['claude', 'codex', 'cursor', 'grok', 'opencode', 'kimi', 'pi'] as const;
+const PROVIDER_OPTIONS = ['claude', 'codex', 'cursor', 'grok', 'opencode', 'kilo', 'cline', 'kimi', 'pi'] as const;
 const ERROR_OPTIONS = [
   { id: 'auth', label: 'Auth failure' },
   { id: 'rate_limit', label: 'Rate limit' },
@@ -1098,7 +1098,7 @@ function SwarmPanel({ projectId }: { projectId: string }) {
     { id: 'docs', label: 'Docs' },
   ] as const;
 
-  const PROVIDER_OPTIONS = ['claude', 'codex', 'cursor', 'grok', 'opencode', 'kimi', 'pi'] as const;
+  const PROVIDER_OPTIONS = ['claude', 'codex', 'cursor', 'grok', 'opencode', 'kilo', 'cline', 'kimi', 'pi'] as const;
 
   const [goal, setGoal] = useState('Review recent changes for safety and completeness');
   const [roles, setRoles] = useState<string[]>(ROLE_OPTIONS.map((r) => r.id));

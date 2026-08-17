@@ -23,6 +23,8 @@ export default function AgentsSettingsTab({
   onGrokPermissionsChange,
   codexPermissionMode,
   onCodexPermissionModeChange,
+  kiloPermissionMode,
+  onKiloPermissionModeChange,
   piPermissionMode,
   onPiPermissionModeChange,
   projects,
@@ -48,7 +50,7 @@ export default function AgentsSettingsTab({
   }, [visibleCategories, selectedCategory]);
 
   const visibleAgents = useMemo<AgentProvider[]>(() => {
-    return ['claude', 'cursor', 'codex', 'opencode', 'grok', 'kimi', 'pi'];
+    return ['claude', 'cursor', 'codex', 'opencode', 'kilo', 'cline', 'grok', 'kimi', 'qwencode', 'pi'];
   }, []);
 
   const agentContextById = useMemo<Record<AgentProvider, AgentContext>>(() => {
@@ -76,6 +78,16 @@ export default function AgentsSettingsTab({
       onLogin: () => onProviderLogin('opencode'),
       onRefresh: () => refresh('opencode'),
     },
+    kilo: {
+      authStatus: providerAuthStatus.kilo,
+      onLogin: () => onProviderLogin('kilo'),
+      onRefresh: () => refresh('kilo'),
+    },
+    cline: {
+      authStatus: providerAuthStatus.cline,
+      onLogin: () => onProviderLogin('cline'),
+      onRefresh: () => refresh('cline'),
+    },
     grok: {
       authStatus: providerAuthStatus.grok,
       onLogin: () => onProviderLogin('grok'),
@@ -85,6 +97,11 @@ export default function AgentsSettingsTab({
       authStatus: providerAuthStatus.kimi,
       onLogin: () => onProviderLogin('kimi'),
       onRefresh: () => refresh('kimi'),
+    },
+    qwencode: {
+      authStatus: providerAuthStatus.qwencode,
+      onLogin: () => onProviderLogin('qwencode'),
+      onRefresh: () => refresh('qwencode'),
     },
     pi: {
       authStatus: providerAuthStatus.pi,
@@ -99,8 +116,11 @@ export default function AgentsSettingsTab({
     providerAuthStatus.codex,
     providerAuthStatus.cursor,
     providerAuthStatus.opencode,
+    providerAuthStatus.kilo,
+    providerAuthStatus.cline,
     providerAuthStatus.grok,
     providerAuthStatus.kimi,
+    providerAuthStatus.qwencode,
     providerAuthStatus.pi,
   ]);
 
@@ -116,7 +136,7 @@ export default function AgentsSettingsTab({
   const isLastEnabledAgent = selectedAgentEnabled && enabledProviders.length === 1;
 
   return (
-    <div className="-mx-4 -mb-4 -mt-2 flex min-h-[300px] min-w-0 flex-col overflow-hidden md:-mx-6 md:-mb-6 md:-mt-2 md:min-h-[500px]">
+    <div className="-mx-4 -mb-4 -mt-2 flex min-h-[300px] min-w-0 flex-col overflow-hidden md:-mx-6 md:-mb-6 md:-mt-2 md:min-h-[500px] md:flex-row">
       <AgentSelectorSection
         agents={visibleAgents}
         selectedAgent={selectedAgent}
@@ -125,26 +145,26 @@ export default function AgentsSettingsTab({
         isAgentEnabled={isAgentEnabled}
       />
 
-      <div className="flex flex-shrink-0 items-center justify-between gap-3 border-b border-border px-3 py-2 md:px-4">
-        <div className="min-w-0">
-          <p className="text-sm font-medium text-foreground">
-            {t('agents.visibility.label', { agent: AGENT_NAMES[selectedAgent] })}
-          </p>
-          <p className="text-xs text-muted-foreground">
-            {isLastEnabledAgent
-              ? t('agents.visibility.lastEnabledHint')
-              : t('agents.visibility.description', { agent: AGENT_NAMES[selectedAgent] })}
-          </p>
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+        <div className="flex flex-shrink-0 items-center justify-between gap-3 border-b border-border px-3 py-2 md:px-4">
+          <div className="min-w-0">
+            <p className="text-sm font-medium text-foreground">
+              {t('agents.visibility.label', { agent: AGENT_NAMES[selectedAgent] })}
+            </p>
+            <p className="text-xs text-muted-foreground">
+              {isLastEnabledAgent
+                ? t('agents.visibility.lastEnabledHint')
+                : t('agents.visibility.description', { agent: AGENT_NAMES[selectedAgent] })}
+            </p>
+          </div>
+          <SettingsToggle
+            checked={selectedAgentEnabled}
+            disabled={isLastEnabledAgent}
+            onChange={(enabled) => setAgentEnabled(selectedAgent, enabled)}
+            ariaLabel={t('agents.visibility.label', { agent: AGENT_NAMES[selectedAgent] })}
+          />
         </div>
-        <SettingsToggle
-          checked={selectedAgentEnabled}
-          disabled={isLastEnabledAgent}
-          onChange={(enabled) => setAgentEnabled(selectedAgent, enabled)}
-          ariaLabel={t('agents.visibility.label', { agent: AGENT_NAMES[selectedAgent] })}
-        />
-      </div>
 
-      <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
         <AgentCategoryTabsSection
           categories={visibleCategories}
           selectedAgent={selectedAgent}
@@ -164,6 +184,8 @@ export default function AgentsSettingsTab({
           onGrokPermissionsChange={onGrokPermissionsChange}
           codexPermissionMode={codexPermissionMode}
           onCodexPermissionModeChange={onCodexPermissionModeChange}
+          kiloPermissionMode={kiloPermissionMode}
+          onKiloPermissionModeChange={onKiloPermissionModeChange}
           piPermissionMode={piPermissionMode}
           onPiPermissionModeChange={onPiPermissionModeChange}
           projects={projects}

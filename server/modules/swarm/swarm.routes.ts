@@ -1,11 +1,18 @@
 import express from 'express';
 
 import { swarmService } from '@/modules/swarm/swarm.service.js';
-import type { SwarmAgentSpec, SwarmRoleConfig } from '@/modules/swarm/swarm.types.js';
+import type {
+  SwarmAgentSpec,
+  SwarmAttachment,
+  SwarmRoleConfig,
+} from '@/modules/swarm/swarm.types.js';
 import { AppError, asyncHandler } from '@/shared/utils.js';
 import { CloudError } from '@/shared/run-events.js';
 
 const router = express.Router();
+
+/** Cap attachments per swarm (mirrors chat composer limit). */
+const MAX_SWARM_ATTACHMENTS = 10;
 
 function stringValue(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
@@ -13,6 +20,35 @@ function stringValue(value: unknown): string {
 function optionalString(value: unknown): string | undefined {
   const v = stringValue(value);
   return v || undefined;
+}
+
+function parseAttachments(body: Record<string, unknown>): SwarmAttachment[] | undefined {
+  // Accept either `attachments` or chat-style `images`.
+  const raw = Array.isArray(body.attachments)
+    ? body.attachments
+    : Array.isArray(body.images)
+      ? body.images
+      : null;
+  if (!raw) return undefined;
+
+  const out: SwarmAttachment[] = [];
+  for (const entry of raw.slice(0, MAX_SWARM_ATTACHMENTS)) {
+    if (typeof entry === 'string' && entry.trim()) {
+      out.push({ path: entry.trim() });
+      continue;
+    }
+    if (!entry || typeof entry !== 'object') continue;
+    const record = entry as Record<string, unknown>;
+    const path = typeof record.path === 'string' ? record.path.trim() : '';
+    if (!path) continue;
+    out.push({
+      path,
+      name: typeof record.name === 'string' ? record.name : undefined,
+      mimeType: typeof record.mimeType === 'string' ? record.mimeType : undefined,
+      size: typeof record.size === 'number' && Number.isFinite(record.size) ? record.size : undefined,
+    });
+  }
+  return out;
 }
 
 function mapError(error: unknown): never {
@@ -95,6 +131,7 @@ router.post(
       const swarm = swarmService.start({
         projectId,
         goal,
+        attachments: parseAttachments(body),
         agents,
         orchestrator,
         roles: Array.isArray(body.roles) ? (body.roles as SwarmRoleConfig[]) : undefined,
@@ -123,6 +160,12 @@ router.post(
             ? body.maxReplanRounds
             : typeof body.maxReplanRounds === 'string' && Number(body.maxReplanRounds) > 0
               ? Number(body.maxReplanRounds)
+              : undefined,
+        maxSupervisorTicks:
+          typeof body.maxSupervisorTicks === 'number' && body.maxSupervisorTicks > 0
+            ? body.maxSupervisorTicks
+            : typeof body.maxSupervisorTicks === 'string' && Number(body.maxSupervisorTicks) > 0
+              ? Number(body.maxSupervisorTicks)
               : undefined,
         stepTimeoutMs:
           typeof body.stepTimeoutMs === 'number' && body.stepTimeoutMs > 0
@@ -339,6 +382,20 @@ router.post(
       res.json({
         success: true,
         swarm: await swarmService.retryStep(stringValue(req.params.swarmId), stepId),
+      });
+    } catch (error) {
+      mapError(error);
+    }
+  }),
+);
+
+router.post(
+  '/swarm/:swarmId/resume',
+  asyncHandler(async (req, res) => {
+    try {
+      res.json({
+        success: true,
+        swarm: await swarmService.resumeFromFailure(stringValue(req.params.swarmId)),
       });
     } catch (error) {
       mapError(error);

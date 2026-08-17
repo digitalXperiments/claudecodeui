@@ -231,7 +231,7 @@ test('shell session without an app session is indexed as its own sidebar row', a
     assert.ok(result);
     assert.equal(result.providerSessionId, 'grok-orphan');
     assert.equal(result.adopted, true);
-    const row = sessionsDb.getSessionByProviderSessionId('grok-orphan');
+    const row = sessionsDb.getSessionByProviderSessionId('grok-orphan', 'grok');
     assert.ok(row);
     assert.equal(row.session_id, result.appSessionId);
   });

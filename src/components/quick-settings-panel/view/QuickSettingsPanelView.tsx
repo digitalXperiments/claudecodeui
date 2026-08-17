@@ -1,9 +1,20 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { MouseEvent as ReactMouseEvent } from 'react';
 
 import { useDeviceSettings } from '../../../hooks/useDeviceSettings';
 import { useUiPreferences } from '../../../hooks/useUiPreferences';
 import { useTheme } from '../../../contexts/ThemeContext';
+import {
+  PROVIDER_USAGE_COLLAPSE_CHANGED_EVENT,
+  PROVIDER_USAGE_DISABLED_PROVIDERS_KEY,
+  PROVIDER_USAGE_LEGEND_COLLAPSED_KEY,
+  PROVIDER_USAGE_VISIBILITY_CHANGED_EVENT,
+  readProviderUsageLegendCollapsed,
+  readProviderUsageVisibility,
+  writeProviderUsageLegendCollapsed,
+  writeProviderUsageVisible,
+  type ProviderUsageProviderId,
+} from '../../../utils/providerUsagePreferences';
 import { useQuickSettingsDrag } from '../hooks/useQuickSettingsDrag';
 import type { PreferenceToggleKey, QuickSettingsPreferences } from '../types';
 
@@ -13,6 +24,10 @@ import QuickSettingsPanelHeader from './QuickSettingsPanelHeader';
 
 export default function QuickSettingsPanelView() {
   const [isOpen, setIsOpen] = useState(false);
+  const [providerUsageLegendCollapsed, setProviderUsageLegendCollapsed] = useState(
+    readProviderUsageLegendCollapsed,
+  );
+  const [providerUsageVisibility, setProviderUsageVisibility] = useState(readProviderUsageVisibility);
   const { isMobile } = useDeviceSettings({ trackPWA: false });
   const { isDarkMode } = useTheme();
   const { preferences, setPreference } = useUiPreferences();
@@ -35,12 +50,50 @@ export default function QuickSettingsPanelView() {
     preferences.voiceEnabled,
   ]);
 
+  useEffect(() => {
+    const syncCollapsed = () => {
+      setProviderUsageLegendCollapsed(readProviderUsageLegendCollapsed());
+    };
+    const syncStorage = (event: StorageEvent) => {
+      if (event.key === PROVIDER_USAGE_LEGEND_COLLAPSED_KEY) syncCollapsed();
+    };
+    window.addEventListener(PROVIDER_USAGE_COLLAPSE_CHANGED_EVENT, syncCollapsed);
+    window.addEventListener('storage', syncStorage);
+    return () => {
+      window.removeEventListener(PROVIDER_USAGE_COLLAPSE_CHANGED_EVENT, syncCollapsed);
+      window.removeEventListener('storage', syncStorage);
+    };
+  }, []);
+
+  useEffect(() => {
+    const syncVisibility = () => setProviderUsageVisibility(readProviderUsageVisibility());
+    const syncStorage = (event: StorageEvent) => {
+      if (event.key === PROVIDER_USAGE_DISABLED_PROVIDERS_KEY) syncVisibility();
+    };
+    window.addEventListener(PROVIDER_USAGE_VISIBILITY_CHANGED_EVENT, syncVisibility);
+    window.addEventListener('storage', syncStorage);
+    return () => {
+      window.removeEventListener(PROVIDER_USAGE_VISIBILITY_CHANGED_EVENT, syncVisibility);
+      window.removeEventListener('storage', syncStorage);
+    };
+  }, []);
+
   const handlePreferenceChange = useCallback(
     (key: PreferenceToggleKey, value: boolean) => {
       setPreference(key, value);
     },
     [setPreference],
   );
+
+  const handleProviderUsageLegendCollapsedChange = useCallback((value: boolean) => {
+    setProviderUsageLegendCollapsed(value);
+    writeProviderUsageLegendCollapsed(value);
+  }, []);
+
+  const handleProviderUsageVisibilityChange = useCallback((providerId: ProviderUsageProviderId, value: boolean) => {
+    setProviderUsageVisibility((current) => ({ ...current, [providerId]: value }));
+    writeProviderUsageVisible(providerId, value);
+  }, []);
 
   const handleToggleFromHandle = useCallback(
     (event: ReactMouseEvent<HTMLButtonElement>) => {
@@ -74,7 +127,11 @@ export default function QuickSettingsPanelView() {
           <QuickSettingsContent
             isDarkMode={isDarkMode}
             preferences={quickSettingsPreferences}
+            providerUsageLegendCollapsed={providerUsageLegendCollapsed}
+            providerUsageVisibility={providerUsageVisibility}
             onPreferenceChange={handlePreferenceChange}
+            onProviderUsageLegendCollapsedChange={handleProviderUsageLegendCollapsedChange}
+            onProviderUsageVisibilityChange={handleProviderUsageVisibilityChange}
           />
         </div>
       </div>

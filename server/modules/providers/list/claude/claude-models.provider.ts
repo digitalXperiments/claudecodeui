@@ -115,7 +115,7 @@ export const findClaudeModelOption = (model: string | undefined | null): Provide
  * which is what every token_budget event actually reports. Used to decide
  * when a run's stored model is a request-time alias worth superseding with
  * the resolved id, rather than a value to leave alone (see
- * runs.service.ts recordProviderUsage / runs-token-backfill.ts
+ * runs.service.ts recordProviderUsage and completed-run reconciliation
  * resolveUnresolvedModels) — without this, Stats fragments one real model
  * into an alias bucket and a resolved-id bucket.
  */

@@ -8,7 +8,7 @@ import { Cron } from 'croner';
 
 import { getConnection } from '@/modules/database/index.js';
 import { interruptsService } from '@/modules/interrupt-queue/index.js';
-import { scheduleHistoricalTokenBackfill } from '@/modules/runs/runs-token-backfill.js';
+import { publishShiftReport } from '@/modules/runs/shift-report.service.js';
 import { TERMINAL_RUN_STATUSES } from '@/shared/run-events.js';
 
 /** Minutes without a durable event while status is in-flight before flagging stuck. */
@@ -109,14 +109,10 @@ export function applyRunRetention(): { eventsDeleted: number; runsDeleted: numbe
     .prepare(
       `DELETE FROM agent_runs
        WHERE status IN (${placeholders})
-         -- Historical token-backfill rows (source = 'history', see
-         -- runs-token-backfill.ts) are stamped with the *session's* original
+         -- Legacy imported rows (source = 'history') are stamped with the session's original
          -- created_at/finished_at, which is routinely older than the
-         -- retention window by design (that's the whole point of "historical").
-         -- Retention would delete them here, then the very next backfill pass
-         -- would recreate them (the session still lacks a token-covered run)
-         -- — a nightly delete/recreate loop with real WS broadcast noise.
-         -- These rows carry no operational data to retire, so exclude them.
+         -- timestamp. They no longer participate in Stats and are preserved as
+         -- dormant data; maintenance must not mutate or recreate them.
          AND source != 'history'
          AND COALESCE(finished_at, updated_at, created_at) < ?`,
     )
@@ -134,6 +130,8 @@ export function applyRunRetention(): { eventsDeleted: number; runsDeleted: numbe
     runsDeleted: Number(runs.changes ?? 0),
   };
 }
+
+let shiftReportJob: Cron | null = null;
 
 export function startRunMaintenance(): () => void {
   stopRunMaintenance();
@@ -155,16 +153,24 @@ export function startRunMaintenance(): () => void {
     } catch (error) {
       console.error('[Runs] retention failed', error);
     }
-    // Sessions discovered after boot (provider sync) may still lack token_*;
-    // re-run the idempotent backfill alongside nightly retention. Safe to run
-    // right after retention now that retention excludes source='history' rows.
-    void scheduleHistoricalTokenBackfill();
+  });
+  shiftReportJob = new Cron('0,15 9 * * *', () => {
+    try {
+      const report = publishShiftReport();
+      if (report) {
+        console.log('[Runs] published overnight shift report', {
+          prs: report.prs.length,
+          spendUsd: report.spendUsd,
+        });
+      }
+    } catch (error) {
+      console.error('[Runs] shift report failed', error);
+    }
   });
 
-  // One-shot (coalesced) durable fill of agent_runs.token_* from provider disk
-  // for sessions that predate live token_budget persistence. Fire-and-forget so
-  // boot is not blocked on filesystem scans.
-  void scheduleHistoricalTokenBackfill();
+  // Usage Stats is intentionally live/operational only. Do not scan provider
+  // history at boot or from a cron job: those imports previously changed
+  // totals after restart and coupled filesystem work to nightly maintenance.
 
   return stopRunMaintenance;
 }
@@ -172,6 +178,8 @@ export function startRunMaintenance(): () => void {
 export function stopRunMaintenance(): void {
   stuckJob?.stop();
   retentionJob?.stop();
+  shiftReportJob?.stop();
   stuckJob = null;
   retentionJob = null;
+  shiftReportJob = null;
 }

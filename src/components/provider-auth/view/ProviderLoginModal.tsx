@@ -1,7 +1,9 @@
 import { X } from 'lucide-react';
+
 import StandaloneShell from '../../standalone-shell/view/StandaloneShell';
 import { DEFAULT_PROJECT_FOR_EMPTY_SHELL, IS_PLATFORM } from '../../../constants/config';
 import type { LLMProvider } from '../../../types/app';
+import { PROVIDER_USAGE_AUTH_CHANGED_EVENT } from '../../../utils/providerUsagePreferences';
 
 type ProviderLoginModalProps = {
   isOpen: boolean;
@@ -44,6 +46,10 @@ const getProviderCommand = ({
     return 'opencode auth login';
   }
 
+  if (provider === 'kilo') {
+    return 'kilo auth login';
+  }
+
   if (provider === 'grok') {
     return 'grok login';
   }
@@ -51,6 +57,8 @@ const getProviderCommand = ({
   if (provider === 'kimi') {
     return 'kimi login';
   }
+
+  if (provider === 'qwencode') return 'qwen';
 
   if (provider === 'pi') {
     // Pi authenticates via the interactive /login command inside the TUI.
@@ -65,8 +73,10 @@ const getProviderTitle = (provider: LLMProvider) => {
   if (provider === 'cursor') return 'Cursor CLI Login';
   if (provider === 'codex') return 'Codex CLI Login';
   if (provider === 'opencode') return 'OpenCode CLI Login';
+  if (provider === 'kilo') return 'Kilo Code CLI Login';
   if (provider === 'grok') return 'Grok Build CLI Login';
   if (provider === 'kimi') return 'Kimi CLI Login';
+  if (provider === 'qwencode') return 'Qwen Code CLI Login';
   if (provider === 'pi') return 'Pi CLI Login';
   return 'Claude CLI Login';
 };
@@ -88,6 +98,9 @@ export default function ProviderLoginModal({
 
   const handleComplete = (exitCode: number) => {
     onComplete?.(exitCode);
+    window.dispatchEvent(new CustomEvent(PROVIDER_USAGE_AUTH_CHANGED_EVENT, {
+      detail: { provider, authenticated: exitCode === 0 },
+    }));
     // Keep the modal open so users can read terminal output before closing.
   };
 

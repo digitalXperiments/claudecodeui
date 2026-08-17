@@ -7,6 +7,7 @@ import { WebSocket, type RawData } from 'ws';
 
 import { parseIncomingJsonObject } from '@/shared/utils.js';
 import { ensureManagedGrokHome } from '@/shared/grok-home.js';
+import { resolveAcpCliCommand } from '@/shared/acp-cli-path.js';
 // Import the capabilities module directly (not the providers barrel) so shell
 // init does not create a circular load path through sessions → websocket.
 // eslint-disable-next-line boundaries/dependencies
@@ -349,6 +350,32 @@ export function buildShellCommand(
       return `${modeEnvPrefix}opencode --session "${resumeSessionId}"${modeArgs}`;
     }
     return `${modeEnvPrefix}${initialCommand || 'opencode'}${modeArgs}`;
+  }
+
+  if (provider === 'kilo') {
+    let modeArgs = '';
+    let modeEnvPrefix = '';
+    if (permissionMode === 'auto' || permissionMode === 'bypassPermissions') {
+      modeArgs = ' --auto';
+    } else if (permissionMode === 'default' || permissionMode === 'acceptEdits' || permissionMode === 'plan') {
+      const permission = permissionMode === 'acceptEdits'
+        ? { edit: 'allow', bash: 'ask', webfetch: 'ask', external_directory: 'ask' }
+        : { edit: 'ask', bash: 'ask', webfetch: 'ask', external_directory: 'ask' };
+      const permissionJson = JSON.stringify(permission);
+      modeEnvPrefix =
+        os.platform() === 'win32'
+          ? `$env:KILO_PERMISSION='${permissionJson}'; `
+          : `KILO_PERMISSION='${permissionJson}' `;
+    }
+    // The installer drops kilo in ~/.kilo/bin, which a PTY spawned without the
+    // user's shell profile never sees — resolve the absolute path so the
+    // session starts instead of dying with "kilo: command not found".
+    const kiloBin =
+      os.platform() === 'win32' ? 'kilo' : shellSingleQuote(resolveAcpCliCommand('kilo'));
+    if (resumeSessionId) {
+      return `${modeEnvPrefix}${kiloBin} --session "${resumeSessionId}"${modeArgs}`;
+    }
+    return `${modeEnvPrefix}${initialCommand || kiloBin}${modeArgs}`;
   }
 
   if (provider === 'grok') {
@@ -842,6 +869,8 @@ export function handleShellConnection(
                 ? 'Codex'
                 : provider === 'opencode'
                     ? 'OpenCode'
+                  : provider === 'kilo'
+                    ? 'Kilo Code'
                   : provider === 'grok'
                     ? 'Grok Build'
                     : provider === 'kimi'

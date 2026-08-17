@@ -13,7 +13,7 @@
  *    the documented session-spend pair (sum of turns) and are what we want.
  *    OpenCode's reader does not emit them, so we fall back to the generic
  *    `inputTokens` / `outputTokens` pair, which for that provider is already a
- *    cumulative session total read out of OpenCode's own sqlite store.
+ *    cumulative session total read out of OpenCode/Kilo's own sqlite store.
  *    We deliberately ignore `used` / `contextUsed` / `total`: those describe
  *    *context-window occupancy* for the composer badge, not tokens spent.
  *
@@ -81,7 +81,7 @@ export function readTokenBudgetUsage(tokenBudget: unknown): ProviderUsageSnapsho
   }
   const budget = tokenBudget as Record<string, unknown>;
   // Prefer the explicit billed/spend pair; fall back to the generic pair for
-  // providers (opencode) that only expose that one.
+  // providers (opencode/kilo) that only expose that one.
   const input = readCount(budget.billedInputTokens) ?? readCount(budget.inputTokens);
   const output = readCount(budget.billedOutputTokens) ?? readCount(budget.outputTokens);
   if (input == null && output == null) return null;

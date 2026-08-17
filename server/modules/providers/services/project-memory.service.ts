@@ -69,8 +69,11 @@ const MEMORY_MCP_PROVIDERS: LLMProvider[] = [
   'cursor',
   'codex',
   'opencode',
+  'kilo',
+  'cline',
   'grok',
   'kimi',
+  'qwencode',
 ];
 
 /**

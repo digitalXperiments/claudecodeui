@@ -47,7 +47,7 @@ test('projectSkillsService fans one skill out to every agent project folder', { 
     const skill = created[0];
     assert.ok(skill);
     assert.equal(skill.directoryName, 'shared-skill');
-    assert.deepEqual([...skill.providers].sort(), ['claude', 'codex', 'cursor', 'grok', 'kimi', 'pi']);
+    assert.deepEqual([...skill.providers].sort(), ['claude', 'codex', 'cursor', 'grok', 'kimi', 'pi', 'qwencode']);
     assert.deepEqual(skill.conflicts, []);
 
     // Canonical master copy.
@@ -63,7 +63,7 @@ test('projectSkillsService fans one skill out to every agent project folder', { 
     const listed = await projectSkillsService.listProjectSkills({ workspacePath });
     assert.equal(listed.length, 1);
     assert.equal(listed[0]?.name, 'shared-skill');
-    assert.deepEqual([...(listed[0]?.providers ?? [])].sort(), ['claude', 'codex', 'cursor', 'grok', 'kimi', 'pi']);
+    assert.deepEqual([...(listed[0]?.providers ?? [])].sort(), ['claude', 'codex', 'cursor', 'grok', 'kimi', 'pi', 'qwencode']);
 
     const removed = await projectSkillsService.removeProjectSkill({ workspacePath, directoryName: 'shared-skill' });
     assert.equal(removed.removed, true);
@@ -171,6 +171,62 @@ test('projectSkillsService.updateProjectSkillContent rewrites all copies and kee
     await assert.rejects(
       () => projectSkillsService.updateProjectSkillContent({ workspacePath, directoryName: 'missing', content: '---\nname: missing\n---\n\nX.\n' }),
       (error: unknown) => (error as { code?: string }).code === 'PROJECT_SKILL_NOT_FOUND',
+    );
+  } finally {
+    restoreHomeDir();
+    await fs.rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+/**
+ * Applying a project skill to other workspaces copies the canonical folder
+ * (including supporting files) into each destination's managed + agent trees.
+ */
+test('projectSkillsService.copyProjectSkill installs into other workspaces', { concurrency: false }, async () => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'llm-project-skills-copy-'));
+  const sourcePath = path.join(tempRoot, 'source');
+  const destA = path.join(tempRoot, 'dest-a');
+  const destB = path.join(tempRoot, 'dest-b');
+  await fs.mkdir(sourcePath, { recursive: true });
+  await fs.mkdir(destA, { recursive: true });
+  await fs.mkdir(destB, { recursive: true });
+
+  const restoreHomeDir = patchHomeDir(tempRoot);
+  try {
+    await projectSkillsService.addProjectSkills({
+      workspacePath: sourcePath,
+      entries: [
+        {
+          directoryName: 'shared-playbook',
+          content: '---\nname: shared-playbook\ndescription: Copy me\n---\n\nDo the thing.\n',
+          files: [{ relativePath: 'refs/notes.md', content: 'keep this\n', encoding: 'utf8' }],
+        },
+      ],
+    });
+
+    const copied = await projectSkillsService.copyProjectSkill({
+      workspacePath: sourcePath,
+      directoryName: 'shared-playbook',
+      projects: [destA, destB, sourcePath],
+    });
+
+    assert.equal(copied.directoryName, 'shared-playbook');
+    assert.equal(copied.projects.length, 2);
+    assert.equal(await pathExists(path.join(destA, '.cloudcli', 'skills', 'shared-playbook', 'SKILL.md')), true);
+    assert.equal(await pathExists(path.join(destB, '.claude', 'skills', 'shared-playbook', 'SKILL.md')), true);
+    assert.equal(await pathExists(path.join(destA, '.cloudcli', 'skills', 'shared-playbook', 'refs', 'notes.md')), true);
+    assert.match(
+      await fs.readFile(path.join(destA, '.cloudcli', 'skills', 'shared-playbook', 'SKILL.md'), 'utf8'),
+      /Do the thing\./,
+    );
+
+    await assert.rejects(
+      () => projectSkillsService.copyProjectSkill({
+        workspacePath: sourcePath,
+        directoryName: 'shared-playbook',
+        projects: [sourcePath],
+      }),
+      (error: unknown) => (error as { code?: string }).code === 'PROJECT_SKILL_COPY_TARGETS_REQUIRED',
     );
   } finally {
     restoreHomeDir();

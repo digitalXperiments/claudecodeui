@@ -58,6 +58,7 @@ export interface RunService {
   markTerminal(runId: string, result: TerminalResult): void;
   /** Reconcile: running runs with dead processes → failed/aborted */
   reconcileOrphans(): number;
+  usageForSession(sessionId: string): { tokens: number; costUsd: number; runCount: number };
   projectStats(projectId: string): ProjectRunStats;
   globalStats(filter: GlobalStatsFilter): GlobalRunStats;
   getBudget(projectId: string): ProjectRunBudget;
@@ -489,7 +490,7 @@ export const runService: RunService = {
     // Automation kernel event trigger (PRD §12) — fire-and-forget.
     void import('@/modules/automation/index.js')
       .then(({ automationService }) => {
-        void automationService.fire({
+        automationService.fireDetached({
           type: 'run_completed',
           payload: {
             runId,
@@ -507,6 +508,10 @@ export const runService: RunService = {
 
   reconcileOrphans(): number {
     return runsDb.reconcileOrphans();
+  },
+
+  usageForSession(sessionId: string): { tokens: number; costUsd: number; runCount: number } {
+    return runsDb.usageForSession(sessionId);
   },
 };
 
@@ -602,5 +607,16 @@ export function recordNormalizedRunEvent(
       errorSummary: status === 'failed' ? message.content ?? 'Provider run failed' : null,
       exitCode: typeof complete.exitCode === 'number' ? complete.exitCode : null,
     });
+    if (current.provider === 'claude') {
+      // JSONL is authoritative after completion. Keep this off the websocket
+      // hot path; maintenance retries it if the provider is still flushing.
+      void import('@/modules/runs/runs-usage-reconciliation.js')
+        .then(({ reconcileCompletedClaudeRunUsage }) => {
+          reconcileCompletedClaudeRunUsage(runId);
+        })
+        .catch((error) => {
+          console.error('[Runs] completed Claude usage reconciliation failed', error);
+        });
+    }
   }
 }

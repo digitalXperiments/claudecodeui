@@ -5,7 +5,7 @@ import path from 'node:path';
 import spawn from 'cross-spawn';
 
 import type { IProviderAuth } from '@/shared/interfaces.js';
-import type { ProviderAuthStatus } from '@/shared/types.js';
+import type { LLMProvider, ProviderAuthStatus } from '@/shared/types.js';
 import { readObjectRecord, readOptionalString } from '@/shared/utils.js';
 
 type OpenCodeCredentialsStatus = {
@@ -23,13 +23,39 @@ const OPENCODE_ENV_CREDENTIAL_KEYS = [
   'OPENROUTER_API_KEY',
 ];
 
+export type OpenCodeProviderAuthOptions = {
+  provider?: LLMProvider;
+  command?: string;
+  authPath?: string;
+  environmentCredentialKeys?: string[];
+  displayName?: string;
+  notConfiguredMessage?: string;
+};
+
 export class OpenCodeProviderAuth implements IProviderAuth {
+  private readonly provider: LLMProvider;
+  private readonly command: string;
+  private readonly authPath: string;
+  private readonly environmentCredentialKeys: string[];
+  private readonly displayName: string;
+  private readonly notConfiguredMessage: string;
+
+  constructor(options: OpenCodeProviderAuthOptions = {}) {
+    this.provider = options.provider ?? 'opencode';
+    this.command = options.command ?? 'opencode';
+    this.authPath = options.authPath
+      ?? path.join(os.homedir(), '.local', 'share', 'opencode', 'auth.json');
+    this.environmentCredentialKeys = options.environmentCredentialKeys ?? OPENCODE_ENV_CREDENTIAL_KEYS;
+    this.displayName = options.displayName ?? 'OpenCode';
+    this.notConfiguredMessage = options.notConfiguredMessage ?? `${this.displayName} not configured`;
+  }
+
   /**
    * Checks whether the OpenCode CLI is available to the server process.
    */
   private checkInstalled(): boolean {
     try {
-      const result = spawn.sync('opencode', ['--version'], { stdio: 'ignore', timeout: 5000 });
+      const result = spawn.sync(this.command, ['--version'], { stdio: 'ignore', timeout: 5000 });
       return !result.error && result.status === 0;
     } catch {
       return false;
@@ -45,7 +71,7 @@ export class OpenCodeProviderAuth implements IProviderAuth {
 
     return {
       installed,
-      provider: 'opencode',
+      provider: this.provider,
       authenticated: credentials.authenticated,
       email: credentials.email,
       method: credentials.method,
@@ -58,8 +84,7 @@ export class OpenCodeProviderAuth implements IProviderAuth {
    */
   private async checkCredentials(): Promise<OpenCodeCredentialsStatus> {
     try {
-      const authPath = path.join(os.homedir(), '.local', 'share', 'opencode', 'auth.json');
-      const content = await readFile(authPath, 'utf8');
+      const content = await readFile(this.authPath, 'utf8');
       const auth = readObjectRecord(JSON.parse(content)) ?? {};
 
       for (const [providerId, providerAuth] of Object.entries(auth)) {
@@ -86,12 +111,12 @@ export class OpenCodeProviderAuth implements IProviderAuth {
           authenticated: false,
           email: null,
           method: null,
-          error: error instanceof Error ? error.message : 'Failed to read OpenCode auth',
+          error: error instanceof Error ? error.message : `Failed to read ${this.displayName} auth`,
         };
       }
     }
 
-    const envCredential = OPENCODE_ENV_CREDENTIAL_KEYS.find((key) => process.env[key]?.trim());
+    const envCredential = this.environmentCredentialKeys.find((key) => process.env[key]?.trim());
     if (envCredential) {
       return {
         authenticated: true,
@@ -104,7 +129,7 @@ export class OpenCodeProviderAuth implements IProviderAuth {
       authenticated: false,
       email: null,
       method: null,
-      error: 'OpenCode not configured',
+      error: this.notConfiguredMessage,
     };
   }
 }

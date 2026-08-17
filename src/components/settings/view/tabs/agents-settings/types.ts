@@ -6,6 +6,7 @@ import type {
   CursorPermissionsState,
   GrokPermissionsState,
   CodexPermissionMode,
+  KiloPermissionMode,
   PiPermissionMode,
   SettingsProject,
 } from '../../../types/types';
@@ -31,6 +32,8 @@ export type AgentsSettingsTabProps = {
   onGrokPermissionsChange: (value: GrokPermissionsState) => void;
   codexPermissionMode: CodexPermissionMode;
   onCodexPermissionModeChange: (value: CodexPermissionMode) => void;
+  kiloPermissionMode: KiloPermissionMode;
+  onKiloPermissionModeChange: (value: KiloPermissionMode) => void;
   piPermissionMode: PiPermissionMode;
   onPiPermissionModeChange: (value: PiPermissionMode) => void;
   projects: SettingsProject[];
@@ -63,6 +66,8 @@ export type AgentCategoryContentSectionProps = {
   onGrokPermissionsChange: (value: GrokPermissionsState) => void;
   codexPermissionMode: CodexPermissionMode;
   onCodexPermissionModeChange: (value: CodexPermissionMode) => void;
+  kiloPermissionMode: KiloPermissionMode;
+  onKiloPermissionModeChange: (value: KiloPermissionMode) => void;
   piPermissionMode: PiPermissionMode;
   onPiPermissionModeChange: (value: PiPermissionMode) => void;
   projects: SettingsProject[];

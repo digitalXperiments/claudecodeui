@@ -85,6 +85,8 @@ const PROVIDER_LABELS: Record<string, string> = {
   cursor: 'Cursor',
   codex: 'Codex',
   opencode: 'OpenCode',
+  kilo: 'Kilo Code',
+  cline: 'Cline',
   grok: 'Grok',
   kimi: 'Kimi',
   pi: 'Pi',

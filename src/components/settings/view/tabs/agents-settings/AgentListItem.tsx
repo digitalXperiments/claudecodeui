@@ -1,124 +1,74 @@
 import { cn } from '../../../../../lib/utils';
 import SessionProviderLogo from '../../../../llm-logo-provider/SessionProviderLogo';
+import { AGENT_NAMES } from '../../../constants/constants';
 import type { AgentProvider, AuthStatus } from '../../../types/types';
 
 type AgentListItemProps = {
   agentId: AgentProvider;
   authStatus: AuthStatus;
   isSelected: boolean;
+  isEnabled: boolean;
+  inChatLabel: string;
+  hiddenLabel: string;
+  connectedLabel: string;
+  offlineLabel: string;
   onClick: () => void;
-  isMobile?: boolean;
 };
 
-type AgentConfig = {
-  name: string;
-  color: 'blue' | 'purple' | 'gray' | 'zinc' | 'amber' | 'emerald' | 'violet';
+const DOT_COLOR: Record<AgentProvider, string> = {
+  claude: 'bg-blue-500',
+  cursor: 'bg-purple-500',
+  opencode: 'bg-zinc-500',
+  kilo: 'bg-orange-500',
+  cline: 'bg-cyan-500',
+  grok: 'bg-amber-500',
+  kimi: 'bg-emerald-500',
+  qwencode: 'bg-sky-500',
+  pi: 'bg-violet-500',
+  codex: 'bg-foreground/60',
 };
-
-const agentConfig: Record<AgentProvider, AgentConfig> = {
-  claude: {
-    name: 'Claude',
-    color: 'blue',
-  },
-  cursor: {
-    name: 'Cursor',
-    color: 'purple',
-  },
-  codex: {
-    name: 'Codex',
-    color: 'gray',
-  },
-  opencode: {
-    name: 'OpenCode',
-    color: 'zinc',
-  },
-  grok: {
-    name: 'Grok Build',
-    color: 'amber',
-  },
-  kimi: {
-    name: 'Kimi',
-    color: 'emerald',
-  },
-  pi: {
-    name: 'Pi',
-    color: 'violet',
-  },
-};
-
-const colorClasses = {
-  blue: {
-    dot: 'bg-blue-500',
-  },
-  purple: {
-    dot: 'bg-purple-500',
-  },
-  gray: {
-    dot: 'bg-foreground/60',
-  },
-  zinc: {
-    dot: 'bg-zinc-500',
-  },
-  amber: {
-    dot: 'bg-amber-500',
-  },
-  emerald: {
-    dot: 'bg-emerald-500',
-  },
-  violet: {
-    dot: 'bg-violet-500',
-  },
-} as const;
 
 export default function AgentListItem({
   agentId,
   authStatus,
   isSelected,
+  isEnabled,
+  inChatLabel,
+  hiddenLabel,
+  connectedLabel,
+  offlineLabel,
   onClick,
-  isMobile = false,
 }: AgentListItemProps) {
-  const config = agentConfig[agentId];
-  const colors = colorClasses[config.color];
-
-  if (isMobile) {
-    return (
-      <button
-        onClick={onClick}
-        className={cn(
-          'min-w-0 flex-1 touch-manipulation rounded-md px-2 py-2 text-center transition-all duration-150',
-          isSelected
-            ? 'bg-background text-foreground shadow-sm'
-            : 'text-muted-foreground active:bg-background/50',
-        )}
-      >
-        <div className="flex items-center justify-center gap-1.5">
-          <SessionProviderLogo provider={agentId} className="h-4 w-4 flex-shrink-0" />
-          <span className="truncate text-xs font-medium">{config.name}</span>
-          {authStatus.authenticated && (
-            <span className={`h-1.5 w-1.5 flex-shrink-0 rounded-full ${colors.dot}`} />
-          )}
-        </div>
-      </button>
-    );
-  }
+  const visibility = isEnabled ? inChatLabel : hiddenLabel;
+  const authLabel = authStatus.authenticated ? connectedLabel : offlineLabel;
 
   return (
     <button
+      type="button"
       onClick={onClick}
+      aria-current={isSelected ? 'true' : undefined}
       className={cn(
-        'flex touch-manipulation items-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-all duration-150',
+        'flex w-full min-w-0 touch-manipulation items-center gap-2 rounded-md px-2 py-2 text-left transition-colors duration-150',
         isSelected
-          ? 'bg-background text-foreground shadow-sm'
-          : 'text-muted-foreground active:bg-background/50',
+          ? 'bg-muted text-foreground'
+          : 'text-foreground hover:bg-muted/60',
+        !isEnabled && !isSelected && 'opacity-60',
       )}
     >
       <SessionProviderLogo provider={agentId} className="h-4 w-4 flex-shrink-0" />
-      <span>{config.name}</span>
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-sm font-medium">{AGENT_NAMES[agentId]}</span>
+        <span className="block truncate text-[11px] text-muted-foreground">
+          {visibility} · {authLabel}
+        </span>
+      </span>
       {authStatus.authenticated ? (
-        <span className={`h-1.5 w-1.5 flex-shrink-0 rounded-full ${colors.dot}`} />
+        <span className={`h-1.5 w-1.5 flex-shrink-0 rounded-full ${DOT_COLOR[agentId]}`} />
       ) : authStatus.loading ? (
-        <span className="h-1.5 w-1.5 flex-shrink-0 rounded-full bg-muted-foreground/30 animate-pulse" />
-      ) : null}
+        <span className="h-1.5 w-1.5 flex-shrink-0 animate-pulse rounded-full bg-muted-foreground/30" />
+      ) : (
+        <span className="h-1.5 w-1.5 flex-shrink-0 rounded-full bg-muted-foreground/25" />
+      )}
     </button>
   );
 }

@@ -1,4 +1,4 @@
-import { Bell, Bot, BrainCircuit, FileCode2, GitBranch, Info, Key, KeyRound, ListChecks, Mic, MonitorPlay, Palette, Puzzle, Server, ShieldCheck, UserCog, Webhook } from 'lucide-react';
+import { Bell, Bot, BrainCircuit, FileCode2, FlaskConical, GitBranch, Info, Key, KeyRound, ListChecks, Mic, MonitorPlay, Palette, Puzzle, Server, ShieldCheck, UserCog, Webhook } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import { cn } from '../../../lib/utils';
@@ -27,6 +27,13 @@ const NAV_ITEMS: NavItem[] = [
     fallbackLabel: 'Agent profiles',
     icon: UserCog,
   },
+  {
+    id: 'studio',
+    labelKey: 'mainTabs.studio',
+    fallbackLabel: 'Studio',
+    icon: Palette,
+  },
+  { id: 'evals', labelKey: 'mainTabs.evals', fallbackLabel: 'Eval Center', icon: FlaskConical },
   { id: 'mcp', labelKey: 'mainTabs.mcpServers', fallbackLabel: 'MCP', icon: Server },
   { id: 'skills', labelKey: 'mainTabs.skills', fallbackLabel: 'Skills', icon: FileCode2 },
   { id: 'memory', labelKey: 'mainTabs.memory', fallbackLabel: 'Memory', icon: BrainCircuit },

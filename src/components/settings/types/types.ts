@@ -3,7 +3,7 @@ import type { Dispatch, SetStateAction } from 'react';
 import type { LLMProvider } from '../../../types/app';
 import type { ProviderAuthStatus } from '../../provider-auth/types';
 
-export type SettingsMainTab = 'agents' | 'agent-profiles' | 'mcp' | 'skills' | 'global-skills' | 'memory' | 'appearance' | 'git' | 'api' | 'secrets' | 'voice' | 'tasks' | 'browser' | 'notifications' | 'plugins' | 'webhooks' | 'security' | 'about';
+export type SettingsMainTab = 'agents' | 'agent-profiles' | 'studio' | 'evals' | 'mcp' | 'skills' | 'global-skills' | 'memory' | 'appearance' | 'git' | 'api' | 'secrets' | 'voice' | 'tasks' | 'browser' | 'notifications' | 'plugins' | 'webhooks' | 'security' | 'about';
 export type AgentProvider = LLMProvider;
 /** Agent settings categories — MCP and Skills live in dedicated top-level tabs. */
 export type AgentCategory = 'account' | 'permissions' | 'models';
@@ -12,8 +12,12 @@ export type SaveStatus = 'success' | 'error' | null;
 export type CodexPermissionMode = 'default' | 'acceptEdits' | 'bypassPermissions';
 // Pi has no permission popups; plan = read-only tools, bypass = full tool set.
 export type PiPermissionMode = 'plan' | 'bypassPermissions';
+// Mirrors the kilo entry in provider-capabilities.service.ts (KILO_PERMISSION
+// policy + ACP build/plan agent — see resolveKiloPermissionPolicy).
+export type KiloPermissionMode = 'default' | 'acceptEdits' | 'auto' | 'bypassPermissions' | 'plan';
 
 export type SettingsProject = {
+  projectId?: string;
   name: string;
   displayName?: string;
   fullPath?: string;

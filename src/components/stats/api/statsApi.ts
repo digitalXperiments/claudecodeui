@@ -11,6 +11,8 @@ export type StatsOverview = {
   totalTokens: number;
   inputTokens: number;
   outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
   totalCostUsd: number | null;
   runsWithCost: number;
   totalDurationMs: number;
@@ -79,6 +81,8 @@ export type StatsRangeParams = {
   from?: string;
   /** ISO-8601 inclusive upper bound; omit for unbounded. */
   to?: string;
+  /** Provider id, or `__unknown__` for unattributed runs. */
+  provider?: string;
 };
 
 async function parse<T>(response: Response): Promise<T> {
@@ -97,6 +101,7 @@ export const statsApi = {
     const query = new URLSearchParams();
     if (params.from) query.set('from', params.from);
     if (params.to) query.set('to', params.to);
+    if (params.provider != null) query.set('provider', params.provider);
     const suffix = query.toString();
     const response = await authenticatedFetch(`/api/runs/stats/global${suffix ? `?${suffix}` : ''}`);
     const payload = await parse<{ stats: GlobalRunStats }>(response);

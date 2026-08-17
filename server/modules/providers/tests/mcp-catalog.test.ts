@@ -71,8 +71,11 @@ test('mcpCatalogService upserts once and fans out only to selected providers', {
     }
 
     // Inventory must list a single catalog row (no duplicate definition)
-    const inventory = await mcpCatalogService.listInventory();
-    const matches = inventory.filter((i) => i.name === 'shared-obsidian');
+    // Fast phase is enough — catalog is file-backed and must not wait on CLIs.
+    const inventory = await mcpCatalogService.listInventory({ phase: 'fast' });
+    assert.equal(inventory.phase, 'fast');
+    assert.equal(inventory.partial, true);
+    const matches = inventory.items.filter((i) => i.name === 'shared-obsidian');
     assert.equal(matches.length, 1);
     assert.equal(matches[0].source, 'cloudcli');
     assert.deepEqual([...matches[0].providers].sort(), ['claude', 'grok']);
@@ -96,6 +99,103 @@ test('mcpCatalogService upserts once and fans out only to selected providers', {
       servers: Record<string, unknown>;
     };
     assert.equal(catalogAfter.servers['shared-obsidian'], undefined);
+  } finally {
+    os.homedir = originalHome;
+    await fs.rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('listInventory fast phase skips CLI and marks partial', {
+  concurrency: false,
+}, async () => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'llm-mcp-catalog-fast-'));
+  const originalHome = os.homedir;
+  (os as { homedir: () => string }).homedir = () => tempRoot;
+
+  try {
+    await fs.mkdir(path.join(tempRoot, '.cloudcli', 'mcp'), { recursive: true });
+    await fs.writeFile(
+      path.join(tempRoot, '.cloudcli', 'mcp', 'catalog.json'),
+      JSON.stringify({
+        version: 1,
+        servers: {
+          'local-only': {
+            name: 'local-only',
+            transport: 'stdio',
+            scope: 'user',
+            command: 'echo',
+            args: ['ok'],
+            bindings: { claude: { enabled: true } },
+          },
+        },
+      }),
+      'utf8',
+    );
+
+    const started = Date.now();
+    const result = await mcpCatalogService.listInventory({ phase: 'fast' });
+    const elapsed = Date.now() - started;
+
+    assert.equal(result.phase, 'fast');
+    assert.equal(result.partial, true);
+    assert.ok(result.items.some((i) => i.name === 'local-only' && i.source === 'cloudcli'));
+    // Fast path is file I/O only — must not wait on CLI doctor (often multi-second).
+    assert.ok(elapsed < 5_000, `fast inventory took ${elapsed}ms`);
+  } finally {
+    os.homedir = originalHome;
+    await fs.rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('listInventory fast phase includes Claude.ai and Grok.com disk hints', {
+  concurrency: false,
+}, async () => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'llm-mcp-catalog-hints-'));
+  const originalHome = os.homedir;
+  (os as { homedir: () => string }).homedir = () => tempRoot;
+
+  try {
+    await fs.mkdir(path.join(tempRoot, '.claude'), { recursive: true });
+    await fs.writeFile(
+      path.join(tempRoot, '.claude.json'),
+      JSON.stringify({
+        mcpServers: {},
+        claudeAiMcpEverConnected: ['claude.ai Slack', 'claude.ai Gmail'],
+      }),
+      'utf8',
+    );
+    await fs.writeFile(
+      path.join(tempRoot, '.claude', 'mcp-needs-auth-cache.json'),
+      JSON.stringify({ 'claude.ai Figma': { timestamp: 1, id: 'x' } }),
+      'utf8',
+    );
+    const grokMcps = path.join(tempRoot, '.grok', 'projects', 'demo', 'mcps');
+    await fs.mkdir(path.join(grokMcps, 'GMail'), { recursive: true });
+    await fs.mkdir(path.join(grokMcps, 'grok_com_fluxito'), { recursive: true });
+    await fs.mkdir(path.join(grokMcps, 'obsidian'), { recursive: true });
+
+    const result = await mcpCatalogService.listInventory({ phase: 'fast' });
+    assert.equal(result.phase, 'fast');
+
+    const slack = result.items.find((item) => item.name === 'claude.ai Slack');
+    assert.ok(slack);
+    assert.equal(slack?.source, 'provider_cloud');
+    assert.deepEqual(slack?.providers, ['claude']);
+
+    const figma = result.items.find((item) => item.name === 'claude.ai Figma');
+    assert.ok(figma);
+    assert.equal(figma?.needsAuth, true);
+
+    const fluxito = result.items.find((item) => item.name === 'Fluxito MCP');
+    assert.ok(fluxito);
+    assert.equal(fluxito?.source, 'provider_cloud');
+    assert.deepEqual(fluxito?.providers, ['grok']);
+
+    const gmail = result.items.find((item) => item.name === 'GMail');
+    assert.ok(gmail);
+    assert.equal(gmail?.source, 'provider_cloud');
+
+    assert.equal(result.items.some((item) => item.name === 'obsidian' && item.source === 'provider_cloud'), false);
   } finally {
     os.homedir = originalHome;
     await fs.rm(tempRoot, { recursive: true, force: true });

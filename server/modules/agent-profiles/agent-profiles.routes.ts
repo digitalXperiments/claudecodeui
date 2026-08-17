@@ -20,8 +20,11 @@ const KNOWN_PROVIDERS: readonly LLMProvider[] = [
   'codex',
   'cursor',
   'opencode',
+  'kilo',
+  'cline',
   'grok',
   'kimi',
+  'qwencode',
   'pi',
 ];
 

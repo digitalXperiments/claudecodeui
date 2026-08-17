@@ -10,6 +10,7 @@ type SessionRow = {
   project_path: string | null;
   runtime_project_path: string | null;
   jsonl_path: string | null;
+  is_internal: number;
   custom_name: string | null;
   isArchived: number;
   created_at: string;
@@ -17,7 +18,7 @@ type SessionRow = {
 };
 
 const SESSION_ROW_COLUMNS =
-  'session_id, provider, provider_session_id, continued_from_session_id, project_path, runtime_project_path, jsonl_path, custom_name, isArchived, created_at, updated_at';
+  'session_id, provider, provider_session_id, continued_from_session_id, project_path, runtime_project_path, jsonl_path, is_internal, custom_name, isArchived, created_at, updated_at';
 
 const SQLITE_UTC_TIMESTAMP_REGEX = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
 
@@ -130,8 +131,8 @@ export const sessionsDb = {
     // keyed by the provider-native id for both columns. The ON CONFLICT path
     // covers legacy rows that predate the provider_session_id mapping.
     db.prepare(
-      `INSERT INTO sessions (session_id, provider, provider_session_id, custom_name, project_path, runtime_project_path, jsonl_path, isArchived, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 0, COALESCE(?, CURRENT_TIMESTAMP), COALESCE(?, CURRENT_TIMESTAMP))
+      `INSERT INTO sessions (session_id, provider, provider_session_id, custom_name, project_path, runtime_project_path, jsonl_path, is_internal, isArchived, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, COALESCE(?, CURRENT_TIMESTAMP), COALESCE(?, CURRENT_TIMESTAMP))
        ON CONFLICT(session_id) DO UPDATE SET
          provider = excluded.provider,
          provider_session_id = excluded.provider_session_id,
@@ -164,16 +165,21 @@ export const sessionsDb = {
    * stays NULL until the provider runtime announces its own id and
    * `assignProviderSessionId` records the mapping.
    */
-  createAppSession(sessionId: string, provider: string, projectPath: string): string {
+  createAppSession(
+    sessionId: string,
+    provider: string,
+    projectPath: string,
+    options: { internal?: boolean } = {},
+  ): string {
     const db = getConnection();
     const { logicalProjectPath, runtimeProjectPath } = resolveSessionPaths(provider, projectPath);
 
     projectsDb.createProjectPath(logicalProjectPath);
 
     db.prepare(
-      `INSERT INTO sessions (session_id, provider, provider_session_id, custom_name, project_path, runtime_project_path, jsonl_path, isArchived, created_at, updated_at)
-       VALUES (?, ?, NULL, NULL, ?, ?, NULL, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`
-    ).run(sessionId, provider, logicalProjectPath, runtimeProjectPath);
+      `INSERT INTO sessions (session_id, provider, provider_session_id, custom_name, project_path, runtime_project_path, jsonl_path, is_internal, isArchived, created_at, updated_at)
+       VALUES (?, ?, NULL, NULL, ?, ?, NULL, ?, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`
+    ).run(sessionId, provider, logicalProjectPath, runtimeProjectPath, options.internal ? 1 : 0);
 
     return sessionId;
   },
@@ -383,17 +389,17 @@ export const sessionsDb = {
    * file names), so it uses this lookup to translate disk artifacts back to
    * the app-facing session row before broadcasting sidebar updates.
    */
-  getSessionByProviderSessionId(providerSessionId: string): SessionRow | null {
+  getSessionByProviderSessionId(providerSessionId: string, provider: string): SessionRow | null {
     const db = getConnection();
     const row = db
       .prepare(
         `SELECT ${SESSION_ROW_COLUMNS}
          FROM sessions
-         WHERE provider_session_id = ?
+         WHERE provider_session_id = ? AND provider = ?
          ORDER BY updated_at DESC
          LIMIT 1`
       )
-      .get(providerSessionId) as SessionRow | undefined;
+      .get(providerSessionId, provider) as SessionRow | undefined;
 
     return normalizeSessionRow(row) ?? null;
   },
@@ -402,8 +408,8 @@ export const sessionsDb = {
    * Finds the newest app-created session for a project that is still waiting
    * for its provider-native id to be recorded.
    *
-   * Primary intention: OpenCode can expose a new session in its shared
-   * `opencode.db` before the websocket runtime reports that same provider id
+   * Primary intention: OpenCode/Kilo can expose a new session in their shared
+   * database before the websocket runtime reports that same provider id
    * back to our app. At that moment the sidebar already has an optimistic
    * app-owned session row, but the watcher only knows the provider-native id.
    *
@@ -444,7 +450,7 @@ export const sessionsDb = {
       .prepare(
         `SELECT ${SESSION_ROW_COLUMNS}
          FROM sessions
-         WHERE isArchived = 0`
+         WHERE isArchived = 0 AND is_internal = 0`
       )
       .all() as SessionRow[];
 
@@ -461,7 +467,7 @@ export const sessionsDb = {
       .prepare(
         `SELECT ${SESSION_ROW_COLUMNS}
          FROM sessions
-         WHERE isArchived = 1
+         WHERE isArchived = 1 AND is_internal = 0
          ORDER BY datetime(COALESCE(updated_at, created_at)) DESC, session_id DESC`
       )
       .all() as SessionRow[];

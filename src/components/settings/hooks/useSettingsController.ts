@@ -11,6 +11,7 @@ import {
 } from '../constants/constants';
 import type {
   AgentProvider,
+  KiloPermissionMode,
   PiPermissionMode,
   ClaudePermissionsState,
   CodeEditorSettingsState,
@@ -55,6 +56,10 @@ type CodexSettingsStorage = {
   permissionMode?: CodexPermissionMode;
 };
 
+type KiloSettingsStorage = {
+  permissionMode?: KiloPermissionMode;
+};
+
 type PiSettingsStorage = {
   permissionMode?: PiPermissionMode;
 };
@@ -69,6 +74,8 @@ type ActiveLoginProvider = AgentProvider | '';
 const KNOWN_MAIN_TABS: SettingsMainTab[] = [
   'agents',
   'agent-profiles',
+  'studio',
+  'evals',
   'mcp',
   'skills',
   'memory',
@@ -76,11 +83,13 @@ const KNOWN_MAIN_TABS: SettingsMainTab[] = [
   'git',
   'api',
   'secrets',
+  'voice',
   'tasks',
   'browser',
   'notifications',
   'plugins',
   'webhooks',
+  'security',
   'about',
 ];
 
@@ -111,6 +120,19 @@ const parseJson = <T>(value: string | null, fallback: T): T => {
 
 const toCodexPermissionMode = (value: unknown): CodexPermissionMode => {
   if (value === 'acceptEdits' || value === 'bypassPermissions') {
+    return value;
+  }
+
+  return 'default';
+};
+
+const toKiloPermissionMode = (value: unknown): KiloPermissionMode => {
+  if (
+    value === 'acceptEdits'
+    || value === 'auto'
+    || value === 'bypassPermissions'
+    || value === 'plan'
+  ) {
     return value;
   }
 
@@ -245,6 +267,7 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
     createDefaultNotificationPreferences()
   ));
   const [codexPermissionMode, setCodexPermissionMode] = useState<CodexPermissionMode>('default');
+  const [kiloPermissionMode, setKiloPermissionMode] = useState<KiloPermissionMode>('default');
   const [piPermissionMode, setPiPermissionMode] = useState<PiPermissionMode>('bypassPermissions');
 
   const [showLoginModal, setShowLoginModal] = useState(false);
@@ -294,6 +317,12 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
       );
       setCodexPermissionMode(toCodexPermissionMode(savedCodexSettings.permissionMode));
 
+      const savedKiloSettings = parseJson<KiloSettingsStorage>(
+        localStorage.getItem('kilo-settings'),
+        {},
+      );
+      setKiloPermissionMode(toKiloPermissionMode(savedKiloSettings.permissionMode));
+
       const savedPiSettings = parseJson<PiSettingsStorage>(
         localStorage.getItem('pi-tools-settings'),
         {},
@@ -323,6 +352,7 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
       setGrokPermissions(createEmptyGrokPermissions());
       setNotificationPreferences(createDefaultNotificationPreferences());
       setCodexPermissionMode('default');
+      setKiloPermissionMode('default');
       setPiPermissionMode('bypassPermissions');
       setProjectSortOrder('name');
     }
@@ -391,6 +421,11 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
         lastUpdated: now,
       }));
 
+      localStorage.setItem('kilo-settings', JSON.stringify({
+        permissionMode: kiloPermissionMode,
+        lastUpdated: now,
+      }));
+
       localStorage.setItem('pi-tools-settings', JSON.stringify({
         permissionMode: piPermissionMode,
         lastUpdated: now,
@@ -414,6 +449,7 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
     claudePermissions.disallowedTools,
     claudePermissions.skipPermissions,
     codexPermissionMode,
+    kiloPermissionMode,
     piPermissionMode,
     cursorPermissions.allowedCommands,
     cursorPermissions.disallowedCommands,
@@ -528,6 +564,8 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
     setNotificationPreferences,
     codexPermissionMode,
     setCodexPermissionMode,
+    kiloPermissionMode,
+    setKiloPermissionMode,
     piPermissionMode,
     setPiPermissionMode,
     providerAuthStatus,

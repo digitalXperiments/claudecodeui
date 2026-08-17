@@ -16,6 +16,8 @@ export default function AgentCategoryContentSection({
   onGrokPermissionsChange,
   codexPermissionMode,
   onCodexPermissionModeChange,
+  kiloPermissionMode,
+  onKiloPermissionModeChange,
   piPermissionMode,
   onPiPermissionModeChange,
 }: AgentCategoryContentSectionProps) {
@@ -75,6 +77,14 @@ export default function AgentCategoryContentSection({
           agent="codex"
           permissionMode={codexPermissionMode}
           onPermissionModeChange={onCodexPermissionModeChange}
+        />
+      )}
+
+      {selectedCategory === 'permissions' && selectedAgent === 'kilo' && (
+        <PermissionsContent
+          agent="kilo"
+          permissionMode={kiloPermissionMode}
+          onPermissionModeChange={onKiloPermissionModeChange}
         />
       )}
 

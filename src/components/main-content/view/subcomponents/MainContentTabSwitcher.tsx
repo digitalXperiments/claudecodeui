@@ -81,7 +81,7 @@ export default function MainContentTabSwitcher({
   const tabs: TabDefinition[] = [...builtInTabs, ...pluginTabs];
 
   return (
-    <PillBar>
+    <PillBar className="w-full justify-between md:w-auto md:justify-start">
       {tabs.map((tab) => {
         const isActive = tab.id === activeTab;
         const displayLabel = tab.kind === 'builtin' ? t(tab.labelKey) : tab.label;

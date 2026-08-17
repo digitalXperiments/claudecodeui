@@ -19,7 +19,7 @@ import { CloudError, TERMINAL_RUN_STATUSES } from '@/shared/run-events.js';
 import type { LLMProvider } from '@/shared/types.js';
 
 const ERROR_CLASSES: readonly FailoverErrorClass[] = ['auth', 'rate_limit', 'timeout', 'mcp_unhealthy', 'any'];
-const PROVIDERS: readonly LLMProvider[] = ['claude', 'codex', 'cursor', 'opencode', 'grok', 'kimi', 'pi'];
+const PROVIDERS: readonly LLMProvider[] = ['claude', 'codex', 'cursor', 'opencode', 'kilo', 'cline', 'grok', 'kimi', 'qwencode', 'pi'];
 
 let runtimeSpawnFns: Partial<Record<LLMProvider, ProviderSpawnFn>> = {};
 

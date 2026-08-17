@@ -9,7 +9,7 @@ import PluginTabContent from '../../plugins/view/PluginTabContent';
 import { BrowserUsePanel } from '../../browser-use';
 import type { MainContentProps } from '../types/types';
 import { useTaskMaster } from '../../../contexts/TaskMasterContext';
-import { usePaletteOpsRegister } from '../../../contexts/PaletteOpsContext';
+import { usePaletteOps, usePaletteOpsRegister } from '../../../contexts/PaletteOpsContext';
 import { useTasksSettings } from '../../../contexts/TasksSettingsContext';
 import { useUiPreferences } from '../../../hooks/useUiPreferences';
 import { useFileOpenResolver } from '../../../hooks/useFileOpenResolver';
@@ -22,6 +22,8 @@ import { TaskMasterPanel } from '../../task-master';
 import MainContentHeader from './subcomponents/MainContentHeader';
 import MainContentStateView from './subcomponents/MainContentStateView';
 import ErrorBoundary from './ErrorBoundary';
+import StudioView from '../../studio/view/StudioView';
+import MobileMenuButton from './subcomponents/MobileMenuButton';
 
 type TaskMasterContextValue = {
   currentProject?: Project | null;
@@ -59,7 +61,11 @@ function MainContent({
   onNewSession,
   onLoadMoreSessions,
   isLoadingMoreSessions = false,
+  projects = [],
+  studioActive = false,
+  onLeaveStudio,
 }: MainContentProps) {
+  const paletteOps = usePaletteOps();
   const { preferences } = useUiPreferences();
   const { showRawParameters, showThinking, sendByCtrlEnter } = preferences;
 
@@ -160,6 +166,40 @@ function MainContent({
 
   if (isLoading) {
     return <MainContentStateView mode="loading" isMobile={isMobile} onMenuClick={onMenuClick} />;
+  }
+
+  if (studioActive) {
+    return (
+      <div className="flex h-full min-h-0 flex-col">
+        {isMobile ? (
+          <div className="pwa-header-safe flex-shrink-0 border-b border-border/50 bg-background/80 p-2 backdrop-blur-sm sm:p-3">
+            <MobileMenuButton onMenuClick={onMenuClick} compact />
+          </div>
+        ) : null}
+        <div className="min-h-0 flex-1 overflow-hidden">
+          <ErrorBoundary showDetails>
+            <StudioView
+              selectedProject={selectedProject}
+              projects={projects.length > 0 ? projects : selectedProject ? [selectedProject] : []}
+              isVisible={studioActive}
+              onIdeateInChat={({ project, prompt, title }) => {
+                sessionStorage.setItem(
+                  `cloudcli:pending-prompt:new:${project.projectId}`,
+                  JSON.stringify({
+                    prompt,
+                    summary: title,
+                    provider: localStorage.getItem('selected-provider') || 'claude',
+                  }),
+                );
+                onNewSession(project);
+              }}
+              onOpenSwarm={() => paletteOps.openAgentSwarm()}
+              onBackToChat={onLeaveStudio}
+            />
+          </ErrorBoundary>
+        </div>
+      </div>
+    );
   }
 
   if (!selectedProject) {

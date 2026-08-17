@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { AlertTriangle, Plus, Shield, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Button, Input } from '../../../../../../../shared/view/ui';
-import type { CodexPermissionMode } from '../../../../../types/types';
+import type { CodexPermissionMode, KiloPermissionMode } from '../../../../../types/types';
 
 const COMMON_CLAUDE_TOOLS = [
   'Bash(git log:*)',
@@ -830,6 +830,144 @@ function CodexPermissions({ permissionMode, onPermissionModeChange }: Omit<Codex
   );
 }
 
+type KiloPermissionsProps = {
+  agent: 'kilo';
+  permissionMode: KiloPermissionMode;
+  onPermissionModeChange: (value: KiloPermissionMode) => void;
+};
+
+function KiloPermissions({
+  permissionMode,
+  onPermissionModeChange,
+}: Omit<KiloPermissionsProps, 'agent'>) {
+  const { t } = useTranslation('settings');
+
+  // Mode semantics mirror resolveKiloPermissionPolicy in server/opencode-cli.js
+  // and the kilo copy in chat/constants/permissionModeCopy.ts — keep in sync.
+  const modes: Array<{
+    value: KiloPermissionMode;
+    activeClass: string;
+    radioClass: string;
+    titleClass: string;
+    descriptionClass: string;
+    title: string;
+    description: string;
+    warning?: boolean;
+  }> = [
+    {
+      value: 'default',
+      activeClass: 'border-border bg-accent',
+      radioClass: 'text-green-600',
+      titleClass: 'text-foreground',
+      descriptionClass: 'text-muted-foreground',
+      title: t('permissions.kilo.modes.default.title', { defaultValue: 'Default' }),
+      description: t('permissions.kilo.modes.default.description', {
+        defaultValue: 'Prompt for edits, shell commands, web fetches, and access outside the workspace.',
+      }),
+    },
+    {
+      value: 'acceptEdits',
+      activeClass: 'border-green-400 bg-green-50 dark:border-green-600 dark:bg-green-900/20',
+      radioClass: 'text-green-600',
+      titleClass: 'text-green-900 dark:text-green-100',
+      descriptionClass: 'text-green-700 dark:text-green-300',
+      title: t('permissions.kilo.modes.acceptEdits.title', { defaultValue: 'Accept Edits' }),
+      description: t('permissions.kilo.modes.acceptEdits.description', {
+        defaultValue: 'Auto-allow file edits; shell, web fetch, and outside-workspace access still prompt.',
+      }),
+    },
+    {
+      value: 'auto',
+      activeClass: 'border-blue-400 bg-blue-50 dark:border-blue-600 dark:bg-blue-900/20',
+      radioClass: 'text-blue-600',
+      titleClass: 'text-blue-900 dark:text-blue-100',
+      descriptionClass: 'text-blue-700 dark:text-blue-300',
+      title: t('permissions.kilo.modes.auto.title', { defaultValue: 'Auto' }),
+      description: t('permissions.kilo.modes.auto.description', {
+        defaultValue: 'Approve permission prompts automatically. Your own Kilo Code deny rules still block.',
+      }),
+    },
+    {
+      value: 'bypassPermissions',
+      activeClass: 'border-orange-400 bg-orange-50 dark:border-orange-600 dark:bg-orange-900/20',
+      radioClass: 'text-orange-600',
+      titleClass: 'text-orange-900 dark:text-orange-100',
+      descriptionClass: 'text-orange-700 dark:text-orange-300',
+      title: t('permissions.kilo.modes.bypassPermissions.title', { defaultValue: 'Bypass Permissions' }),
+      description: t('permissions.kilo.modes.bypassPermissions.description', {
+        defaultValue: 'Alias of Auto: approve ACP permission requests automatically for this run.',
+      }),
+      warning: true,
+    },
+    {
+      value: 'plan',
+      activeClass: 'border-violet-400 bg-violet-50 dark:border-violet-600 dark:bg-violet-900/20',
+      radioClass: 'text-violet-600',
+      titleClass: 'text-violet-900 dark:text-violet-100',
+      descriptionClass: 'text-violet-700 dark:text-violet-300',
+      title: t('permissions.kilo.modes.plan.title', { defaultValue: 'Plan' }),
+      description: t('permissions.kilo.modes.plan.description', {
+        defaultValue: 'Kilo Code\u2019s read-only plan agent; anything it needs is still asked for.',
+      }),
+    },
+  ];
+
+  return (
+    <div className="space-y-6">
+      <div className="space-y-4">
+        <div className="flex items-center gap-3">
+          <Shield className="h-5 w-5 text-green-500" />
+          <h3 className="text-lg font-medium text-foreground">
+            {t('permissions.kilo.permissionMode', { defaultValue: 'Permission Mode' })}
+          </h3>
+        </div>
+        <p className="text-sm text-muted-foreground">
+          {t('permissions.kilo.description', {
+            defaultValue: 'Controls how Kilo Code handles file edits, shell commands, and access outside the workspace.',
+          })}
+        </p>
+
+        {modes.map((mode) => (
+          <div
+            key={mode.value}
+            className={`cursor-pointer rounded-lg border p-4 transition-all ${
+              permissionMode === mode.value
+                ? mode.activeClass
+                : 'border-border bg-card/50 active:border-border active:bg-accent/50'
+            }`}
+            onClick={() => onPermissionModeChange(mode.value)}
+          >
+            <label className="flex cursor-pointer items-start gap-3">
+              <input
+                type="radio"
+                name="kiloPermissionMode"
+                checked={permissionMode === mode.value}
+                onChange={() => onPermissionModeChange(mode.value)}
+                className={`mt-1 h-4 w-4 ${mode.radioClass}`}
+              />
+              <div>
+                <div className={`flex items-center gap-2 font-medium ${mode.titleClass}`}>
+                  {mode.title}
+                  {mode.warning ? <AlertTriangle className="h-4 w-4" /> : null}
+                </div>
+                <div className={`text-sm ${mode.descriptionClass}`}>
+                  {mode.description}
+                </div>
+              </div>
+            </label>
+          </div>
+        ))}
+
+        <p className="text-xs text-muted-foreground">
+          {t('permissions.kilo.overrideNote', {
+            defaultValue: 'You can override this per session using the mode button in the chat interface.',
+          })}
+        </p>
+      </div>
+    </div>
+  );
+}
+
 type PiPermissionsProps = {
   agent: 'pi';
   permissionMode: import('../../../../../types/types').PiPermissionMode;
@@ -927,6 +1065,7 @@ type PermissionsContentProps =
   | CursorPermissionsProps
   | GrokPermissionsProps
   | CodexPermissionsProps
+  | KiloPermissionsProps
   | PiPermissionsProps;
 
 export default function PermissionsContent(props: PermissionsContentProps) {
@@ -940,6 +1079,10 @@ export default function PermissionsContent(props: PermissionsContentProps) {
 
   if (props.agent === 'grok') {
     return <GrokPermissions {...props} />;
+  }
+
+  if (props.agent === 'kilo') {
+    return <KiloPermissions {...props} />;
   }
 
   if (props.agent === 'pi') {

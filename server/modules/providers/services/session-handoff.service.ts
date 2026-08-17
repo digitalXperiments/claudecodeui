@@ -71,6 +71,14 @@ export type CreateHandoffSessionResult = {
   backupFilePath?: string;
 };
 
+const SECOND_OPINION_PREAMBLE = `You are giving a **second opinion** on another agent's work. Do not take over the original session. Review the conversation and the current diff, then:
+
+1. Say whether you agree with the current plan / implementation.
+2. List concrete risks, missing tests, or simpler alternatives.
+3. If you would change something, write the exact patch or next step.
+
+Stay concise. The human will stay in the original thread and decide.`;
+
 const GOAL_MAX_CHARS = 1500;
 const RECENT_MESSAGE_MAX_CHARS = 1200;
 const FULL_MESSAGE_MAX_CHARS = 4000;
@@ -700,6 +708,33 @@ export const sessionHandoffService = {
       handoffPrompt,
       ...(handoffFilePath ? { handoffFilePath } : {}),
       ...(backupFilePath ? { backupFilePath } : {}),
+    };
+  },
+
+  /**
+   * Second opinion: same project + last turns + git state, new provider.
+   * The caller stays in the original thread and sends this prompt on the
+   * side session — it is not a handoff the user is expected to switch to.
+   */
+  async createSecondOpinionSession(input: {
+    sourceSessionId: string;
+    targetProvider: LLMProvider;
+    targetModel?: string | null;
+  }): Promise<CreateHandoffSessionResult> {
+    const result = await sessionHandoffService.createHandoffSession({
+      sourceSessionId: input.sourceSessionId,
+      targetProvider: input.targetProvider,
+      targetModel: input.targetModel,
+      mode: 'summary',
+      saveToFile: false,
+      saveToMemory: false,
+      includeGitState: true,
+      includeKanbanState: false,
+    });
+    const body = result.handoffPrompt?.trim() || 'Review the current session and git state.';
+    return {
+      ...result,
+      handoffPrompt: `${SECOND_OPINION_PREAMBLE}\n\n${body}`,
     };
   },
 

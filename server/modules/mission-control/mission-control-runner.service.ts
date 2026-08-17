@@ -12,6 +12,7 @@ import type {
   McItem,
   McSection,
 } from '@/modules/mission-control/mission-control.types.js';
+import { isKanbanEnabled } from '@/modules/app-features/app-features.service.js';
 import { kanbanDb, COLUMN_BACKLOG } from '@/modules/kanban/index.js';
 import { AppError } from '@/shared/utils.js';
 import { resolveProviderAuthFailure } from '@/shared/provider-auth-failure.js';
@@ -711,6 +712,9 @@ function maybeBridgeToKanban(
   action: McAction,
   item: McItem,
 ): McItem {
+  if (!isKanbanEnabled()) {
+    return item;
+  }
   if (!section.create_kanban_task || action.kind !== 'approve' || item.status !== 'resolved') {
     return item;
   }

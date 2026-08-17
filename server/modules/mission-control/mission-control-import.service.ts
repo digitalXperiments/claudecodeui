@@ -62,6 +62,7 @@ function mapEngineToProvider(engine: string | null | undefined): McProvider {
   const e = (engine || 'claude').toLowerCase().trim();
   if (isMcProvider(e)) return e;
   if (e === 'opencode') return 'opencode';
+  if (e === 'kilo') return 'kilo';
   if (e === 'grok') return 'grok';
   return 'claude';
 }

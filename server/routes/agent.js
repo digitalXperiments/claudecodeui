@@ -9,8 +9,9 @@ import { userDb, apiKeysDb, githubTokensDb, projectsDb } from '../modules/databa
 import { queryClaudeSDK } from '../claude-sdk.js';
 import { spawnCursor } from '../cursor-cli.js';
 import { queryCodex } from '../openai-codex.js';
-import { spawnOpenCode } from '../opencode-cli.js';
+import { spawnCline, spawnKilo, spawnOpenCode, spawnQwenCode } from '../opencode-cli.js';
 import { getPiSessionStats, spawnPi } from '../pi-cli.js';
+import { spawnKimi } from '../kimi-cli.js';
 import { buildPiTokenUsageFromStats } from '../modules/providers/list/pi/pi-token-usage.js';
 import { Octokit } from '@octokit/rest';
 import { providerModelsService } from '../modules/providers/services/provider-models.service.js';
@@ -659,7 +660,7 @@ class ResponseCollector {
  *                          - Source for auto-generated branch names (if createBranch=true and no branchName)
  *                          - Fallback for PR title if no commits are made
  *
- * @param {string} provider - (Optional) AI provider to use. Options: 'claude' | 'cursor' | 'codex' | 'opencode' | 'pi'
+ * @param {string} provider - (Optional) AI provider to use. Options: 'claude' | 'cursor' | 'codex' | 'opencode' | 'kilo' | 'pi'
  *                           Default: 'claude'
  *
  * @param {boolean} stream - (Optional) Enable Server-Sent Events (SSE) streaming for real-time updates.
@@ -782,7 +783,7 @@ class ResponseCollector {
  * Input Validations (400 Bad Request):
  *   - Either githubUrl OR projectPath must be provided (not neither)
  *   - message must be non-empty string
- *   - provider must be 'claude', 'cursor', 'codex', 'opencode', or 'pi'
+ *   - provider must be 'claude', 'cursor', 'codex', 'opencode', 'kilo', or 'pi'
  *   - createBranch/createPR requires githubUrl OR projectPath (not neither)
  *   - branchName must pass Git naming rules (if provided)
  *
@@ -894,8 +895,8 @@ router.post('/', validateExternalApiKey, async (req, res) => {
     return res.status(400).json({ error: 'message is required' });
   }
 
-  if (!['claude', 'cursor', 'codex', 'opencode', 'pi'].includes(provider)) {
-    return res.status(400).json({ error: 'provider must be "claude", "cursor", "codex", "opencode", or "pi"' });
+  if (!['claude', 'cursor', 'codex', 'opencode', 'kilo', 'cline', 'kimi', 'qwencode', 'pi'].includes(provider)) {
+    return res.status(400).json({ error: 'provider must be "claude", "cursor", "codex", "opencode", "kilo", "cline", "kimi", "qwencode", or "pi"' });
   }
 
   // Validate GitHub branch/PR creation requirements
@@ -973,8 +974,18 @@ router.post('/', validateExternalApiKey, async (req, res) => {
       });
     }
 
-    const codexModels = (await providerModelsService.getProviderModels('codex')).models;
-    const opencodeModels = (await providerModelsService.getProviderModels('opencode')).models;
+    const codexModels = provider === 'codex'
+      ? (await providerModelsService.getProviderModels('codex')).models
+      : null;
+    const opencodeModels = provider === 'opencode'
+      ? (await providerModelsService.getProviderModels('opencode')).models
+      : null;
+    const kiloModels = provider === 'kilo'
+      ? (await providerModelsService.getProviderModels('kilo')).models
+      : null;
+    const qwenModels = provider === 'qwencode'
+      ? (await providerModelsService.getProviderModels('qwencode')).models
+      : null;
 
     // Start the appropriate session
     if (provider === 'claude') {
@@ -1006,7 +1017,7 @@ router.post('/', validateExternalApiKey, async (req, res) => {
         projectPath: finalProjectPath,
         cwd: finalProjectPath,
         sessionId: sessionId || null,
-        model: model || codexModels.DEFAULT,
+        model: model || codexModels?.DEFAULT,
         effort,
         permissionMode: 'bypassPermissions'
       }, writer);
@@ -1017,9 +1028,54 @@ router.post('/', validateExternalApiKey, async (req, res) => {
         projectPath: finalProjectPath,
         cwd: finalProjectPath,
         sessionId: sessionId || null,
-        model: model || opencodeModels.DEFAULT,
+        model: model || opencodeModels?.DEFAULT,
         effort,
         permissionMode: 'bypassPermissions' // Agent runs are non-interactive, like the other providers above
+      }, writer);
+    } else if (provider === 'kilo') {
+      console.log('Starting Kilo Code CLI session');
+
+      await spawnKilo(message.trim(), {
+        projectPath: finalProjectPath,
+        cwd: finalProjectPath,
+        sessionId: sessionId || null,
+        model: model || kiloModels?.DEFAULT,
+        effort,
+        permissionMode: 'bypassPermissions'
+      }, writer);
+    } else if (provider === 'cline') {
+      console.log('Starting Cline CLI session');
+
+      await spawnCline(message.trim(), {
+        projectPath: finalProjectPath,
+        cwd: finalProjectPath,
+        sessionId: sessionId || null,
+        model: model || undefined,
+        effort,
+        permissionMode: 'bypassPermissions'
+      }, writer);
+    } else if (provider === 'qwencode') {
+      console.log('Starting Qwen Code CLI session');
+
+      await spawnQwenCode(message.trim(), {
+        projectPath: finalProjectPath,
+        cwd: finalProjectPath,
+        sessionId: sessionId || null,
+        model: model || qwenModels?.DEFAULT,
+        effort,
+        permissionMode: 'bypassPermissions',
+        unattended: true,
+      }, writer);
+    } else if (provider === 'kimi') {
+      console.log('Starting Kimi CLI session');
+      await spawnKimi(message.trim(), {
+        projectPath: finalProjectPath,
+        cwd: finalProjectPath,
+        sessionId: sessionId || null,
+        model,
+        effort,
+        permissionMode: 'bypassPermissions',
+        unattended: true,
       }, writer);
     } else if (provider === 'pi') {
       console.log('Starting Pi RPC session');

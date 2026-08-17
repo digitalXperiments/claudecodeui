@@ -17,8 +17,21 @@ export { projectMemoryService, getMemoryPreamble, configureMemoryCurationRuntime
 export { providerCapabilitiesService } from './services/provider-capabilities.service.js';
 export { providerAuthService } from './services/provider-auth.service.js';
 export { providerRegistry } from './provider.registry.js';
-export { buildClaudeTokenBudgetFromUsage, readClaudeSessionTokenUsage } from './list/claude/claude-token-usage.js';
+export {
+  buildClaudeTokenBudgetFromUsage,
+  readClaudeRunTokenUsage,
+  readClaudeSessionTokenUsage,
+} from './list/claude/claude-token-usage.js';
 export { CLAUDE_MODEL_ALIASES } from './list/claude/claude-models.provider.js';
+export {
+  ClaudeProviderAuth,
+  setClaudeAuthIoForTests,
+} from './list/claude/claude-auth.provider.js';
+export type {
+  ClaudeAuthIo,
+  DetectedProviderAuthStatus,
+  ProviderAuthDetection,
+} from './list/claude/claude-auth.provider.js';
 export { buildCodexTokenUsage } from './list/codex/codex-token-usage.js';
 export { findKimiSessionDir, readKimiSessionTokenUsage } from './list/kimi/kimi-token-usage.js';
 export { readGrokSessionTokenUsage, resolveGrokSessionDir } from './list/grok/grok-sessions.provider.js';

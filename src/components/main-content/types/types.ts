@@ -63,6 +63,9 @@ export type MainContentProps = {
   onNewSession: (project: Project) => void;
   onLoadMoreSessions?: (projectId: string) => void | Promise<void>;
   isLoadingMoreSessions?: boolean;
+  projects?: Project[];
+  studioActive?: boolean;
+  onLeaveStudio?: () => void;
 };
 
 export type MainContentHeaderProps = {

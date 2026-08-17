@@ -25,6 +25,8 @@ function makeStats(overrides: Partial<GlobalRunStats> = {}): GlobalRunStats {
       totalTokens: 0,
       inputTokens: 0,
       outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
       totalCostUsd: null,
       runsWithCost: 0,
       totalDurationMs: 0,
@@ -54,6 +56,14 @@ test('resolveStatsRange: presets produce inclusive bounds ending at now', () => 
   const month = resolveStatsRange('30d', undefined, undefined, NOW);
   assert.equal(month.from, '2026-07-13T00:00:00.000Z');
 
+  const today = resolveStatsRange('today', undefined, undefined, NOW);
+  assert.equal(today.from, '2026-08-11T00:00:00.000Z');
+  assert.equal(today.to, '2026-08-11T23:59:59.999Z');
+
+  const yesterday = resolveStatsRange('yesterday', undefined, undefined, NOW);
+  assert.equal(yesterday.from, '2026-08-10T00:00:00.000Z');
+  assert.equal(yesterday.to, '2026-08-10T23:59:59.999Z');
+
   assert.deepEqual(resolveStatsRange('all', undefined, undefined, NOW), {});
 });
 
@@ -78,6 +88,8 @@ test('resolveStatsRange: reversed custom dates are normalized, not left impossib
 
 test('describeStatsRange: all-time and bounded labels', () => {
   assert.equal(describeStatsRange('all', {}), 'All time');
+  assert.equal(describeStatsRange('today', { from: '2026-08-11T00:00:00.000Z' }), 'Today (UTC)');
+  assert.equal(describeStatsRange('yesterday', { from: '2026-08-10T00:00:00.000Z' }), 'Yesterday (UTC)');
   const label = describeStatsRange('7d', {
     from: '2026-08-05T00:00:00.000Z',
     to: '2026-08-11T12:00:00.000Z',
@@ -150,6 +162,8 @@ test('deriveStatsInsights: full payload yields pattern insights with real values
       totalTokens: 100_000,
       inputTokens: 70_000,
       outputTokens: 30_000,
+      cacheReadTokens: 50_000,
+      cacheWriteTokens: 5_000,
       totalCostUsd: 1.25,
       runsWithCost: 8,
       totalDurationMs: 600_000,

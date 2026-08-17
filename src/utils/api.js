@@ -15,6 +15,31 @@ export const isValidRefreshedToken = (token) =>
 // 401 at once, and one event is enough to send the user to login.
 let lastSessionExpiredDispatch = 0;
 const SESSION_EXPIRED_DISPATCH_GAP_MS = 2000;
+let sessionExpiredCheckInFlight = null;
+
+/**
+ * A 401 during a rebuild is often the proxy or a half-booted server, not a
+ * real logout. Confirm `/api/auth/status` (unauthenticated) is reachable
+ * before wiping the stored token.
+ */
+const confirmSessionExpiredBeforeLogout = () => {
+  if (sessionExpiredCheckInFlight) {
+    return sessionExpiredCheckInFlight;
+  }
+  sessionExpiredCheckInFlight = fetch('/api/auth/status', { cache: 'no-store' })
+    .then((statusResponse) => {
+      if (statusResponse.ok) {
+        window.dispatchEvent(new CustomEvent('auth:session-expired'));
+      }
+    })
+    .catch(() => {
+      // Server is down or restarting — keep the token.
+    })
+    .finally(() => {
+      sessionExpiredCheckInFlight = null;
+    });
+  return sessionExpiredCheckInFlight;
+};
 
 // Utility function for authenticated API calls
 export const authenticatedFetch = (url, options = {}) => {
@@ -49,7 +74,7 @@ export const authenticatedFetch = (url, options = {}) => {
       const now = Date.now();
       if (now - lastSessionExpiredDispatch >= SESSION_EXPIRED_DISPATCH_GAP_MS) {
         lastSessionExpiredDispatch = now;
-        window.dispatchEvent(new CustomEvent('auth:session-expired'));
+        void confirmSessionExpiredBeforeLogout();
       }
     }
     return response;
@@ -97,6 +122,38 @@ export const createSessionHandoff = async (sessionId, body) => {
       payload?.message ||
       (typeof payload?.error === 'string' ? payload.error : null) ||
       `Handoff failed (HTTP ${response.status})`;
+    throw new Error(message);
+  }
+
+  return payload?.data ?? payload;
+};
+
+/**
+ * Second opinion: same project + recent turns + git diff, new provider.
+ * The original session stays the user's surface.
+ */
+export const createSessionSecondOpinion = async (sessionId, body) => {
+  const response = await authenticatedFetch(
+    `/api/providers/sessions/${encodeURIComponent(sessionId)}/second-opinion`,
+    {
+      method: 'POST',
+      body: JSON.stringify(body),
+    },
+  );
+
+  let payload = null;
+  try {
+    payload = await response.json();
+  } catch {
+    // Non-JSON error body
+  }
+
+  if (!response.ok) {
+    const message =
+      payload?.error?.message ||
+      payload?.message ||
+      (typeof payload?.error === 'string' ? payload.error : null) ||
+      `Second opinion failed (HTTP ${response.status})`;
     throw new Error(message);
   }
 

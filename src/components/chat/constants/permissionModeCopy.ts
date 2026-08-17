@@ -113,6 +113,50 @@ export const PERMISSION_MODE_COPY: Record<
       technical: 'OpenCode ACP mode = plan + OPENCODE_PERMISSION ask',
     },
   },
+  kilo: {
+    default: {
+      label: 'Default',
+      summary: 'Prompt for edits, shell, web fetch and access outside the workspace.',
+      technical: 'Kilo Code ACP mode = build + KILO_PERMISSION ask',
+    },
+    acceptEdits: {
+      label: 'Accept Edits',
+      summary: 'Auto-allow file edits; shell, web fetch and outside-workspace access still prompt.',
+      technical: 'KILO_PERMISSION={"edit":"allow", …:"ask"}',
+    },
+    auto: {
+      label: 'Auto',
+      summary: 'Approve prompts automatically. Kilo Code deny rules still apply.',
+      technical: 'Kilo Code ACP mode = build, approvals answered automatically',
+    },
+    bypassPermissions: {
+      label: 'Bypass Permissions',
+      summary: 'Approve ACP permission requests automatically for this run.',
+      technical: 'Kilo Code ACP mode = build, CloudCLI auto-approves requests',
+    },
+    plan: {
+      label: 'Plan',
+      summary: 'Kilo Code’s read-only plan agent; anything it needs is still asked for.',
+      technical: 'Kilo Code ACP mode = plan + KILO_PERMISSION ask',
+    },
+  },
+  cline: {
+    default: {
+      label: 'Default',
+      summary: 'Use Cline’s normal ACP permission flow.',
+      technical: 'cline --acp with CloudCLI approval requests',
+    },
+    auto: {
+      label: 'Auto',
+      summary: 'Automatically approve Cline tool requests for this run.',
+      technical: 'CloudCLI ACP approval bridge auto-approves requests',
+    },
+    bypassPermissions: {
+      label: 'Bypass Permissions',
+      summary: 'Skip Cline permission prompts for this run.',
+      technical: 'CloudCLI ACP approval bridge auto-approves requests',
+    },
+  },
   grok: {
     default: {
       label: 'Default',
@@ -161,6 +205,12 @@ export const PERMISSION_MODE_COPY: Record<
       summary: 'YOLO — automatically approve all actions.',
       technical: 'Kimi ACP mode = yolo',
     },
+  },
+  qwencode: {
+    default: { label: 'Default', summary: 'Ask before Qwen Code runs tools that require approval.', technical: 'Qwen ACP mode = default' },
+    plan: { label: 'Plan', summary: 'Plan and inspect without making normal implementation changes.', technical: 'Qwen ACP mode = plan' },
+    auto: { label: 'Auto', summary: 'Approve Qwen Code tool requests automatically for this session.', technical: 'Qwen ACP mode = auto' },
+    bypassPermissions: { label: 'Bypass Permissions', summary: 'Qwen Code yolo mode — automatically approve actions.', technical: 'Qwen ACP mode = yolo' },
   },
   pi: {
     plan: {

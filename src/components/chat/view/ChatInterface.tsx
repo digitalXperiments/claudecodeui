@@ -12,7 +12,7 @@ import { useChatSessionState } from '../hooks/useChatSessionState';
 import { useChatRealtimeHandlers } from '../hooks/useChatRealtimeHandlers';
 import { useChatComposerState } from '../hooks/useChatComposerState';
 import { useSessionStore } from '../../../stores/useSessionStore';
-import { createSessionHandoff } from '../../../utils/api';
+import { authenticatedFetch, createSessionHandoff } from '../../../utils/api';
 import { resolveProviderModelLabel } from '../../../utils/providerModels';
 import { readProviderToolsSettings, writeQueuedMessage } from '../utils/chatStorage';
 import { DEFAULT_EFFORT_VALUE } from '../constants/providerEffort';
@@ -22,6 +22,10 @@ import SkillWizardDialog from '../../skills/view/SkillWizardDialog';
 import ChatMessagesPane from './subcomponents/ChatMessagesPane';
 import ChatComposer from './subcomponents/ChatComposer';
 import CommandResultModal, { type SessionSwitchRequest } from './subcomponents/CommandResultModal';
+import LiveSpendMeter from './subcomponents/LiveSpendMeter';
+import ProviderUsageLegend from './subcomponents/ProviderUsageLegend';
+import SecondOpinionControl from './subcomponents/SecondOpinionControl';
+import SessionCollaborationControl from './subcomponents/SessionCollaborationControl';
 
 /** Labels for the post-switch notice (mirrors CommandResultModal's map). */
 const SWITCH_PROVIDER_LABELS: Record<string, string> = {
@@ -29,6 +33,8 @@ const SWITCH_PROVIDER_LABELS: Record<string, string> = {
   cursor: 'Cursor',
   codex: 'Codex',
   opencode: 'OpenCode',
+  kilo: 'Kilo Code',
+  cline: 'Cline',
   grok: 'Grok',
   kimi: 'Kimi',
   pi: 'Pi',
@@ -41,6 +47,7 @@ const getSwitchProviderLabel = (targetProvider: string) =>
 type PendingHandoffSend = {
   sessionId: string;
   provider: Provider;
+  projectId: string | null;
   model: string | null;
   prompt: string | null;
   filePath?: string;
@@ -99,12 +106,16 @@ function ChatInterface({
     selectCodexFastMode,
     currentProviderEffort,
     currentProviderEffortOptions,
-    opencodeModel,
-    setOpenCodeModel,
+  opencodeModel,
+  setOpenCodeModel,
+  kiloModel,
+  setKiloModel,
     grokModel,
     setGrokModel,
     kimiModel,
     setKimiModel,
+    qwencodeModel,
+    setQwenCodeModel,
     piModel,
     setPiModel,
     permissionMode,
@@ -246,6 +257,79 @@ function ChatInterface({
   // sending before that would stamp the message onto the old session.
   const [pendingHandoffSend, setPendingHandoffSend] = useState<PendingHandoffSend | null>(null);
 
+  // Mission Control "Work this" parks the implementer prompt in sessionStorage
+  // so this view can send it after /session/:id mounts.
+  useEffect(() => {
+    const sessionId = selectedSession?.id || currentSessionId;
+    const projectScopedKey = selectedProject?.projectId
+      ? `cloudcli:pending-prompt:new:${selectedProject.projectId}`
+      : null;
+    const sessionKey = sessionId ? `cloudcli:pending-prompt:${sessionId}` : null;
+    const sessionRaw = sessionKey ? sessionStorage.getItem(sessionKey) : null;
+    // A project-scoped prompt represents an explicit NEW-chat intent. Never
+    // consume it while the previous session id is still mounted during the
+    // project/new-session state transition — that race sent a Studio prompt
+    // into an unrelated Codex conversation.
+    const projectRaw = !sessionId && projectScopedKey
+      ? sessionStorage.getItem(projectScopedKey)
+      : null;
+    const raw = sessionRaw || projectRaw;
+    if (!raw) return;
+    if (sessionRaw && sessionKey) sessionStorage.removeItem(sessionKey);
+    if (projectRaw && projectScopedKey) sessionStorage.removeItem(projectScopedKey);
+    let cancelled = false;
+    try {
+      const parsed = JSON.parse(raw) as { prompt?: string; provider?: string; summary?: string };
+      const prompt = typeof parsed.prompt === 'string' ? parsed.prompt.trim() : '';
+      if (!prompt) return;
+      const targetProvider = (parsed.provider || provider) as Provider;
+      void (async () => {
+        let targetSessionId = sessionId;
+        if (!targetSessionId) {
+          const projectPath = selectedProject?.fullPath || selectedProject?.path || '';
+          if (!selectedProject || !projectPath) return;
+          const response = await authenticatedFetch('/api/providers/sessions', {
+            method: 'POST',
+            body: JSON.stringify({ provider: targetProvider, projectPath }),
+          });
+          if (!response.ok) {
+            throw new Error(`Failed to allocate Studio chat session (${response.status})`);
+          }
+          const body = await response.json();
+          targetSessionId = body?.data?.sessionId || null;
+          if (!targetSessionId) throw new Error('Studio chat allocation returned no session id');
+          if (cancelled) return;
+          handleSessionEstablished(targetSessionId, {
+            provider: targetProvider,
+            project: selectedProject,
+            summary: parsed.summary || 'Studio ideation',
+          });
+        }
+        if (cancelled || !targetSessionId) return;
+        setPendingHandoffSend({
+          sessionId: targetSessionId,
+          provider: targetProvider,
+          projectId: selectedProject?.projectId ?? null,
+          model: localStorage.getItem(`${targetProvider}-model`) || null,
+          prompt,
+        });
+      })().catch((error) => {
+        console.error('[Chat] Failed to start parked prompt:', error);
+      });
+    } catch {
+      // Ignore a corrupt parked prompt rather than blocking the session.
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    selectedSession?.id,
+    currentSessionId,
+    provider,
+    selectedProject,
+    handleSessionEstablished,
+  ]);
+
   // Confirm handler for the model picker's switch-options step. Runs the
   // handoff API, then re-points provider state, session state, and the URL at
   // the freshly created session. Rejections propagate so the modal shows the
@@ -302,6 +386,7 @@ function ChatInterface({
     setPendingHandoffSend({
       sessionId: newSessionId,
       provider: targetProvider,
+      projectId: selectedProject.projectId,
       model: targetModel,
       prompt:
         typeof data?.handoffPrompt === 'string' && data.handoffPrompt.trim().length > 0
@@ -324,11 +409,15 @@ function ChatInterface({
     }
 
     const viewSessionId = selectedSession?.id || currentSessionId;
-    if (viewSessionId !== pendingHandoffSend.sessionId) {
+    const parkedId = pendingHandoffSend.sessionId === 'pending-new'
+      ? viewSessionId
+      : pendingHandoffSend.sessionId;
+    if (!parkedId || viewSessionId !== parkedId) {
       return;
     }
 
-    const { sessionId, provider: targetProvider, model, prompt, filePath } = pendingHandoffSend;
+    const { provider: targetProvider, projectId, model, prompt, filePath } = pendingHandoffSend;
+    const sessionId = parkedId;
     setPendingHandoffSend(null);
 
     const targetLabel = getSwitchProviderLabel(targetProvider);
@@ -362,6 +451,8 @@ function ChatInterface({
     const sent = sendMessage({
       type: 'chat.send',
       sessionId,
+      expectedProvider: targetProvider,
+      expectedProjectId: projectId,
       content: prompt,
       options: { ...sendOptions, images: [] },
     });
@@ -595,6 +686,8 @@ function ChatInterface({
           ? t('messageTypes.codex')
           : provider === 'opencode'
               ? t('messageTypes.opencode', { defaultValue: 'OpenCode' })
+            : provider === 'kilo'
+              ? t('messageTypes.kilo', { defaultValue: 'Kilo Code' })
             : t('messageTypes.claude');
 
     return (
@@ -614,6 +707,8 @@ function ChatInterface({
   return (
     <PermissionContext.Provider value={permissionContextValue}>
       <div className="flex h-full min-h-0 flex-col">
+        <div className="chat-canvas-layout flex min-h-0 flex-1" data-testid="chat-canvas-layout">
+          <div className="chat-transcript-column flex min-h-0 min-w-0 flex-1 flex-col" data-testid="chat-transcript-column">
         <ChatMessagesPane
           scrollContainerRef={scrollContainerRef}
           onWheel={handleScroll}
@@ -635,10 +730,14 @@ function ChatInterface({
           setCodexModel={setCodexModel}
           opencodeModel={opencodeModel}
           setOpenCodeModel={setOpenCodeModel}
+          kiloModel={kiloModel}
+          setKiloModel={setKiloModel}
           grokModel={grokModel}
           setGrokModel={setGrokModel}
           kimiModel={kimiModel}
           setKimiModel={setKimiModel}
+          qwencodeModel={qwencodeModel}
+          setQwenCodeModel={setQwenCodeModel}
           piModel={piModel}
           setPiModel={setPiModel}
           providerModelCatalog={providerModelCatalog}
@@ -669,6 +768,84 @@ function ChatInterface({
         />
 
         <div className="relative flex-shrink-0">
+          <div className="flex items-center justify-between gap-2 px-3 pb-1">
+            <SessionCollaborationControl
+              currentSessionId={selectedSession?.id || currentSessionId || null}
+              sessions={selectedProject?.sessions || []}
+              onStart={async ({ sessionId, provider: targetProvider, prompt }) => {
+                const targetModel = localStorage.getItem(`${targetProvider}-model`) || null;
+                const effort = localStorage.getItem(`${targetProvider}-effort`) || DEFAULT_EFFORT_VALUE;
+                const toolsSettings = readProviderToolsSettings(targetProvider);
+                const sendOptions: Record<string, unknown> = {
+                  effort,
+                  permissionMode: resolvePermissionModeForProvider(targetProvider, permissionMode),
+                  toolsSettings,
+                  skipPermissions: Boolean(toolsSettings?.skipPermissions),
+                  delegatedRequest: true,
+                  delegatingSessionId: selectedSession?.id || currentSessionId || null,
+                  sessionSummary: 'Delegated request from another session',
+                  images: [],
+                };
+                if (targetModel) {
+                  sendOptions.model = targetModel;
+                }
+
+                const sent = sendMessage({
+                  type: 'chat.send',
+                  sessionId,
+                  expectedProvider: targetProvider,
+                  expectedProjectId: selectedProject?.projectId ?? null,
+                  content: prompt,
+                  options: sendOptions,
+                });
+
+                if (targetModel) {
+                  persistSessionModelEffort(targetProvider, sessionId, targetModel, effort);
+                }
+
+                if (sent) {
+                  onSessionProcessing?.(sessionId, {
+                    statusText: 'Working on a delegated request',
+                    canInterrupt: true,
+                  });
+                  showHandoffNotice(`Request sent to ${getSwitchProviderLabel(targetProvider)} · open /session/${sessionId} to follow it.`);
+                  return;
+                }
+
+                writeQueuedMessage(sessionId, { content: prompt, options: sendOptions });
+                showHandoffNotice('Not connected — the delegated request is queued for that session.');
+              }}
+            />
+            <SecondOpinionControl
+              sessionId={selectedSession?.id || currentSessionId || null}
+              currentProvider={provider}
+              onStart={({ sessionId, provider: targetProvider, prompt }) => {
+                const effort = localStorage.getItem(`${targetProvider}-effort`) || DEFAULT_EFFORT_VALUE;
+                const toolsSettings = readProviderToolsSettings(targetProvider);
+                const sent = sendMessage({
+                  type: 'chat.send',
+                  sessionId,
+                  expectedProvider: targetProvider,
+                  expectedProjectId: selectedProject?.projectId ?? null,
+                  content: prompt,
+                  options: {
+                    effort,
+                    permissionMode: resolvePermissionModeForProvider(targetProvider, permissionMode),
+                    toolsSettings,
+                    skipPermissions: Boolean(toolsSettings?.skipPermissions),
+                    sessionSummary: `Second opinion from ${getSwitchProviderLabel(targetProvider)}`,
+                    images: [],
+                  },
+                });
+                showHandoffNotice(
+                  sent
+                    ? `${getSwitchProviderLabel(targetProvider)} is reviewing — you stay in this thread. Open /session/${sessionId} if you want the full answer.`
+                    : 'Not connected — could not start the second opinion.',
+                );
+              }}
+            />
+            <LiveSpendMeter sessionId={selectedSession?.id || currentSessionId || null} />
+          </div>
           {isUserScrolledUp && chatMessages.length > 0 && (
             <div className="pointer-events-none absolute -top-11 left-0 right-0 z-20 flex justify-center">
               <button
@@ -758,6 +935,8 @@ function ChatInterface({
                   ? t('messageTypes.codex')
                   : provider === 'opencode'
                       ? t('messageTypes.opencode', { defaultValue: 'OpenCode' })
+                    : provider === 'kilo'
+                      ? t('messageTypes.kilo', { defaultValue: 'Kilo Code' })
                     : provider === 'grok'
                       ? t('messageTypes.grok', { defaultValue: 'Grok Build' })
                       : provider === 'kimi'
@@ -769,6 +948,9 @@ function ChatInterface({
           isTextareaExpanded={isTextareaExpanded}
           sendByCtrlEnter={sendByCtrlEnter}
         />
+        </div>
+          </div>
+          <ProviderUsageLegend />
         </div>
       </div>
 

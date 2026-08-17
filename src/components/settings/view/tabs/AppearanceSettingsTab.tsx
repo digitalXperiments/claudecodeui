@@ -1,11 +1,18 @@
 import { useTranslation } from 'react-i18next';
+
 import { useTheme } from '../../../../contexts/ThemeContext';
+import { useAppFeatures } from '../../../../hooks/useAppFeatures';
 import type { CodeEditorSettingsState, ProjectSortOrder } from '../../types/types';
 import LanguageSelector from '../../../../shared/view/ui/LanguageSelector';
 import SettingsCard from '../SettingsCard';
 import SettingsRow from '../SettingsRow';
 import SettingsSection from '../SettingsSection';
 import SettingsToggle from '../SettingsToggle';
+import {
+  PROVIDER_USAGE_PROVIDERS,
+  type ProviderUsageProviderId,
+  type ProviderUsageVisibility,
+} from '../../../../utils/providerUsagePreferences';
 
 type AppearanceSettingsTabProps = {
   projectSortOrder: ProjectSortOrder;
@@ -15,6 +22,10 @@ type AppearanceSettingsTabProps = {
   onCodeEditorShowMinimapChange: (value: boolean) => void;
   onCodeEditorLineNumbersChange: (value: boolean) => void;
   onCodeEditorFontSizeChange: (value: string) => void;
+  providerUsageLegendCollapsed: boolean;
+  providerUsageVisibility: ProviderUsageVisibility;
+  onProviderUsageLegendCollapsedChange: (value: boolean) => void;
+  onProviderUsageVisibilityChange: (providerId: ProviderUsageProviderId, value: boolean) => void;
 };
 
 export default function AppearanceSettingsTab({
@@ -25,8 +36,13 @@ export default function AppearanceSettingsTab({
   onCodeEditorShowMinimapChange,
   onCodeEditorLineNumbersChange,
   onCodeEditorFontSizeChange,
+  providerUsageLegendCollapsed,
+  providerUsageVisibility,
+  onProviderUsageLegendCollapsedChange,
+  onProviderUsageVisibilityChange,
 }: AppearanceSettingsTabProps) {
   const { t } = useTranslation('settings');
+  const { features, update } = useAppFeatures();
   const { themeMode, setThemeMode } = useTheme() as {
     themeMode: string;
     setThemeMode: (mode: string) => void;
@@ -75,6 +91,38 @@ export default function AppearanceSettingsTab({
               <option value="date">{t('appearanceSettings.projectSorting.recentActivity')}</option>
             </select>
           </SettingsRow>
+        </SettingsCard>
+      </SettingsSection>
+
+      <SettingsSection
+        title={t('appearanceSettings.providerUsage.title', { defaultValue: 'Provider usage' })}
+      >
+        <SettingsCard divided>
+          <SettingsRow
+            label={t('appearanceSettings.providerUsage.collapsedLabel', { defaultValue: 'Minimize provider usage widget' })}
+            description={t('appearanceSettings.providerUsage.collapsedDescription', {
+              defaultValue: 'Keep provider usage as a small floating button until you open it.',
+            })}
+          >
+            <SettingsToggle
+              checked={providerUsageLegendCollapsed}
+              onChange={onProviderUsageLegendCollapsedChange}
+              ariaLabel={t('appearanceSettings.providerUsage.collapsedLabel', { defaultValue: 'Minimize provider usage widget' })}
+            />
+          </SettingsRow>
+          {PROVIDER_USAGE_PROVIDERS.map(({ id, label }) => (
+            <SettingsRow
+              key={id}
+              label={label}
+              description={`Show ${label} in the provider usage rail when signed in.`}
+            >
+              <SettingsToggle
+                checked={providerUsageVisibility[id]}
+                onChange={(value) => onProviderUsageVisibilityChange(id, value)}
+                ariaLabel={`Show ${label} usage`}
+              />
+            </SettingsRow>
+          ))}
         </SettingsCard>
       </SettingsSection>
 
@@ -132,6 +180,68 @@ export default function AppearanceSettingsTab({
               <option value="18">18px</option>
               <option value="20">20px</option>
             </select>
+          </SettingsRow>
+        </SettingsCard>
+      </SettingsSection>
+
+      <SettingsSection title={t('appearanceSettings.surfaces.title', { defaultValue: 'Surfaces' })}>
+        <SettingsCard>
+          <SettingsRow
+            label={t('appearanceSettings.surfaces.kanban.label', { defaultValue: 'Kanban board' })}
+            description={t('appearanceSettings.surfaces.kanban.description', {
+              defaultValue: 'Show the Kanban rail button, panel, and Mission Control → board bridge. Off hides it completely.',
+            })}
+          >
+            <SettingsToggle
+              checked={features.kanbanEnabled}
+              onChange={(value) => {
+                void update({ kanbanEnabled: value });
+              }}
+              ariaLabel={t('appearanceSettings.surfaces.kanban.label', { defaultValue: 'Kanban board' })}
+            />
+          </SettingsRow>
+        </SettingsCard>
+      </SettingsSection>
+
+      <SettingsSection title={t('appearanceSettings.spend.title', { defaultValue: 'Live spend governor' })}>
+        <SettingsCard divided>
+          <SettingsRow
+            label={t('appearanceSettings.spend.soft.label', { defaultValue: 'Soft cap (USD)' })}
+            description={t('appearanceSettings.spend.soft.description', {
+              defaultValue: 'Downgrade the next swarm seat (Opus → Sonnet → Haiku) once this swarm or chat crosses the cap. Empty = off.',
+            })}
+          >
+            <input
+              type="number"
+              min={1}
+              step={10}
+              value={features.spendSoftCostUsd ?? ''}
+              placeholder="off"
+              onChange={(event) => {
+                const raw = event.target.value.trim();
+                void update({ spendSoftCostUsd: raw === '' ? null : Number(raw) });
+              }}
+              className="w-full rounded-lg border border-input bg-card p-2.5 text-sm text-foreground sm:w-28"
+            />
+          </SettingsRow>
+          <SettingsRow
+            label={t('appearanceSettings.spend.hard.label', { defaultValue: 'Hard cap (USD)' })}
+            description={t('appearanceSettings.spend.hard.description', {
+              defaultValue: 'Pause the swarm and put a Needs you card up. Empty = off.',
+            })}
+          >
+            <input
+              type="number"
+              min={1}
+              step={10}
+              value={features.spendHardCostUsd ?? ''}
+              placeholder="off"
+              onChange={(event) => {
+                const raw = event.target.value.trim();
+                void update({ spendHardCostUsd: raw === '' ? null : Number(raw) });
+              }}
+              className="w-full rounded-lg border border-input bg-card p-2.5 text-sm text-foreground sm:w-28"
+            />
           </SettingsRow>
         </SettingsCard>
       </SettingsSection>

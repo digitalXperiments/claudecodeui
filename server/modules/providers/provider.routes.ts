@@ -292,8 +292,11 @@ const parseProvider = (value: unknown): LLMProvider => {
     || normalized === 'codex'
     || normalized === 'cursor'
     || normalized === 'opencode'
+    || normalized === 'kilo'
+    || normalized === 'cline'
     || normalized === 'grok'
     || normalized === 'kimi'
+    || normalized === 'qwencode'
     || normalized === 'pi'
   ) {
     return normalized;
@@ -483,8 +486,21 @@ router.get(
   '/mcp/inventory',
   asyncHandler(async (req: Request, res: Response) => {
     const workspacePath = readOptionalQueryString(req.query.workspacePath);
-    const items = await mcpCatalogService.listInventory({ workspacePath });
-    res.json(createApiSuccessResponse({ items }));
+    const phaseRaw = readOptionalQueryString(req.query.phase);
+    const phase = phaseRaw === 'full' ? 'full' : phaseRaw === 'fast' ? 'fast' : 'full';
+    const refresh = readOptionalQueryString(req.query.refresh);
+    const result = await mcpCatalogService.listInventory({
+      workspacePath,
+      phase,
+      // Explicit Refresh in the UI should re-probe CLIs, not serve a stale doctor cache.
+      bypassCliCache: refresh === '1' || refresh === 'true',
+    });
+    res.json(createApiSuccessResponse({
+      items: result.items,
+      phase: result.phase,
+      partial: result.partial,
+      warnings: result.warnings ?? [],
+    }));
   }),
 );
 
@@ -782,6 +798,27 @@ router.post(
     const result = await sessionHandoffService.createHandoffSession({
       sourceSessionId: sessionId,
       ...payload,
+    });
+    res.status(201).json(createApiSuccessResponse(result));
+  }),
+);
+
+/**
+ * Second opinion: same files + recent turns + current diff, new provider.
+ * The original session stays the user's surface.
+ */
+router.post(
+  '/sessions/:sessionId/second-opinion',
+  asyncHandler(async (req: Request, res: Response) => {
+    const sessionId = parseSessionId(req.params.sessionId);
+    const payload = await parseHandoffPayload({
+      ...(req.body && typeof req.body === 'object' ? req.body : {}),
+      mode: 'summary',
+    });
+    const result = await sessionHandoffService.createSecondOpinionSession({
+      sourceSessionId: sessionId,
+      targetProvider: payload.targetProvider,
+      targetModel: payload.targetModel,
     });
     res.status(201).json(createApiSuccessResponse(result));
   }),

@@ -11,6 +11,7 @@ export {
   retryItem,
   previewItemResolution,
 } from '@/modules/mission-control/mission-control-runner.service.js';
+export { workThisItem, matchProjectsForItem, buildWorkThisPrompt } from '@/modules/mission-control/mission-control-work.service.js';
 export type {
   ProduceRunResult,
   RetryItemResult,

@@ -6,8 +6,11 @@ const PROVIDER_LABELS: Record<LLMProvider, string> = {
   cursor: 'Cursor',
   codex: 'Codex',
   opencode: 'OpenCode',
+  kilo: 'Kilo Code',
+  cline: 'Cline',
   grok: 'Grok',
   kimi: 'Kimi',
+  qwencode: 'Qwen Code',
   pi: 'Pi',
 };
 
@@ -16,8 +19,11 @@ export const FANOUT_PROVIDERS: LLMProvider[] = [
   'cursor',
   'codex',
   'opencode',
+  'kilo',
+  'cline',
   'grok',
   'kimi',
+  'qwencode',
 ];
 
 type ProviderBindingMatrixProps = {

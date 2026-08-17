@@ -6,6 +6,7 @@
 import express from 'express';
 
 import { runService } from '@/modules/runs/runs.service.js';
+import { evaluateSpend } from '@/modules/runs/spend-governor.service.js';
 import type { GlobalStatsFilter } from '@/modules/runs/runs.types.js';
 import { AppError, asyncHandler } from '@/shared/utils.js';
 import {
@@ -96,6 +97,23 @@ router.get(
   }),
 );
 
+/** Must be registered before `/:runId` so "live-usage" is not captured as a run id. */
+router.get(
+  '/live-usage',
+  asyncHandler(async (req, res) => {
+    const sessionId = readOptionalString(req.query.sessionId);
+    if (!sessionId) {
+      throw new AppError('sessionId is required', {
+        code: 'RUN_SESSION_ID_REQUIRED',
+        statusCode: 400,
+      });
+    }
+    const usage = runService.usageForSession(sessionId);
+    const verdict = evaluateSpend(usage.costUsd);
+    res.json({ success: true, usage, verdict });
+  }),
+);
+
 /** Must be registered before `/:runId` so "stats" is not captured as a run id. */
 router.get(
   '/stats',
@@ -136,9 +154,11 @@ function readDateBound(value: unknown, name: string): string | undefined {
 router.get(
   '/stats/global',
   asyncHandler(async (req, res) => {
+    const providerRaw = readOptionalString(req.query.provider);
     const filter: GlobalStatsFilter = {
       from: readDateBound(req.query.from, 'from'),
       to: readDateBound(req.query.to, 'to'),
+      ...(providerRaw !== undefined ? { provider: providerRaw } : {}),
     };
     const stats = runService.globalStats(filter);
     res.json({ success: true, stats });

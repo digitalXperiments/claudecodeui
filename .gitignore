@@ -9,6 +9,8 @@ lerna-debug.log*
 # Build outputs
 dist/
 dist-server/
+dist-server.next/
+dist-server.prev/
 dist-ssr/
 build/
 out/

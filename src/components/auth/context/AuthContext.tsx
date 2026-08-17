@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { IS_PLATFORM } from '../../../constants/config';
 import { api } from '../../../utils/api';
 import { AUTH_ERROR_MESSAGES, AUTH_TOKEN_STORAGE_KEY } from '../constants';
@@ -41,6 +41,10 @@ export function AuthProvider({ children }: AuthProviderProps) {
   const [needsSetup, setNeedsSetup] = useState(false);
   const [hasCompletedOnboarding, setHasCompletedOnboarding] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Do not put `user` in checkAuthStatus's deps — a new object from /auth/user
+  // would retrigger the effect and wipe the token if a rebuild request fails.
+  const userRef = useRef(user);
+  userRef.current = user;
 
   const setSession = useCallback((nextUser: AuthUser, nextToken: string) => {
     setUser(nextUser);
@@ -79,7 +83,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
       // Only show the full-screen auth loader on cold start. After login/register,
       // setSession already set user+token and this effect re-runs because `token`
       // is a dependency — flashing AuthLoadingScreen would blank the whole app.
-      if (!user) {
+      if (!userRef.current) {
         setIsLoading(true);
       }
       setError(null);
@@ -99,8 +103,12 @@ export function AuthProvider({ children }: AuthProviderProps) {
       }
 
       const userResponse = await api.auth.user();
+      // 401/403 mean the token is actually invalid. 5xx / proxy errors during
+      // a rebuild must not delete localStorage or a restart looks like logout.
       if (!userResponse.ok) {
-        clearSession();
+        if (userResponse.status === 401 || userResponse.status === 403) {
+          clearSession();
+        }
         return;
       }
 
@@ -110,7 +118,17 @@ export function AuthProvider({ children }: AuthProviderProps) {
         return;
       }
 
-      setUser(userPayload.user);
+      const nextUser = userPayload.user;
+      setUser((previousUser) => {
+        if (
+          previousUser
+          && previousUser.id === nextUser.id
+          && previousUser.username === nextUser.username
+        ) {
+          return previousUser;
+        }
+        return nextUser;
+      });
       await checkOnboardingStatus();
     } catch (caughtError) {
       console.error('[Auth] Auth status check failed:', caughtError);
@@ -118,7 +136,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
     } finally {
       setIsLoading(false);
     }
-  }, [checkOnboardingStatus, clearSession, token, user]);
+  }, [checkOnboardingStatus, clearSession, token]);
 
   useEffect(() => {
     if (IS_PLATFORM) {

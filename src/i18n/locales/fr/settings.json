@@ -330,6 +330,9 @@
       },
       "opencode": {
         "description": "Assistant CLI OpenCode"
+      },
+      "kilo": {
+        "description": "Agent de codage IA Kilo Code"
       }
     },
     "connectionStatus": "Statut de la connexion",
@@ -425,7 +428,8 @@
       "claude": "Les serveurs Model Context Protocol fournissent des outils et sources de données supplémentaires à Claude",
       "cursor": "Les serveurs Model Context Protocol fournissent des outils et sources de données supplémentaires à Cursor",
       "codex": "Les serveurs Model Context Protocol fournissent des outils et sources de données supplémentaires à Codex",
-      "opencode": "Les serveurs Model Context Protocol fournissent des outils et sources de données supplémentaires à OpenCode"
+      "opencode": "Les serveurs Model Context Protocol fournissent des outils et sources de données supplémentaires à OpenCode",
+      "kilo": "Les serveurs Model Context Protocol fournissent des outils et sources de données supplémentaires à Kilo Code"
     },
     "addButton": "Ajouter un serveur MCP",
     "empty": "Aucun serveur MCP configuré",

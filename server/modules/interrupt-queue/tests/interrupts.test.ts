@@ -4,7 +4,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { makeScratchDir } from '@/shared/scratch.js';
-import { closeConnection, initializeDatabase } from '@/modules/database/index.js';
+import { closeConnection, getConnection, initializeDatabase } from '@/modules/database/index.js';
 import { interruptsDb, interruptsService } from '@/modules/interrupt-queue/index.js';
 import { applyItemAction, missionControlDb } from '@/modules/mission-control/index.js';
 import { runService } from '@/modules/runs/index.js';
@@ -68,6 +68,79 @@ test('Mission Control actions close linked interrupts and stale approvals stay h
 
     assert.equal(interruptsDb.get(staleInterrupt.interrupt_id)?.status, 'open');
     assert.equal(interruptsService.list().some((i) => i.interrupt_id === staleInterrupt.interrupt_id), false);
+    assert.equal(interruptsService.countOpen(), 0);
+
+    const swept = interruptsService.sweep();
+    assert.equal(swept.resolved, 1);
+    assert.equal(interruptsDb.get(staleInterrupt.interrupt_id)?.status, 'resolved');
+    assert.equal(interruptsDb.get(staleInterrupt.interrupt_id)?.resolution, 'mc_item_terminal');
+  });
+});
+
+test('Needs you scope excludes operational telemetry from the list and badge', async () => {
+  await withDatabase(() => {
+    const permission = interruptsService.create({
+      kind: 'permission_pending',
+      title: 'Permission required',
+      actions: [{ id: 'approve_permission', label: 'Approve' }],
+    });
+    const approval = interruptsService.create({
+      kind: 'approval_pending',
+      title: 'Approval required',
+      actions: [{ id: 'dismiss', label: 'Dismiss' }],
+    });
+    interruptsService.create({ kind: 'run_stuck', title: 'Stuck run' });
+    interruptsService.create({ kind: 'run_failed', title: 'Failed run' });
+    interruptsService.create({ kind: 'ci_failed', title: 'CI failed' });
+
+    const attention = interruptsService.list({ attentionOnly: true });
+    assert.deepEqual(
+      attention.map((item) => item.interrupt_id).sort(),
+      [permission.interrupt_id, approval.interrupt_id].sort(),
+    );
+    assert.equal(interruptsService.countOpen(undefined, true), 2);
+    assert.equal(interruptsService.countOpen(), 5);
+
+    const spend = interruptsService.create({ kind: 'spend_cap', title: 'Spend cap' });
+    const shift = interruptsService.create({ kind: 'shift_report', title: 'Shift report' });
+    const attentionWithGovernor = interruptsService.list({ attentionOnly: true });
+    assert.equal(
+      attentionWithGovernor.some((item) => item.interrupt_id === spend.interrupt_id),
+      true,
+    );
+    assert.equal(
+      attentionWithGovernor.some((item) => item.interrupt_id === shift.interrupt_id),
+      true,
+    );
+  });
+});
+
+test('sweep retires stuck cards for terminal runs and orphaned approvals', async () => {
+  await withDatabase(() => {
+    const run = runService.create({ source: 'chat', title: 'Finished elsewhere' });
+    const stuck = interruptsService.create({
+      kind: 'run_stuck',
+      title: 'Run stuck',
+      runId: run.run_id,
+      dedupeKey: `run_stuck:${run.run_id}`,
+    });
+    const orphanedApproval = interruptsService.create({
+      kind: 'approval_pending',
+      title: 'Deleted draft approval',
+      meta: { itemId: 'mc_item_missing' },
+      dedupeKey: 'mc_item:mc_item_missing',
+    });
+
+    // Simulate state left behind by an older process that never ran the
+    // terminal hook; boot maintenance must reconcile it from durable state.
+    getConnection()
+      .prepare(`UPDATE agent_runs SET status = 'succeeded' WHERE run_id = ?`)
+      .run(run.run_id);
+
+    const result = interruptsService.sweep();
+    assert.equal(result.resolved, 2);
+    assert.equal(interruptsService.get(stuck.interrupt_id)?.resolution, 'run_terminal');
+    assert.equal(interruptsService.get(orphanedApproval.interrupt_id)?.resolution, 'mc_item_missing');
     assert.equal(interruptsService.countOpen(), 0);
   });
 });

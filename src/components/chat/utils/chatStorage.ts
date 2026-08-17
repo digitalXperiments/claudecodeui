@@ -97,6 +97,8 @@ export const providerToolsSettingsKey = (provider: string): string =>
       ? 'codex-settings'
       : provider === 'opencode'
         ? 'opencode-settings'
+        : provider === 'kilo'
+          ? 'kilo-settings'
         : provider === 'grok'
           ? 'grok-tools-settings'
           : provider === 'pi'

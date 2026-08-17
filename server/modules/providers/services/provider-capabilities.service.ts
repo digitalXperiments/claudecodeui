@@ -101,6 +101,34 @@ const PROVIDER_CAPABILITIES: Record<LLMProvider, ProviderCapabilities> = {
     supportsTokenUsage: true,
     supportsEffort: true,
   },
+  kilo: {
+    provider: 'kilo',
+    // Kilo Code exposes the OpenCode-compatible ACP mode and permission
+    // configuration. CloudCLI keeps the same user-facing modes while sending
+    // KILO_PERMISSION to the isolated `kilo acp` child.
+    permissionModes: ['default', 'acceptEdits', 'auto', 'bypassPermissions', 'plan'],
+    defaultPermissionMode: 'default',
+    supportsImages: true,
+    supportsFiles: true,
+    supportsAbort: true,
+    supportsPermissionRequests: true,
+    supportsTokenUsage: true,
+    supportsEffort: true,
+  },
+  cline: {
+    provider: 'cline',
+    // Cline exposes a real ACP server through `cline --acp`. The ACP client
+    // handles permission requests; Cline's CLI currently has no stable
+    // provider-specific permission config surface for CloudCLI to persist.
+    permissionModes: ['default', 'auto', 'bypassPermissions'],
+    defaultPermissionMode: 'default',
+    supportsImages: true,
+    supportsFiles: true,
+    supportsAbort: true,
+    supportsPermissionRequests: true,
+    supportsTokenUsage: false,
+    supportsEffort: false,
+  },
   grok: {
     provider: 'grok',
     // grok-cli.js runs Grok over ACP (`grok agent stdio`). Modes map to a
@@ -155,6 +183,19 @@ const PROVIDER_CAPABILITIES: Record<LLMProvider, ProviderCapabilities> = {
     // kimi-for-coding) simply get no picker, since the catalog drives the
     // frontend options. (Verified live 2026-07-29 via scripts/probe-kimi-acp.mjs.)
     supportsEffort: true,
+  },
+  qwencode: {
+    provider: 'qwencode',
+    // Qwen Code's ACP server exposes these as mode ids. `bypassPermissions`
+    // is translated to Qwen's yolo mode by opencode-cli.js.
+    permissionModes: ['default', 'plan', 'auto', 'bypassPermissions'],
+    defaultPermissionMode: 'default',
+    supportsImages: true,
+    supportsFiles: true,
+    supportsAbort: true,
+    supportsPermissionRequests: true,
+    supportsTokenUsage: false,
+    supportsEffort: false,
   },
   pi: {
     provider: 'pi',

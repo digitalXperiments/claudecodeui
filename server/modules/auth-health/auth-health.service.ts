@@ -37,8 +37,11 @@ export const REAUTH_HINTS: Record<string, string> = {
   cursor: 'cursor-agent login',
   codex: 'codex login',
   opencode: 'opencode auth login',
+  kilo: 'kilo auth login',
+  cline: 'cline auth',
   grok: 'grok login',
   kimi: 'kimi login',
+  qwencode: 'qwen',
   pi: 'pi (then /login)',
 };
 

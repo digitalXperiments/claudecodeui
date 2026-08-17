@@ -4,13 +4,14 @@ import { useTranslation } from 'react-i18next';
 import { useDeviceSettings } from '../../../hooks/useDeviceSettings';
 import { useVersionCheck } from '../../../hooks/useVersionCheck';
 import { useUiPreferences } from '../../../hooks/useUiPreferences';
+import { useAppFeatures } from '../../../hooks/useAppFeatures';
 import { useSidebarController } from '../hooks/useSidebarController';
 import { useTaskMaster } from '../../../contexts/TaskMasterContext';
-import { usePaletteOps } from '../../../contexts/PaletteOpsContext';
+import { usePaletteOps, usePaletteOpsRegister } from '../../../contexts/PaletteOpsContext';
 import { useTasksSettings } from '../../../contexts/TasksSettingsContext';
 import type { Project, ProjectCategory, LLMProvider } from '../../../types/app';
 import type { MCPServerStatus, SidebarProps } from '../types/types';
-import MissionControlPanel from '../../mission-control/view/MissionControlPanel';
+import MissionControlPanel, { type WorkThisSessionRequest } from '../../mission-control/view/MissionControlPanel';
 import { missionControlApi } from '../../mission-control/api/missionControlApi';
 import KanbanPanel from '../../kanban/view/KanbanPanel';
 import AgentSwarmPanel from '../../swarm/view/AgentSwarmPanel';
@@ -18,7 +19,7 @@ import StatsPanel from '../../stats/view/StatsPanel';
 
 import SidebarContent from './subcomponents/SidebarContent';
 import SidebarModals from './subcomponents/SidebarModals';
-import NotificationsPanel from './subcomponents/NotificationsPanel';
+import NeedsYouPanel from './subcomponents/NeedsYouPanel';
 import type { SidebarProjectListProps } from './subcomponents/SidebarProjectList';
 
 type TaskMasterSidebarContext = {
@@ -47,6 +48,8 @@ function Sidebar({
   onCloseSettings,
   isMobile,
   projectsPanelWidth,
+  studioActive = false,
+  onShowStudio,
 }: SidebarProps) {
   const { t } = useTranslation(['sidebar', 'common']);
   const { isPWA } = useDeviceSettings({ trackMobile: false });
@@ -55,21 +58,18 @@ function Sidebar({
     'claudecodeui',
   );
   const { preferences, setPreference } = useUiPreferences();
+  const { features } = useAppFeatures();
   const { sidebarVisible } = preferences;
   const { setCurrentProject, mcpServerStatus } = useTaskMaster() as TaskMasterSidebarContext;
   const { tasksEnabled } = useTasksSettings();
   const paletteOps = usePaletteOps();
-  const [showNotifications, setShowNotifications] = useState(false);
-  const [unreadNotificationCount, setUnreadNotificationCount] = useState(0);
-  const [interruptCount, setInterruptCount] = useState(0);
+  const [showNeedsYou, setShowNeedsYou] = useState(false);
+  const [needsYouCount, setNeedsYouCount] = useState(0);
   const [showMissionControl, setShowMissionControl] = useState(false);
   const [missionControlPendingCount, setMissionControlPendingCount] = useState(0);
   const [showKanban, setShowKanban] = useState(false);
   const [showAgentSwarm, setShowAgentSwarm] = useState(false);
   const [showStats, setShowStats] = useState(false);
-  const handleUnreadChange = useCallback((count: number) => {
-    setUnreadNotificationCount(count);
-  }, []);
   const handleMissionControlPendingChange = useCallback((count: number) => {
     setMissionControlPendingCount(count);
   }, []);
@@ -198,6 +198,28 @@ function Sidebar({
   const handleProjectCreated = () => {
     void paletteOps.refreshProjects();
   };
+
+  usePaletteOpsRegister({
+    openNeedsYou: () => setShowNeedsYou(true),
+    openMissionControl: () => setShowMissionControl(true),
+    openKanban: features.kanbanEnabled ? () => setShowKanban(true) : undefined,
+    openAgentSwarm: () => setShowAgentSwarm(true),
+    openStudio: () => onShowStudio?.(),
+    openStats: () => setShowStats(true),
+    openNewProject: () => setShowNewProject(true),
+    setSidebarSearchMode: (mode) => {
+      setSearchMode(mode);
+      if (mode === 'projects') clearConversationResults();
+    },
+    selectProject: onProjectSelect,
+    toggleSidebarCollapsed: () => {
+      if (isSidebarCollapsed) {
+        handleExpandSidebar();
+      } else {
+        handleCollapseSidebar();
+      }
+    },
+  });
 
   const projectListProps: SidebarProjectListProps = {
     projects,
@@ -380,23 +402,24 @@ function Sidebar({
         currentVersion={currentVersion}
         onShowVersionModal={() => setShowVersionModal(true)}
         onShowSettings={onShowSettings}
-        onShowNotifications={() => setShowNotifications(true)}
-        unreadNotificationCount={unreadNotificationCount + interruptCount}
+        onShowNeedsYou={() => setShowNeedsYou(true)}
+        needsYouCount={needsYouCount}
         onShowMissionControl={() => setShowMissionControl(true)}
         missionControlPendingCount={missionControlPendingCount}
-        onShowKanban={() => setShowKanban(true)}
+        onShowKanban={features.kanbanEnabled ? () => setShowKanban(true) : undefined}
         onShowAgentSwarm={() => setShowAgentSwarm(true)}
+        onShowStudio={() => onShowStudio?.()}
+        studioActive={studioActive}
         onShowStats={() => setShowStats(true)}
         projectListProps={projectListProps}
         projectsPanelWidth={projectsPanelWidth}
         t={t}
       />
 
-      <NotificationsPanel
-        open={showNotifications}
-        onClose={() => setShowNotifications(false)}
-        onUnreadChange={handleUnreadChange}
-        onInterruptCountChange={setInterruptCount}
+      <NeedsYouPanel
+        open={showNeedsYou}
+        onClose={() => setShowNeedsYou(false)}
+        onCountChange={setNeedsYouCount}
       />
 
       <MissionControlPanel
@@ -404,14 +427,37 @@ function Sidebar({
         onClose={() => setShowMissionControl(false)}
         projects={projects}
         onPendingCountChange={handleMissionControlPendingChange}
+        onWorkThis={(request: WorkThisSessionRequest) => {
+          sessionStorage.setItem(
+            `cloudcli:pending-prompt:${request.sessionId}`,
+            JSON.stringify({
+              prompt: request.prompt,
+              provider: request.provider,
+              summary: request.title,
+            }),
+          );
+          const project = projects.find((entry) => entry.projectId === request.projectId);
+          if (project) {
+            onProjectSelect(project);
+          }
+          onSessionSelect({
+            id: request.sessionId,
+            title: request.title,
+            summary: request.title,
+            __provider: request.provider as LLMProvider,
+            __projectId: request.projectId,
+          });
+        }}
       />
 
-      <KanbanPanel
-        isOpen={showKanban}
-        onClose={() => setShowKanban(false)}
-        selectedProject={selectedProject}
-        projects={projects}
-      />
+      {features.kanbanEnabled ? (
+        <KanbanPanel
+          isOpen={showKanban}
+          onClose={() => setShowKanban(false)}
+          selectedProject={selectedProject}
+          projects={projects}
+        />
+      ) : null}
 
       <AgentSwarmPanel
         isOpen={showAgentSwarm}

@@ -279,7 +279,7 @@ const GIT_WORKSPACE_SUBCOMMANDS = new Set([
 ]);
 
 const GIT_RISKY_SUBCOMMANDS = new Set([
-  'push', 'pull', 'fetch', 'clone', 'submodule', 'clean', 'gc', 'prune', 'worktree', 'filter-branch',
+  'push', 'pull', 'fetch', 'clone', 'submodule', 'clean', 'gc', 'prune', 'filter-branch',
 ]);
 
 function splitCommandSegments(command: string): string[] {
@@ -424,7 +424,10 @@ function unwrapShellPayload(command: string): string | null {
 }
 
 function commandTokens(segment: string): string[] {
-  const tokens = segment.split(/\s+/).filter(Boolean);
+  // Keep quoted arguments intact. Besides shell payloads, this matters for
+  // ordinary commands such as `git -C "/path with spaces" status`: the path
+  // is an option value, not the git subcommand.
+  const tokens = tokenizeQuoteAware(segment);
   let index = 0;
   while (index < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[index])) index += 1;
   while (index < tokens.length && ['command', 'time', 'nice', 'nohup'].includes(tokens[index])) index += 1;
@@ -474,12 +477,37 @@ function classifyPathSet(
 }
 
 function classifyGitSegment(tokens: string[], workspaceRoot: string, cwd: string | null): CategoryResult {
-  const args = tokens.slice(1).filter((token) => !token.startsWith('--git-dir') && !token.startsWith('-C'));
+  const args: string[] = [];
+  for (let index = 1; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    // These global git options consume the following token when they are not
+    // written as --option=value / -Cpath. The old filter removed `-C` but left
+    // its directory behind, then called that directory the subcommand.
+    if (token === '-C' || token === '--git-dir' || token === '--work-tree' || token === '--namespace') {
+      index += 1;
+      continue;
+    }
+    if (/^-C.+/.test(token) || /^--(?:git-dir|work-tree|namespace)=/.test(token)) continue;
+    // Other global switches do not consume a value.
+    if (['--no-pager', '--paginate', '-p', '--literal-pathspecs', '--no-literal-pathspecs'].includes(token)) continue;
+    args.push(token);
+  }
   const sub = args.find((token) => !token.startsWith('-')) ?? '';
   const rest = args.slice(args.indexOf(sub) + 1);
 
   if (GIT_RISKY_SUBCOMMANDS.has(sub)) {
     return { category: 'risky', reason: `git ${sub} reaches beyond the local worktree` };
+  }
+  if (sub === 'worktree') {
+    // `git worktree list` (and a bare `git worktree`, which git rejects) is
+    // inspection. add/remove/move/lock/unlock/prune/repair mutate other
+    // checkouts and stay risky — Grok orchestrators routinely list worktrees
+    // during planning, and a deny aborts the entire Grok turn.
+    const action = rest.find((token) => !token.startsWith('-')) ?? 'list';
+    if (action === 'list') {
+      return { category: 'read', reason: 'git worktree list is read-only' };
+    }
+    return { category: 'risky', reason: `git worktree ${action} reaches beyond the local worktree` };
   }
   if (sub === 'branch') {
     if (rest.some((token) => token === '-D' || token === '-d' || token === '--delete')) {
@@ -578,13 +606,30 @@ function classifyCommandSegment(
     }
   }
 
-  const tokens = commandTokens(segment);
+  let tokens = commandTokens(segment);
+  // POSIX control-flow is split at `;`/newlines by splitCommandSegments. Strip
+  // the structural prefix so the command inside `do <cmd>` / `then <cmd>` is
+  // still classified, while loop declarations and closing keywords are inert.
+  while (tokens.length > 0 && ['do', 'then', 'else'].includes(tokens[0])) tokens = tokens.slice(1);
   if (tokens.length === 0) return { category: 'read', reason: 'empty command segment' };
   const head = (tokens[0] ?? '').replace(/^.*\//, '').toLowerCase();
 
+  // Unlike `for` declarations, while/until/if/elif headers execute their
+  // trailing command as a condition. Classify that command recursively.
+  if (['while', 'until', 'if', 'elif'].includes(head)) {
+    return tokens.length > 1
+      ? classifyCommandSegment(tokens.slice(1).join(' '), workspaceRoot, cwd, depth + 1)
+      : { category: 'read', reason: `empty shell ${head} condition` };
+  }
+
   let result: CategoryResult;
 
-  if (ALWAYS_RISKY_COMMANDS.has(head)) {
+  if (head === 'for' || head === 'case'
+    || head === 'done' || head === 'fi' || head === 'esac') {
+    // The body/condition is classified as its own segment. These tokens only
+    // describe shell control flow and do not mutate state by themselves.
+    result = { category: 'read', reason: `shell control-flow keyword "${head}"` };
+  } else if (ALWAYS_RISKY_COMMANDS.has(head)) {
     result = { category: 'risky', reason: `"${head}" requires privilege, spawns arbitrary code, or exposes the environment` };
   } else if (head === 'cd') {
     const target = tokens.slice(1).find((token) => !token.startsWith('-')) ?? '.';

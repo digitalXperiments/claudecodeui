@@ -30,8 +30,11 @@ const PROVIDER_META: { id: LLMProvider; name: string }[] = [
   { id: "codex", name: "OpenAI" },
   { id: "cursor", name: "Cursor" },
   { id: "opencode", name: "OpenCode" },
+  { id: "kilo", name: "Kilo Code" },
+  { id: "cline", name: "Cline" },
   { id: "grok", name: "xAI" },
   { id: "kimi", name: "Moonshot AI" },
+  { id: "qwencode", name: "Qwen" },
   { id: "pi", name: "Pi" },
 ];
 
@@ -63,10 +66,14 @@ type ProviderSelectionEmptyStateProps = {
   setCodexModel: (model: string) => void;
   opencodeModel: string;
   setOpenCodeModel: (model: string) => void;
+  kiloModel: string;
+  setKiloModel: (model: string) => void;
   grokModel: string;
   setGrokModel: (model: string) => void;
   kimiModel: string;
   setKimiModel: (model: string) => void;
+  qwencodeModel: string;
+  setQwenCodeModel: (model: string) => void;
   piModel: string;
   setPiModel: (model: string) => void;
   providerModelCatalog: Partial<Record<LLMProvider, ProviderModelsDefinition>>;
@@ -97,15 +104,20 @@ function getCurrentModel(
   cu: string,
   co: string,
   o: string,
+  kilo: string,
   g: string,
   k: string,
+  q: string,
   pi: string,
 ) {
   if (p === "claude") return c;
   if (p === "codex") return co;
   if (p === "opencode") return o;
+  if (p === "kilo") return kilo;
+  if (p === "cline") return o;
   if (p === "grok") return g;
   if (p === "kimi") return k;
+  if (p === "qwencode") return q;
   if (p === "pi") return pi;
   return cu;
 }
@@ -115,8 +127,11 @@ function getProviderDisplayName(p: LLMProvider) {
   if (p === "cursor") return "Cursor";
   if (p === "codex") return "Codex";
   if (p === "opencode") return "OpenCode";
+  if (p === "kilo") return "Kilo Code";
+  if (p === "cline") return "Cline";
   if (p === "grok") return "Grok Build";
   if (p === "kimi") return "Kimi";
+  if (p === "qwencode") return "Qwen Code";
   if (p === "pi") return "Pi";
   return "Claude";
 }
@@ -135,10 +150,14 @@ export default function ProviderSelectionEmptyState({
   setCodexModel,
   opencodeModel,
   setOpenCodeModel,
+  kiloModel,
+  setKiloModel,
   grokModel,
   setGrokModel,
   kimiModel,
   setKimiModel,
+  qwencodeModel,
+  setQwenCodeModel,
   piModel,
   setPiModel,
   providerModelCatalog,
@@ -171,8 +190,10 @@ export default function ProviderSelectionEmptyState({
     cursorModel,
     codexModel,
     opencodeModel,
+    kiloModel,
     grokModel,
     kimiModel,
+    qwencodeModel,
     piModel,
   );
 
@@ -195,9 +216,15 @@ export default function ProviderSelectionEmptyState({
       } else if (providerId === "opencode") {
         setOpenCodeModel(modelValue);
         localStorage.setItem("opencode-model", modelValue);
+      } else if (providerId === "kilo") {
+        setKiloModel(modelValue);
+        localStorage.setItem("kilo-model", modelValue);
       } else if (providerId === "kimi") {
         setKimiModel(modelValue);
         localStorage.setItem("kimi-model", modelValue);
+      } else if (providerId === "qwencode") {
+        setQwenCodeModel(modelValue);
+        localStorage.setItem("qwencode-model", modelValue);
       } else if (providerId === "pi") {
         setPiModel(modelValue);
         localStorage.setItem("pi-model", modelValue);
@@ -209,7 +236,7 @@ export default function ProviderSelectionEmptyState({
         localStorage.setItem("cursor-model", modelValue);
       }
     },
-    [setClaudeModel, setCursorModel, setCodexModel, setOpenCodeModel, setKimiModel, setPiModel, setGrokModel],
+    [setClaudeModel, setCursorModel, setCodexModel, setOpenCodeModel, setKiloModel, setKimiModel, setQwenCodeModel, setPiModel, setGrokModel],
   );
 
   const handleModelSelect = useCallback(
@@ -356,6 +383,14 @@ export default function ProviderSelectionEmptyState({
                   model: opencodeModel,
                   defaultValue: "Ready with OpenCode {{model}}",
                 }),
+                kilo: t("providerSelection.readyPrompt.kilo", {
+                  model: kiloModel,
+                  defaultValue: "Ready with Kilo Code {{model}}",
+                }),
+                cline: t("providerSelection.readyPrompt.cline", {
+                  model: opencodeModel,
+                  defaultValue: "Ready with Cline {{model}}",
+                }),
                 grok: t("providerSelection.readyPrompt.grok", {
                   model: grokModel,
                   defaultValue: "Ready with Grok Build {{model}}",
@@ -363,6 +398,10 @@ export default function ProviderSelectionEmptyState({
                 kimi: t("providerSelection.readyPrompt.kimi", {
                   model: kimiModel,
                   defaultValue: "Ready with Kimi {{model}}",
+                }),
+                qwencode: t("providerSelection.readyPrompt.qwencode", {
+                  model: qwencodeModel,
+                  defaultValue: "Ready with Qwen Code {{model}}",
                 }),
                 pi: t("providerSelection.readyPrompt.pi", {
                   model: piModel,

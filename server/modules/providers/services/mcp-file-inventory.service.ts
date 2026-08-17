@@ -6,7 +6,13 @@ import TOML from '@iarna/toml';
 
 import { projectsDb } from '@/modules/database/index.js';
 import type { LLMProvider, McpScope, McpTransport } from '@/shared/types.js';
-import { readJsonConfig, readObjectRecord, readStringArray, readStringRecord } from '@/shared/utils.js';
+import {
+  getKiloConfigDirectory,
+  readJsonConfig,
+  readObjectRecord,
+  readStringArray,
+  readStringRecord,
+} from '@/shared/utils.js';
 
 /**
  * File-backed MCP discovery — **no invented servers**.
@@ -32,6 +38,8 @@ export type McpConfigKind =
   | 'codex_project'
   | 'opencode_user'
   | 'opencode_project'
+  | 'kilo_user'
+  | 'kilo_project'
   | 'kimi_user'
   | 'kimi_project';
 
@@ -78,6 +86,17 @@ const normalizeJsonServer = (
 ): McpFileHit | null => {
   if (!raw || typeof raw !== 'object') return null;
   const config = raw as Record<string, unknown>;
+  if (Array.isArray(config.command) && typeof config.command[0] === 'string') {
+    return {
+      ...base,
+      name,
+      transport: 'stdio',
+      command: config.command[0],
+      args: config.command.slice(1).filter((arg): arg is string => typeof arg === 'string'),
+      env: readStringRecord(config.environment ?? config.env),
+      cwd: typeof config.cwd === 'string' ? config.cwd : undefined,
+    };
+  }
   if (typeof config.command === 'string') {
     return {
       ...base,
@@ -105,7 +124,7 @@ const normalizeJsonServer = (
 const collectJsonMcpServers = async (
   filePath: string,
   base: Omit<McpFileHit, 'name' | 'transport' | 'command' | 'args' | 'env' | 'url' | 'headers' | 'cwd'>,
-  serversKey: 'mcpServers' = 'mcpServers',
+  serversKey: 'mcpServers' | 'mcp' = 'mcpServers',
 ): Promise<McpFileHit[]> => {
   if (!(await pathExists(filePath))) return [];
   const config = await readJsonConfig(filePath);
@@ -284,6 +303,41 @@ export async function scanMcpConfigFiles(): Promise<McpFileHit[]> {
           scope: 'user',
         })),
       );
+    }
+  }
+
+  // --- Kilo Code ---
+  for (const candidate of [
+    path.join(getKiloConfigDirectory(), 'kilo.json'),
+    path.join(getKiloConfigDirectory(), 'kilo.jsonc'),
+  ]) {
+    if (await pathExists(candidate)) {
+      hits.push(
+        ...(await collectJsonMcpServers(candidate, {
+          ownerProvider: 'kilo',
+          configKind: 'kilo_user',
+          configPath: candidate,
+          scope: 'user',
+        }, 'mcp')),
+      );
+    }
+  }
+  for (const workspacePath of workspaces) {
+    for (const candidate of [
+      path.join(workspacePath, 'kilo.json'),
+      path.join(workspacePath, 'kilo.jsonc'),
+    ]) {
+      if (await pathExists(candidate)) {
+        hits.push(
+          ...(await collectJsonMcpServers(candidate, {
+            ownerProvider: 'kilo',
+            configKind: 'kilo_project',
+            configPath: candidate,
+            scope: 'project',
+            workspacePath,
+          }, 'mcp')),
+        );
+      }
     }
   }
 

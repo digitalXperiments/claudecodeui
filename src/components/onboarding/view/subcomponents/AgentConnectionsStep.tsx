@@ -37,6 +37,27 @@ const providerCards = [
     iconContainerClassName: 'bg-zinc-100 dark:bg-zinc-800',
     loginButtonClassName: 'bg-zinc-800 hover:bg-zinc-900 dark:bg-zinc-700 dark:hover:bg-zinc-600',
   },
+  {
+    provider: 'kilo' as const,
+    title: 'Kilo Code',
+    connectedClassName: 'bg-orange-50 dark:bg-orange-900/20 border-orange-200 dark:border-orange-800',
+    iconContainerClassName: 'bg-orange-100 dark:bg-orange-900/30',
+    loginButtonClassName: 'bg-orange-600 hover:bg-orange-700',
+  },
+  {
+    provider: 'cline' as const,
+    title: 'Cline',
+    connectedClassName: 'bg-cyan-50 dark:bg-cyan-900/20 border-cyan-200 dark:border-cyan-800',
+    iconContainerClassName: 'bg-cyan-100 dark:bg-cyan-900/30',
+    loginButtonClassName: 'bg-cyan-600 hover:bg-cyan-700',
+  },
+  {
+    provider: 'qwencode' as const,
+    title: 'Qwen Code',
+    connectedClassName: 'bg-sky-50 dark:bg-sky-900/20 border-sky-200 dark:border-sky-800',
+    iconContainerClassName: 'bg-sky-100 dark:bg-sky-900/30',
+    loginButtonClassName: 'bg-sky-600 hover:bg-sky-700',
+  },
 ];
 
 export default function AgentConnectionsStep({

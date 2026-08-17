@@ -1201,6 +1201,38 @@ export function getOpenCodeDatabasePath(): string {
   return path.join(os.homedir(), '.local', 'share', 'opencode', 'opencode.db');
 }
 
+export function getKiloDataDirectory(): string {
+  return path.join(
+    process.env.XDG_DATA_HOME?.trim() || path.join(os.homedir(), '.local', 'share'),
+    'kilo',
+  );
+}
+
+export function getKiloConfigDirectory(): string {
+  return path.join(
+    process.env.XDG_CONFIG_HOME?.trim() || path.join(os.homedir(), '.config'),
+    'kilo',
+  );
+}
+
+/** Cline CLI state root (overridable for isolated CLI installations). */
+export function getClineDataDirectory(): string {
+  return process.env.CLINE_DATA_DIR?.trim()
+    || path.join(os.homedir(), '.cline', 'data');
+}
+
+/**
+ * Kilo Code is an OpenCode-derived ACP agent, but it deliberately keeps a
+ * separate XDG data root and SQLite store. Never let the Kilo adapter read or
+ * mutate OpenCode's database.
+ */
+export function getKiloDatabasePath(): string {
+  const configured = process.env.KILO_DB?.trim();
+  return configured
+    ? (path.isAbsolute(configured) ? configured : path.join(getKiloDataDirectory(), configured))
+    : path.join(getKiloDataDirectory(), 'kilo.db');
+}
+
 /**
  * Decodes an OpenCode text payload that was persisted as a JSON string literal.
  *
@@ -1410,7 +1442,7 @@ export async function extractFirstValidJsonlData<T>(
  * Collapsing newline runs to single spaces loses formatting but never loses
  * content, so runtimes should call this on win32 right before spawning.
  *
- * Used by the cursor and opencode spawn runtimes.
+ * Used by the cursor, OpenCode, and Kilo spawn runtimes.
  */
 export function flattenPromptForWindowsShell(prompt: string): string {
   if (process.platform !== 'win32' || typeof prompt !== 'string') {

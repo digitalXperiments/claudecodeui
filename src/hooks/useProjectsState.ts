@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { NavigateFunction } from 'react-router-dom';
+import { useLocation, type NavigateFunction } from 'react-router-dom';
 
 import { api } from '../utils/api';
 import type { ServerEvent } from '../contexts/WebSocketContext';
@@ -358,6 +358,8 @@ export function useProjectsState({
   isMobile,
   activeSessions,
 }: UseProjectsStateArgs) {
+  const location = useLocation();
+  const studioActive = location.pathname === '/studio' || location.pathname.startsWith('/studio/');
   const [projects, setProjects] = useState<Project[]>([]);
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
   const [selectedSession, setSelectedSession] = useState<ProjectSession | null>(null);
@@ -868,18 +870,22 @@ export function useProjectsState({
         if (activeTab === 'tasks' || activeTab === 'browser') {
           setActiveTab('chat');
         }
-        navigate(`/session/${sessionWithProject.id}`);
+        if (!studioActive) {
+          navigate(`/session/${sessionWithProject.id}`);
+        }
       } else {
         setSelectedSession(null);
         setActiveTab('chat');
-        navigate('/');
+        if (!studioActive) {
+          navigate('/');
+        }
       }
 
       if (isMobile) {
         setSidebarOpen(false);
       }
     },
-    [activeTab, clearSessionAttention, isMobile, navigate],
+    [activeTab, clearSessionAttention, isMobile, navigate, studioActive],
   );
 
   const handleSessionSelect = useCallback(
@@ -908,6 +914,45 @@ export function useProjectsState({
     },
     [activeTab, clearSessionAttention, isMobile, navigate, selectedProject?.projectId],
   );
+
+  const STUDIO_RETURN_SESSION_KEY = 'cloudcli:studio-return-session';
+
+  const leaveStudio = useCallback(() => {
+    const rememberedId = (() => {
+      try {
+        return sessionStorage.getItem(STUDIO_RETURN_SESSION_KEY);
+      } catch {
+        return null;
+      }
+    })();
+    const targetId = rememberedId || selectedSession?.id;
+    if (targetId) {
+      navigate(`/session/${targetId}`);
+    } else {
+      navigate('/');
+    }
+    if (isMobile) {
+      setSidebarOpen(false);
+    }
+  }, [isMobile, navigate, selectedSession?.id]);
+
+  const openStudio = useCallback(() => {
+    if (studioActive) {
+      leaveStudio();
+      return;
+    }
+    if (selectedSession?.id) {
+      try {
+        sessionStorage.setItem(STUDIO_RETURN_SESSION_KEY, selectedSession.id);
+      } catch {
+        // ignore storage errors
+      }
+    }
+    navigate('/studio');
+    if (isMobile) {
+      setSidebarOpen(false);
+    }
+  }, [isMobile, leaveStudio, navigate, selectedSession?.id, studioActive]);
 
   const handleNewSession = useCallback(
     (project: Project) => {
@@ -1119,6 +1164,8 @@ export function useProjectsState({
       settingsInitialTab,
       onCloseSettings: () => setShowSettings(false),
       isMobile,
+      studioActive,
+      onShowStudio: openStudio,
     }),
     [
       attentionSessionIds,
@@ -1138,6 +1185,8 @@ export function useProjectsState({
       selectedProject,
       selectedSession,
       showSettings,
+      studioActive,
+      openStudio,
     ],
   );
 
@@ -1165,6 +1214,9 @@ export function useProjectsState({
     sidebarSharedProps,
     handleSessionArchive,
     handleSessionPermanentDelete,
+    studioActive,
+    openStudio,
+    leaveStudio,
     handleProjectSelect,
     handleSessionSelect,
     handleNewSession,

@@ -4,6 +4,7 @@ import { authenticatedFetch } from '../../../utils/api';
 import type {
   ApiResponse,
   ProjectSkill,
+  ProjectSkillCopyResult,
   ProjectSkillsResponse,
   ProviderSkillCreateEntryPayload,
   SkillContentResponse,
@@ -97,7 +98,10 @@ export function useProjectSkills({ workspacePath }: UseProjectSkillsArgs) {
     }
   }, [workspacePath]);
 
-  const addSkills = useCallback(async (entries: ProviderSkillCreateEntryPayload[]) => {
+  const addSkills = useCallback(async (
+    entries: ProviderSkillCreateEntryPayload[],
+    options?: { projects?: string[] },
+  ) => {
     if (!workspacePath) {
       throw new Error('Select a project before adding project skills.');
     }
@@ -105,7 +109,11 @@ export function useProjectSkills({ workspacePath }: UseProjectSkillsArgs) {
     try {
       const response = await authenticatedFetch('/api/project-skills', {
         method: 'POST',
-        body: JSON.stringify({ workspacePath, entries }),
+        body: JSON.stringify({
+          workspacePath,
+          entries,
+          projects: options?.projects,
+        }),
       });
       const data = await toResponseJson<ApiResponse<ProjectSkillsResponse>>(response);
       if (!response.ok || !data.success) {
@@ -137,6 +145,31 @@ export function useProjectSkills({ workspacePath }: UseProjectSkillsArgs) {
     }
 
     await refreshSkills();
+  }, [refreshSkills, workspacePath]);
+
+  const copySkillToProjects = useCallback(async (
+    directoryName: string,
+    projects: string[],
+  ): Promise<ProjectSkillCopyResult> => {
+    if (!workspacePath) {
+      throw new Error('Select a project before copying project skills.');
+    }
+
+    const response = await authenticatedFetch(
+      `/api/project-skills/${encodeURIComponent(directoryName)}/copy`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ workspacePath, projects }),
+      },
+    );
+    const data = await toResponseJson<ApiResponse<ProjectSkillCopyResult>>(response);
+    if (!response.ok || !data.success) {
+      throw new Error(getApiErrorMessage(data, 'Failed to apply skill to projects'));
+    }
+
+    await refreshSkills();
+    setSaveStatus('success');
+    return data.data;
   }, [refreshSkills, workspacePath]);
 
   const getSkillContent = useCallback(async (directoryName: string): Promise<SkillContentResponse> => {
@@ -205,6 +238,7 @@ export function useProjectSkills({ workspacePath }: UseProjectSkillsArgs) {
     saveStatus,
     addSkills,
     removeSkill,
+    copySkillToProjects,
     getSkillContent,
     saveSkillContent,
     refreshSkills,

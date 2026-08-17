@@ -61,6 +61,16 @@ export type ProjectSkill = {
 export type ProjectSkillCreatePayload = {
   workspacePath: string;
   entries: ProviderSkillCreateEntryPayload[];
+  /** Extra workspaces to install the same entries into (plus workspacePath). */
+  projects?: string[];
+};
+
+export type ProjectSkillCopyResult = {
+  directoryName: string;
+  projects: Array<{
+    workspacePath: string;
+    skill: ProjectSkill;
+  }>;
 };
 
 export type ProjectSkillsResponse = {

@@ -30,10 +30,20 @@ const IGNORED_PROJECT_STATE_NAMES = new Set([
   '.grok',
   '.kimi-code',
   '.opencode',
+  '.kilo',
+  '.kilocode',
 ]);
 
 function shouldIgnoreDirectory(relativePath: string, name: string): boolean {
-  if (IGNORED_DIRECTORY_NAMES.has(name) || IGNORED_PROJECT_STATE_NAMES.has(name)) return true;
+  if (IGNORED_DIRECTORY_NAMES.has(name)) return true;
+  // Studio prototypes live under .cloudcli/studio. Those writes *are* the
+  // implementation diff for design swarms — ignore the rest of .cloudcli.
+  if (name === '.cloudcli') return false;
+  if (relativePath === path.join('.cloudcli', 'studio') || relativePath.startsWith(`${path.join('.cloudcli', 'studio')}${path.sep}`)) {
+    return false;
+  }
+  if (relativePath === '.cloudcli' || relativePath.startsWith(`.cloudcli${path.sep}`)) return true;
+  if (IGNORED_PROJECT_STATE_NAMES.has(name)) return true;
   return relativePath === 'tmp' || relativePath.startsWith(`tmp${path.sep}`);
 }
 

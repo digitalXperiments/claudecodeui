@@ -4,7 +4,13 @@ import Database from 'better-sqlite3';
 
 import { parseImagesInputTag } from '@/shared/image-attachments.js';
 import type { IProviderSessions } from '@/shared/interfaces.js';
-import type { AnyRecord, FetchHistoryOptions, FetchHistoryResult, NormalizedMessage } from '@/shared/types.js';
+import type {
+  AnyRecord,
+  FetchHistoryOptions,
+  FetchHistoryResult,
+  LLMProvider,
+  NormalizedMessage,
+} from '@/shared/types.js';
 import {
   createNormalizedMessage,
   generateMessageId,
@@ -17,7 +23,12 @@ import {
   unwrapJsonStringLiteral,
 } from '@/shared/utils.js';
 
-const PROVIDER = 'opencode';
+const DEFAULT_PROVIDER = 'opencode' as const;
+
+export type OpenCodeSessionsProviderOptions = {
+  provider?: LLMProvider;
+  databasePath?: string;
+};
 
 type OpenCodeHistoryRow = {
   message_id: string;
@@ -36,8 +47,8 @@ type OpenCodeTokenTotals = {
   cacheWriteTokens: number;
 };
 
-const openOpenCodeDatabase = (): Database.Database | null => {
-  const dbPath = getOpenCodeDatabasePath();
+const openOpenCodeDatabase = (databasePath: string = getOpenCodeDatabasePath()): Database.Database | null => {
+  const dbPath = databasePath;
   if (!fsSync.existsSync(dbPath)) {
     return null;
   }
@@ -199,6 +210,7 @@ const aggregateOpenCodeSessionTokenUsage = (
 };
 
 type NormalizeOpenCodePartOptions = {
+  provider: LLMProvider;
   part: AnyRecord;
   id: string;
   sessionId: string | null;
@@ -216,7 +228,7 @@ type NormalizeOpenCodePartOptions = {
  * transcript from disagreeing about what the agent said.
  */
 const normalizeOpenCodePart = (options: NormalizeOpenCodePartOptions): NormalizedMessage[] => {
-  const { part, id, sessionId, timestamp, role, toolIdFallback } = options;
+  const { provider, part, id, sessionId, timestamp, role, toolIdFallback } = options;
   const partType = readOptionalString(part.type);
   if (!partType) {
     return [];
@@ -237,7 +249,7 @@ const normalizeOpenCodePart = (options: NormalizeOpenCodePartOptions): Normalize
       id,
       sessionId,
       timestamp,
-      provider: PROVIDER,
+      provider,
       kind: 'text',
       role,
       content,
@@ -255,7 +267,7 @@ const normalizeOpenCodePart = (options: NormalizeOpenCodePartOptions): Normalize
       id,
       sessionId,
       timestamp,
-      provider: PROVIDER,
+      provider,
       kind: 'thinking',
       content,
     })];
@@ -268,7 +280,7 @@ const normalizeOpenCodePart = (options: NormalizeOpenCodePartOptions): Normalize
       id,
       sessionId,
       timestamp,
-      provider: PROVIDER,
+      provider,
       kind: 'tool_use',
       toolName: readOptionalString(part.tool) ?? 'Tool',
       toolInput: state.input ?? part.input ?? {},
@@ -290,7 +302,7 @@ const normalizeOpenCodePart = (options: NormalizeOpenCodePartOptions): Normalize
       id,
       sessionId,
       timestamp,
-      provider: PROVIDER,
+      provider,
       kind: 'stream_end',
     })];
   }
@@ -300,7 +312,7 @@ const normalizeOpenCodePart = (options: NormalizeOpenCodePartOptions): Normalize
       id,
       sessionId,
       timestamp,
-      provider: PROVIDER,
+      provider,
       kind: 'tool_use',
       toolName: partType === 'patch' ? 'Patch' : 'Agent',
       toolInput: part,
@@ -316,7 +328,11 @@ const normalizeOpenCodePart = (options: NormalizeOpenCodePartOptions): Normalize
  * opencode-cli.js). `sessionUpdate` is ACP's discriminant field; the shapes
  * were captured from opencode 1.18.11.
  */
-const normalizeAcpUpdate = (raw: AnyRecord, sessionId: string | null): NormalizedMessage[] => {
+const normalizeAcpUpdate = (
+  raw: AnyRecord,
+  sessionId: string | null,
+  provider: LLMProvider,
+): NormalizedMessage[] => {
   const kind = readOptionalString(raw.sessionUpdate);
   // Chunk text must NOT go through readOptionalString: it trims, and a delta
   // that is only a newline or indentation would vanish — which silently
@@ -329,14 +345,14 @@ const normalizeAcpUpdate = (raw: AnyRecord, sessionId: string | null): Normalize
   if (kind === 'agent_thought_chunk') {
     const text = chunkText(raw.content);
     return text
-      ? [createNormalizedMessage({ kind: 'thinking', content: text, sessionId, provider: PROVIDER })]
+      ? [createNormalizedMessage({ kind: 'thinking', content: text, sessionId, provider })]
       : [];
   }
 
   if (kind === 'agent_message_chunk') {
     const text = chunkText(raw.content);
     return text
-      ? [createNormalizedMessage({ kind: 'stream_delta', content: text, sessionId, provider: PROVIDER })]
+      ? [createNormalizedMessage({ kind: 'stream_delta', content: text, sessionId, provider })]
       : [];
   }
 
@@ -354,7 +370,7 @@ const normalizeAcpUpdate = (raw: AnyRecord, sessionId: string | null): Normalize
       content: content || formatToolContent(raw.rawOutput),
       isError: status === 'failed',
       sessionId,
-      provider: PROVIDER,
+      provider,
     })];
   }
 
@@ -365,9 +381,9 @@ const normalizeAcpUpdate = (raw: AnyRecord, sessionId: string | null): Normalize
       // `toolName`; `title` by this point is the command being run.
       toolName: readOptionalString(raw.toolName) ?? readOptionalString(raw.title) ?? 'Tool',
       toolInput: raw.rawInput,
-      toolId: readOptionalString(raw.toolCallId) ?? generateMessageId('opencode'),
+      toolId: readOptionalString(raw.toolCallId) ?? generateMessageId(provider),
       sessionId,
-      provider: PROVIDER,
+      provider,
     })];
   }
 
@@ -378,6 +394,14 @@ const normalizeAcpUpdate = (raw: AnyRecord, sessionId: string | null): Normalize
 };
 
 export class OpenCodeSessionsProvider implements IProviderSessions {
+  private readonly provider: LLMProvider;
+  private readonly databasePath: string;
+
+  constructor(options: OpenCodeSessionsProviderOptions = {}) {
+    this.provider = options.provider ?? DEFAULT_PROVIDER;
+    this.databasePath = options.databasePath ?? getOpenCodeDatabasePath();
+  }
+
   /**
    * Normalizes live OpenCode events into frontend messages: ACP
    * `session/update` payloads (`opencode acp`, the current runtime) and the
@@ -390,7 +414,7 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
     }
 
     if (typeof raw.sessionUpdate === 'string') {
-      return normalizeAcpUpdate(raw, sessionId);
+      return normalizeAcpUpdate(raw, sessionId, this.provider);
     }
 
     const type = readOptionalString(raw.type) ?? readOptionalString(raw.event);
@@ -398,7 +422,7 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
     const timestamp = normalizeProviderTimestamp(raw.time ?? raw.timestamp);
     const baseId = readOptionalString(raw.id)
       ?? readOptionalString(raw.messageID)
-      ?? generateMessageId('opencode');
+      ?? generateMessageId(this.provider);
 
     if (type === 'error') {
       // OpenCode reports structured errors (`{ error: { name, data } }`) as
@@ -412,7 +436,7 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
         id: baseId,
         sessionId: eventSessionId,
         timestamp,
-        provider: PROVIDER,
+        provider: this.provider,
         kind: 'error',
         content: content.trim() || 'Unknown OpenCode error',
       })];
@@ -435,6 +459,7 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
 
       const partId = readOptionalString(part.id) ?? baseId;
       return normalizeOpenCodePart({
+        provider: this.provider,
         part,
         id: partId,
         sessionId: eventSessionId,
@@ -460,7 +485,7 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
         id: baseId,
         sessionId: eventSessionId,
         timestamp,
-        provider: PROVIDER,
+        provider: this.provider,
         kind: 'stream_delta',
         content,
       })];
@@ -476,7 +501,7 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
         id: baseId,
         sessionId: eventSessionId,
         timestamp,
-        provider: PROVIDER,
+        provider: this.provider,
         kind: 'thinking',
         content,
       })];
@@ -489,7 +514,7 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
         id: baseId,
         sessionId: eventSessionId,
         timestamp,
-        provider: PROVIDER,
+        provider: this.provider,
         kind: 'tool_use',
         toolName,
         toolInput: raw.input ?? raw.arguments ?? {},
@@ -511,7 +536,7 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
         id: baseId,
         sessionId: eventSessionId,
         timestamp,
-        provider: PROVIDER,
+        provider: this.provider,
         kind: 'stream_end',
       })];
     }
@@ -530,7 +555,7 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
     // OpenCode's shared sqlite database keys messages by the provider-native
     // session id, not the app-facing id this method is addressed with.
     const providerSessionId = options.providerSessionId ?? sessionId;
-    const db = openOpenCodeDatabase();
+    const db = openOpenCodeDatabase(this.databasePath);
     if (!db) {
       return { messages: [], total: 0, hasMore: false, offset: 0, limit: null };
     }
@@ -602,7 +627,7 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
           id: `${baseId}_error`,
           sessionId,
           timestamp,
-          provider: PROVIDER,
+          provider: this.provider,
           kind: 'error',
           content: formatToolContent(messageInfo.error),
         }));
@@ -614,6 +639,7 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
 
       const partData = readJsonRecord(row.part_data) ?? {};
       normalized.push(...normalizeOpenCodePart({
+        provider: this.provider,
         part: partData,
         id: baseId,
         sessionId,

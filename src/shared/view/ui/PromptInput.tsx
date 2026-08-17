@@ -133,9 +133,9 @@ export const PromptInputTools = React.forwardRef<
     ref={ref}
     data-slot="prompt-input-tools"
     className={cn(
-      // Horizontal scroll on narrow viewports keeps every control reachable
-      // without wrapping the send button off-screen.
-      'scrollbar-hide flex min-w-0 flex-1 items-center gap-1 overflow-x-auto overscroll-x-contain',
+      // Phones wrap the tools onto multiple rows; from sm up a single-row
+      // horizontal scroll strip keeps every control reachable.
+      'scrollbar-hide flex min-w-0 flex-1 flex-wrap items-center gap-1 overscroll-x-contain sm:flex-nowrap sm:overflow-x-auto',
       className,
     )}
     {...props}

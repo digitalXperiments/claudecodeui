@@ -2,9 +2,11 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  extractJsonPayload,
   friendlyGrokManagedName,
   mergeCliMcpEntries,
   parseCliMcpListOutput,
+  parseDoctorJson,
 } from '@/modules/providers/services/mcp-cli-list.service.js';
 
 test('parseCliMcpListOutput parses claude mcp list lines', () => {
@@ -79,6 +81,26 @@ test('friendlyGrokManagedName humanizes grok.com connector ids', () => {
     'Leong Associates MCP',
   );
   assert.equal(friendlyGrokManagedName('leong-associates-mcp'), 'Leong Associates MCP');
+});
+
+test('extractJsonPayload ignores brace snippets in log lines', () => {
+  const raw = [
+    'ERROR worker quit: UnexpectedServerResponse("HTTP 405: {\\"detail\\":\\"Method Not Allowed\\"}")',
+    '{',
+    '  "servers": [',
+    '    { "name": "grok_com_fluxito", "target": "https://fluxito.app/mcp", "source": "managed", "transport": "http", "healthy": true, "checks": [] }',
+    '  ]',
+    '}',
+  ].join('\n');
+  const payload = extractJsonPayload(raw) as { servers?: unknown[] };
+  assert.ok(payload);
+  assert.equal(payload.servers?.length, 1);
+
+  const entries = parseDoctorJson(raw);
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].source, 'grok.com');
+  assert.equal(entries[0].ownerProvider, 'grok');
+  assert.match(entries[0].name, /Fluxito/i);
 });
 
 // Identity rules live in mcp-catalog; smoke-check friendly names stay stable.

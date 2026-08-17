@@ -29,16 +29,26 @@ import { isXArticleBody } from '../utils/xArticle';
 
 import ArticleDraftCard from './subcomponents/ArticleDraftCard';
 
+export type WorkThisSessionRequest = {
+  sessionId: string;
+  projectId: string;
+  projectPath: string;
+  provider: string;
+  prompt: string;
+  title: string;
+};
+
 type MissionControlPanelProps = {
   isOpen: boolean;
   onClose: () => void;
   projects?: Project[];
   onPendingCountChange?: (count: number) => void;
+  onWorkThis?: (request: WorkThisSessionRequest) => void;
 };
 
 type ModelOption = { value: string; label: string };
 
-const PROVIDERS = ['claude', 'grok', 'opencode', 'codex', 'cursor', 'kimi', 'pi'] as const;
+const PROVIDERS = ['claude', 'grok', 'opencode', 'kilo', 'cline', 'codex', 'cursor', 'kimi', 'pi'] as const;
 
 const emptyForm = (): McSectionInput => ({
   title: '',
@@ -112,6 +122,7 @@ export default function MissionControlPanel({
   onClose,
   projects = [],
   onPendingCountChange,
+  onWorkThis,
 }: MissionControlPanelProps) {
   const [sections, setSections] = useState<McSection[]>([]);
   const [items, setItems] = useState<McItem[]>([]);
@@ -513,6 +524,19 @@ export default function MissionControlPanel({
     setActingItemId(item.item_id);
     setError(null);
     try {
+      if (action?.kind === 'work') {
+        const result = await missionControlApi.workThis(item.item_id);
+        onWorkThis?.({
+          sessionId: result.sessionId,
+          projectId: result.projectId,
+          projectPath: result.projectPath,
+          provider: result.provider,
+          prompt: result.prompt,
+          title: item.title,
+        });
+        onClose();
+        return;
+      }
       let body: Record<string, unknown> | undefined;
       if (editingBodyId === item.item_id && action?.kind !== 'delete') {
         const parsed = parseBodyDraft();
@@ -1150,6 +1174,8 @@ export default function MissionControlPanel({
                                     <Loader2 className="h-3 w-3 animate-spin" />
                                   ) : action.kind === 'approve' ? (
                                     <Check className="h-3 w-3" />
+                                  ) : action.kind === 'work' ? (
+                                    <Play className="h-3 w-3" />
                                   ) : action.kind === 'delete' ? (
                                     <Trash2 className="h-3 w-3" />
                                   ) : action.kind === 'dismiss' ? (

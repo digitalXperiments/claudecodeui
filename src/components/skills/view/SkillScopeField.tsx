@@ -10,6 +10,8 @@ type SkillScopeFieldProps = {
   options: SkillProjectOption[];
   optionsLoading: boolean;
   onChange: (scope: GlobalSkillScope, projects: string[]) => void;
+  /** Hide the "All projects" radio — used when copying into a selected set only. */
+  hideAllProjects?: boolean;
 };
 
 /**
@@ -22,6 +24,7 @@ export default function SkillScopeField({
   options,
   optionsLoading,
   onChange,
+  hideAllProjects = false,
 }: SkillScopeFieldProps) {
   const [searchQuery, setSearchQuery] = useState('');
 
@@ -52,28 +55,30 @@ export default function SkillScopeField({
   return (
     <div className="space-y-2">
       <span className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">Applies to</span>
-      <div className="flex flex-col gap-1.5">
-        <label className="flex cursor-pointer items-center gap-2 text-sm text-foreground">
-          <input
-            type="radio"
-            name="skill-scope-field"
-            checked={scope === 'all'}
-            onChange={() => handleScopeChange('all')}
-          />
-          All projects
-        </label>
-        <label className="flex cursor-pointer items-center gap-2 text-sm text-foreground">
-          <input
-            type="radio"
-            name="skill-scope-field"
-            checked={scope === 'projects'}
-            onChange={() => handleScopeChange('projects')}
-          />
-          Selected projects
-        </label>
-      </div>
+      {!hideAllProjects && (
+        <div className="flex flex-col gap-1.5">
+          <label className="flex cursor-pointer items-center gap-2 text-sm text-foreground">
+            <input
+              type="radio"
+              name="skill-scope-field"
+              checked={scope === 'all'}
+              onChange={() => handleScopeChange('all')}
+            />
+            All projects
+          </label>
+          <label className="flex cursor-pointer items-center gap-2 text-sm text-foreground">
+            <input
+              type="radio"
+              name="skill-scope-field"
+              checked={scope === 'projects'}
+              onChange={() => handleScopeChange('projects')}
+            />
+            Selected projects
+          </label>
+        </div>
+      )}
 
-      {scope === 'projects' && (
+      {(hideAllProjects || scope === 'projects') && (
         <div className="space-y-2 rounded-md border border-border/70 bg-muted/10 p-2">
           {optionsLoading ? (
             <div className="flex items-center gap-2 px-1 py-1.5 text-xs text-muted-foreground">

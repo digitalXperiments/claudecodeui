@@ -102,17 +102,6 @@ export class KimiSessionsProvider implements IProviderSessions {
           : [];
       }
 
-      if (kind === 'tool_call_update' && raw.rawInput) {
-        return [createNormalizedMessage({
-          kind: 'tool_use',
-          toolName: typeof raw.title === 'string' ? raw.title : 'Tool',
-          toolInput: raw.rawInput,
-          toolId: typeof raw.toolCallId === 'string' ? raw.toolCallId : generateMessageId('kimi'),
-          sessionId,
-          provider: PROVIDER,
-        })];
-      }
-
       if (kind === 'tool_call_update' && (raw.status === 'completed' || raw.status === 'failed')) {
         const content = Array.isArray(raw.content)
           ? raw.content.map((part) => readObjectRecord(readObjectRecord(part)?.content)?.text).filter(Boolean).join('\n')
@@ -122,6 +111,17 @@ export class KimiSessionsProvider implements IProviderSessions {
           toolId: typeof raw.toolCallId === 'string' ? raw.toolCallId : '',
           content: typeof raw.rawOutput === 'string' ? raw.rawOutput : content,
           isError: raw.status === 'failed',
+          sessionId,
+          provider: PROVIDER,
+        })];
+      }
+
+      if (kind === 'tool_call_update' && raw.rawInput) {
+        return [createNormalizedMessage({
+          kind: 'tool_use',
+          toolName: typeof raw.title === 'string' ? raw.title : 'Tool',
+          toolInput: raw.rawInput,
+          toolId: typeof raw.toolCallId === 'string' ? raw.toolCallId : generateMessageId('kimi'),
           sessionId,
           provider: PROVIDER,
         })];

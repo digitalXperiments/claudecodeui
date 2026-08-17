@@ -9,7 +9,9 @@ export type InterruptKind =
   | 'task_blocked'
   | 'workspace_conflict'
   | 'secret_missing'
-  | 'ci_failed';
+  | 'ci_failed'
+  | 'spend_cap'
+  | 'shift_report';
 
 export type InterruptSeverity = 'info' | 'warning' | 'error' | 'critical';
 export type InterruptStatus = 'open' | 'snoozed' | 'resolved' | 'dismissed' | 'expired';
@@ -72,6 +74,8 @@ export type InterruptListFilter = {
   projectId?: string;
   status?: InterruptStatus | InterruptStatus[];
   limit?: number;
+  /** Only decisions or configuration fixes that require a person right now. */
+  attentionOnly?: boolean;
 };
 
 export type InterruptActionInput = {
@@ -79,4 +83,3 @@ export type InterruptActionInput = {
   actor?: string | null;
   body?: Record<string, unknown>;
 };
-

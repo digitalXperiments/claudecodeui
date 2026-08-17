@@ -117,8 +117,11 @@ test('provider models are cached for the three-day ttl', async () => {
     assert.equal(cached.models.DEFAULT, first.models.DEFAULT);
     assert.equal(cached.cache.source, 'memory');
 
+    // Just shy of the TTL the entry is still live. Probed with 'cursor' on
+    // purpose: 'codex' is in UNCACHED_PROVIDERS and always loads directly, so
+    // it can never demonstrate a cache hit (that path has its own test).
     currentTime += PROVIDER_MODELS_CACHE_TTL_MS - 1;
-    await service.getProviderModels('codex');
+    await service.getProviderModels('cursor');
     assert.equal(loadCount, 1);
 
     currentTime += 2;

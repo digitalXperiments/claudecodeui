@@ -7,6 +7,8 @@ import { secretsService } from '@/modules/secrets/index.js';
 import { providerRegistry } from '@/modules/providers/provider.registry.js';
 import { providerMcpService } from '@/modules/providers/services/mcp.service.js';
 import {
+  clearMcpCliListCache,
+  friendlyGrokManagedName,
   listMcpServersFromCli,
 } from '@/modules/providers/services/mcp-cli-list.service.js';
 import type {
@@ -41,6 +43,7 @@ import {
 
 const CATALOG_DIR_SEGMENTS = ['.cloudcli', 'mcp'] as const;
 const CATALOG_FILE_NAME = 'catalog.json';
+const ACCOUNT_CACHE_FILE_NAME = 'account-inventory-cache.json';
 
 type CatalogFile = {
   version: 1;
@@ -61,14 +64,18 @@ export type ResolvedMcpServerConnection = {
 
 const getCatalogDir = (): string => path.join(os.homedir(), ...CATALOG_DIR_SEGMENTS);
 const getCatalogPath = (): string => path.join(getCatalogDir(), CATALOG_FILE_NAME);
+const getAccountCachePath = (): string => path.join(getCatalogDir(), ACCOUNT_CACHE_FILE_NAME);
 
 const ALL_MCP_PROVIDERS: LLMProvider[] = [
   'claude',
   'cursor',
   'codex',
   'opencode',
+  'kilo',
+  'cline',
   'grok',
   'kimi',
+  'qwencode',
   'pi',
 ];
 
@@ -335,33 +342,143 @@ const rankSource = (source: McpInventoryItem['source']): number => {
   }
 };
 
+const serializeAccountItem = (item: McpInventoryItem): McpInventoryItem => ({
+  name: item.name,
+  source: 'provider_cloud',
+  transport: item.transport,
+  url: item.url,
+  command: item.command,
+  args: item.args,
+  providers: item.providers,
+  originProvider: item.originProvider,
+  connected: item.connected,
+  needsAuth: item.needsAuth,
+  cloudLabel: item.cloudLabel,
+  configPaths: item.configPaths,
+  configKinds: item.configKinds,
+});
+
+const readAccountInventoryCache = async (): Promise<McpInventoryItem[]> => {
+  try {
+    const data = await readJsonConfig(getAccountCachePath()) as {
+      version?: number;
+      items?: unknown;
+    };
+    if (data?.version !== 1 || !Array.isArray(data.items)) return [];
+    return data.items
+      .filter((item): item is McpInventoryItem => (
+        Boolean(item)
+        && typeof item === 'object'
+        && (item as McpInventoryItem).source === 'provider_cloud'
+        && typeof (item as McpInventoryItem).name === 'string'
+      ))
+      .map((item) => ({ ...item, source: 'provider_cloud' as const }));
+  } catch {
+    return [];
+  }
+};
+
+const writeAccountInventoryCache = async (items: McpInventoryItem[]): Promise<void> => {
+  const cloud = items.filter((item) => item.source === 'provider_cloud').map(serializeAccountItem);
+  if (cloud.length === 0) return;
+  await writeJsonConfig(getAccountCachePath(), {
+    version: 1,
+    savedAt: new Date().toISOString(),
+    items: cloud,
+  } as unknown as Record<string, unknown>);
+};
+
 /**
- * Discover every Grok project-scoped MCP folder under ~/.grok/projects/<id>/mcps.
- * Hosted connectors often only appear here, never in config.toml or `grok mcp list`.
+ * Claude.ai connectors never live in mcpServers — only in account-side caches.
+ * Fast path paints these so Settings is not empty while `claude mcp list` runs.
  */
-const listAllGrokProjectMcpNames = async (): Promise<string[]> => {
+const loadClaudeAccountHints = async (): Promise<McpInventoryItem[]> => {
+  const names = new Map<string, { needsAuth: boolean; configPath: string }>();
+  const claudeJson = path.join(os.homedir(), '.claude.json');
+  try {
+    const data = await readJsonConfig(claudeJson) as { claudeAiMcpEverConnected?: unknown };
+    if (Array.isArray(data.claudeAiMcpEverConnected)) {
+      for (const name of data.claudeAiMcpEverConnected) {
+        if (typeof name === 'string' && isProviderCloudName(name)) {
+          names.set(name, { needsAuth: false, configPath: claudeJson });
+        }
+      }
+    }
+  } catch {
+    // optional
+  }
+
+  const authPath = path.join(os.homedir(), '.claude', 'mcp-needs-auth-cache.json');
+  try {
+    const data = await readJsonConfig(authPath);
+    if (data && typeof data === 'object') {
+      for (const name of Object.keys(data)) {
+        if (isProviderCloudName(name)) {
+          names.set(name, { needsAuth: true, configPath: authPath });
+        }
+      }
+    }
+  } catch {
+    // optional
+  }
+
+  return [...names.entries()].map(([name, meta]) => ({
+    name,
+    source: 'provider_cloud' as const,
+    transport: 'http' as const,
+    providers: ['claude'] as LLMProvider[],
+    originProvider: 'claude' as const,
+    cloudLabel: 'Claude.ai',
+    needsAuth: meta.needsAuth,
+    configPaths: [meta.configPath],
+    configKinds: ['claude_account_hint'],
+  }));
+};
+
+/**
+ * Grok.com managed connectors leave a project-cache folder even when doctor
+ * is skipped. Only emit names that look hosted (never local stdio tools).
+ */
+const loadGrokProjectAccountHints = async (): Promise<McpInventoryItem[]> => {
   const root = path.join(os.homedir(), '.grok', 'projects');
-  const names = new Set<string>();
+  const items: McpInventoryItem[] = [];
+  const seen = new Set<string>();
   try {
     const projects = await readdir(root, { withFileTypes: true });
     for (const project of projects) {
       if (!project.isDirectory()) continue;
       const mcpsDir = path.join(root, project.name, 'mcps');
+      let entries;
       try {
-        const entries = await readdir(mcpsDir, { withFileTypes: true });
-        for (const entry of entries) {
-          if (entry.isDirectory() && !entry.name.startsWith('.')) {
-            names.add(entry.name);
-          }
-        }
+        entries = await readdir(mcpsDir, { withFileTypes: true });
       } catch {
-        // missing mcps dir
+        continue;
+      }
+      for (const entry of entries) {
+        if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
+        if (!isProviderCloudName(entry.name) && !isGrokHostedCacheName(entry.name)) continue;
+        const display = /^grok_com_/i.test(entry.name)
+          ? friendlyGrokManagedName(entry.name)
+          : entry.name;
+        const identity = normalizeMcpIdentity(display);
+        if (!identity || seen.has(identity)) continue;
+        seen.add(identity);
+        items.push({
+          name: display,
+          source: 'provider_cloud',
+          transport: 'http',
+          providers: ['grok'],
+          originProvider: 'grok',
+          cloudLabel: 'Grok.com',
+          configPaths: [path.join(mcpsDir, entry.name)],
+          configKinds: ['grok_project_cache'],
+        });
       }
     }
   } catch {
     // no projects root
   }
-  return [...names];
+  return items;
 };
 
 /**
@@ -553,12 +670,30 @@ export const mcpCatalogService = {
   },
 
   /**
-   * Unified inventory from **real files only** (+ optional CLI for account
+   * Unified inventory from **real files** (+ optional CLI for account
    * connectors that never live on disk).
+   *
+   * Phases:
+   *  - `fast` — catalog.json + on-disk provider configs only (ms). Used for
+   *    first paint so Settings never blocks on `claude/grok mcp doctor`.
+   *  - `full` — also shells out for claude.ai / grok.com account connectors.
    *
    * Never invents servers. Every native/cloud row carries configPaths/kinds.
    */
-  async listInventory(_options?: { workspacePath?: string }): Promise<McpInventoryItem[]> {
+  async listInventory(options?: {
+    workspacePath?: string;
+    phase?: 'fast' | 'full';
+    bypassCliCache?: boolean;
+  }): Promise<{
+    items: McpInventoryItem[];
+    phase: 'fast' | 'full';
+    partial: boolean;
+    warnings: string[];
+  }> {
+    // Default full so a forgotten phase never silently drops account connectors.
+    const phase = options?.phase === 'fast' ? 'fast' : 'full';
+    const warnings: string[] = [];
+
     // Ensure Grok stops auto-importing ~/.claude.json (sticky Claude MCPs in /mcps).
     try {
       const { ensureUserGrokMcpIsolation } = await import('../../../shared/grok-home.js');
@@ -568,7 +703,6 @@ export const mcpCatalogService = {
     }
 
     const catalog = await readCatalog();
-    const items: McpInventoryItem[] = [];
     const byIdentity = new Map<string, McpInventoryItem>();
 
     const put = (item: McpInventoryItem) => {
@@ -671,48 +805,67 @@ export const mcpCatalogService = {
       });
     }
 
-    // 3) Account connectors only (not in files) — from provider CLIs with real source tags.
-    //    No placeholders. No project-cache directory invention.
-    for (const provider of ['claude', 'grok'] as LLMProvider[]) {
-      try {
-        const cliEntries = await listMcpServersFromCli(provider, {
-          workspacePaths: provider === 'grok' ? workspacePathsSafe() : undefined,
-        });
-        for (const entry of cliEntries) {
-          const isCloudName = isProviderCloudName(entry.name)
-            || entry.source === 'grok.com'
-            || (typeof entry.source === 'string' && /managed/i.test(entry.source));
-          // Skip file-backed servers from CLI (already covered by scan).
-          if (!isCloudName) continue;
-          // Skip doctor noise from ~/.claude.json when listing as grok
-          if (entry.ownerProvider && entry.ownerProvider !== provider && entry.ownerProvider !== undefined) {
-            // still allow if name is clearly claude.ai and owner is claude
-          }
-          const owner = entry.ownerProvider
-            ?? (entry.name.toLowerCase().startsWith('claude.ai') ? 'claude' : provider);
-          // Only emit cloud rows for the owning account
-          if (entry.name.toLowerCase().startsWith('claude.ai') && owner !== 'claude') continue;
-          if ((entry.source === 'grok.com' || /^grok_com_/i.test(entry.name)) && owner !== 'grok') continue;
+    // 3) Last-known + on-disk account hints (ms) so Account is never blank.
+    for (const item of await readAccountInventoryCache()) put(item);
+    for (const item of await loadClaudeAccountHints()) put(item);
+    for (const item of await loadGrokProjectAccountHints()) put(item);
 
-          const looksUrl = /^https?:\/\//i.test(entry.target);
-          put({
-            name: entry.name,
-            source: 'provider_cloud',
-            transport: entry.transport === 'sse' ? 'sse' : looksUrl ? 'http' : 'stdio',
-            url: looksUrl ? entry.target.split(/\s+/)[0] : undefined,
-            command: looksUrl ? undefined : entry.target.split(/\s+/)[0],
-            args: looksUrl ? undefined : entry.target.split(/\s+/).slice(1),
-            providers: [owner],
-            originProvider: owner,
-            connected: entry.connected,
-            needsAuth: entry.needsAuth,
-            cloudLabel: owner === 'claude' ? 'Claude.ai' : 'Grok.com',
-            configPaths: entry.source ? [`cli:${provider}:${entry.source}`] : [`cli:${provider}`],
-            configKinds: [entry.source === 'grok.com' || entry.source === 'managed' ? 'cli_grok_managed' : 'cli_account'],
-          });
-        }
-      } catch {
-        // CLI optional
+    // 4) Live CLI enrichment — skipped on fast phase.
+    if (phase === 'full') {
+      const workspacePaths = workspacePathsSafe();
+      const cliCloudCounts: Record<'claude' | 'grok', number> = { claude: 0, grok: 0 };
+      await Promise.all(
+        (['claude', 'grok'] as LLMProvider[]).map(async (provider) => {
+          try {
+            const cliEntries = await listMcpServersFromCli(provider, {
+              workspacePaths: provider === 'grok' ? workspacePaths : undefined,
+              bypassCache: options?.bypassCliCache === true,
+            });
+            for (const entry of cliEntries) {
+              const isCloudName = isProviderCloudName(entry.name)
+                || entry.source === 'grok.com'
+                || (typeof entry.source === 'string' && /managed/i.test(entry.source));
+              // Skip file-backed servers from CLI (already covered by scan).
+              if (!isCloudName) continue;
+              const owner = entry.ownerProvider
+                ?? (entry.name.toLowerCase().startsWith('claude.ai') ? 'claude' : provider);
+              // Only emit cloud rows for the owning account
+              if (entry.name.toLowerCase().startsWith('claude.ai') && owner !== 'claude') continue;
+              if ((entry.source === 'grok.com' || /^grok_com_/i.test(entry.name)) && owner !== 'grok') continue;
+
+              if (owner === 'claude' || owner === 'grok') {
+                cliCloudCounts[owner] += 1;
+              }
+
+              const looksUrl = /^https?:\/\//i.test(entry.target);
+              put({
+                name: entry.name,
+                source: 'provider_cloud',
+                transport: entry.transport === 'sse' ? 'sse' : looksUrl ? 'http' : 'stdio',
+                url: looksUrl ? entry.target.split(/\s+/)[0] : undefined,
+                command: looksUrl ? undefined : entry.target.split(/\s+/)[0],
+                args: looksUrl ? undefined : entry.target.split(/\s+/).slice(1),
+                providers: [owner],
+                originProvider: owner,
+                connected: entry.connected,
+                needsAuth: entry.needsAuth,
+                cloudLabel: owner === 'claude' ? 'Claude.ai' : 'Grok.com',
+                configPaths: entry.source ? [`cli:${provider}:${entry.source}`] : [`cli:${provider}`],
+                configKinds: [entry.source === 'grok.com' || entry.source === 'managed' ? 'cli_grok_managed' : 'cli_account'],
+              });
+            }
+          } catch (error) {
+            warnings.push(
+              `${provider} account scan failed: ${error instanceof Error ? error.message : String(error)}`,
+            );
+          }
+        }),
+      );
+      if (cliCloudCounts.claude === 0) {
+        warnings.push('Claude.ai connectors did not refresh from `claude mcp list` — showing cached names.');
+      }
+      if (cliCloudCounts.grok === 0) {
+        warnings.push('Grok.com connectors did not refresh from `grok mcp doctor` — showing cached names.');
       }
     }
 
@@ -732,11 +885,29 @@ export const mcpCatalogService = {
     // Surface isolation note via managed empty path is enough; UI can show configPaths.
     void grokCompat;
 
-    return result.sort((a, b) => {
+    const items = result.sort((a, b) => {
       const rank = rankSource(a.source) - rankSource(b.source);
       if (rank !== 0) return rank;
       return a.name.localeCompare(b.name);
     });
+
+    if (phase === 'full') {
+      const cloudCount = items.filter((item) => item.source === 'provider_cloud').length;
+      if (cloudCount > 0) {
+        try {
+          await writeAccountInventoryCache(items);
+        } catch {
+          // cache is best-effort
+        }
+      }
+    }
+
+    return {
+      items,
+      phase,
+      partial: phase === 'fast',
+      warnings,
+    };
   },
 
   /**
@@ -799,6 +970,7 @@ export const mcpCatalogService = {
 
     catalog.servers[name] = def;
     await writeCatalog(catalog);
+    clearMcpCliListCache();
 
     const syncResults = await syncBindings(def, previousEnabled);
     return { ...def, source: 'cloudcli', syncResults };
@@ -823,6 +995,7 @@ export const mcpCatalogService = {
     existing.updatedAt = new Date().toISOString();
     catalog.servers[name] = existing;
     await writeCatalog(catalog);
+    clearMcpCliListCache();
 
     const syncResults = await syncBindings(existing, previousEnabled);
     return { ...existing, source: 'cloudcli', syncResults };
@@ -846,6 +1019,7 @@ export const mcpCatalogService = {
 
     delete catalog.servers[name];
     await writeCatalog(catalog);
+    clearMcpCliListCache();
 
     return { removed: true, name, syncResults };
   },

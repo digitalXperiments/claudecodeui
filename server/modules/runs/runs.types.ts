@@ -143,6 +143,8 @@ export type ProjectRunStats = {
 export type GlobalStatsFilter = {
   from?: string;
   to?: string;
+  /** Filter runs/sessions to this provider. Use `__unknown__` for unattributed rows. */
+  provider?: string;
 };
 
 /** Headline KPIs for the Stats dashboard. */
@@ -150,10 +152,13 @@ export type StatsOverview = {
   totalRuns: number;
   /** Runs with a non-null token_total (token coverage). */
   runsWithTokens: number;
-  /** SUM(token_total). Provider totals may include cache reads; cache detail is not stored. */
+  /** Normalized provider usage. Input includes cache reads/writes, matching provider billing usage. */
   totalTokens: number;
   inputTokens: number;
   outputTokens: number;
+  /** Subsets of inputTokens, when reported by the provider. */
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
   /** SUM(cost_usd_estimate); null when no run in range carries a cost estimate. */
   totalCostUsd: number | null;
   /** Runs with a non-null cost estimate (cost coverage). */

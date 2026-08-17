@@ -40,8 +40,11 @@ const PROVIDER_MODEL_LABELS: Record<LLMProvider, string> = {
   cursor: 'Cursor',
   codex: 'Codex',
   opencode: 'OpenCode',
+  kilo: 'Kilo Code',
+  cline: 'Cline',
   grok: 'Grok Build',
   kimi: 'Kimi',
+  qwencode: 'Qwen Code',
   pi: 'Pi',
 };
 
@@ -928,6 +931,8 @@ export function useChatComposerState({
       const sent = sendMessage({
         type: 'chat.send',
         sessionId: targetSessionId,
+        expectedProvider: provider,
+        expectedProjectId: selectedProject.projectId,
         content: messageContent,
         options: {
           ...sendOptions,

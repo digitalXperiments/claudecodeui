@@ -51,6 +51,8 @@ type ChatWebSocketDependencies = {
   getPendingApprovalsForSession: (providerSessionId: string) => unknown[];
 };
 
+const MAX_DELEGATED_REQUEST_CHARS = 8000;
+
 /**
  * Extracts the authenticated request user id in the formats currently produced
  * by platform and OSS auth code paths.
@@ -135,7 +137,39 @@ async function handleChatSend(
     return;
   }
 
+  if (session.is_internal) {
+    sendProtocolError(
+      ws,
+      'SESSION_NOT_INTERACTIVE',
+      `Session "${sessionId}" belongs to an internal automation run and cannot be opened or continued in chat.`,
+      sessionId,
+    );
+    return;
+  }
+
   const provider = session.provider as LLMProvider;
+  const project = session.project_path ? projectsDb.getProjectPath(session.project_path) : null;
+  const expectedProvider = typeof data.expectedProvider === 'string' ? data.expectedProvider.trim() : '';
+  const expectedProjectId = typeof data.expectedProjectId === 'string' ? data.expectedProjectId.trim() : '';
+  if (expectedProvider && expectedProvider !== provider) {
+    sendProtocolError(
+      ws,
+      'SESSION_CONTEXT_MISMATCH',
+      `Refusing to send: session provider is "${provider}", but the composer expected "${expectedProvider}".`,
+      sessionId,
+    );
+    return;
+  }
+  if (expectedProjectId && expectedProjectId !== project?.project_id) {
+    sendProtocolError(
+      ws,
+      'SESSION_CONTEXT_MISMATCH',
+      'Refusing to send: the selected project does not own this session.',
+      sessionId,
+    );
+    return;
+  }
+
   const spawnFn = dependencies.spawnFns[provider];
   if (!spawnFn) {
     sendProtocolError(ws, 'UNSUPPORTED_PROVIDER', `Provider "${provider}" is not available.`, sessionId);
@@ -144,6 +178,36 @@ async function handleChatSend(
 
   const clientOptions = (data.options ?? {}) as AnyRecord;
   const command = typeof data.content === 'string' ? data.content : '';
+  if (clientOptions.delegatedRequest === true) {
+    if (command.length > MAX_DELEGATED_REQUEST_CHARS) {
+      sendProtocolError(
+        ws,
+        'DELEGATED_REQUEST_TOO_LARGE',
+        `Delegated requests are limited to ${MAX_DELEGATED_REQUEST_CHARS} characters.`,
+        sessionId,
+      );
+      return;
+    }
+
+    const delegatingSessionId = typeof clientOptions.delegatingSessionId === 'string'
+      ? clientOptions.delegatingSessionId.trim()
+      : '';
+    const delegatingSession = delegatingSessionId ? sessionsDb.getSessionById(delegatingSessionId) : null;
+    if (
+      !delegatingSession
+      || delegatingSession.is_internal
+      || delegatingSession.session_id === sessionId
+      || delegatingSession.project_path !== session.project_path
+    ) {
+      sendProtocolError(
+        ws,
+        'INVALID_SESSION_DELEGATION',
+        'Delegated requests must come from another interactive session in the same project.',
+        sessionId,
+      );
+      return;
+    }
+  }
   const wantIsolatedWorkspace =
     clientOptions.isolatedWorkspace === true ||
     clientOptions.isolated_workspace === true ||
@@ -153,7 +217,6 @@ async function handleChatSend(
   // session can accept an injected follow-up message, which belongs to the
   // existing run rather than creating a second canonical row.
   const shouldCreateCanonicalRun = !chatRunRegistry.isProcessing(sessionId);
-  const project = session.project_path ? projectsDb.getProjectPath(session.project_path) : null;
   const canonicalRun = shouldCreateCanonicalRun
     ? runService.create({
         source: 'chat',
@@ -311,6 +374,17 @@ async function handleChatAbort(
     return;
   }
 
+  const session = sessionsDb.getSessionById(sessionId);
+  if (!session || session.is_internal) {
+    sendProtocolError(
+      ws,
+      'SESSION_NOT_INTERACTIVE',
+      `Session "${sessionId}" is not an interactive chat session.`,
+      sessionId,
+    );
+    return;
+  }
+
   const run = chatRunRegistry.getRun(sessionId);
   if (!run || run.status !== 'running') {
     sendProtocolError(ws, 'NO_ACTIVE_RUN', `Session "${sessionId}" has no active run.`, sessionId);
@@ -364,6 +438,20 @@ function handleChatSubscribe(
 
     const run = chatRunRegistry.getRun(sessionId);
     const isProcessing = chatRunRegistry.isProcessing(sessionId);
+    const session = sessionsDb.getSessionById(sessionId);
+
+    // Internal swarm/automation streams are not an interactive chat surface.
+    // Silently omit them from subscription fan-out even if a browser learned
+    // an app-session id from stale local state or an old build.
+    if (!session || session.is_internal) {
+      sendJson(ws, {
+        kind: 'chat_subscribed',
+        sessionId,
+        isProcessing: false,
+        pendingPermissions: [],
+      });
+      continue;
+    }
 
     // Future live events for this run should also land on the socket that
     // asked — additive fan-out, so other tabs following the run keep their

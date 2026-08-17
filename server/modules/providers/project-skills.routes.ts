@@ -136,8 +136,11 @@ const KNOWN_LLM_PROVIDERS: LLMProvider[] = [
   'codex',
   'cursor',
   'opencode',
+  'kilo',
+  'cline',
   'grok',
   'kimi',
+  'qwencode',
   'pi',
 ];
 
@@ -156,6 +159,19 @@ const readTestProvider = (value: unknown): LLMProvider => {
 const readOptionalWorkspacePath = (value: unknown): string | undefined => {
   const normalized = readOptionalString(value);
   return normalized ? path.resolve(normalized) : undefined;
+};
+
+const parseOptionalWorkspaceList = (value: unknown): string[] => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return [...new Set(
+    value
+      .map((item) => (typeof item === 'string' ? item.trim() : ''))
+      .filter(Boolean)
+      .map((item) => path.resolve(item)),
+  )];
 };
 
 // ----------------- Project skills routes -----------------
@@ -186,8 +202,42 @@ router.post(
   '/',
   asyncHandler(async (req: Request, res: Response) => {
     const input = parseProjectSkillCreatePayload(req.body);
-    const skills = await projectSkillsService.addProjectSkills(input);
-    res.json(createApiSuccessResponse({ workspacePath: input.workspacePath, skills }));
+    const extraWorkspaces = parseOptionalWorkspaceList((req.body as Record<string, unknown>)?.projects);
+    if (extraWorkspaces.length === 0) {
+      const skills = await projectSkillsService.addProjectSkills(input);
+      res.json(createApiSuccessResponse({ workspacePath: input.workspacePath, skills }));
+      return;
+    }
+
+    const destinations = [...new Set([path.resolve(input.workspacePath), ...extraWorkspaces])];
+    const byWorkspace: Array<{ workspacePath: string; skills: Awaited<ReturnType<typeof projectSkillsService.addProjectSkills>> }> = [];
+    for (const workspacePath of destinations) {
+      const skills = await projectSkillsService.addProjectSkills({
+        workspacePath,
+        entries: input.entries,
+      });
+      byWorkspace.push({ workspacePath, skills });
+    }
+
+    const current = byWorkspace.find((item) => item.workspacePath === path.resolve(input.workspacePath));
+    res.json(createApiSuccessResponse({
+      workspacePath: input.workspacePath,
+      skills: current?.skills ?? [],
+      projects: byWorkspace,
+    }));
+  }),
+);
+
+router.post(
+  '/:directoryName/copy',
+  asyncHandler(async (req: Request, res: Response) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const result = await projectSkillsService.copyProjectSkill({
+      workspacePath: readRequiredString(body.workspacePath, 'workspacePath'),
+      directoryName: readPathParam(req.params.directoryName, 'directoryName'),
+      projects: parseOptionalWorkspaceList(body.projects),
+    });
+    res.json(createApiSuccessResponse(result));
   }),
 );
 
