@@ -152,7 +152,11 @@ tasks/
 .worktrees/
 
 # Local scripts and tooling
-scripts/
+scripts/*
+!scripts/build-server.mjs
+!scripts/dev-isolated.mjs
+!scripts/fix-node-pty.js
+!scripts/release/
 opencode.json
 
 # Local desktop packaging artifacts

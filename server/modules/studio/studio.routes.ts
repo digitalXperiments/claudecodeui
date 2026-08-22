@@ -1,6 +1,7 @@
 import express from 'express';
 
 import { buildIdeatePrompt, studioService } from '@/modules/studio/studio.service.js';
+import type { StudioSelectedElement, StudioTokensPatch } from '@/modules/studio/studio.types.js';
 import { AppError, asyncHandler } from '@/shared/utils.js';
 
 const router = express.Router();
@@ -31,6 +32,41 @@ function stringList(value: unknown): string[] | undefined {
     .map((item) => item.trim());
 }
 
+function intValue(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) return Math.trunc(value);
+  if (typeof value === 'string' && /^-?\d+$/.test(value.trim())) return Number.parseInt(value.trim(), 10);
+  return undefined;
+}
+
+function parseSelectedElement(value: unknown): StudioSelectedElement | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const row = value as Record<string, unknown>;
+  const tag = stringValue(row.tag);
+  if (!tag) return undefined;
+  const classes = Array.isArray(row.classes)
+    ? row.classes.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+      .map((item) => item.trim())
+    : undefined;
+  const text = typeof row.text === 'string' ? row.text.slice(0, 500) : undefined;
+  const pathValue = typeof row.path === 'string' ? row.path.slice(0, 500) : undefined;
+  return {
+    tag,
+    classes,
+    text,
+    path: pathValue,
+  };
+}
+
+function parseTokenPatch(value: unknown): StudioTokensPatch {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new AppError('Design tokens must be an object', {
+      code: 'STUDIO_TOKENS_INVALID',
+      statusCode: 400,
+    });
+  }
+  return value as StudioTokensPatch;
+}
+
 router.get(
   '/:projectId/prototypes',
   asyncHandler(async (req, res) => {
@@ -49,6 +85,9 @@ router.post(
       title: stringValue(body.title) || undefined,
       brief: stringValue(body.brief),
       skills: stringList(body.skills),
+      tokens: body.tokens && typeof body.tokens === 'object' && !Array.isArray(body.tokens)
+        ? body.tokens as StudioTokensPatch
+        : undefined,
     });
     res.status(201).json({ success: true, prototype });
   }),
@@ -101,10 +140,94 @@ router.get(
   '/:projectId/prototypes/:id/ideate-prompt',
   asyncHandler(async (req, res) => {
     const prototype = await studioService.get(stringValue(req.params.projectId), stringValue(req.params.id));
-    if (!prototype) {
-      throw new AppError('Prototype not found', { code: 'STUDIO_NOT_FOUND', statusCode: 404 });
-    }
     res.json({ success: true, prompt: buildIdeatePrompt(prototype), prototype });
+  }),
+);
+
+router.post(
+  '/:projectId/prototypes/:id/turns',
+  asyncHandler(async (req, res) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const prototype = await studioService.appendTurn(
+      stringValue(req.params.projectId),
+      stringValue(req.params.id),
+      {
+        message: stringValue(body.message),
+        selectedElement: parseSelectedElement(body.selectedElement),
+      },
+    );
+    res.status(202).json({ success: true, prototype });
+  }),
+);
+
+router.post(
+  '/:projectId/prototypes/:id/variants',
+  asyncHandler(async (req, res) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const prototype = await studioService.generateVariants(
+      stringValue(req.params.projectId),
+      stringValue(req.params.id),
+      {
+        message: stringValue(body.message) || undefined,
+        count: intValue(body.count),
+        selectedElement: parseSelectedElement(body.selectedElement),
+      },
+    );
+    res.status(202).json({ success: true, prototype });
+  }),
+);
+
+router.post(
+  '/:projectId/prototypes/:id/variants/:variantId/promote',
+  asyncHandler(async (req, res) => {
+    const prototype = await studioService.promoteVariant(
+      stringValue(req.params.projectId),
+      stringValue(req.params.id),
+      stringValue(req.params.variantId),
+    );
+    res.status(201).json({ success: true, prototype });
+  }),
+);
+
+router.post(
+  '/:projectId/prototypes/:id/versions/:versionId/revert',
+  asyncHandler(async (req, res) => {
+    const prototype = await studioService.revertToVersion(
+      stringValue(req.params.projectId),
+      stringValue(req.params.id),
+      stringValue(req.params.versionId),
+    );
+    res.json({ success: true, prototype });
+  }),
+);
+
+router.get(
+  '/:projectId/prototypes/:id/tokens',
+  asyncHandler(async (req, res) => {
+    const tokens = await studioService.getTokens(
+      stringValue(req.params.projectId),
+      stringValue(req.params.id),
+    );
+    res.json({ success: true, tokens });
+  }),
+);
+
+router.put(
+  '/:projectId/prototypes/:id/tokens',
+  asyncHandler(async (req, res) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const patch = body.tokens !== undefined ? body.tokens : body;
+    const regenerate = body.regenerate === undefined ? true : body.regenerate !== false;
+    const prototype = await studioService.updateTokens(
+      stringValue(req.params.projectId),
+      stringValue(req.params.id),
+      {
+        tokens: parseTokenPatch(patch),
+        regenerate,
+      },
+    );
+    const status = prototype.status === 'generating' ? 202 : 200;
+    res.status(status).json({ success: true, tokens: prototype.tokens, prototype });
   }),
 );
 

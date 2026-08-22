@@ -1,6 +1,67 @@
+/**
+ * Client-facing Design Studio payload types.
+ * Kept in sync with server/modules/studio/studio.types.ts.
+ */
+
+export const STUDIO_FORMAT = 'cloudcli.studio.v2';
+
+/** Client polls GET /prototypes/:id while status=generating. Matches StudioView's original 2500ms cadence. */
+export const STUDIO_POLL_INTERVAL_MS = 2500;
+
 export type StudioPrototypeStatus = 'draft' | 'generating' | 'ready' | 'failed';
 
+export type StudioVersionKind = 'initial' | 'turn' | 'variant-promotion' | 'revert';
+
+export type StudioGenerationKind = 'turn' | 'variants' | 'tokens' | 'swarm';
+
+export type StudioPreviewFrame = 'mobile' | 'tablet' | 'desktop';
+
+export type StudioSelectedElement = {
+  tag: string;
+  classes?: string[];
+  text?: string;
+  path?: string;
+};
+
+export type StudioDesignTokens = {
+  colors: {
+    background: string;
+    foreground: string;
+    muted: string;
+    accent: string;
+    accentForeground: string;
+    card: string;
+    border: string;
+    wash: string;
+  };
+  typography: {
+    fontFamily: string;
+    headingFamily: string;
+    baseSizePx: number;
+    lineHeight: number;
+  };
+  spacing: {
+    unitPx: number;
+    sectionGapPx: number;
+  };
+  radii: {
+    smPx: number;
+    mdPx: number;
+    lgPx: number;
+    pillPx: number;
+  };
+};
+
+export type StudioGenerationProgress = {
+  kind: StudioGenerationKind;
+  startedAt: string;
+  message: string | null;
+  error: string | null;
+  variantCount?: number;
+};
+
 export type StudioPrototype = {
+  format?: typeof STUDIO_FORMAT;
   id: string;
   projectId: string;
   title: string;
@@ -12,14 +73,56 @@ export type StudioPrototype = {
   notesRelativePath: string;
   handoffRelativePath: string;
   swarmId: string | null;
+  activeVersionId: string;
+  generation: StudioGenerationProgress | null;
   createdAt: string;
   updatedAt: string;
+};
+
+export type StudioVersion = {
+  id: string;
+  parentVersionId: string | null;
+  kind: StudioVersionKind;
+  message: string;
+  selectedElement: StudioSelectedElement | null;
+  createdAt: string;
+  variantIds: string[];
+  promotedFromVariantId?: string | null;
+  revertedFromVersionId?: string | null;
+};
+
+export type StudioVersionDetail = StudioVersion & {
+  html: string;
+  notes: string;
+  handoff: string;
+};
+
+export type StudioVariant = {
+  id: string;
+  versionId: string;
+  label: string;
+  direction: string;
+  html: string;
+  notes: string;
+  handoff: string;
+  createdAt: string;
 };
 
 export type StudioPrototypeDetail = StudioPrototype & {
   html: string;
   notes: string;
   handoff: string;
+  tokens: StudioDesignTokens;
+  versions: StudioVersionDetail[];
+  activeVersion: StudioVersionDetail;
+  variants: StudioVariant[];
+};
+
+export type StudioTokensPatch = {
+  colors?: Partial<StudioDesignTokens['colors']>;
+  typography?: Partial<StudioDesignTokens['typography']>;
+  spacing?: Partial<StudioDesignTokens['spacing']>;
+  radii?: Partial<StudioDesignTokens['radii']>;
 };
 
 export type StudioSeatProfile = {
