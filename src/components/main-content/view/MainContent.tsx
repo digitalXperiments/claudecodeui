@@ -6,6 +6,7 @@ import StandaloneShell from '../../standalone-shell/view/StandaloneShell';
 import GitPanel from '../../git-panel/view/GitPanel';
 import OperationsView from '../../operations/view/OperationsView';
 import PluginTabContent from '../../plugins/view/PluginTabContent';
+import StudioView from '../../studio/view/StudioView';
 import { BrowserUsePanel } from '../../browser-use';
 import type { MainContentProps } from '../types/types';
 import { useTaskMaster } from '../../../contexts/TaskMasterContext';
@@ -19,10 +20,9 @@ import EditorSidebar from '../../code-editor/view/EditorSidebar';
 import type { Project } from '../../../types/app';
 import { TaskMasterPanel } from '../../task-master';
 
+import ErrorBoundary from './ErrorBoundary';
 import MainContentHeader from './subcomponents/MainContentHeader';
 import MainContentStateView from './subcomponents/MainContentStateView';
-import ErrorBoundary from './ErrorBoundary';
-import StudioView from '../../studio/view/StudioView';
 import MobileMenuButton from './subcomponents/MobileMenuButton';
 
 type TaskMasterContextValue = {
@@ -181,6 +181,17 @@ function MainContent({
             <StudioView
               selectedProject={selectedProject}
               projects={projects.length > 0 ? projects : selectedProject ? [selectedProject] : []}
+              ws={ws}
+              sendMessage={sendMessage}
+              onInputFocusChange={onInputFocusChange}
+              onSessionProcessing={onSessionProcessing}
+              onSessionIdle={onSessionIdle}
+              processingSessions={processingSessions}
+              onNavigateToSession={onNavigateToSession}
+              onSessionEstablished={onSessionEstablished}
+              onShowSettings={onShowSettings}
+              externalMessageUpdate={externalMessageUpdate}
+              newSessionTrigger={newSessionTrigger}
               isVisible={studioActive}
               onIdeateInChat={({ project, prompt, title }) => {
                 sessionStorage.setItem(

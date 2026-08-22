@@ -252,7 +252,7 @@ test('update replaces html and remove deletes the folder', async () => {
 });
 
 test('append turn links parent and moves the active version', async () => {
-  await withTempDb(async (projectId) => {
+  await withTempDb(async (projectId, workspace) => {
     const calls = installFakeGenerate();
     const proto = await studioService.create({ projectId, brief: 'Loyalty punch card' });
     const initialId = proto.activeVersionId;
@@ -267,6 +267,7 @@ test('append turn links parent and moves the active version', async () => {
     assert.match(afterFirst.html, /Make the hero darker/);
     assert.match(afterFirst.html, /data-go="signup"/);
     assert.equal(calls[0]?.parentHtml.includes('data-go="signup"'), true);
+    assert.equal(calls[0]?.projectPath, workspace);
 
     await studioService.appendTurn(projectId, proto.id, {
       message: 'Enlarge the primary CTA',

@@ -123,6 +123,8 @@ export type SessionEstablishedContext = {
 export interface ChatInterfaceProps {
   selectedProject: Project | null;
   selectedSession: ProjectSession | null;
+  /** Compact composer and Studio-specific defaults for the embedded prototype workspace. */
+  studioMode?: boolean;
   ws: WebSocket | null;
   sendMessage: (message: unknown) => boolean;
   onFileOpen?: (filePath: string, diffInfo?: any) => void;

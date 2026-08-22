@@ -56,6 +56,7 @@ type PendingHandoffSend = {
 function ChatInterface({
   selectedProject,
   selectedSession,
+  studioMode = false,
   ws,
   sendMessage,
   onFileOpen,
@@ -138,6 +139,10 @@ function ChatInterface({
     selectedSession,
     selectedProject,
   });
+
+  // Studio iterations are trusted, focused edits to the prototype checkout.
+  // Keep the normal chat's permission preference untouched everywhere else.
+  const composerPermissionMode = studioMode ? 'bypassPermissions' : permissionMode;
 
   // Called on session switch / new session / unmount. Flush each pending
   // buffer into its OWN session's store slot (updateStreaming replaces the
@@ -554,7 +559,7 @@ function ChatInterface({
     selectedSession,
     currentSessionId,
     provider,
-    permissionMode,
+    permissionMode: composerPermissionMode,
     cyclePermissionMode,
     currentProviderModel,
     currentProviderEffort,
@@ -769,7 +774,7 @@ function ChatInterface({
 
         <div className="relative flex-shrink-0">
           <div className="flex items-center justify-between gap-2 px-3 pb-1">
-            <SessionCollaborationControl
+            {!studioMode ? <SessionCollaborationControl
               currentSessionId={selectedSession?.id || currentSessionId || null}
               sessions={selectedProject?.sessions || []}
               onStart={async ({ sessionId, provider: targetProvider, prompt }) => {
@@ -815,8 +820,8 @@ function ChatInterface({
                 writeQueuedMessage(sessionId, { content: prompt, options: sendOptions });
                 showHandoffNotice('Not connected — the delegated request is queued for that session.');
               }}
-            />
-            <SecondOpinionControl
+            /> : null}
+            {!studioMode ? <SecondOpinionControl
               sessionId={selectedSession?.id || currentSessionId || null}
               currentProvider={provider}
               onStart={({ sessionId, provider: targetProvider, prompt }) => {
@@ -843,8 +848,8 @@ function ChatInterface({
                     : 'Not connected — could not start the second opinion.',
                 );
               }}
-            />
-            <LiveSpendMeter sessionId={selectedSession?.id || currentSessionId || null} />
+            /> : null}
+            {!studioMode ? <LiveSpendMeter sessionId={selectedSession?.id || currentSessionId || null} /> : null}
           </div>
           {isUserScrolledUp && chatMessages.length > 0 && (
             <div className="pointer-events-none absolute -top-11 left-0 right-0 z-20 flex justify-center">
@@ -868,8 +873,8 @@ function ChatInterface({
           isLoading={isProcessing}
           onAbortSession={handleAbortSession}
           provider={provider}
-          permissionMode={permissionMode}
-          onModeSwitch={cyclePermissionMode}
+          permissionMode={composerPermissionMode}
+          onModeSwitch={studioMode ? () => undefined : cyclePermissionMode}
           effort={currentProviderEffort}
           availableEffortOptions={currentProviderEffortOptions}
           onSelectEffort={(nextEffort) =>
@@ -886,6 +891,7 @@ function ChatInterface({
           onToggleCommandMenu={handleToggleCommandMenu}
           onSaveAsSkill={onSaveAsSkill}
           saveAsSkillDisabled={saveAsSkillDisabled}
+          studioMode={studioMode}
           hasInput={Boolean(input.trim())}
           onClearInput={handleClearInput}
           onSubmit={handleSubmit}
@@ -927,7 +933,7 @@ function ChatInterface({
           onTextareaInput={handleTextareaInput}
           isInputFocused={isInputFocused}
           onInputFocusChange={handleInputFocusChange}
-          placeholder={t('input.placeholder', {
+          placeholder={studioMode ? 'Describe a change to this prototype…' : t('input.placeholder', {
             provider:
               provider === 'cursor'
                 ? t('messageTypes.cursor')
@@ -950,7 +956,7 @@ function ChatInterface({
         />
         </div>
           </div>
-          <ProviderUsageLegend />
+          {!studioMode ? <ProviderUsageLegend /> : null}
         </div>
       </div>
 

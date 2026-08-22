@@ -1,5 +1,5 @@
 import { appConfigDb } from '@/modules/database/index.js';
-import type { SwarmAgentSpec } from '@/modules/swarm/swarm.types.js';
+import type { SwarmAgentSpec } from '@/modules/swarm/index.js';
 
 export const STUDIO_ROSTER_CONFIG_KEY = 'studio_design_roster';
 

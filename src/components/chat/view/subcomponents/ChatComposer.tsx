@@ -129,6 +129,8 @@ interface ChatComposerProps {
   onAbortSession: () => void;
   /** Active agent — used for provider-accurate permission mode tooltips. */
   provider: LLMProvider;
+  /** Compact composer used by Design Studio's focused iteration chat. */
+  studioMode?: boolean;
   permissionMode: PermissionMode | string;
   onModeSwitch: () => void;
   effort: string;
@@ -197,6 +199,7 @@ export default function ChatComposer({
   isLoading,
   onAbortSession,
   provider,
+  studioMode = false,
   permissionMode,
   onModeSwitch,
   effort,
@@ -543,11 +546,11 @@ export default function ChatComposer({
                         })
                   }
                 />
-                {voiceAvailable ? <MicDevicePicker disabled={isRecording || isTranscribing} /> : null}
+                {!studioMode && voiceAvailable ? <MicDevicePicker disabled={isRecording || isTranscribing} /> : null}
               </span>
             ) : null}
 
-            {(() => {
+            {!studioMode && (() => {
               const modeCopy = getPermissionModeCopy(provider, permissionMode);
               const modeLabel = modeCopy.label
                 || PERMISSION_MODE_LABELS[permissionMode as PermissionMode]
@@ -623,7 +626,7 @@ export default function ChatComposer({
               <span className="max-w-[5.5rem] truncate sm:max-w-none">{modelLabel}</span>
             </button>
 
-            {availableEffortOptions.length > 0 && (
+            {!studioMode && availableEffortOptions.length > 0 && (
               <div ref={effortDropdownRef} className="relative">
                 <button
                   ref={effortDropdownButtonRef}
@@ -688,7 +691,7 @@ export default function ChatComposer({
               </div>
             )}
 
-            {provider === 'codex' && (
+            {!studioMode && provider === 'codex' && (
               <Tooltip
                 content={supportsFastMode
                   ? fastMode
@@ -725,11 +728,11 @@ export default function ChatComposer({
               </Tooltip>
             )}
 
-            <IsolatedWorkspaceToggle />
+            {!studioMode && <IsolatedWorkspaceToggle />}
 
-            <TokenUsageSummary usage={tokenBudget} onClick={onShowTokenUsage} />
+            {!studioMode && <TokenUsageSummary usage={tokenBudget} onClick={onShowTokenUsage} />}
 
-            {onSaveAsSkill && (
+            {!studioMode && onSaveAsSkill && (
               <PromptInputButton
                 tooltip={{ content: t('input.saveAsSkill', { defaultValue: 'Save as skill' }) }}
                 onClick={onSaveAsSkill}
@@ -739,22 +742,22 @@ export default function ChatComposer({
               </PromptInputButton>
             )}
 
-            <PromptInputButton
-              tooltip={{ content: t('input.showAllCommands') }}
-              onClick={onToggleCommandMenu}
-              className="relative"
-            >
-              <MessageSquareIcon />
-              {slashCommandsCount > 0 && (
-                <span
-                  className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-primary text-[10px] font-bold text-primary-foreground"
-                >
-                  {slashCommandsCount}
-                </span>
-              )}
-            </PromptInputButton>
+            {!studioMode && <PromptInputButton
+                tooltip={{ content: t('input.showAllCommands') }}
+                onClick={onToggleCommandMenu}
+                className="relative"
+              >
+                <MessageSquareIcon />
+                {slashCommandsCount > 0 && (
+                  <span
+                    className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-primary text-[10px] font-bold text-primary-foreground"
+                  >
+                    {slashCommandsCount}
+                  </span>
+                )}
+              </PromptInputButton>}
 
-            {hasInput && (
+            {!studioMode && hasInput && (
               <PromptInputButton
                 tooltip={{ content: t('input.clearInput', { defaultValue: 'Clear input' }) }}
                 onClick={onClearInput}
