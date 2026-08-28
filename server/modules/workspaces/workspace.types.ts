@@ -115,6 +115,29 @@ export type GetDiffOptions = {
   base?: 'merge-base' | 'base_sha'; // default: 'merge-base'
 };
 
+export type ApplyToPrimaryOptions = {
+  /** Stage + commit the applied paths in the primary repo. Default: false. */
+  commit?: boolean;
+  /** Required when `commit` is true. */
+  message?: string;
+};
+
+export type ApplyToPrimarySkipReason = 'dirty_overlap';
+
+export type ApplyToPrimarySkip = {
+  path: string;
+  reason: ApplyToPrimarySkipReason;
+};
+
+export type ApplyToPrimaryResult = {
+  /** Paths copied (or deleted) onto the primary checkout. */
+  applied: string[];
+  /** Paths left untouched because the primary checkout is dirty there. */
+  skipped: ApplyToPrimarySkip[];
+  committed: boolean;
+  commit_sha: string | null;
+};
+
 /** Event hook so later waves can wire WS fan-out (PRD §4.6 `workspace_updated`). */
 export type WorkspaceEventType =
   | 'workspace.created'
@@ -135,6 +158,12 @@ export interface WorkspaceService {
   refreshStatus(workspaceId: string): Promise<WorkspaceStatus>;
   getDiff(workspaceId: string, opts?: GetDiffOptions): Promise<DiffResult>;
   mergeToBase(workspaceId: string, opts?: MergeToBaseOptions): Promise<MergeResult>;
+  /**
+   * Copy the workspace's changed files onto the primary checkout without
+   * `git merge`/`git rebase`/`git checkout`. File-copy only; see
+   * workspace.service.ts `applyToPrimary` for the dirty-overlap rules.
+   */
+  applyToPrimary(workspaceId: string, opts?: ApplyToPrimaryOptions): Promise<ApplyToPrimaryResult>;
   discard(workspaceId: string, opts?: DiscardOptions): Promise<void>;
   cleanup(workspaceId: string): Promise<void>;
   /** Rebind an existing task workspace to the current canonical run. */

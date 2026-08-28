@@ -40,6 +40,9 @@ import * as git from '@/modules/workspaces/workspace-git.service.js';
 import { workspaceDb } from '@/modules/workspaces/workspace.repository.js';
 import type {
   AgentWorkspace,
+  ApplyToPrimaryOptions,
+  ApplyToPrimaryResult,
+  ApplyToPrimarySkip,
   CreateWorkspaceInput,
   DiffResult,
   DiscardOptions,
@@ -255,6 +258,88 @@ async function realpathOrSelf(target: string): Promise<string> {
   } catch {
     return target;
   }
+}
+
+type ChangedFile = { path: string; status: string };
+
+/** Excludes the same dirs `copySandboxTree`/`prepareWorkspaceScratch` write, plus VCS/lock dirs. */
+function isExcludedRelPath(relPath: string): boolean {
+  const segments = relPath.split(path.sep);
+  if (segments.some((segment) => segment === 'node_modules' || segment === '.git' || segment === WORKTREES_DIRNAME)) {
+    return true;
+  }
+  if (segments[0] === '.cloudcli') {
+    return true;
+  }
+  return segments[0] === SCRATCH_SUBPATH[0] && segments[1] === SCRATCH_SUBPATH[1];
+}
+
+async function listFilesRecursive(root: string): Promise<string[]> {
+  const results: string[] = [];
+  const walk = async (dir: string): Promise<void> => {
+    let entries;
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const absolute = path.join(dir, entry.name);
+      const relative = path.relative(root, absolute);
+      if (isExcludedRelPath(relative)) {
+        continue;
+      }
+      if (entry.isSymbolicLink()) {
+        continue;
+      }
+      if (entry.isDirectory()) {
+        await walk(absolute);
+      } else if (entry.isFile()) {
+        results.push(relative);
+      }
+    }
+  };
+  await walk(root);
+  return results;
+}
+
+async function filesIdentical(a: string, b: string): Promise<boolean> {
+  try {
+    const [bufA, bufB] = await Promise.all([readFile(a), readFile(b)]);
+    return bufA.equals(bufB);
+  } catch {
+    return false;
+  }
+}
+
+/** File-by-file tree diff for `sandbox_copy` workspaces, which have no git history. */
+async function diffSandboxTree(primaryPath: string, workspaceRootPath: string): Promise<ChangedFile[]> {
+  const [primaryFiles, workspaceFiles] = await Promise.all([
+    listFilesRecursive(primaryPath),
+    listFilesRecursive(workspaceRootPath),
+  ]);
+  const primarySet = new Set(primaryFiles);
+  const workspaceSet = new Set(workspaceFiles);
+  const changed: ChangedFile[] = [];
+  for (const relPath of workspaceFiles) {
+    if (!primarySet.has(relPath)) {
+      changed.push({ path: relPath, status: 'added' });
+      continue;
+    }
+    const identical = await filesIdentical(
+      path.join(primaryPath, relPath),
+      path.join(workspaceRootPath, relPath),
+    );
+    if (!identical) {
+      changed.push({ path: relPath, status: 'modified' });
+    }
+  }
+  for (const relPath of primaryFiles) {
+    if (!workspaceSet.has(relPath)) {
+      changed.push({ path: relPath, status: 'deleted' });
+    }
+  }
+  return changed;
 }
 
 export function createWorkspaceService(options: WorkspaceServiceOptions = {}): WorkspaceService {
@@ -850,6 +935,126 @@ export function createWorkspaceService(options: WorkspaceServiceOptions = {}): W
     );
   };
 
+  /**
+   * Copy the workspace's changed files onto `workspace.root_path`'s primary
+   * checkout. File-copy only — never `git merge`/`git rebase`/`git checkout`,
+   * so this lands on a dirty primary too. A path is skipped when the primary
+   * checkout is dirty there AND its content differs from the workspace file;
+   * everything else is applied even if some paths are skipped.
+   */
+  const applyToPrimary = async (
+    workspaceId: string,
+    opts?: ApplyToPrimaryOptions,
+  ): Promise<ApplyToPrimaryResult> => {
+    const workspace = requireWorkspace(workspaceId);
+    if (opts?.commit && !opts.message) {
+      throw new CloudError(
+        'WORKSPACE_APPLY_FAILED',
+        'opts.message is required when opts.commit is true',
+      );
+    }
+    const projectPath = assertWorkspaceRootAllowed(workspace);
+    if (!(await pathExists(workspace.root_path))) {
+      throw new CloudError(
+        'WORKSPACE_NOT_FOUND',
+        `Workspace directory is missing: ${workspace.root_path}`,
+      );
+    }
+
+    return withProjectLock(
+      workspace.project_id,
+      async () => {
+        const changed =
+          workspace.mode === 'sandbox_copy'
+            ? await diffSandboxTree(projectPath, workspace.root_path)
+            : await git.changedFilesSinceRef(
+                workspace.root_path,
+                (workspace.base_branch &&
+                  (await git.mergeBase(workspace.root_path, workspace.base_branch, 'HEAD'))) ||
+                  workspace.base_sha ||
+                  workspace.base_branch ||
+                  'HEAD',
+              );
+
+        const primaryIsGit = await git.isGitRepo(projectPath);
+        const dirtyPrimaryPaths = primaryIsGit
+          ? new Set((await git.statusPorcelain(projectPath)).dirtyFiles.map((file) => file.path))
+          : new Set<string>();
+
+        const applied: string[] = [];
+        const skipped: ApplyToPrimarySkip[] = [];
+
+        for (const file of changed) {
+          const relPath = file.path;
+          const primaryFilePath = path.join(projectPath, relPath);
+          const workspaceFilePath = path.join(workspace.root_path, relPath);
+          const primaryDirty = dirtyPrimaryPaths.has(relPath);
+
+          if (file.status === 'deleted') {
+            if (primaryDirty) {
+              skipped.push({ path: relPath, reason: 'dirty_overlap' });
+              continue;
+            }
+            if (await pathExists(primaryFilePath)) {
+              await rm(primaryFilePath, { force: true });
+            }
+            applied.push(relPath);
+            continue;
+          }
+
+          if (primaryDirty && !(await filesIdentical(primaryFilePath, workspaceFilePath))) {
+            skipped.push({ path: relPath, reason: 'dirty_overlap' });
+            continue;
+          }
+
+          if (!(await pathExists(workspaceFilePath))) {
+            continue; // Source vanished between diff and apply; nothing to copy.
+          }
+          await mkdir(path.dirname(primaryFilePath), { recursive: true });
+          await copyFile(workspaceFilePath, primaryFilePath);
+          applied.push(relPath);
+        }
+
+        let committed = false;
+        let commitSha: string | null = null;
+        if (opts?.commit && applied.length > 0) {
+          if (!primaryIsGit) {
+            throw new CloudError(
+              'WORKSPACE_APPLY_FAILED',
+              `Cannot commit: primary project is not a git repository: ${projectPath}`,
+            );
+          }
+          const add = await git.runGit(projectPath, ['add', '-A', '--', ...applied]);
+          if (add.code !== 0) {
+            throw new CloudError(
+              'WORKSPACE_APPLY_FAILED',
+              `git add failed: ${add.stderr.trim().slice(0, 300)}`,
+            );
+          }
+          const commit = await git.runGit(projectPath, [
+            'commit',
+            '-m',
+            opts.message!,
+            '--',
+            ...applied,
+          ]);
+          if (commit.code !== 0) {
+            throw new CloudError(
+              'WORKSPACE_APPLY_FAILED',
+              `git commit failed: ${commit.stderr.trim().slice(0, 300)}`,
+            );
+          }
+          committed = true;
+          commitSha = await git.revParse(projectPath, 'HEAD');
+        }
+
+        return { applied, skipped, committed, commit_sha: commitSha };
+      },
+      projectPath,
+      lockOptions,
+    );
+  };
+
   const discard = async (workspaceId: string, opts?: DiscardOptions): Promise<void> => {
     const workspace = requireWorkspace(workspaceId);
     const projectPath =
@@ -981,6 +1186,7 @@ export function createWorkspaceService(options: WorkspaceServiceOptions = {}): W
     refreshStatus,
     getDiff,
     mergeToBase,
+    applyToPrimary,
     discard,
     cleanup,
     bindRun,

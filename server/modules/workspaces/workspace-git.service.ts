@@ -409,6 +409,71 @@ export async function diffNameStatus(
   return files;
 }
 
+/**
+ * Diff `<fromRef>` against the working tree with rename detection disabled,
+ * so a rename surfaces as a plain delete + add pair. `git diff <ref>` never
+ * reports untracked files (blobs it has never seen), so this only covers
+ * tracked changes — pair with `listUntrackedFiles` for a complete set.
+ */
+export async function diffChangedFiles(
+  worktreePath: string,
+  fromRef: string,
+): Promise<{ path: string; status: string }[]> {
+  const result = await runGit(worktreePath, ['diff', '--no-renames', '--name-status', fromRef]);
+  if (result.code !== 0) {
+    return [];
+  }
+  const files: { path: string; status: string }[] = [];
+  for (const line of result.stdout.split('\n')) {
+    if (!line.trim()) {
+      continue;
+    }
+    const parts = line.split('\t');
+    const code = parts[0].charAt(0);
+    files.push({ path: parts[1], status: NAME_STATUS_MAP[code] ?? code.toLowerCase() });
+  }
+  return files;
+}
+
+/**
+ * Untracked (never `git add`ed) file paths, individually — `--untracked-files=all`
+ * so a brand-new directory is expanded file-by-file instead of collapsed to
+ * one `dir/` entry, which `applyToPrimary` needs to copy each file by path.
+ */
+export async function listUntrackedFiles(worktreePath: string): Promise<string[]> {
+  const result = await runGit(worktreePath, ['status', '--porcelain', '--untracked-files=all']);
+  if (result.code !== 0) {
+    return [];
+  }
+  const files: string[] = [];
+  for (const line of result.stdout.split('\n')) {
+    if (line.startsWith('?? ')) {
+      files.push(line.slice(3));
+    }
+  }
+  return files;
+}
+
+/**
+ * Complete changed-file set for `applyToPrimary`: committed diffs on the
+ * feature branch plus uncommitted worktree changes, including files an
+ * interrupted agent created but never staged.
+ */
+export async function changedFilesSinceRef(
+  worktreePath: string,
+  fromRef: string,
+): Promise<{ path: string; status: string }[]> {
+  const [tracked, untracked] = await Promise.all([
+    diffChangedFiles(worktreePath, fromRef),
+    listUntrackedFiles(worktreePath),
+  ]);
+  const seen = new Set(tracked.map((file) => file.path));
+  const additions = untracked
+    .filter((filePath) => !seen.has(filePath))
+    .map((filePath) => ({ path: filePath, status: 'added' }));
+  return [...tracked, ...additions];
+}
+
 /** Unified patch for one file (`git diff <fromRef> -- <path>`). */
 export async function diffFilePatch(
   worktreePath: string,
