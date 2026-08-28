@@ -254,11 +254,11 @@ export default function ProviderSelectionEmptyState({
     return (
       <div className="flex h-full items-center justify-center px-4">
         <div className="w-full max-w-[34.25rem]">
-          <div className="mb-8 text-center">
+          <div className="mb-4 text-center sm:mb-8">
             <h2 className="text-lg font-semibold tracking-tight text-foreground sm:text-xl">
               {t("providerSelection.title")}
             </h2>
-            <p className="mt-1 text-[13px] text-muted-foreground">
+            <p className="mt-1 hidden text-[13px] text-muted-foreground sm:block">
               {t("providerSelection.description")}
             </p>
           </div>
@@ -367,7 +367,7 @@ export default function ProviderSelectionEmptyState({
             </DialogContent>
           </Dialog>
 
-          <p className="mt-4 text-center text-sm text-muted-foreground/70">
+          <p className="mt-2 text-center text-sm text-muted-foreground/70 sm:mt-4">
             {
               {
                 claude: t("providerSelection.readyPrompt.claude", {
@@ -411,7 +411,7 @@ export default function ProviderSelectionEmptyState({
             }
           </p>
 
-          <p className="mt-3 flex items-center justify-center gap-1.5 text-center text-xs text-muted-foreground/60">
+          <p className="mt-3 hidden items-center justify-center gap-1.5 text-center text-xs text-muted-foreground/60 sm:flex">
             <Trans
               ns="chat"
               i18nKey="providerSelection.pressToSearch"

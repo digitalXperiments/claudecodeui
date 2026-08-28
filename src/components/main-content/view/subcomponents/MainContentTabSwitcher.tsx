@@ -91,7 +91,7 @@ export default function MainContentTabSwitcher({
             <Pill
               isActive={isActive}
               onClick={() => setActiveTab(tab.id)}
-              className="min-h-9 shrink-0 px-2.5 py-[5px] sm:min-h-0"
+              className="min-h-8 shrink-0 px-2.5 py-[5px] sm:min-h-0"
             >
               {tab.kind === 'builtin' ? (
                 <tab.icon className="h-3.5 w-3.5" strokeWidth={isActive ? 2.2 : 1.8} />

@@ -748,15 +748,17 @@ export default function ChatComposer({
               </Tooltip>
             )}
 
-            {!studioMode && <IsolatedWorkspaceToggle />}
+            {/* Low-priority extras hidden on phones — mode/model/effort/attach/send stay reachable */}
+            {!studioMode && <span className="hidden sm:inline-flex"><IsolatedWorkspaceToggle /></span>}
 
-            {!studioMode && <TokenUsageSummary usage={tokenBudget} onClick={onShowTokenUsage} />}
+            {!studioMode && <span className="hidden sm:inline-flex"><TokenUsageSummary usage={tokenBudget} onClick={onShowTokenUsage} /></span>}
 
             {!studioMode && onSaveAsSkill && (
               <PromptInputButton
                 tooltip={{ content: t('input.saveAsSkill', { defaultValue: 'Save as skill' }) }}
                 onClick={onSaveAsSkill}
                 disabled={saveAsSkillDisabled}
+                className="hidden sm:flex"
               >
                 <Sparkles />
               </PromptInputButton>
@@ -765,7 +767,7 @@ export default function ChatComposer({
             {!studioMode && <PromptInputButton
                 tooltip={{ content: t('input.showAllCommands') }}
                 onClick={onToggleCommandMenu}
-                className="relative"
+                className="relative hidden sm:flex"
               >
                 <MessageSquareIcon />
                 {slashCommandsCount > 0 && (

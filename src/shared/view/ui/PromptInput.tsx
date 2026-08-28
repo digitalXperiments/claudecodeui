@@ -96,7 +96,7 @@ export const PromptInputTextarea = React.forwardRef<
     ref={ref}
     data-slot="prompt-input-textarea"
     className={cn(
-      'chat-input-placeholder block max-h-[40vh] w-full resize-none overflow-y-auto bg-transparent px-4 py-2 text-sm leading-6 text-foreground placeholder-muted-foreground/50 focus:outline-none sm:max-h-[300px]',
+      'chat-input-placeholder block max-h-[40vh] min-h-[5.5rem] w-full resize-none overflow-y-auto bg-transparent px-4 py-2 text-sm leading-6 text-foreground placeholder-muted-foreground/50 focus:outline-none sm:max-h-[300px] sm:min-h-0',
       className
     )}
     {...props}
@@ -133,9 +133,9 @@ export const PromptInputTools = React.forwardRef<
     ref={ref}
     data-slot="prompt-input-tools"
     className={cn(
-      // Phones wrap the tools onto multiple rows; from sm up a single-row
-      // horizontal scroll strip keeps every control reachable.
-      'scrollbar-hide flex min-w-0 flex-1 flex-wrap items-center gap-1 overscroll-x-contain sm:flex-nowrap sm:overflow-x-auto',
+      // Single-row horizontal scroll strip at every width so the toolbar
+      // never wraps to a second row and eats composer height on phones.
+      'scrollbar-hide flex min-w-0 flex-1 flex-nowrap items-center gap-1 overflow-x-auto overscroll-x-contain',
       className,
     )}
     {...props}
