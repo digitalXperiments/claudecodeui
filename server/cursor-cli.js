@@ -41,6 +41,7 @@ async function spawnCursor(command, options = {}, ws) {
       model,
       sessionSummary,
       images,
+      appSessionId,
     } = options;
     const resolvedModel = await providerModelsService.resolveResumeModel('cursor', sessionId, model);
     let capturedSessionId = sessionId; // Track session ID throughout the process
@@ -148,10 +149,20 @@ async function spawnCursor(command, options = {}, ws) {
         console.log('Retrying Cursor CLI with --trust after workspace trust prompt');
       }
 
+      // Peer mailbox identity: the cursor-agent CLI inherits this into any
+      // MCP server it spawns from its own config (including
+      // cloudcli-session-mailbox).
+      const identityEnv = appSessionId
+        ? {
+          CLOUDCLI_SESSION_ID: appSessionId,
+          CLOUDCLI_PROVIDER: 'cursor',
+          CLOUDCLI_PROJECT_PATH: workingDir,
+        }
+        : {};
       const cursorProcess = spawnFunction('cursor-agent', args, {
         cwd: workingDir,
         stdio: ['pipe', 'pipe', 'pipe'],
-        env: { ...process.env } // Inherit all environment variables
+        env: { ...process.env, ...identityEnv } // Inherit all environment variables
       });
 
       activeCursorProcesses.set(processKey, cursorProcess);

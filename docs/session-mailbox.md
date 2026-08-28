@@ -68,12 +68,13 @@ on top of the parent process env, not a full replacement). See:
 - `server/grok-cli.js` (`spawnGrok`)
 - `server/opencode-cli.js` (`spawnAcpProvider` — covers opencode, kilo,
   cline, and qwencode, which all share this ACP runtime)
+- `server/openai-codex.js` (`queryCodex` → `createCodexAppServer`)
+- `server/cursor-cli.js` (`spawnCursor` → `runCursorProcess`)
+- `server/kimi-cli.js` (`spawnKimi` → `createAcpSession`)
+- `server/pi-cli.js` (`spawnPi` → `createPiRpcSession`)
 
-`codex`, `cursor`, `kimi`, and `pi` get the catalog registration (so the
-server shows up in their MCP config) but do not yet get per-session identity
-injected into their subprocess env — a session using one of those providers
-will see `CLOUDCLI_SESSION_ID is not set` errors from the MCP server until a
-follow-up wires their spawn paths the same way.
+Every provider CloudCLI drives now injects this identity, so
+`cloudcli-session-mailbox` works from any of them.
 
 The HTTP bridge (`server/modules/session-mailbox/session-mailbox-mcp.routes.ts`,
 mounted at `/api/session-mailbox-mcp`) trusts the `x-session-mailbox-session-id`
