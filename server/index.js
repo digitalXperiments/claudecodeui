@@ -103,6 +103,8 @@ import voiceRoutes from './voice-proxy.js';
 import browserUseRoutes from './modules/browser-use/browser-use.routes.js';
 import { assetsRoutes } from './modules/assets/index.js';
 import browserUseMcpRoutes from './modules/browser-use/browser-use-mcp.routes.js';
+import sessionMailboxMcpRoutes from './modules/session-mailbox/session-mailbox-mcp.routes.js';
+import { configureSessionMailboxRuntimes, sessionMailboxService } from './modules/session-mailbox/session-mailbox.service.js';
 import kanbanRoutes from './modules/kanban/kanban.routes.js';
 import {
     configureKanbanRuntimes,
@@ -261,6 +263,14 @@ initWebhookAutomation();
 configureSkillTestRuntimes(providerSpawnFns);
 configureMemoryCurationRuntimes(providerSpawnFns);
 
+// Peer mailbox: attached to every session (not gated behind a settings
+// toggle), so it registers itself on every boot instead of on a settings
+// change like Browser does. Delivery reuses the same runtimes as chat.
+configureSessionMailboxRuntimes(providerSpawnFns, { claude: injectClaudeMessage });
+sessionMailboxService.registerAgentMcp().catch((error) => {
+    console.error('[SessionMailbox] Failed to register MCP server for providers', error?.message || error);
+});
+
 // Shell must not resume a provider-native session while Chatbar is still
 // using it. Register before checking isProcessing again so an already-finished
 // run cannot leave the Shell wait unresolved.
@@ -404,6 +414,7 @@ app.use('/api/auth', authRoutes);
 // bridge later would let authenticateToken reject the MCP client's bearer token
 // with a 403 before this router's own token guard ever runs.
 app.use('/api/browser-use-mcp', browserUseMcpRoutes);
+app.use('/api/session-mailbox-mcp', sessionMailboxMcpRoutes);
 
 // PRD platform primitives (protected). Project-scoped workspace routes are
 // mounted before the general projects router so they cannot be swallowed by a
