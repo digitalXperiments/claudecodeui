@@ -218,6 +218,9 @@ function ChatInterface({
 
   const [skillWizardOpen, setSkillWizardOpen] = useState(false);
   const [skillWizardTranscript, setSkillWizardTranscript] = useState<string | undefined>(undefined);
+  // Mobile-only composer overflow — collapses the relay/collab chips and the
+  // tool icon row into a single "More" toggle so the default row stays compact.
+  const [mobileToolsOpen, setMobileToolsOpen] = useState(false);
 
   // Brand-new conversation: the composer allocated a stable session id via
   // the session gateway before the first send. Record it locally and put it
@@ -773,7 +776,11 @@ function ChatInterface({
         />
 
         <div className="relative flex-shrink-0">
-          <div className="flex items-center justify-between gap-2 px-3 pb-1">
+          <div
+            className={`items-center justify-between gap-2 px-3 pb-1 ${
+              mobileToolsOpen ? 'flex' : 'hidden sm:flex'
+            }`}
+          >
             {!studioMode ? <SessionCollaborationControl
               currentSessionId={selectedSession?.id || currentSessionId || null}
               sessions={selectedProject?.sessions || []}
@@ -933,6 +940,8 @@ function ChatInterface({
           onTextareaInput={handleTextareaInput}
           isInputFocused={isInputFocused}
           onInputFocusChange={handleInputFocusChange}
+          mobileToolsOpen={mobileToolsOpen}
+          onToggleMobileTools={() => setMobileToolsOpen((current) => !current)}
           placeholder={studioMode ? 'Describe a change to this prototype…' : t('input.placeholder', {
             provider:
               provider === 'cursor'

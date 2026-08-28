@@ -11,7 +11,7 @@ import type {
   RefObject,
   TouchEvent,
 } from 'react';
-import { Paperclip, MessageSquareIcon, XIcon, Loader2, ChevronDown, Check, ArrowUpIcon, Cpu, Sparkles, Gauge, Zap, GitFork } from 'lucide-react';
+import { Paperclip, MessageSquareIcon, XIcon, Loader2, ChevronDown, Check, ArrowUpIcon, Cpu, Sparkles, Gauge, Zap, GitFork, MoreHorizontal } from 'lucide-react';
 
 import { useVoiceInput } from '../../hooks/useVoiceInput';
 import { useVoiceAvailable } from '../../hooks/useVoiceAvailable';
@@ -189,6 +189,9 @@ interface ChatComposerProps {
   placeholder: string;
   isTextareaExpanded: boolean;
   sendByCtrlEnter?: boolean;
+  /** Mobile-only overflow row (attach, permissions, model, effort, etc.) visibility. */
+  mobileToolsOpen: boolean;
+  onToggleMobileTools: () => void;
 }
 
 export default function ChatComposer({
@@ -256,6 +259,8 @@ export default function ChatComposer({
   placeholder,
   isTextareaExpanded,
   sendByCtrlEnter,
+  mobileToolsOpen,
+  onToggleMobileTools,
 }: ChatComposerProps) {
   const { t } = useTranslation('chat');
   const commandMenuPosition = useMemo(() => {
@@ -523,6 +528,21 @@ export default function ChatComposer({
 
         <PromptInputFooter>
           <PromptInputTools>
+            {/* Mobile-only overflow toggle — keeps the default row to just
+                textarea + send; every other tool lives behind this. */}
+            <PromptInputButton
+              tooltip={{ content: t('input.moreTools', { defaultValue: 'More tools' }) }}
+              onClick={onToggleMobileTools}
+              aria-expanded={mobileToolsOpen}
+              aria-label={t('input.moreTools', { defaultValue: 'More tools' })}
+              className="sm:hidden"
+            >
+              <MoreHorizontal />
+            </PromptInputButton>
+
+            <div
+              className={`${mobileToolsOpen ? 'flex' : 'hidden'} min-w-0 flex-wrap items-center gap-1 sm:flex sm:flex-nowrap`}
+            >
             <PromptInputButton
               tooltip={{ content: t('input.attachFiles') }}
               onClick={openImagePicker}
@@ -766,6 +786,7 @@ export default function ChatComposer({
                 <XIcon />
               </PromptInputButton>
             )}
+            </div>
 
           </PromptInputTools>
 
