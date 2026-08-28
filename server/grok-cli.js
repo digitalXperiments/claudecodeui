@@ -729,6 +729,7 @@ async function spawnGrok(command, options = {}, ws) {
     mcpServers: requestedMcpServerNames = [],
     unattended = false,
     approvalTimeoutMs,
+    appSessionId,
   } = options;
 
   const workingDir = cwd || projectPath || process.cwd();
@@ -753,6 +754,13 @@ async function spawnGrok(command, options = {}, ws) {
   const permissionRuntime = resolveGrokPermissionRuntime(permissionMode);
   const managedGrokHome = ensureManagedGrokHome(permissionRuntime.configPermissionMode);
   const spawnEnv = { GROK_HOME: managedGrokHome };
+  // Peer mailbox identity: the grok CLI inherits this into any MCP server it
+  // spawns from its own config (including cloudcli-session-mailbox).
+  if (appSessionId) {
+    spawnEnv.CLOUDCLI_SESSION_ID = appSessionId;
+    spawnEnv.CLOUDCLI_PROVIDER = 'grok';
+    spawnEnv.CLOUDCLI_PROJECT_PATH = workingDir;
+  }
   const spawnArgs = buildSpawnArgs({
     model: resolvedModel,
     effort: resolvedEffort,

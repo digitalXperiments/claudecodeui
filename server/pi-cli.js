@@ -198,12 +198,12 @@ function createPiRpcClient(child) {
   };
 }
 
-async function createPiRpcSession(workingDir, resumeSessionId, model, permissionMode, thinkingLevel) {
+async function createPiRpcSession(workingDir, resumeSessionId, model, permissionMode, thinkingLevel, identityEnv = {}) {
   const args = buildPiSpawnArgs({ model, permissionMode, resumeSessionId, thinkingLevel });
   const child = spawnFunction('pi', args, {
     cwd: workingDir,
     stdio: ['pipe', 'pipe', 'pipe'],
-    env: { ...process.env, PI_CODING_AGENT: 'true' },
+    env: { ...process.env, PI_CODING_AGENT: 'true', ...identityEnv },
   });
 
   const rpc = createPiRpcClient(child);
@@ -289,9 +289,19 @@ async function spawnPi(command, options = {}, ws) {
     effort,
     sessionSummary,
     permissionMode = 'bypassPermissions',
+    appSessionId,
   } = options;
 
   const workingDir = cwd || projectPath || process.cwd();
+  // Peer mailbox identity: the pi RPC child inherits this into any MCP
+  // server it spawns from its own config (including cloudcli-session-mailbox).
+  const identityEnv = appSessionId
+    ? {
+      CLOUDCLI_SESSION_ID: appSessionId,
+      CLOUDCLI_PROVIDER: 'pi',
+      CLOUDCLI_PROJECT_PATH: workingDir,
+    }
+    : {};
   const resolvedModel = await providerModelsService.resolveResumeModel('pi', sessionId, model);
 
   // Effort only makes sense when the selected model's catalog entry
@@ -310,7 +320,7 @@ async function spawnPi(command, options = {}, ws) {
   let capturedSessionId = sessionId;
 
   if (!handle || handle.child.exitCode !== null || handle.child.killed) {
-    handle = await createPiRpcSession(workingDir, sessionId, resolvedModel, permissionMode, resolvedEffort);
+    handle = await createPiRpcSession(workingDir, sessionId, resolvedModel, permissionMode, resolvedEffort, identityEnv);
     rpcSessions.set(processKey, handle);
 
     if (!capturedSessionId && handle.piSessionId) {

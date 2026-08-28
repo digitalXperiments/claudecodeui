@@ -511,9 +511,21 @@ async function spawnAcpProvider(runtime, command, options = {}, ws) {
     permissionMode,
     unattended = false,
     approvalTimeoutMs,
+    appSessionId,
   } = options;
 
   const workingDir = cwd || projectPath || process.cwd();
+  // Peer mailbox identity: the opencode/kilo/cline/qwencode ACP child inherits
+  // this into any MCP server it spawns from its own config (including
+  // cloudcli-session-mailbox). Kept out of the permissionEnvKey cache check
+  // below since it never changes for the lifetime of one app session.
+  const identityEnv = appSessionId
+    ? {
+      CLOUDCLI_SESSION_ID: appSessionId,
+      CLOUDCLI_PROVIDER: runtime.provider,
+      CLOUDCLI_PROJECT_PATH: workingDir,
+    }
+    : {};
   const policy = runtime.resolvePermissionPolicy(permissionMode);
   const resolvedModel = await providerModelsService.resolveResumeModel(runtime.provider, sessionId, model);
 
@@ -539,7 +551,7 @@ async function spawnAcpProvider(runtime, command, options = {}, ws) {
   }
 
   if (!handle || handle.child.exitCode !== null || handle.child.killed) {
-    handle = await createAcpSession(workingDir, sessionId, policy.env, runtime);
+    handle = await createAcpSession(workingDir, sessionId, { ...policy.env, ...identityEnv }, runtime);
     acpSessions.set(processKey, handle);
 
     if (!capturedSessionId) {
@@ -780,7 +792,7 @@ async function spawnAcpProvider(runtime, command, options = {}, ws) {
         acpSessions.delete(key);
       }
       disposeSession(handle);
-      const fresh = await createAcpSession(workingDir, resumeId, policy.env, runtime);
+      const fresh = await createAcpSession(workingDir, resumeId, { ...policy.env, ...identityEnv }, runtime);
       acpSessions.set(key, fresh);
       fresh.child.on('exit', () => {
         if (acpSessions.get(key) === fresh) {

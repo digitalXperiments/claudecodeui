@@ -349,6 +349,7 @@ export async function queryCodex(command, options = {}, ws) {
     permissionMode = 'default',
     unattended = false,
     approvalTimeoutMs,
+    appSessionId,
   } = options;
 
   const resolvedModel = await providerModelsService.resolveResumeModel(
@@ -714,9 +715,20 @@ export async function queryCodex(command, options = {}, ws) {
           : {}),
       }
       : {};
+    // Peer mailbox identity: the codex app-server subprocess inherits this
+    // into any MCP server it spawns from its own config (including
+    // cloudcli-session-mailbox). createCodexAppServer treats `env` as the
+    // full child environment (not a merge), so build a full copy here too.
+    const identityEnv = appSessionId
+      ? {
+        CLOUDCLI_SESSION_ID: appSessionId,
+        CLOUDCLI_PROVIDER: 'codex',
+        CLOUDCLI_PROJECT_PATH: workingDirectory,
+      }
+      : {};
     appServer = createCodexAppServer({
       cwd: workingDirectory,
-      env: managedObsidianRuntime?.env,
+      env: { ...(managedObsidianRuntime?.env ?? process.env), ...identityEnv },
       config: managedConfig,
     });
     rpcUnsubscribe = appServer.onMessage(handleAppServerMessage);
