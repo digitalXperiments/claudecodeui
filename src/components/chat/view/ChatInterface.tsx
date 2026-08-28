@@ -24,8 +24,6 @@ import ChatComposer from './subcomponents/ChatComposer';
 import CommandResultModal, { type SessionSwitchRequest } from './subcomponents/CommandResultModal';
 import LiveSpendMeter from './subcomponents/LiveSpendMeter';
 import ProviderUsageLegend from './subcomponents/ProviderUsageLegend';
-import SecondOpinionControl from './subcomponents/SecondOpinionControl';
-import SessionCollaborationControl from './subcomponents/SessionCollaborationControl';
 
 /** Labels for the post-switch notice (mirrors CommandResultModal's map). */
 const SWITCH_PROVIDER_LABELS: Record<string, string> = {
@@ -781,81 +779,6 @@ function ChatInterface({
               mobileToolsOpen ? 'flex' : 'hidden sm:flex'
             }`}
           >
-            {!studioMode ? <SessionCollaborationControl
-              currentSessionId={selectedSession?.id || currentSessionId || null}
-              sessions={selectedProject?.sessions || []}
-              onStart={async ({ sessionId, provider: targetProvider, prompt }) => {
-                const targetModel = localStorage.getItem(`${targetProvider}-model`) || null;
-                const effort = localStorage.getItem(`${targetProvider}-effort`) || DEFAULT_EFFORT_VALUE;
-                const toolsSettings = readProviderToolsSettings(targetProvider);
-                const sendOptions: Record<string, unknown> = {
-                  effort,
-                  permissionMode: resolvePermissionModeForProvider(targetProvider, permissionMode),
-                  toolsSettings,
-                  skipPermissions: Boolean(toolsSettings?.skipPermissions),
-                  delegatedRequest: true,
-                  delegatingSessionId: selectedSession?.id || currentSessionId || null,
-                  sessionSummary: 'Delegated request from another session',
-                  images: [],
-                };
-                if (targetModel) {
-                  sendOptions.model = targetModel;
-                }
-
-                const sent = sendMessage({
-                  type: 'chat.send',
-                  sessionId,
-                  expectedProvider: targetProvider,
-                  expectedProjectId: selectedProject?.projectId ?? null,
-                  content: prompt,
-                  options: sendOptions,
-                });
-
-                if (targetModel) {
-                  persistSessionModelEffort(targetProvider, sessionId, targetModel, effort);
-                }
-
-                if (sent) {
-                  onSessionProcessing?.(sessionId, {
-                    statusText: 'Working on a delegated request',
-                    canInterrupt: true,
-                  });
-                  showHandoffNotice(`Request sent to ${getSwitchProviderLabel(targetProvider)} · open /session/${sessionId} to follow it.`);
-                  return;
-                }
-
-                writeQueuedMessage(sessionId, { content: prompt, options: sendOptions });
-                showHandoffNotice('Not connected — the delegated request is queued for that session.');
-              }}
-            /> : null}
-            {!studioMode ? <SecondOpinionControl
-              sessionId={selectedSession?.id || currentSessionId || null}
-              currentProvider={provider}
-              onStart={({ sessionId, provider: targetProvider, prompt }) => {
-                const effort = localStorage.getItem(`${targetProvider}-effort`) || DEFAULT_EFFORT_VALUE;
-                const toolsSettings = readProviderToolsSettings(targetProvider);
-                const sent = sendMessage({
-                  type: 'chat.send',
-                  sessionId,
-                  expectedProvider: targetProvider,
-                  expectedProjectId: selectedProject?.projectId ?? null,
-                  content: prompt,
-                  options: {
-                    effort,
-                    permissionMode: resolvePermissionModeForProvider(targetProvider, permissionMode),
-                    toolsSettings,
-                    skipPermissions: Boolean(toolsSettings?.skipPermissions),
-                    sessionSummary: `Second opinion from ${getSwitchProviderLabel(targetProvider)}`,
-                    images: [],
-                  },
-                });
-                showHandoffNotice(
-                  sent
-                    ? `${getSwitchProviderLabel(targetProvider)} is reviewing — you stay in this thread. Open /session/${sessionId} if you want the full answer.`
-                    : 'Not connected — could not start the second opinion.',
-                );
-              }}
-            /> : null}
             {!studioMode ? <LiveSpendMeter sessionId={selectedSession?.id || currentSessionId || null} /> : null}
           </div>
           {isUserScrolledUp && chatMessages.length > 0 && (
