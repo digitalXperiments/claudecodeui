@@ -608,9 +608,21 @@ async function spawnAcpProvider(runtime, command, options = {}, ws) {
     permissionMode,
     unattended = false,
     approvalTimeoutMs,
+    appSessionId,
   } = options;
 
   const workingDir = cwd || projectPath || process.cwd();
+  // Peer mailbox identity: the opencode/kilo/cline/qwencode ACP child inherits
+  // this into any MCP server it spawns from its own config (including
+  // cloudcli-session-mailbox). Kept out of the permissionEnvKey cache check
+  // below since it never changes for the lifetime of one app session.
+  const identityEnv = appSessionId
+    ? {
+      CLOUDCLI_SESSION_ID: appSessionId,
+      CLOUDCLI_PROVIDER: runtime.provider,
+      CLOUDCLI_PROJECT_PATH: workingDir,
+    }
+    : {};
   const policy = { ...runtime.resolvePermissionPolicy(permissionMode) };
   // Plan is the provider's read-only agent. Unattended explorers still asked
   // on every bash call (`bash: ask`); auto-approve those asks so inspect
@@ -651,7 +663,7 @@ async function spawnAcpProvider(runtime, command, options = {}, ws) {
   }
 
   if (!handle || handle.child.exitCode !== null || handle.child.killed) {
-    handle = await createAcpSession(workingDir, sessionId, policy.env, runtime, extraEnv, acpMcpServers);
+    handle = await createAcpSession(workingDir, sessionId, { ...policy.env, ...identityEnv }, runtime, extraEnv, acpMcpServers);
     acpSessions.set(processKey, handle);
 
     if (!capturedSessionId) {
@@ -892,7 +904,7 @@ async function spawnAcpProvider(runtime, command, options = {}, ws) {
         acpSessions.delete(key);
       }
       disposeSession(handle);
-      const fresh = await createAcpSession(workingDir, resumeId, policy.env, runtime, extraEnv, acpMcpServers);
+      const fresh = await createAcpSession(workingDir, resumeId, { ...policy.env, ...identityEnv }, runtime, extraEnv, acpMcpServers);
       acpSessions.set(key, fresh);
       fresh.child.on('exit', () => {
         if (acpSessions.get(key) === fresh) {

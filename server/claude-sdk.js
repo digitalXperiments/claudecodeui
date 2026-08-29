@@ -240,13 +240,24 @@ function matchesToolPermission(entry, toolName, input) {
 }
 
 function mapCliOptionsToSDK(options = {}) {
-  const { sessionId, cwd, toolsSettings, permissionMode, effort } = options;
+  const { sessionId, cwd, toolsSettings, permissionMode, effort, appSessionId, projectPath } = options;
 
   const sdkOptions = {};
 
   // Forward all host env vars (e.g. ANTHROPIC_BASE_URL) to the subprocess.
   // Since SDK 0.2.113, options.env replaces process.env instead of overlaying it.
   sdkOptions.env = { ...process.env };
+
+  // Peer mailbox identity: the Claude Code CLI subprocess inherits these when
+  // it spawns its own configured MCP servers (including cloudcli-session-mailbox),
+  // so that server can identify which app session is calling it.
+  if (appSessionId) {
+    sdkOptions.env.CLOUDCLI_SESSION_ID = appSessionId;
+    sdkOptions.env.CLOUDCLI_PROVIDER = 'claude';
+    if (cwd || projectPath) {
+      sdkOptions.env.CLOUDCLI_PROJECT_PATH = cwd || projectPath;
+    }
+  }
 
   // Resolve the executable eagerly on Windows because the SDK uses raw child_process.spawn,
   // which does not reliably follow npm's shell wrappers like cross-spawn does.

@@ -322,6 +322,7 @@ export async function queryCodex(command, options = {}, ws) {
     unattended = false,
     approvalTimeoutMs,
     relayWorker = false,
+    appSessionId,
   } = options;
 
   const resolvedModel = await providerModelsService.resolveResumeModel(
@@ -692,13 +693,22 @@ export async function queryCodex(command, options = {}, ws) {
           : {}),
       }
       : {};
+    // Peer mailbox identity: the codex app-server subprocess inherits this
+    // into any MCP server it spawns from its own config (including
+    // cloudcli-session-mailbox). createCodexAppServer treats `env` as the
+    // full child environment (not a merge), so build a full copy here too.
+    const identityEnv = appSessionId
+      ? {
+        CLOUDCLI_SESSION_ID: appSessionId,
+        CLOUDCLI_PROVIDER: 'codex',
+        CLOUDCLI_PROJECT_PATH: workingDirectory,
+      }
+      : {};
     appServer = createCodexAppServer({
       cwd: workingDirectory,
-      // Codex forwards only the variables an MCP entry names in `env_vars`, so
-      // the owning chat session has to be present in this process env for the
-      // Agent Relay MCP child to inherit it.
       env: {
         ...(managedObsidianRuntime?.env ?? process.env),
+        ...identityEnv,
         ...leadSessionEnv(options.appSessionId),
       },
       config: managedConfig,

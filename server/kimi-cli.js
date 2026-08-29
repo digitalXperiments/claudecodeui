@@ -347,9 +347,19 @@ async function spawnKimi(command, options = {}, ws) {
     permissionMode = 'bypassPermissions',
     unattended = false,
     approvalTimeoutMs,
+    appSessionId,
   } = options;
 
   const workingDir = cwd || projectPath || process.cwd();
+  // Peer mailbox identity: the kimi ACP child inherits this into any MCP
+  // server it spawns from its own config (including cloudcli-session-mailbox).
+  const identityEnv = appSessionId
+    ? {
+      CLOUDCLI_SESSION_ID: appSessionId,
+      CLOUDCLI_PROVIDER: 'kimi',
+      CLOUDCLI_PROJECT_PATH: workingDir,
+    }
+    : {};
   const resolvedModel = await providerModelsService.resolveResumeModel('kimi', sessionId, model);
   const kimiMode = KIMI_MODE_MAP[permissionMode] || 'yolo';
 
@@ -368,7 +378,10 @@ async function spawnKimi(command, options = {}, ws) {
   let capturedSessionId = sessionId;
 
   if (!handle || handle.child.exitCode !== null || handle.child.killed) {
-    handle = await createAcpSession(workingDir, sessionId, leadSessionEnv(options.appSessionId));
+    handle = await createAcpSession(workingDir, sessionId, {
+      ...identityEnv,
+      ...leadSessionEnv(options.appSessionId),
+    });
     acpSessions.set(processKey, handle);
 
     if (!capturedSessionId) {
@@ -566,7 +579,10 @@ async function spawnKimi(command, options = {}, ws) {
       if (acpSessions.get(key) === handle) acpSessions.delete(key);
       try { handle.rpc.close(); } catch { /* already closed */ }
       try { handle.child.kill('SIGTERM'); } catch { /* already gone */ }
-      const fresh = await createAcpSession(workingDir, finalSessionId, leadSessionEnv(options.appSessionId));
+      const fresh = await createAcpSession(workingDir, finalSessionId, {
+        ...identityEnv,
+        ...leadSessionEnv(options.appSessionId),
+      });
       handle = fresh;
       acpSessions.set(key, fresh);
       fresh.child.stderr.on('data', (data) => console.error('Kimi ACP stderr:', data.toString()));
