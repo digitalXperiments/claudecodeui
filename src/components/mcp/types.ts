@@ -121,7 +121,7 @@ export type McpInventoryItem = {
   connected?: boolean | null;
   needsAuth?: boolean;
   originProvider?: McpProvider;
-  kind?: 'memory';
+  kind?: 'memory' | 'agent-relay';
   cloudLabel?: string;
   /** Real config file paths this row was read from. */
   configPaths?: string[];

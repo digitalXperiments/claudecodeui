@@ -34,38 +34,10 @@ import {
 import { resolveCodexServiceTier } from './modules/providers/list/codex/codex-service-tier.js';
 import { createCompleteMessage, createNormalizedMessage } from './shared/utils.js';
 import { buildCodexTokenUsage } from './modules/providers/list/codex/codex-token-usage.js';
+import { leadSessionEnv } from './shared/lead-session-env.js';
+import { mapPermissionModeToCodexOptions } from './modules/providers/list/codex/codex-permission-mode.js';
 
 const activeCodexSessions = new Map();
-
-/**
- * Map permission mode to Codex app-server options
- * @param {string} permissionMode - 'default', 'auto', or 'bypassPermissions'
- * @returns {object} - app-server sandbox and approval settings
- */
-function mapPermissionModeToCodexOptions(permissionMode) {
-  switch (permissionMode) {
-    case 'auto':
-    case 'acceptEdits':
-      return {
-        sandbox: 'workspace-write',
-        approvalPolicy: 'on-request',
-        approvalsReviewer: 'auto_review',
-      };
-    case 'bypassPermissions':
-      return {
-        sandbox: 'danger-full-access',
-        approvalPolicy: 'never',
-        approvalsReviewer: 'user',
-      };
-    case 'default':
-    default:
-      return {
-        sandbox: 'workspace-write',
-        approvalPolicy: 'untrusted',
-        approvalsReviewer: 'user',
-      };
-  }
-}
 
 /**
  * Resolve CloudCLI's managed Obsidian MCP into the environment/configuration
@@ -349,6 +321,7 @@ export async function queryCodex(command, options = {}, ws) {
     permissionMode = 'default',
     unattended = false,
     approvalTimeoutMs,
+    relayWorker = false,
   } = options;
 
   const resolvedModel = await providerModelsService.resolveResumeModel(
@@ -360,8 +333,11 @@ export async function queryCodex(command, options = {}, ws) {
   const workingDirectory = cwd || projectPath || process.cwd();
   // Bounded approval wait for unattended (swarm) runs; 0 = wait forever (chat).
   const approvalWaitMs = resolveApprovalTimeoutMs({ unattended, approvalTimeoutMs });
-  const { sandbox, approvalPolicy, approvalsReviewer } = mapPermissionModeToCodexOptions(permissionMode);
-  const managedObsidianRuntime = loadManagedObsidianCodexRuntime();
+  const { sandbox, approvalPolicy, approvalsReviewer } = mapPermissionModeToCodexOptions(permissionMode, { unattended });
+  // Codex does not support per-task MCP grants on this app-server path. A
+  // relay worker therefore gets no managed or inherited CloudCLI MCPs; the
+  // lead can select a provider with explicit grant support when MCP is needed.
+  const managedObsidianRuntime = relayWorker ? null : loadManagedObsidianCodexRuntime();
   const catalog = (await providerModelsService.getProviderModels('codex')).models;
   const selectedModel = catalog.OPTIONS.find((option) => option.value === resolvedModel) || null;
   const allowedEfforts = selectedModel?.effort?.values?.map((value) => value.value) || [];
@@ -706,7 +682,9 @@ export async function queryCodex(command, options = {}, ws) {
   };
 
   try {
-    const managedConfig = managedObsidianRuntime?.config
+    const managedConfig = relayWorker
+      ? { mcp_servers: {} }
+      : managedObsidianRuntime?.config
       ? {
         ...managedObsidianRuntime.config,
         ...(sandbox === 'workspace-write'
@@ -716,7 +694,13 @@ export async function queryCodex(command, options = {}, ws) {
       : {};
     appServer = createCodexAppServer({
       cwd: workingDirectory,
-      env: managedObsidianRuntime?.env,
+      // Codex forwards only the variables an MCP entry names in `env_vars`, so
+      // the owning chat session has to be present in this process env for the
+      // Agent Relay MCP child to inherit it.
+      env: {
+        ...(managedObsidianRuntime?.env ?? process.env),
+        ...leadSessionEnv(options.appSessionId),
+      },
       config: managedConfig,
     });
     rpcUnsubscribe = appServer.onMessage(handleAppServerMessage);

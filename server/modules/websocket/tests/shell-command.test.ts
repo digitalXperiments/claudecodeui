@@ -114,6 +114,27 @@ test('kilo maps ACP permission modes onto KILO_PERMISSION or --auto', () => {
   );
 });
 
+test('cline launches its interactive TUI and resumes with --id', () => {
+  const clineBin = os.platform() === 'win32' ? 'cline' : `'${resolveAcpCliCommand('cline')}'`;
+  assert.equal(build({ provider: 'cline' }), `${clineBin} --tui`);
+  assert.equal(
+    build({ provider: 'cline', hasSession: true, sessionId: 'cl1' }),
+    `${clineBin} --tui --id "cl1"`,
+  );
+});
+
+test('qwen maps interactive resume and approval modes', () => {
+  const qwenBin = os.platform() === 'win32' ? 'qwen' : `'${resolveAcpCliCommand('qwen')}'`;
+  assert.equal(build({ provider: 'qwencode' }), qwenBin);
+  assert.equal(build({ provider: 'qwencode', permissionMode: 'plan' }), `${qwenBin} --approval-mode plan`);
+  assert.equal(build({ provider: 'qwencode', permissionMode: 'auto' }), `${qwenBin} --approval-mode auto`);
+  assert.equal(build({ provider: 'qwencode', permissionMode: 'bypassPermissions' }), `${qwenBin} --yolo`);
+  assert.equal(
+    build({ provider: 'qwencode', hasSession: true, sessionId: 'q1', permissionMode: 'auto' }),
+    `${qwenBin} --resume "q1" --approval-mode auto`,
+  );
+});
+
 test('pi restricts tools in plan mode only', () => {
   assert.equal(
     build({ provider: 'pi', permissionMode: 'plan' }),
@@ -140,7 +161,7 @@ test('plain shells ignore the permission mode', () => {
 });
 
 test('identifies every provider-backed shell with an existing session', () => {
-  for (const provider of ['claude', 'cursor', 'codex', 'opencode', 'kilo', 'grok', 'kimi', 'pi']) {
+  for (const provider of ['claude', 'cursor', 'codex', 'opencode', 'kilo', 'cline', 'grok', 'kimi', 'qwencode', 'pi']) {
     assert.equal(
       isAgentShellRequestWithExistingSession({
         provider,

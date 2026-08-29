@@ -1,6 +1,7 @@
 import type { TFunction } from 'i18next';
 
 import type { LLMProvider, Project, ProjectCategory, ProjectSession } from '../../../types/app';
+import type { SessionActivityMap } from '../../../hooks/useSessionProtection';
 import type { ProjectCategoryGroup, ProjectSortOrder, SettingsProject, SessionViewModel, SessionWithProvider } from '../types/types';
 
 // Native HTML5 drag-and-drop payloads used to drag projects onto category
@@ -108,6 +109,148 @@ export const getAllSessions = (project: Project): SessionWithProvider[] => {
   })).sort(
     (a, b) => getSessionDate(b).getTime() - getSessionDate(a).getTime(),
   );
+};
+
+const asProvider = (value: string | null | undefined): LLMProvider => {
+  return typeof value === 'string' && value.trim() ? value as LLMProvider : 'claude';
+};
+
+export const sessionFromRunningActivity = (
+  sessionId: string,
+  activity: {
+    title?: string | null;
+    projectId?: string | null;
+    provider?: string | null;
+    startedAt: number;
+  },
+): ProjectSession => {
+  const title = activity.title?.trim() || sessionId;
+  const startedAt = new Date(activity.startedAt).toISOString();
+  const provider = asProvider(activity.provider);
+  return {
+    id: sessionId,
+    summary: title,
+    name: title,
+    lastActivity: startedAt,
+    createdAt: startedAt,
+    provider,
+    __provider: provider,
+    __projectId: activity.projectId ?? undefined,
+  };
+};
+
+/**
+ * Returns the selected project's sessions, pinning live sessions that belong
+ * to that project even when they are outside the currently loaded page.
+ *
+ * The processing map is global because it drives the app-wide activity rail,
+ * so it must never be used as an unfiltered source for a project session
+ * picker. Activities without an owning project are intentionally excluded
+ * from this picker rather than guessed into the current project.
+ */
+export const getProjectSessionsWithActivity = (
+  project: Project,
+  activeSessions: SessionActivityMap,
+): SessionWithProvider[] => {
+  const projectSessions = getAllSessions(project);
+  if (activeSessions.size === 0) {
+    return projectSessions;
+  }
+
+  const loadedSessionIds = new Set(projectSessions.map((session) => String(session.id)));
+  const projectProcessingSessions = Array.from(activeSessions.entries()).filter(
+    // Internal runs (swarm members, Agent Relay workers, automation) are live
+    // and belong in the Running rail, but they are not the user's sessions —
+    // synthesizing rows for them is what leaked delegate prompts such as
+    // "You are a delegated sidekick…" into this project's session picker.
+    ([sessionId, activity]) => !activity.isInternal
+      && (loadedSessionIds.has(String(sessionId)) || activity.projectId === project.projectId),
+  );
+
+  if (projectProcessingSessions.length === 0) {
+    return projectSessions;
+  }
+
+  const byId = new Map<string, SessionWithProvider>(projectSessions.map((session) => [String(session.id), session]));
+  for (const [sessionId, activity] of projectProcessingSessions) {
+    if (byId.has(String(sessionId))) {
+      continue;
+    }
+
+    const stub = sessionFromRunningActivity(sessionId, activity);
+    byId.set(String(sessionId), {
+      ...stub,
+      __provider: stub.__provider ?? stub.provider ?? 'claude',
+    });
+  }
+
+  const pinned = projectProcessingSessions
+    .map(([sessionId]) => byId.get(String(sessionId)))
+    .filter((session): session is SessionWithProvider => Boolean(session));
+  const pinnedIds = new Set(pinned.map((session) => String(session.id)));
+
+  return [
+    ...pinned,
+    ...projectSessions.filter((session) => !pinnedIds.has(String(session.id))),
+  ];
+};
+
+/**
+ * Running view rows must not depend on the paginated `project.sessions` page.
+ * Live ids missing from the current page are synthesized from `/sessions/running`.
+ */
+export const buildRunningProjects = (
+  projects: Project[],
+  activeSessions: SessionActivityMap,
+): Project[] => {
+  if (activeSessions.size === 0) {
+    return [];
+  }
+
+  const sessionIndex = new Map<string, { project: Project; session: ProjectSession }>();
+  const projectsById = new Map<string, Project>();
+  for (const project of projects) {
+    projectsById.set(project.projectId, project);
+    for (const session of project.sessions ?? []) {
+      sessionIndex.set(String(session.id), { project, session });
+    }
+  }
+
+  const grouped = new Map<string, { project: Project; sessions: ProjectSession[] }>();
+
+  for (const [sessionId, activity] of activeSessions) {
+    const found = sessionIndex.get(sessionId);
+    const session = found?.session ?? sessionFromRunningActivity(sessionId, activity);
+    const projectId = found?.project.projectId
+      ?? activity.projectId
+      ?? `running:${sessionId}`;
+    const existingGroup = grouped.get(projectId);
+    if (existingGroup) {
+      existingGroup.sessions.push(session);
+      continue;
+    }
+
+    const project = found?.project
+      ?? (activity.projectId ? projectsById.get(activity.projectId) : undefined)
+      ?? {
+        projectId,
+        displayName: activity.projectDisplayName?.trim() || 'Running',
+        fullPath: '',
+        sessions: [],
+      };
+
+    grouped.set(projectId, { project, sessions: [session] });
+  }
+
+  return Array.from(grouped.values()).map(({ project, sessions }) => ({
+    ...project,
+    sessions,
+    sessionMeta: {
+      ...project.sessionMeta,
+      total: sessions.length,
+      hasMore: false,
+    },
+  }));
 };
 
 export const getProjectLastActivity = (project: Project): Date => {

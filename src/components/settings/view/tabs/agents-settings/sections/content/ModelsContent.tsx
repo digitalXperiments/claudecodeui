@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { RefreshCw } from 'lucide-react';
 
 import { authenticatedFetch } from '../../../../../../../utils/api';
 import { readHiddenModels, writeHiddenModels } from '../../../../../../../utils/modelVisibility';
@@ -52,6 +53,7 @@ export default function ModelsContent({ agent }: ModelsContentProps) {
   const { t } = useTranslation('settings');
   const [models, setModels] = useState<ProviderModelsDefinition | null>(null);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [defaultModel, setDefaultModel] = useState<string>(() => localStorage.getItem(storageKey(agent)) || '');
   const [defaultEffort, setDefaultEffort] = useState<string>(
@@ -66,45 +68,65 @@ export default function ModelsContent({ agent }: ModelsContentProps) {
     setHiddenModels(readHiddenModels(agent));
   }, [agent]);
 
+  const fetchModels = useCallback(async (bypassCache: boolean): Promise<ProviderModelsDefinition> => {
+    const query = bypassCache ? '?bypassCache=true' : '';
+    const response = await authenticatedFetch(`/api/providers/${agent}/models${query}`);
+    const body = (await response.json()) as ProviderModelsApiResponse;
+    if (!response.ok || !body.success || !body.data?.models) {
+      throw new Error('Unable to load provider models');
+    }
+    return body.data.models;
+  }, [agent]);
+
+  const applyModels = useCallback((nextModels: ProviderModelsDefinition) => {
+    setModels(nextModels);
+    setDefaultModel((current) => {
+      const options = nextModels.OPTIONS ?? [];
+      if (options.some((option) => option.value === current)) return current;
+      const stored = localStorage.getItem(storageKey(agent));
+      if (options.some((option) => option.value === stored)) return stored as string;
+      return options.find((option) => option.value === nextModels.DEFAULT)?.value
+        ?? options[0]?.value
+        ?? '';
+    });
+  }, [agent]);
+
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setError(null);
 
-    (async () => {
-      try {
-        const response = await authenticatedFetch(`/api/providers/${agent}/models`);
-        const body = (await response.json()) as ProviderModelsApiResponse;
-        if (cancelled) return;
-        if (!body.success || !body.data?.models) {
-          setError(t('agents.models.loadError', { defaultValue: 'Could not load models for this agent.' }));
-          setModels(null);
-          return;
-        }
-        setModels(body.data.models);
-        setDefaultModel((current) => {
-          const options = body.data?.models?.OPTIONS ?? [];
-          if (options.some((option) => option.value === current)) return current;
-          const stored = localStorage.getItem(storageKey(agent));
-          if (options.some((option) => option.value === stored)) return stored as string;
-          return options.find((option) => option.value === body.data?.models?.DEFAULT)?.value
-            ?? options[0]?.value
-            ?? '';
-        });
-      } catch {
+    void fetchModels(false)
+      .then((nextModels) => {
+        if (!cancelled) applyModels(nextModels);
+      })
+      .catch(() => {
         if (!cancelled) {
           setError(t('agents.models.loadError', { defaultValue: 'Could not load models for this agent.' }));
           setModels(null);
         }
-      } finally {
+      })
+      .finally(() => {
         if (!cancelled) setLoading(false);
-      }
-    })();
+      });
 
     return () => {
       cancelled = true;
     };
-  }, [agent, t]);
+  }, [applyModels, fetchModels, t]);
+
+  const handleRefresh = async () => {
+    if (loading || refreshing) return;
+    setRefreshing(true);
+    setError(null);
+    try {
+      applyModels(await fetchModels(true));
+    } catch {
+      setError(t('agents.models.loadError', { defaultValue: 'Could not load models for this agent.' }));
+    } finally {
+      setRefreshing(false);
+    }
+  };
 
   const defaultModelOption = useMemo(
     () => models?.OPTIONS.find((option) => option.value === defaultModel),
@@ -280,24 +302,40 @@ export default function ModelsContent({ agent }: ModelsContentProps) {
             </div>
           </div>
 
-          {!loading && !error && options.length > 0 && (
-            <div className="flex shrink-0 gap-2">
-              <button
-                type="button"
-                onClick={() => setAllVisible(true)}
-                className="rounded-lg border border-input px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-              >
-                {t('agents.models.showAll', { defaultValue: 'Show all' })}
-              </button>
-              <button
-                type="button"
-                onClick={() => setAllVisible(false)}
-                className="rounded-lg border border-input px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-              >
-                {t('agents.models.hideAll', { defaultValue: 'Hide all' })}
-              </button>
-            </div>
-          )}
+          <div className="flex shrink-0 gap-2">
+            <button
+              type="button"
+              onClick={() => void handleRefresh()}
+              disabled={loading || refreshing}
+              aria-label={t('agents.models.refresh', { defaultValue: 'Refresh models' })}
+              title={t('agents.models.refresh', { defaultValue: 'Refresh models' })}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-input px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              <RefreshCw className={`h-3.5 w-3.5 ${refreshing ? 'animate-spin' : ''}`} aria-hidden="true" />
+              <span>{refreshing
+                ? t('agents.models.refreshing', { defaultValue: 'Refreshing…' })
+                : t('agents.models.refresh', { defaultValue: 'Refresh models' })}
+              </span>
+            </button>
+            {!loading && !error && options.length > 0 && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setAllVisible(true)}
+                  className="rounded-lg border border-input px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                >
+                  {t('agents.models.showAll', { defaultValue: 'Show all' })}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAllVisible(false)}
+                  className="rounded-lg border border-input px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                >
+                  {t('agents.models.hideAll', { defaultValue: 'Hide all' })}
+                </button>
+              </>
+            )}
+          </div>
         </div>
 
         {loading ? (

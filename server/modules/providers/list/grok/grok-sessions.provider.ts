@@ -14,7 +14,7 @@ import {
 } from '@/shared/utils.js';
 
 const PROVIDER = 'grok';
-const grokSessionsRoot = (): string => path.join(
+export const grokSessionsRoot = (): string => path.join(
   process.env.GROK_HOME || path.join(os.homedir(), '.grok'),
   'sessions',
 );
@@ -75,6 +75,41 @@ function extractGrokTextParts(content: unknown): string {
 export function resolveGrokSessionDir(projectPath: string, sessionId: string): string {
   const encodedProjectPath = encodeURIComponent(projectPath);
   return path.join(grokSessionsRoot(), encodedProjectPath, sessionId);
+}
+
+function grokHistoryPathInDir(sessionDir: string): string {
+  return path.join(sessionDir, 'chat_history.jsonl');
+}
+
+/**
+ * Prefer the indexed summary.json sibling, then reconstructed dirs. Shell
+ * adoption encodes `path.resolve(cwd)`; Chat fetch used to miss that and
+ * return an empty transcript even though the file existed.
+ */
+export function resolveGrokHistoryPath(
+  projectPath: string,
+  providerSessionId: string,
+  jsonlPath?: string | null,
+): string {
+  const candidates: string[] = [];
+  if (jsonlPath) {
+    candidates.push(path.join(path.dirname(jsonlPath), 'chat_history.jsonl'));
+  }
+  if (projectPath) {
+    candidates.push(grokHistoryPathInDir(resolveGrokSessionDir(projectPath, providerSessionId)));
+    const resolvedProjectPath = path.resolve(projectPath);
+    if (resolvedProjectPath !== projectPath) {
+      candidates.push(grokHistoryPathInDir(resolveGrokSessionDir(resolvedProjectPath, providerSessionId)));
+    }
+  }
+
+  for (const candidate of candidates) {
+    if (fsSync.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  return candidates[0] || grokHistoryPathInDir(resolveGrokSessionDir(projectPath, providerSessionId));
 }
 
 /**
@@ -444,12 +479,11 @@ export class GrokSessionsProvider implements IProviderSessions {
     sessionId: string,
     options: FetchHistoryOptions = {},
   ): Promise<FetchHistoryResult> {
-    const { projectPath = '', limit = null, offset = 0 } = options;
+    const { projectPath = '', limit = null, offset = 0, jsonlPath } = options;
     const providerSessionId = options.providerSessionId ?? sessionId;
 
     try {
-      const sessionDir = resolveGrokSessionDir(projectPath, providerSessionId);
-      const historyPath = path.join(sessionDir, 'chat_history.jsonl');
+      const historyPath = resolveGrokHistoryPath(projectPath, providerSessionId, jsonlPath);
       const allNormalized = await this.readGrokHistoryFile(historyPath, sessionId);
       const renderableMessages = allNormalized.filter((msg) => msg.kind !== 'tool_result');
       const total = renderableMessages.length;
@@ -551,7 +585,7 @@ export class GrokSessionsProvider implements IProviderSessions {
           continue;
         }
 
-        if (type === 'assistant') {
+        if (type === 'assistant' || type === 'message') {
           const text = extractGrokTextParts(data.content);
           if (text.trim()) {
             messages.push(createNormalizedMessage({

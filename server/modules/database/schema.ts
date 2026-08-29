@@ -386,6 +386,8 @@ CREATE TABLE IF NOT EXISTS mc_sections (
     actions_json        TEXT DEFAULT '[]',
     -- Bridge: on approve, also create a card on the global kanban backlog.
     create_kanban_task        INTEGER DEFAULT 0,
+    -- Bridge: on approve, also launch an autonomous swarm for this item.
+    create_swarm_on_approve   INTEGER DEFAULT 0,
     kanban_assignee_provider  TEXT,   -- default implementation agent for bridged cards
     kanban_review_provider    TEXT,   -- default review agent for bridged cards
     kanban_mcp_tools_json     TEXT DEFAULT '[]', -- MCP servers for bridged kanban tasks
@@ -569,6 +571,77 @@ CREATE TABLE IF NOT EXISTS agent_run_events (
     FOREIGN KEY (run_id) REFERENCES agent_runs(run_id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_agent_run_events_run_seq ON agent_run_events(run_id, seq);
+`;
+
+/**
+ * Agent Relay — lightweight cross-provider delegation owned by a lead chat.
+ * Each job points at the fresh internal provider session and latest canonical
+ * run used to execute it; structured results stay queryable after completion.
+ */
+export const AGENT_RELAY_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS agent_relay_jobs (
+    relay_id             TEXT PRIMARY KEY NOT NULL,
+    batch_id             TEXT NOT NULL,
+    project_id           TEXT NOT NULL,
+    project_path         TEXT NOT NULL,
+    source_session_id    TEXT,
+    app_session_id       TEXT,
+    run_id               TEXT,
+    workspace_id         TEXT,
+    provider             TEXT NOT NULL,
+    model                TEXT,
+    effort               TEXT,
+    mode                 TEXT NOT NULL DEFAULT 'read_only',
+    approval_policy      TEXT NOT NULL DEFAULT 'auto',
+    status               TEXT NOT NULL DEFAULT 'queued',
+    label                TEXT,
+    task                 TEXT NOT NULL,
+    last_prompt          TEXT NOT NULL,
+    mcp_servers_json     TEXT NOT NULL DEFAULT '[]',
+    output_schema_json   TEXT,
+    depends_on_json      TEXT NOT NULL DEFAULT '[]',
+    retries              INTEGER NOT NULL DEFAULT 0,
+    retry_count          INTEGER NOT NULL DEFAULT 0,
+    schema_retry_count   INTEGER NOT NULL DEFAULT 0,
+    result_json          TEXT,
+    error                TEXT,
+    timeout_ms           INTEGER NOT NULL,
+    attempt              INTEGER NOT NULL DEFAULT 0,
+    created_at           DATETIME DEFAULT CURRENT_TIMESTAMP,
+    started_at           DATETIME,
+    finished_at          DATETIME,
+    updated_at           DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (project_id) REFERENCES projects(project_id) ON DELETE CASCADE,
+    FOREIGN KEY (source_session_id) REFERENCES sessions(session_id) ON DELETE SET NULL,
+    FOREIGN KEY (app_session_id) REFERENCES sessions(session_id) ON DELETE SET NULL,
+    FOREIGN KEY (run_id) REFERENCES agent_runs(run_id) ON DELETE SET NULL,
+    FOREIGN KEY (workspace_id) REFERENCES agent_workspaces(workspace_id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_agent_relay_jobs_project_created ON agent_relay_jobs(project_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_agent_relay_jobs_batch ON agent_relay_jobs(batch_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_agent_relay_jobs_status ON agent_relay_jobs(status, created_at);
+CREATE INDEX IF NOT EXISTS idx_agent_relay_jobs_session ON agent_relay_jobs(app_session_id);
+CREATE INDEX IF NOT EXISTS idx_agent_relay_jobs_source_session ON agent_relay_jobs(source_session_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS agent_relay_approvals (
+    approval_id     TEXT PRIMARY KEY NOT NULL,
+    relay_id        TEXT NOT NULL,
+    request_id      TEXT NOT NULL,
+    tool_name       TEXT,
+    command         TEXT,
+    paths_json      TEXT NOT NULL DEFAULT '[]',
+    cwd             TEXT,
+    reason          TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'pending',
+    decision_reason TEXT,
+    decided_by      TEXT,
+    created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+    decided_at      DATETIME,
+    FOREIGN KEY (relay_id) REFERENCES agent_relay_jobs(relay_id) ON DELETE CASCADE
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_relay_approvals_request ON agent_relay_approvals(request_id);
+CREATE INDEX IF NOT EXISTS idx_agent_relay_approvals_relay ON agent_relay_approvals(relay_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_agent_relay_approvals_status ON agent_relay_approvals(status, created_at);
 `;
 
 /**
@@ -758,6 +831,19 @@ CREATE TABLE IF NOT EXISTS swarm_messages (
     FOREIGN KEY (swarm_id) REFERENCES swarm_runs(swarm_id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_swarm_messages_swarm_seq ON swarm_messages(swarm_id, seq);
+CREATE TABLE IF NOT EXISTS swarm_events (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    swarm_id         TEXT NOT NULL,
+    seq              INTEGER NOT NULL,
+    kind             TEXT NOT NULL,
+    step_id          TEXT,
+    level            TEXT NOT NULL DEFAULT 'info',
+    data             TEXT NOT NULL DEFAULT '{}',
+    created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(swarm_id, seq),
+    FOREIGN KEY (swarm_id) REFERENCES swarm_runs(swarm_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_swarm_events_swarm_seq ON swarm_events(swarm_id, seq);
 CREATE TABLE IF NOT EXISTS swarm_artifacts (
     artifact_id       TEXT PRIMARY KEY NOT NULL,
     swarm_id          TEXT NOT NULL,
@@ -913,6 +999,7 @@ export const RUN_SPINE_SCHEMA_SQL = `
 ${AGENT_WORKSPACES_TABLE_SCHEMA_SQL}
 ${AGENT_RUNS_TABLE_SCHEMA_SQL}
 ${AGENT_RUN_EVENTS_TABLE_SCHEMA_SQL}
+${AGENT_RELAY_SCHEMA_SQL}
 ${PROJECT_RUN_BUDGETS_TABLE_SCHEMA_SQL}
 ${SECRETS_TABLE_SCHEMA_SQL}
 ${CONTEXT_PACKS_TABLE_SCHEMA_SQL}

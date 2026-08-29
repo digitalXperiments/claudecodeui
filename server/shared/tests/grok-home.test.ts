@@ -6,7 +6,16 @@ import path from 'node:path';
 import test from 'node:test';
 
 // grok-home.js is plain JS (allowJs, checkJs:false) — its exports are untyped.
-import { mergeDirNewestWins, unifySessionsDir } from '../grok-home.js';
+import { mergeDirNewestWins, stripMcpServersFromConfigToml, unifySessionsDir } from '../grok-home.js';
+
+test('relay Grok config strips inherited MCP tables and keeps unrelated settings', () => {
+  const source = `[ui]\npermission_mode = "default"\n\n[mcp_servers.obsidian]\ncommand = "uvx"\n  [mcp_servers.obsidian.env]\n  TOKEN = "secret"\n\n[models]\ndefault = "grok"\n`;
+  const stripped = stripMcpServersFromConfigToml(source);
+  assert.doesNotMatch(stripped, /mcp_servers|TOKEN|uvx/);
+  assert.match(stripped, /\[ui\]/);
+  assert.match(stripped, /\[models\]/);
+  assert.match(stripped, /default = "grok"/);
+});
 
 async function withTempHomes(runTest: (homes: { sourceHome: string; managedRoot: string }) => void): Promise<void> {
   const tempDirectory = await mkdtemp(path.join(os.tmpdir(), 'grok-home-'));

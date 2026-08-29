@@ -8,6 +8,7 @@ import { createRequestId, extractPermissionPaths, resolveApprovalTimeoutMs, wait
 import { sessionsService } from './modules/providers/services/sessions.service.js';
 import { providerAuthService } from './modules/providers/services/provider-auth.service.js';
 import { providerModelsService } from './modules/providers/services/provider-models.service.js';
+import { mcpCatalogService } from './modules/providers/services/mcp-catalog.service.js';
 import { notifyRunFailed, notifyRunStopped } from './services/notification-orchestrator.js';
 import { createAcpJsonRpcClient, createAcpPermissionCancellation, findAcpPermissionOption } from './shared/acp-rpc.js';
 import {
@@ -17,10 +18,102 @@ import {
   getOpenCodeDatabasePath,
 } from './shared/utils.js';
 import { resolveAcpCliCommand } from './shared/acp-cli-path.js';
+import { leadSessionEnv } from './shared/lead-session-env.js';
 
 // cross-spawn resolves .cmd shims/PATHEXT on Windows and delegates to
 // child_process.spawn everywhere else.
 const spawnFunction = crossSpawn;
+
+const RELAY_MCP_NAME = 'cloudcli-agent-relay';
+
+function envRecordToAcpEnv(env) {
+  if (!env || typeof env !== 'object') return [];
+  return Object.entries(env)
+    .filter(([name, value]) => typeof name === 'string' && name && typeof value === 'string')
+    .map(([name, value]) => ({ name, value }));
+}
+
+/**
+ * Convert CloudCLI catalog connections into OpenCode ACP `session/new`
+ * `mcpServers`.
+ *
+ * OpenCode 1.18.x validates an untagged McpServer union:
+ *   http  { type:'http', name, url, headers:[{name,value}] }
+ *   sse   { type:'sse',  name, url, headers:[{name,value}] }
+ *   stdio { name, command, args, env:[{name,value}] }  — no `type` field
+ * Sending `type: 'stdio'` fails that union. Do not add it.
+ */
+function toOpenCodeAcpMcpServers(resolvedServers = [], extraEnv = {}) {
+  const leadSessionId = typeof extraEnv.CLOUDCLI_LEAD_SESSION_ID === 'string'
+    ? extraEnv.CLOUDCLI_LEAD_SESSION_ID.trim()
+    : '';
+  return (Array.isArray(resolvedServers) ? resolvedServers : [])
+    .map((server) => {
+      const transport = server?.transport
+        || (typeof server?.command === 'string' && server.command.trim() ? 'stdio' : null)
+        || (typeof server?.url === 'string' && server.url.trim() ? 'http' : null);
+
+      if (transport === 'http' || transport === 'sse') {
+        if (typeof server?.url !== 'string' || !server.url.trim()) {
+          console.warn(`[OpenCode] skipping ${transport} MCP "${server?.name || 'unknown'}": missing url`);
+          return null;
+        }
+        return {
+          name: server.name,
+          type: transport,
+          url: server.url,
+          headers: envRecordToAcpEnv(server.headers),
+        };
+      }
+
+      if (transport && transport !== 'stdio') {
+        console.warn(`[OpenCode] skipping ${transport} MCP "${server?.name || 'unknown'}": unsupported ACP transport`);
+        return null;
+      }
+      if (typeof server?.command !== 'string' || !server.command.trim()) {
+        console.warn(`[OpenCode] skipping MCP "${server?.name || 'unknown'}": missing command`);
+        return null;
+      }
+      const env = envRecordToAcpEnv(server.env);
+      if (leadSessionId && !env.some((entry) => entry.name === 'CLOUDCLI_LEAD_SESSION_ID')) {
+        env.push({ name: 'CLOUDCLI_LEAD_SESSION_ID', value: leadSessionId });
+      }
+      return {
+        name: server.name,
+        command: server.command,
+        args: Array.isArray(server.args) ? server.args : [],
+        env,
+      };
+    })
+    .filter(Boolean);
+}
+
+async function resolveOpenCodeAcpMcpServers(runtime, options = {}) {
+  const requested = Array.isArray(options.mcpServers)
+    ? options.mcpServers.filter((name) => typeof name === 'string' && name.trim()).map((name) => name.trim())
+    : [];
+  const names = new Set(requested);
+  // OpenCode ACP does not load ~/.config/opencode/opencode.json `mcp` on
+  // session/new — the catalog has to be passed here or a lead has no Relay
+  // tools. Kilo/Cline/Qwen share this runtime; only attach the OpenCode
+  // catalog to OpenCode chats so those other providers keep their own
+  // native-config path.
+  if (!options.relayWorker && runtime.provider === 'opencode') {
+    try {
+      const enabled = await mcpCatalogService.listEnabledNames('opencode');
+      for (const name of enabled) names.add(name);
+    } catch {
+      // Tests and first-boot have no catalog; session/new still works with [].
+    }
+  }
+  if (options.relayWorker) names.delete(RELAY_MCP_NAME);
+  if (names.size === 0) return [];
+  try {
+    return await mcpCatalogService.resolveForProvider(runtime.provider, [...names]);
+  } catch {
+    return [];
+  }
+}
 
 // OpenCode's Agent Client Protocol server (`opencode acp`), spoken over stdio
 // as newline-delimited JSON-RPC 2.0. Verified live against opencode 1.18.11
@@ -299,14 +392,17 @@ function killChild(child) {
   }
 }
 
-async function createAcpSession(workingDir, resumeSessionId, permissionEnv, runtime) {
+async function createAcpSession(workingDir, resumeSessionId, permissionEnv, runtime, extraEnv = {}, mcpServers = []) {
   // Resolve the bare command (`opencode`, `kilo`) through PATH plus the
   // installer's `~/.<name>/bin` — a GUI-launched server never sources the
   // shell profile that would put it on PATH.
   const child = spawnFunction(resolveAcpCliCommand(runtime.command), runtime.acpArgs || ['acp', '--cwd', workingDir], {
     cwd: workingDir,
     stdio: ['pipe', 'pipe', 'pipe'],
-    env: { ...process.env, ...permissionEnv },
+    // `extraEnv` is deliberately kept out of `permissionEnvKey` below: it
+    // carries the owning chat session, which must not invalidate the cached
+    // ACP session the way a permission-mode change does.
+    env: { ...process.env, ...permissionEnv, ...extraEnv },
   });
 
   const rpc = createAcpJsonRpcClient(child, { label: runtime.label });
@@ -334,16 +430,16 @@ async function createAcpSession(workingDir, resumeSessionId, permissionEnv, runt
         sessionResult = await rpc.request('session/load', {
           sessionId: resumeSessionId,
           cwd: workingDir,
-          mcpServers: [],
+          mcpServers,
         }, SETUP_TIMEOUT_MS);
         sessionResult = { ...sessionResult, sessionId: sessionResult?.sessionId || resumeSessionId };
       } catch {
         // A session that predates this ACP runtime (or was pruned) can't be
         // loaded — start a fresh one rather than failing the whole message.
-        sessionResult = await rpc.request('session/new', { cwd: workingDir, mcpServers: [] }, SETUP_TIMEOUT_MS);
+        sessionResult = await rpc.request('session/new', { cwd: workingDir, mcpServers }, SETUP_TIMEOUT_MS);
       }
     } else {
-      sessionResult = await rpc.request('session/new', { cwd: workingDir, mcpServers: [] }, SETUP_TIMEOUT_MS);
+      sessionResult = await rpc.request('session/new', { cwd: workingDir, mcpServers }, SETUP_TIMEOUT_MS);
     }
   } catch (error) {
     // A setup call that timed out means the process is stuck, not merely slow.
@@ -378,6 +474,7 @@ async function createAcpSession(workingDir, resumeSessionId, permissionEnv, runt
     providerSessionId: sessionResult.sessionId,
     availableModes,
     permissionEnvKey: JSON.stringify(permissionEnv ?? {}),
+    mcpKey: JSON.stringify(mcpServers ?? []),
     currentModel: null,
     currentEffort: null,
     currentMode: null,
@@ -514,7 +611,13 @@ async function spawnAcpProvider(runtime, command, options = {}, ws) {
   } = options;
 
   const workingDir = cwd || projectPath || process.cwd();
-  const policy = runtime.resolvePermissionPolicy(permissionMode);
+  const policy = { ...runtime.resolvePermissionPolicy(permissionMode) };
+  // Plan is the provider's read-only agent. Unattended explorers still asked
+  // on every bash call (`bash: ask`); auto-approve those asks so inspect
+  // commands run, while the plan agent itself still refuses writes.
+  if (unattended && permissionMode === 'plan') {
+    policy.autoApprove = true;
+  }
   const resolvedModel = await providerModelsService.resolveResumeModel(runtime.provider, sessionId, model);
 
   let effortModels = null;
@@ -528,18 +631,27 @@ async function spawnAcpProvider(runtime, command, options = {}, ws) {
   const processKey = sessionId ? sessionMapKey(runtime.provider, sessionId) : `${runtime.provider}:new:${Date.now()}`;
   let handle = acpSessions.get(processKey);
   let capturedSessionId = sessionId;
+  const extraEnv = leadSessionEnv(options.appSessionId);
+  const resolvedMcp = await resolveOpenCodeAcpMcpServers(runtime, options);
+  const acpMcpServers = toOpenCodeAcpMcpServers(resolvedMcp, extraEnv);
+  const mcpKey = JSON.stringify(acpMcpServers);
 
   // OPENCODE_PERMISSION is read once at process start, so a permission-mode
   // change cannot be applied to a live child — retire it and resume the same
   // opencode session under the new env instead of silently using the old one.
-  if (handle && handle.permissionEnvKey !== JSON.stringify(policy.env ?? {})) {
+  // MCP attachments are similarly fixed at session/new, so a different set
+  // also needs a fresh child.
+  if (
+    handle
+    && (handle.permissionEnvKey !== JSON.stringify(policy.env ?? {}) || handle.mcpKey !== mcpKey)
+  ) {
     acpSessions.delete(processKey);
     disposeSession(handle);
     handle = null;
   }
 
   if (!handle || handle.child.exitCode !== null || handle.child.killed) {
-    handle = await createAcpSession(workingDir, sessionId, policy.env, runtime);
+    handle = await createAcpSession(workingDir, sessionId, policy.env, runtime, extraEnv, acpMcpServers);
     acpSessions.set(processKey, handle);
 
     if (!capturedSessionId) {
@@ -780,7 +892,7 @@ async function spawnAcpProvider(runtime, command, options = {}, ws) {
         acpSessions.delete(key);
       }
       disposeSession(handle);
-      const fresh = await createAcpSession(workingDir, resumeId, policy.env, runtime);
+      const fresh = await createAcpSession(workingDir, resumeId, policy.env, runtime, extraEnv, acpMcpServers);
       acpSessions.set(key, fresh);
       fresh.child.on('exit', () => {
         if (acpSessions.get(key) === fresh) {
@@ -999,6 +1111,7 @@ function disposeClineSessions() {
 }
 
 export {
+  toOpenCodeAcpMcpServers,
   spawnOpenCode,
   spawnKilo,
   spawnCline,

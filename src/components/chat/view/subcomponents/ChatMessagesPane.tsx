@@ -82,7 +82,6 @@ function ChatMessagesPane({
   onWheel,
   onTouchMove,
   isLoadingSessionMessages,
-  isProcessing = false,
   hasActivityIndicator = false,
   chatMessages,
   selectedSession,
@@ -185,7 +184,7 @@ function ChatMessagesPane({
       }`}
     >
       <div className="mx-auto w-full max-w-[54.25rem] space-y-3 px-4 sm:space-y-4">
-      {(isLoadingSessionMessages || isProcessing) && chatMessages.length === 0 ? (
+      {isLoadingSessionMessages && chatMessages.length === 0 ? (
         <div className="mt-8 text-center text-gray-500 dark:text-gray-400">
           <div className="flex items-center justify-center space-x-2">
             <div className="h-4 w-4 animate-spin rounded-full border-b-2 border-gray-400" />

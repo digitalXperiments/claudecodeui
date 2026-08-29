@@ -3,6 +3,7 @@ import type { TFunction } from 'i18next';
 
 import { Button, Input, ScrollArea, Tooltip } from '../../../../shared/view/ui';
 import { cn } from '../../../../lib/utils';
+import { useScrollPointerLock } from '../../../../hooks/useScrollPointerLock';
 import type { SidebarSearchMode } from '../../types/types';
 
 type SidebarProjectsPanelProps = {
@@ -86,6 +87,7 @@ export default function SidebarProjectsPanel({
   children,
   t,
 }: SidebarProjectsPanelProps) {
+  const { isScrolling, onScroll } = useScrollPointerLock();
   const showSearch =
     (projectsCount > 0 || runningSessionsCount > 0 || archivedSessionsCount > 0 || isArchivedSessionsLoading) &&
     !isLoading;
@@ -220,8 +222,13 @@ export default function SidebarProjectsPanel({
         </div>
       )}
 
-      <ScrollArea className="flex-1 overflow-y-auto overscroll-contain px-1.5 py-1">
-        {children}
+      <ScrollArea
+        className="flex-1 overflow-y-auto overscroll-contain px-1.5 py-1"
+        onScroll={onScroll}
+      >
+        <div className={cn(isScrolling && 'pointer-events-none')}>
+          {children}
+        </div>
       </ScrollArea>
     </div>
   );

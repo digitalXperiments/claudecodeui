@@ -21,6 +21,7 @@ type SessionRepositoryRow = {
   custom_name?: string | null;
   updated_at?: string | null;
   created_at?: string | null;
+  is_internal?: number | boolean | null;
 };
 
 export type ProjectListItem = {
@@ -129,7 +130,11 @@ function mapSessionRowToSummary(row: SessionRepositoryRow): SessionSummary {
 }
 
 function readProjectSessionsIncludingArchived(projectPath: string): ProjectSessionsPageResult {
-  const rows = sessionsDb.getSessionsByProjectPathIncludingArchived(projectPath) as SessionRepositoryRow[];
+  // The repository call intentionally returns every row (permanent deletion
+  // needs them all), so the internal delegate rows are filtered here — the
+  // archived view is a user-facing list like the session picker.
+  const rows = (sessionsDb.getSessionsByProjectPathIncludingArchived(projectPath) as SessionRepositoryRow[])
+    .filter((row) => !row.is_internal);
 
   return {
     sessions: rows.map(mapSessionRowToSummary),

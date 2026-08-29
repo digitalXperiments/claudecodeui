@@ -23,7 +23,8 @@ const EXIT_ANIMATION_MS = 220;
 const ENTER_ANIMATION_MS = 320;
 
 const activityFieldsEqual = (a: SessionActivity, b: SessionActivity): boolean =>
-  a.statusText === b.statusText
+  a.source === b.source
+  && a.statusText === b.statusText
   && a.canInterrupt === b.canInterrupt
   && a.startedAt === b.startedAt;
 

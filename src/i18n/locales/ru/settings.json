@@ -87,6 +87,9 @@
   "mainTabs": {
     "label": "Настройки",
     "agents": "Агенты",
+    "agentProfiles": "Профили агентов",
+    "modelProfiles": "Профили моделей",
+    "agentRelay": "Agent Relay",
     "globalSkills": "Глобальные навыки",
     "appearance": "Внешний вид",
     "git": "Git",

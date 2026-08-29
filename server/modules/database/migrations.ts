@@ -655,6 +655,8 @@ const ensureMissionControlKanbanBridgeSchema = (db: Database): void => {
   let columns = getTableInfo(db, 'mc_sections').map((column) => column.name);
   addColumnToTableIfNotExists(db, 'mc_sections', columns, 'create_kanban_task', 'INTEGER DEFAULT 0');
   columns = getTableInfo(db, 'mc_sections').map((column) => column.name);
+  addColumnToTableIfNotExists(db, 'mc_sections', columns, 'create_swarm_on_approve', 'INTEGER DEFAULT 0');
+  columns = getTableInfo(db, 'mc_sections').map((column) => column.name);
   addColumnToTableIfNotExists(db, 'mc_sections', columns, 'kanban_assignee_provider', 'TEXT');
   columns = getTableInfo(db, 'mc_sections').map((column) => column.name);
   addColumnToTableIfNotExists(db, 'mc_sections', columns, 'kanban_review_provider', 'TEXT');
@@ -751,6 +753,54 @@ const ensureAutomationGraphSchema = (db: Database): void => {
   }
 };
 
+/** Additive Relay execution metadata introduced after the initial table ship. */
+const ensureAgentRelaySchema = (db: Database): void => {
+  if (!tableExists(db, 'agent_relay_jobs')) return;
+  const columnNames = getTableInfo(db, 'agent_relay_jobs').map((column) => column.name);
+  addColumnToTableIfNotExists(db, 'agent_relay_jobs', columnNames, 'effort', 'TEXT');
+  addColumnToTableIfNotExists(db, 'agent_relay_jobs', columnNames, 'approval_policy', "TEXT NOT NULL DEFAULT 'auto'");
+
+  // Orchestration metadata: labels for compact fleet views, per-task output
+  // schemas, in-batch dependencies, and automatic retry budgets.
+  addColumnToTableIfNotExists(db, 'agent_relay_jobs', columnNames, 'label', 'TEXT');
+  addColumnToTableIfNotExists(db, 'agent_relay_jobs', columnNames, 'output_schema_json', 'TEXT');
+  addColumnToTableIfNotExists(db, 'agent_relay_jobs', columnNames, 'depends_on_json', "TEXT NOT NULL DEFAULT '[]'");
+  addColumnToTableIfNotExists(db, 'agent_relay_jobs', columnNames, 'retries', 'INTEGER NOT NULL DEFAULT 0');
+  addColumnToTableIfNotExists(db, 'agent_relay_jobs', columnNames, 'retry_count', 'INTEGER NOT NULL DEFAULT 0');
+  addColumnToTableIfNotExists(db, 'agent_relay_jobs', columnNames, 'schema_retry_count', 'INTEGER NOT NULL DEFAULT 0');
+
+  // Relays are scoped to the lead session that dispatched them, so the panel
+  // and the MCP surface can stop showing every session's workers everywhere.
+  db.exec(
+    'CREATE INDEX IF NOT EXISTS idx_agent_relay_jobs_source_session ON agent_relay_jobs(source_session_id, created_at DESC)'
+  );
+
+  // Out-of-envelope worker permission requests become durable rows so the lead
+  // (or the operator) can answer them instead of the worker hanging until its
+  // unattended timeout expires.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS agent_relay_approvals (
+        approval_id     TEXT PRIMARY KEY NOT NULL,
+        relay_id        TEXT NOT NULL,
+        request_id      TEXT NOT NULL,
+        tool_name       TEXT,
+        command         TEXT,
+        paths_json      TEXT NOT NULL DEFAULT '[]',
+        cwd             TEXT,
+        reason          TEXT NOT NULL,
+        status          TEXT NOT NULL DEFAULT 'pending',
+        decision_reason TEXT,
+        decided_by      TEXT,
+        created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+        decided_at      DATETIME,
+        FOREIGN KEY (relay_id) REFERENCES agent_relay_jobs(relay_id) ON DELETE CASCADE
+    )
+  `);
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_relay_approvals_request ON agent_relay_approvals(request_id)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_agent_relay_approvals_relay ON agent_relay_approvals(relay_id, created_at)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_agent_relay_approvals_status ON agent_relay_approvals(status, created_at)');
+};
+
 export const runMigrations = (db: Database) => {
   try {
     const usersTableInfo = db.prepare('PRAGMA table_info(users)').all() as { name: string }[];
@@ -843,6 +893,7 @@ export const runMigrations = (db: Database) => {
 
     // Run spine: agent_workspaces, agent_runs, agent_run_events, secrets (P0–P4).
     db.exec(RUN_SPINE_SCHEMA_SQL);
+    ensureAgentRelaySchema(db);
     db.exec(CONTEXT_PACKS_TABLE_SCHEMA_SQL);
     db.exec(AUTOMATION_TABLE_SCHEMA_SQL);
     db.exec(FAILOVER_PLAYBOOKS_TABLE_SCHEMA_SQL);
@@ -962,6 +1013,19 @@ function ensureSwarmAgentSchema(db: Database): void {
       FOREIGN KEY (swarm_id) REFERENCES swarm_runs(swarm_id) ON DELETE CASCADE
     );
     CREATE INDEX IF NOT EXISTS idx_swarm_artifacts_swarm ON swarm_artifacts(swarm_id, created_at);
+    CREATE TABLE IF NOT EXISTS swarm_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      swarm_id TEXT NOT NULL,
+      seq INTEGER NOT NULL,
+      kind TEXT NOT NULL,
+      step_id TEXT,
+      level TEXT NOT NULL DEFAULT 'info',
+      data TEXT NOT NULL DEFAULT '{}',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(swarm_id, seq),
+      FOREIGN KEY (swarm_id) REFERENCES swarm_runs(swarm_id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_swarm_events_swarm_seq ON swarm_events(swarm_id, seq);
   `);
 
   if (!tableExists(db, 'swarm_members')) return;

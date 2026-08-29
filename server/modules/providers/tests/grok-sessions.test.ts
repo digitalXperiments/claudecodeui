@@ -4,11 +4,14 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+
 import {
   ensureExitPlanModeToolInput,
   extractPlanMarkdownFromToolInput,
   GrokSessionsProvider,
   readPlanMarkdownFromDir,
+  resolveGrokHistoryPath,
 } from '@/modules/providers/list/grok/grok-sessions.provider.js';
 
 // Grok runs over the Agent Client Protocol (`grok agent stdio`), which streams
@@ -184,4 +187,59 @@ test('non-content ACP updates (plan, turn_completed, commands) are dropped', () 
 test('legacy streaming-json text/thought shapes still normalize (back-compat)', () => {
   assert.equal(provider.normalizeMessage({ type: 'text', data: 'hi' }, 'sid')[0].kind, 'stream_delta');
   assert.equal(provider.normalizeMessage({ type: 'thought', data: 'hm' }, 'sid')[0].kind, 'thinking');
+});
+
+test('resolveGrokHistoryPath prefers the indexed summary sibling over a reconstructed cwd', async () => {
+  const tempDirectory = await mkdtemp(path.join(os.tmpdir(), 'grok-history-path-'));
+  try {
+    const summaryPath = path.join(tempDirectory, 'summary.json');
+    const historyPath = path.join(tempDirectory, 'chat_history.jsonl');
+    await writeFile(summaryPath, '{}');
+    await writeFile(historyPath, '');
+
+    assert.equal(
+      resolveGrokHistoryPath('/wrong/project', 'missing-id', summaryPath),
+      historyPath,
+    );
+  } finally {
+    await rm(tempDirectory, { recursive: true, force: true });
+  }
+});
+
+test('fetchHistory reads assistant turns stored as type=message', async () => {
+  const previousGrokHome = process.env.GROK_HOME;
+  const tempDirectory = await mkdtemp(path.join(os.tmpdir(), 'grok-history-message-'));
+  const projectPath = path.join(tempDirectory, 'project');
+  const sessionId = 'grok-message-turn';
+  process.env.GROK_HOME = tempDirectory;
+  try {
+    const sessionDir = path.join(tempDirectory, 'sessions', encodeURIComponent(projectPath), sessionId);
+    await mkdir(sessionDir, { recursive: true });
+    await writeFile(
+      path.join(sessionDir, 'chat_history.jsonl'),
+      `${JSON.stringify({
+        type: 'user',
+        content: [{ type: 'text', text: '<user_query>Hello</user_query>' }],
+      })}\n${JSON.stringify({
+        type: 'message',
+        content: [{ type: 'text', text: 'From the TUI' }],
+      })}\n`,
+    );
+
+    const result = await provider.fetchHistory(sessionId, {
+      projectPath,
+      providerSessionId: sessionId,
+    });
+    assert.equal(result.total, 2);
+    assert.equal(result.messages[0]?.role, 'user');
+    assert.equal(result.messages[1]?.role, 'assistant');
+    assert.equal(result.messages[1]?.content, 'From the TUI');
+  } finally {
+    if (previousGrokHome === undefined) {
+      delete process.env.GROK_HOME;
+    } else {
+      process.env.GROK_HOME = previousGrokHome;
+    }
+    await rm(tempDirectory, { recursive: true, force: true });
+  }
 });

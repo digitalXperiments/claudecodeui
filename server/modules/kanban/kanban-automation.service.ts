@@ -81,6 +81,30 @@ function notifyTaskOutcome(
   }
 }
 
+/** Best-effort bridge from board lifecycle changes into user automations. */
+function fireTaskAutomation(
+  task: { task_id: string; project_id?: string | null; title?: string | null } | null,
+  outcome: 'done' | 'failed' | 'aborted',
+): void {
+  if (!task) return;
+  void import('@/modules/automation/index.js')
+    .then(({ automationService }) => {
+      automationService.fireDetached({
+        type: 'kanban_event',
+        event: `task.${outcome}`,
+        projectId: task.project_id ?? null,
+        payload: {
+          taskId: task.task_id,
+          title: task.title ?? null,
+          status: outcome,
+        },
+      });
+    })
+    .catch(() => {
+      // Optional integration; board completion must never fail because of it.
+    });
+}
+
 /**
  * Optional hook invoked when a task is fully complete (Done column). Phase 5's
  * automation engine registers this to enqueue dependents.
@@ -298,6 +322,7 @@ export function handleRunCompletion(event: RunCompletionEvent): void {
     : success
       ? 'done'
       : 'failed';
+  fireTaskAutomation(task, outcome);
   notifyTaskOutcome(event.provider, event.appSessionId, task?.title ?? 'Task', outcome);
 }
 
@@ -321,6 +346,7 @@ export function handleManualColumnMove(taskId: string, previousColumnId: string)
   if (task.column_id === COLUMN_DONE) {
     if (task.status !== 'done') {
       kanbanDb.setTaskStatus(taskId, 'done');
+      fireTaskAutomation(task, 'done');
     }
     onTaskDone?.(taskId);
     return;

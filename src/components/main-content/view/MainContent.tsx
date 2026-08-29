@@ -79,8 +79,11 @@ function MainContent({
 
   const shouldShowTasksTab = Boolean(tasksEnabled && isTaskMasterInstalled);
   const shouldShowBrowserTab = browserUseEnabled;
+  const selectedSessionActivity = selectedSession?.id
+    ? processingSessions.get(selectedSession.id)
+    : undefined;
   const selectedSessionIsProcessing = Boolean(
-    selectedSession?.id && processingSessions.has(selectedSession.id),
+    selectedSessionActivity && selectedSessionActivity.source !== 'shell',
   );
 
   useEffect(() => {
@@ -234,6 +237,7 @@ function MainContent({
         onNewSession={onNewSession}
         onLoadMoreSessions={onLoadMoreSessions}
         isLoadingMoreSessions={isLoadingMoreSessions}
+        processingSessions={processingSessions}
       />
 
       <div className="flex min-h-0 flex-1 overflow-hidden">

@@ -1,5 +1,6 @@
 import express, { type Request, type Response } from 'express';
 
+
 import { providerAuthService } from '@/modules/providers/services/provider-auth.service.js';
 import { providerCapabilitiesService } from '@/modules/providers/services/provider-capabilities.service.js';
 import { providerMcpService } from '@/modules/providers/services/mcp.service.js';
@@ -13,6 +14,7 @@ import {
 } from '@/modules/providers/services/session-handoff.service.js';
 import { getDisabledProviderIds } from '@/modules/providers/services/session-synchronizer.service.js';
 import { sessionsService } from '@/modules/providers/services/sessions.service.js';
+import { projectsDb, sessionsDb } from '@/modules/database/index.js';
 import type {
   LLMProvider,
   McpScope,
@@ -668,7 +670,19 @@ router.post(
   asyncHandler(async (req: Request, res: Response) => {
     const body = (req.body ?? {}) as Record<string, unknown>;
     const provider = parseProvider(body.provider);
-    const projectPath = typeof body.projectPath === 'string' ? body.projectPath : '';
+    const projectId = typeof body.projectId === 'string' ? body.projectId.trim() : '';
+    const resolvedProjectPath = projectId
+      ? projectsDb.getProjectPathById(projectId)
+        : typeof body.projectPath === 'string'
+          ? body.projectPath
+          : '';
+    if (projectId && !resolvedProjectPath) {
+      throw new AppError(`Project "${projectId}" was not found.`, {
+        code: 'PROJECT_NOT_FOUND',
+        statusCode: 404,
+      });
+    }
+    const projectPath = resolvedProjectPath || '';
     const result = sessionsService.createAppSession(provider, projectPath);
     res.status(201).json(createApiSuccessResponse(result));
   }),
@@ -687,6 +701,29 @@ router.get(
   asyncHandler(async (_req: Request, res: Response) => {
     const sessions = sessionsService.listArchivedSessions();
     res.json(createApiSuccessResponse({ sessions }));
+  }),
+);
+
+router.get(
+  '/sessions/:sessionId/meta',
+  asyncHandler(async (req: Request, res: Response) => {
+    const sessionId = parseSessionId(req.params.sessionId);
+    const row = sessionsDb.getSessionById(sessionId);
+    if (!row) {
+      throw new AppError(`Session "${sessionId}" was not found.`, {
+        code: 'SESSION_NOT_FOUND',
+        statusCode: 404,
+      });
+    }
+    res.json(createApiSuccessResponse({
+      session: {
+        id: row.session_id,
+        provider: row.provider,
+        isInternal: Boolean(row.is_internal),
+        projectPath: row.project_path,
+        name: row.custom_name || '',
+      },
+    }));
   }),
 );
 

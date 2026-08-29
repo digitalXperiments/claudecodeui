@@ -5,6 +5,7 @@ import { Button, ScrollArea, Tooltip } from '../../../../shared/view/ui';
 import { cn } from '../../../../lib/utils';
 import type { Project, ProjectSession, LLMProvider } from '../../../../types/app';
 import type { SessionActivityMap } from '../../../../hooks/useSessionProtection';
+import { useScrollPointerLock } from '../../../../hooks/useScrollPointerLock';
 import type { SessionWithProvider } from '../../types/types';
 
 import SidebarProjectSessions from './SidebarProjectSessions';
@@ -66,6 +67,8 @@ export default function SidebarSessionsPanel({
   onToggleCollapse,
   t,
 }: SidebarSessionsPanelProps) {
+  const { isScrolling, onScroll } = useScrollPointerLock();
+
   if (!project) {
     return null;
   }
@@ -141,8 +144,12 @@ export default function SidebarSessionsPanel({
         </Button>
       </div>
 
-      <ScrollArea className={cn('flex-1 overflow-y-auto overscroll-contain px-2 py-1', !initialSessionsLoaded && 'px-3')}>
-        <SidebarProjectSessions
+      <ScrollArea
+        className={cn('flex-1 overflow-y-auto overscroll-contain px-2 py-1', !initialSessionsLoaded && 'px-3')}
+        onScroll={onScroll}
+      >
+        <div className={cn(isScrolling && 'pointer-events-none')}>
+          <SidebarProjectSessions
           project={project}
           isExpanded
           sessions={sessions}
@@ -167,7 +174,8 @@ export default function SidebarSessionsPanel({
           showNewSessionButton={false}
           indent={false}
           t={t}
-        />
+          />
+        </div>
       </ScrollArea>
     </div>
   );

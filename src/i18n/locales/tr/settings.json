@@ -87,6 +87,9 @@
   "mainTabs": {
     "label": "Ayarlar",
     "agents": "Ajanlar",
+    "agentProfiles": "Ajan profilleri",
+    "modelProfiles": "Model profilleri",
+    "agentRelay": "Agent Relay",
     "globalSkills": "Küresel Yetenekler",
     "appearance": "Görünüm",
     "git": "Git",

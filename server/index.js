@@ -21,7 +21,8 @@ import {
     configureSkillTestRuntimes,
     configureMemoryCurationRuntimes,
 } from '@/modules/providers/index.js';
-import { createWebSocketServer } from '@/modules/websocket/index.js';
+import { createWebSocketServer, shellSessionRegistry } from '@/modules/websocket/index.js';
+
 import {
     interruptsRoutes,
     interruptsService,
@@ -56,6 +57,7 @@ import {
     abortPiSession,
     getPiSessionStats,
 } from './pi-cli.js';
+
 import {
     queryCodex,
     abortCodexSession,
@@ -153,6 +155,12 @@ import {
     stopAuthHealthWatchdog,
 } from './modules/auth-health/index.js';
 import { providerUsageRoutes } from './modules/provider-usage/index.js';
+import {
+    agentRelayRoutes,
+    agentRelayMcpRoutes,
+    agentRelayService,
+    configureAgentRelayRuntimes,
+} from './modules/agent-relay/index.js';
 import webhooksRoutes from './modules/webhooks/webhooks.routes.js';
 import webhooksIngestRoutes from './modules/webhooks/webhooks-ingest.routes.js';
 import {
@@ -221,6 +229,21 @@ const providerSpawnFns = {
     pi: spawnPi,
 };
 
+const providerAbortFns = {
+    claude: abortClaudeSDKSession,
+    cursor: abortCursorSession,
+    codex: abortCodexSession,
+    opencode: abortOpenCodeSession,
+    kilo: abortKiloSession,
+    cline: abortClineSession,
+    qwencode: abortQwenCodeSession,
+    grok: abortGrokSession,
+    kimi: abortKimiSession,
+    pi: abortPiSession,
+};
+
+configureAgentRelayRuntimes(providerSpawnFns, providerAbortFns);
+
 // Kanban runner reuses the same runtimes; automation reconciles task/run status
 // from run completions, the queue caps concurrent automated runs, and the
 // scheduler fires cron-based tasks.
@@ -240,18 +263,7 @@ configureEvalRuntimes(providerSpawnFns);
 
 // Review swarm: multi-role headless agent runs on the same runtime map.
 configureSwarmRuntimes(providerSpawnFns);
-configureSwarmAbortFns({
-    claude: abortClaudeSDKSession,
-    cursor: abortCursorSession,
-    codex: abortCodexSession,
-    opencode: abortOpenCodeSession,
-    kilo: abortKiloSession,
-    cline: abortClineSession,
-    qwencode: abortQwenCodeSession,
-    grok: abortGrokSession,
-    kimi: abortKimiSession,
-    pi: abortPiSession,
-});
+configureSwarmAbortFns(providerAbortFns);
 
 // Webhooks: source-routed headless agent runs (dictation, external tools, …).
 configureWebhookRuntimes(providerSpawnFns);
@@ -323,11 +335,17 @@ const wss = createWebSocketServer(server, {
         },
         resolveToolApproval,
         getPendingApprovalsForSession,
+        isShellSessionActive: (appSessionId) => shellSessionRegistry.isActive(appSessionId),
+        cancelRelayJobsForSession: async (appSessionId) => {
+            const relayJobs = agentRelayService.activeForSession(appSessionId)
+                .filter((job) => job.source_session_id === appSessionId);
+            await Promise.all(relayJobs.map((job) => agentRelayService.cancel(job.relay_id)));
+        },
     },
     shell: {
         resolveProviderSessionId: (sessionId, provider) => {
             const dbSession = sessionsDb.getSessionById(sessionId);
-            if (dbSession) {
+            if (dbSession && dbSession.provider === provider) {
                 return dbSession.provider_session_id ?? null;
             }
 
@@ -365,6 +383,7 @@ const wss = createWebSocketServer(server, {
 app.locals.wss = wss;
 
 app.use(cors({ exposedHeaders: ['X-Refreshed-Token'] }));
+
 app.use(express.json({
     limit: '50mb',
     type: (req) => {
@@ -392,6 +411,11 @@ app.get('/health', (req, res) => {
     });
 });
 
+// Agent Relay is authenticated by its own generated local bearer token. Mount
+// it before the installation-wide optional API key middleware as well as JWT;
+// provider-native MCP clients only receive the dedicated Relay credential.
+app.use('/api/agent-relay-mcp', agentRelayMcpRoutes);
+
 // Optional API key validation (if configured)
 app.use('/api', validateApiKey);
 
@@ -418,6 +442,7 @@ app.use('/api', authenticateToken, shipRoutes);
 app.use('/api', authenticateToken, contextPacksRoutes);
 app.use('/api', authenticateToken, automationRoutes);
 app.use('/api', authenticateToken, swarmRoutes);
+app.use('/api/agent-relay', authenticateToken, agentRelayRoutes);
 app.use('/api/studio', authenticateToken, studioRoutes);
 app.use('/api', authenticateToken, failoverRoutes);
 app.use('/api', authenticateToken, stackRoutes);
@@ -1905,6 +1930,19 @@ async function startServer() {
     try {
         // Initialize authentication database
         await initializeDatabase();
+
+        const interruptedRelayJobs = agentRelayService.recoverOnBoot();
+        if (interruptedRelayJobs > 0) {
+            console.log(`[Agent Relay] marked ${interruptedRelayJobs} interrupted job(s) as failed on boot`);
+        }
+        try {
+            // Runs the enable-time fan-out when Relay is on, and tears down
+            // stale managed MCP/skill artifacts when it was disabled before
+            // this restart. No-op for installs that never enabled Relay.
+            await agentRelayService.syncIntegrationsOnBoot();
+        } catch (error) {
+            console.error('[Agent Relay] MCP/skill synchronization failed:', error.message);
+        }
 
         try {
             const reconciledRuns = runService.reconcileOrphans();

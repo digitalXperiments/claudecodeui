@@ -29,6 +29,7 @@ export type McSection = {
   resolve_tools: string[];
   actions: McAction[];
   create_kanban_task: boolean;
+  create_swarm_on_approve: boolean;
   kanban_assignee_provider: string | null;
   kanban_review_provider: string | null;
   kanban_mcp_tools: string[];
@@ -78,18 +79,38 @@ export type McSectionInput = {
   resolve_tools?: string[];
   actions?: McAction[];
   create_kanban_task?: boolean;
+  create_swarm_on_approve?: boolean;
   kanban_assignee_provider?: string | null;
   kanban_review_provider?: string | null;
   kanban_mcp_tools?: string[];
 };
 
+export type McSectionWorkshopDraft = {
+  title: string;
+  scope: 'global' | 'project';
+  mode: 'review' | 'fire_and_forget';
+  scheduleCron: string | null;
+  producePrompt: string;
+  resolvePrompt: string;
+  createKanbanTask: boolean;
+  recommendedMcpServers: string[];
+};
+
+export type McSectionWorkshopMessage = {
+  role: 'user' | 'assistant';
+  content: string;
+};
+
 async function parseJson<T>(res: Response): Promise<T> {
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    const message =
-      (data as { error?: string; message?: string }).error ||
-      (data as { message?: string }).message ||
-      `Request failed (${res.status})`;
+    const payload = data as {
+      error?: string | { message?: string };
+      message?: string;
+    };
+    const message = typeof payload.error === 'string'
+      ? payload.error
+      : payload.error?.message || payload.message || `Request failed (${res.status})`;
     throw new Error(message);
   }
   return data as T;
@@ -105,6 +126,26 @@ export const missionControlApi = {
     const res = await authenticatedFetch('/api/mission-control/sections');
     const data = await parseJson<{ sections: McSection[] }>(res);
     return data.sections ?? [];
+  },
+
+  async draftSection(input: {
+    provider: string;
+    model?: string | null;
+    projectId?: string | null;
+    projectName?: string | null;
+    messages: McSectionWorkshopMessage[];
+    currentDraft: Partial<McSectionWorkshopDraft>;
+    availableMcpServers: string[];
+  }): Promise<{
+    reply: string;
+    draft: McSectionWorkshopDraft | null;
+    ready: boolean;
+  }> {
+    const res = await authenticatedFetch('/api/mission-control/draft-section', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+    return parseJson(res);
   },
 
   async createSection(input: McSectionInput): Promise<McSection> {

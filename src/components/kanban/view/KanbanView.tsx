@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   DndContext,
   DragOverlay,
@@ -9,7 +9,21 @@ import {
   type DragEndEvent,
   type DragStartEvent,
 } from '@dnd-kit/core';
-import { AlertTriangle, Archive, Check, Loader2, Plus, RefreshCw, SquareKanban, Table2, Trash2, X } from 'lucide-react';
+import {
+  Activity,
+  AlertTriangle,
+  Archive,
+  Ban,
+  Check,
+  Clock3,
+  Loader2,
+  Plus,
+  RefreshCw,
+  SquareKanban,
+  Table2,
+  Trash2,
+  X,
+} from 'lucide-react';
 
 import { Button } from '../../../shared/view/ui';
 import type { Project } from '../../../types/app';
@@ -76,6 +90,13 @@ export default function KanbanView({ selectedProject, isVisible, projects: proje
     ? boardTasks.find((t) => t.task_id === editingTaskId) ?? null
     : null;
   const anyActive = boardTasks.some((t) => t.status === 'running' || t.status === 'queued');
+  const activeCount = boardTasks.filter((task) => task.status === 'running' || task.status === 'queued').length;
+  const blockedCount = boardTasks.filter((task) => task.status === 'blocked').length;
+  const overdueCount = boardTasks.filter((task) => {
+    if (!task.due_date || task.status === 'done' || task.status === 'failed') return false;
+    const dueAt = new Date(task.due_date).getTime();
+    return !Number.isNaN(dueAt) && dueAt < Date.now();
+  }).length;
   const selectedTasks = boardTasks.filter((task) => selectedTaskIds.has(task.task_id));
 
   const sensors = useSensors(
@@ -241,23 +262,37 @@ export default function KanbanView({ selectedProject, isVisible, projects: proje
   };
 
   return (
-    <div className="flex h-full min-h-0 w-full flex-col">
-      <div className="flex flex-shrink-0 flex-wrap items-center justify-between gap-2 border-b border-border px-3 py-2 pr-14 pt-[max(0.5rem,env(safe-area-inset-top))] md:px-4 md:pr-12 md:pt-2">
-        <div className="flex min-w-0 flex-wrap items-center gap-2">
-          <div className="flex items-center gap-2 text-sm font-semibold">
-            <SquareKanban className="h-4 w-4 shrink-0" />
-            <span className="truncate">Global board</span>
+    <div className="flex h-full min-h-0 w-full flex-col bg-gradient-to-b from-background via-background to-muted/20">
+      <div className="relative flex flex-shrink-0 flex-wrap items-center justify-between gap-3 overflow-hidden border-b border-border/50 bg-background/85 px-3 py-3 pr-14 pt-[max(0.75rem,env(safe-area-inset-top))] backdrop-blur-xl md:px-6 md:py-5 md:pr-14">
+        <div className="pointer-events-none absolute -left-24 -top-32 h-64 w-64 rounded-full bg-sky-500/10 blur-3xl" />
+        <div className="pointer-events-none absolute right-24 top-0 h-40 w-40 rounded-full bg-violet-500/10 blur-3xl" />
+        <div className="relative flex min-w-0 items-center gap-3">
+          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-sky-500 to-violet-600 text-white shadow-lg shadow-sky-500/20">
+            <SquareKanban className="h-5 w-5" />
+          </span>
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 className="truncate text-lg font-semibold tracking-tight text-foreground">Execution Board</h2>
+              <span className="hidden rounded-full border border-sky-500/20 bg-sky-500/10 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.14em] text-sky-700 dark:text-sky-300 sm:inline-flex">Global workflow</span>
+            </div>
+            <p className="hidden text-xs leading-relaxed text-muted-foreground sm:block">Plan work across projects, route it to agents, and watch every handoff land.</p>
+            <div className="mt-2 hidden flex-wrap gap-2 lg:flex">
+              <BoardStat icon={<Activity className="h-3 w-3 text-sky-500" />} label={`${activeCount} active`} />
+              <BoardStat icon={<Ban className="h-3 w-3 text-amber-500" />} label={`${blockedCount} blocked`} />
+              <BoardStat icon={<Clock3 className="h-3 w-3 text-red-500" />} label={`${overdueCount} overdue`} />
+              <BoardStat icon={<Check className="h-3 w-3 text-emerald-500" />} label={`${boardTasks.length} total`} />
+            </div>
           </div>
         </div>
 
-        <div className="flex shrink-0 items-center gap-1.5 md:gap-2">
-          <Button variant="ghost" size="sm" className="h-10 gap-1 md:h-8" onClick={() => void loadArchived()}>
+        <div className="relative flex shrink-0 items-center gap-1.5 md:gap-2">
+          <Button variant="ghost" size="sm" className="hidden h-10 gap-1 rounded-xl sm:inline-flex md:h-9" onClick={() => void loadArchived()}>
             <Archive className="h-4 w-4" /> <span className="hidden sm:inline">Archived</span>
           </Button>
           <Button
             variant={view === 'matrix' ? 'secondary' : 'ghost'}
             size="icon"
-            className="h-10 w-10 touch-manipulation md:h-8 md:w-8"
+            className="h-10 w-10 touch-manipulation rounded-xl md:h-9 md:w-9"
             onClick={() => setView((prev) => (prev === 'board' ? 'matrix' : 'board'))}
             aria-label="Toggle permission matrix"
           >
@@ -266,14 +301,14 @@ export default function KanbanView({ selectedProject, isVisible, projects: proje
           <Button
             variant="ghost"
             size="icon"
-            className="h-10 w-10 touch-manipulation md:h-8 md:w-8"
+            className="h-10 w-10 touch-manipulation rounded-xl md:h-9 md:w-9"
             onClick={() => void board.reload()}
           >
             <RefreshCw className="h-4 w-4" />
           </Button>
           <Button
             size="sm"
-            className="h-10 touch-manipulation gap-1 md:h-8"
+            className="h-10 touch-manipulation gap-1 rounded-xl bg-gradient-to-r from-primary to-violet-600 px-3 shadow-md shadow-primary/20 md:h-9"
             onClick={() => openNewTask(columns[0]?.id ?? 'backlog')}
             disabled={!board.board}
           >
@@ -312,10 +347,15 @@ export default function KanbanView({ selectedProject, isVisible, projects: proje
         </div>
       ) : null}
 
-      <div className="hidden flex-shrink-0 border-b border-border bg-muted/30 px-4 py-1.5 text-[11px] text-muted-foreground md:block">
-        Cross-project board. Each task belongs to a project you pick. Link tasks with{' '}
-        <strong className="font-medium text-foreground/80">Depends on</strong> — when a dependency
-        finishes, the next task auto-runs if it has an implementation agent.
+      <div className="hidden flex-shrink-0 items-center justify-between gap-3 border-b border-border/60 bg-card/35 px-5 py-2 text-[11px] text-muted-foreground md:flex">
+        <p>
+          Link cards with <strong className="font-medium text-foreground/80">Depends on</strong> to build a self-running delivery chain.
+        </p>
+        <div className="flex items-center gap-3">
+          <span className="inline-flex items-center gap-1"><span className="h-1.5 w-1.5 rounded-full bg-sky-500" /> Agent running</span>
+          <span className="inline-flex items-center gap-1"><span className="h-1.5 w-1.5 rounded-full bg-amber-500" /> Waiting</span>
+          <span className="inline-flex items-center gap-1"><span className="h-1.5 w-1.5 rounded-full bg-emerald-500" /> Complete</span>
+        </div>
       </div>
 
       {board.error ? (
@@ -341,8 +381,8 @@ export default function KanbanView({ selectedProject, isVisible, projects: proje
           onDragStart={handleDragStart}
           onDragEnd={handleDragEnd}
         >
-          <div className="flex min-h-0 flex-1 snap-x snap-mandatory gap-3 overflow-x-auto overflow-y-hidden p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:snap-none md:p-4">
-            {columns.map((column) => (
+          <div className="flex min-h-0 flex-1 snap-x snap-mandatory gap-4 overflow-x-auto overflow-y-hidden p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:snap-none md:p-5">
+            {columns.map((column, index) => (
               <KanbanColumn
                 key={column.id}
                 column={column}
@@ -355,6 +395,7 @@ export default function KanbanView({ selectedProject, isVisible, projects: proje
                 taskById={taskById}
                 selectedTaskIds={selectedTaskIds}
                 onToggleSelect={toggleSelected}
+                accentIndex={index}
               />
             ))}
           </div>
@@ -425,5 +466,14 @@ export default function KanbanView({ selectedProject, isVisible, projects: proje
         }}
       />
     </div>
+  );
+}
+
+function BoardStat({ icon, label }: { icon: ReactNode; label: string }) {
+  return (
+    <span className="inline-flex items-center gap-1.5 rounded-full border border-border/50 bg-background/60 px-2.5 py-1 text-[10px] text-muted-foreground shadow-sm">
+      {icon}
+      {label}
+    </span>
   );
 }

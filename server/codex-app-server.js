@@ -63,6 +63,12 @@ function flattenConfigOverrides(value, prefix = '', output = []) {
     }
   }
 
+  // An empty table is an intentional override (for example, a Relay worker
+  // must clear inherited user/project MCP servers). Do not silently drop it.
+  if (Object.keys(value).length === 0 && prefix) {
+    output.push(`${prefix}={}`);
+  }
+
   return output;
 }
 
@@ -213,4 +219,3 @@ export function createCodexAppServer({ cwd, env, config = {} }) {
 
   return createJsonRpcClient(child);
 }
-

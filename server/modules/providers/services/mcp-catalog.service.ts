@@ -670,6 +670,18 @@ export const mcpCatalogService = {
   },
 
   /**
+   * Catalog server names currently bound to one provider. Used by ACP runtimes
+   * that take MCP on `session/new` instead of reading their native config file.
+   */
+  async listEnabledNames(provider: LLMProvider): Promise<string[]> {
+    const catalog = await readCatalog();
+    return Object.values(catalog.servers)
+      .filter((def) => def.bindings[provider]?.enabled === true)
+      .map((def) => def.name)
+      .sort((left, right) => left.localeCompare(right));
+  },
+
+  /**
    * Unified inventory from **real files** (+ optional CLI for account
    * connectors that never live on disk).
    *

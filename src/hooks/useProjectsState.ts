@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, type NavigateFunction } from 'react-router-dom';
 
-import { api } from '../utils/api';
+import { api, authenticatedFetch } from '../utils/api';
 import type { ServerEvent } from '../contexts/WebSocketContext';
 import type {
   AppTab,
@@ -691,14 +691,18 @@ export function useProjectsState({
         return;
       }
 
-      // The transcript of the currently viewed session changed on disk while
-      // no run is active here (e.g. edited from another client or the CLI):
-      // signal the chat view to reload its messages.
+      // Reload the viewed transcript when it changed on disk and Chatbar is
+      // not the owner (CLI/Shell edits, or an idle session). Chatbar runs
+      // already stream into the pane; treating Shell as a chat run used to
+      // hide those sessions from Running and skip the refresh we need.
       const currentSelectedSession = selectedSessionRef.current;
+      const viewedActivity = currentSelectedSession
+        ? activeSessionsRef.current.get(upsert.sessionId)
+        : undefined;
       if (
         currentSelectedSession
         && upsert.sessionId === currentSelectedSession.id
-        && !activeSessionsRef.current.has(upsert.sessionId)
+        && viewedActivity?.source !== 'chat'
       ) {
         setExternalMessageUpdate((prev) => prev + 1);
       } else {
@@ -834,6 +838,15 @@ export function useProjectsState({
     // `currentSessionId` and the UI stops reading the session store even
     // though messages stream under this id — so synthesize a placeholder.
     if (selectedSession?.id === sessionId) {
+      const live = activeSessions.get(sessionId);
+      if (live?.isInternal && !selectedSession.isInternal) {
+        setSelectedSession({
+          ...selectedSession,
+          isInternal: true,
+          __provider: (live.provider as LLMProvider | undefined) ?? selectedSession.__provider,
+          summary: live.title || selectedSession.summary,
+        });
+      }
       return;
     }
 
@@ -845,13 +858,47 @@ export function useProjectsState({
       return;
     }
 
+    const live = activeSessions.get(sessionId);
     setSelectedSession({
       id: sessionId,
-      __provider: readSelectedProvider(),
-      __projectId: selectedProject.projectId,
-      summary: '',
+      __provider: (live?.provider as LLMProvider | undefined) ?? readSelectedProvider(),
+      __projectId: live?.projectId ?? selectedProject.projectId,
+      summary: live?.title ?? '',
+      isInternal: live?.isInternal === true,
     });
-  }, [sessionId, projects, selectedProject, selectedSession?.id, selectedSession?.__provider]);
+  }, [sessionId, projects, selectedProject, selectedSession?.id, selectedSession?.__provider, selectedSession?.isInternal, activeSessions]);
+
+  useEffect(() => {
+    if (!sessionId) return;
+    const listed = projects.some((project) => project.sessions?.some((session) => session.id === sessionId));
+    if (listed) return;
+    let cancelled = false;
+    void authenticatedFetch(`/api/providers/sessions/${encodeURIComponent(sessionId)}/meta`)
+      .then((response) => (response.ok ? response.json() : null))
+      .then((payload) => {
+        if (cancelled) return;
+        const meta = payload?.data?.session as {
+          id?: string;
+          provider?: LLMProvider;
+          isInternal?: boolean;
+          name?: string;
+        } | undefined;
+        if (!meta?.id) return;
+        setSelectedSession((current) => {
+          if (current?.id !== sessionId) return current;
+          return {
+            ...current,
+            __provider: meta.provider || current.__provider,
+            summary: meta.name || current.summary,
+            isInternal: Boolean(meta.isInternal),
+          };
+        });
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId, projects]);
 
   const handleProjectSelect = useCallback(
     (project: Project) => {

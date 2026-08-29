@@ -15,7 +15,8 @@ export type RunEventSource =
   | 'system'
   | 'ship'
   | 'automation'
-  | 'swarm';
+  | 'swarm'
+  | 'agent_relay';
 
 export type RunEventSeverity = 'debug' | 'info' | 'warn' | 'error';
 
@@ -77,6 +78,8 @@ export type CloudErrorCode =
   | 'AUTOMATION_CYCLE'
   | 'AUTOMATION_TIMEOUT'
   | 'SWARM_NOT_AWAITING_PLAN_APPROVAL'
+  | 'SWARM_NOT_FOUND'
+  | 'SWARM_FORK_INVALID'
   | 'SWARM_STILL_RUNNING'
   | 'SWARM_STEP_NOT_FOUND'
   | 'SWARM_SPEND_CAP';
@@ -156,4 +159,7 @@ export type SystemWsEvent =
       status: string;
       version: number;
       updated_at: string;
-    };
+    }
+  | { kind: 'agent_relay_updated'; job: unknown }
+  | { kind: 'agent_relay_approval_updated'; approval: unknown }
+  | { kind: 'running_sessions_changed' };

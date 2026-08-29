@@ -8,7 +8,10 @@ import { setDisabledProviders } from '@/modules/auth-health/index.js';
 import { closeConnection, initializeDatabase } from '@/modules/database/index.js';
 import { providerRegistry } from '@/modules/providers/provider.registry.js';
 import { sessionSynchronizerService } from '@/modules/providers/services/session-synchronizer.service.js';
-import { getEnabledProviderWatchPaths } from '@/modules/providers/services/sessions-watcher.service.js';
+import {
+  getEnabledProviderWatchPaths,
+  isWatcherTargetFile,
+} from '@/modules/providers/services/sessions-watcher.service.js';
 import type { IProvider } from '@/shared/interfaces.js';
 import type { LLMProvider } from '@/shared/types.js';
 
@@ -38,7 +41,7 @@ test('watch paths exclude disabled providers (and re-include them when re-armed)
   const all = getEnabledProviderWatchPaths(new Set());
   assert.deepEqual(
     all.map((entry) => entry.provider).sort(),
-    ['claude', 'cline', 'codex', 'cursor', 'kilo', 'kimi', 'opencode', 'pi', 'qwencode'],
+    ['claude', 'cline', 'codex', 'cursor', 'grok', 'kilo', 'kimi', 'opencode', 'pi', 'qwencode'],
   );
 
   // Recomputing with a disabled set is what a watcher re-arm does: the
@@ -49,6 +52,22 @@ test('watch paths exclude disabled providers (and re-include them when re-armed)
 
   const reEnabled = getEnabledProviderWatchPaths(new Set());
   assert.equal(reEnabled.some((entry) => entry.provider === 'claude'), true);
+});
+
+test('watcher accepts each provider live-session artifact shape', () => {
+  assert.equal(isWatcherTargetFile('claude', '/sessions/a.jsonl'), true);
+  assert.equal(isWatcherTargetFile('codex', '/sessions/a.jsonl'), true);
+  assert.equal(isWatcherTargetFile('cursor', '/sessions/a.jsonl'), true);
+  assert.equal(isWatcherTargetFile('opencode', '/data/opencode.db'), true);
+  assert.equal(isWatcherTargetFile('kilo', '/data/kilo.db'), true);
+  assert.equal(isWatcherTargetFile('cline', '/tasks/abc/task_metadata.json'), true);
+  assert.equal(isWatcherTargetFile('cline', '/tasks/abc/api_conversation_history.json'), true);
+  assert.equal(isWatcherTargetFile('grok', '/sessions/abc/summary.json'), true);
+  assert.equal(isWatcherTargetFile('grok', '/sessions/abc/chat_history.jsonl'), true);
+  assert.equal(isWatcherTargetFile('kimi', '/sessions/abc/state.json'), true);
+  assert.equal(isWatcherTargetFile('kimi', '/sessions/abc/agents/main/wire.jsonl'), true);
+  assert.equal(isWatcherTargetFile('qwencode', '/projects/abc/transcript.jsonl'), true);
+  assert.equal(isWatcherTargetFile('pi', '/sessions/a.jsonl'), true);
 });
 
 test('synchronizeSessions skips providers disabled in Settings → Agents', async () => {

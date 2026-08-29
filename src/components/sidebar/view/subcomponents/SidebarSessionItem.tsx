@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { memo, useEffect, useRef } from 'react';
 import { Check, Edit2, Loader2, Trash2, X } from 'lucide-react';
 import type { TFunction } from 'i18next';
 
@@ -61,7 +61,7 @@ const formatCompactSessionAge = (dateString: string, currentTime: Date): string 
   return `${diffInDays}d`;
 };
 
-export default function SidebarSessionItem({
+function SidebarSessionItem({
   project,
   session,
   selectedSession,
@@ -148,7 +148,7 @@ export default function SidebarSessionItem({
       <div className="md:hidden">
         <div
           className={cn(
-            'p-2 mx-3 my-0.5 rounded-md bg-card border active:scale-[0.98] transition-all duration-150 relative',
+            'p-2 mx-3 my-0.5 rounded-md bg-card border active:scale-[0.98] transition-colors duration-150 relative',
             isSelected ? 'bg-primary/5 border-primary/20' : '',
             !isSelected && isProcessing
               ? 'border-border/60 bg-muted/20'
@@ -212,7 +212,7 @@ export default function SidebarSessionItem({
           href={`/session/${session.id}`}
           className={cn(
             buttonVariants({ variant: 'ghost' }),
-            'h-auto w-full justify-start rounded-md border bg-card p-2 text-left font-normal transition-all duration-150',
+            'h-auto w-full justify-start rounded-md border bg-card p-2 text-left font-normal transition-colors duration-150',
             isSelected ? 'border-primary/20 bg-primary/5' : 'border-border/30',
             !isSelected && isProcessing
               ? 'border-border/60 bg-muted/20 hover:bg-muted/25'
@@ -348,3 +348,5 @@ export default function SidebarSessionItem({
     </div>
   );
 }
+
+export default memo(SidebarSessionItem);

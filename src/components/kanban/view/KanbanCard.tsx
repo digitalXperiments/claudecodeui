@@ -15,6 +15,15 @@ const STATUS_STYLES: Record<KanbanTaskStatus, string> = {
   blocked: 'bg-muted text-muted-foreground',
 };
 
+const STATUS_RAILS: Record<KanbanTaskStatus, string> = {
+  todo: 'bg-slate-400',
+  queued: 'bg-blue-500',
+  running: 'bg-amber-500',
+  done: 'bg-emerald-500',
+  failed: 'bg-red-500',
+  blocked: 'bg-violet-500',
+};
+
 function providerLabel(provider: string | null | undefined): string | null {
   if (!provider) {
     return null;
@@ -79,12 +88,13 @@ export default function KanbanCard({
       {...listeners}
       onClick={() => onOpen(task)}
       className={cn(
-        'group relative cursor-grab touch-manipulation select-none rounded-md border border-border bg-card p-3 text-left shadow-sm transition-colors hover:border-primary/50 active:border-primary/40',
+        'group relative cursor-grab touch-manipulation select-none overflow-hidden rounded-xl border border-border/70 bg-card/95 p-3.5 pl-4 text-left shadow-sm transition-all hover:-translate-y-0.5 hover:border-primary/35 hover:shadow-md active:translate-y-0 active:border-primary/40',
         isDragging && 'opacity-50',
         task.status === 'blocked' && 'border-amber-500/40',
         selected && 'border-primary ring-1 ring-primary/40',
       )}
     >
+      <span className={cn('absolute inset-y-0 left-0 w-1', STATUS_RAILS[task.status])} />
       <div className="flex items-start justify-between gap-2">
         <div className="flex min-w-0 items-start gap-2">
           {onToggleSelect ? (
@@ -117,7 +127,13 @@ export default function KanbanCard({
       </div>
 
       {task.description ? (
-        <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{task.description}</p>
+        <p className="mt-1.5 line-clamp-3 text-xs leading-relaxed text-muted-foreground">{task.description}</p>
+      ) : null}
+
+      {task.status === 'running' || task.status === 'queued' ? (
+        <div className="mt-2.5 h-1 overflow-hidden rounded-full bg-muted">
+          <div className={cn('h-full rounded-full bg-gradient-to-r from-sky-500 to-violet-500', task.status === 'running' ? 'w-2/3 animate-pulse' : 'w-1/4')} />
+        </div>
       ) : null}
 
       {blockedByTitles.length > 0 ? (
@@ -127,7 +143,7 @@ export default function KanbanCard({
         </p>
       ) : null}
 
-      <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
+      <div className="mt-2.5 flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
         {projectName ? (
           <Badge variant="outline" className="gap-1 font-normal">
             <FolderGit2 className="h-3 w-3" />

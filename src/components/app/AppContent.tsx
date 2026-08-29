@@ -19,6 +19,12 @@ type RunningSessionApiItem = {
   startedAt?: unknown;
   statusText?: unknown;
   canInterrupt?: unknown;
+  source?: unknown;
+  title?: unknown;
+  projectId?: unknown;
+  projectDisplayName?: unknown;
+  provider?: unknown;
+  isInternal?: unknown;
 };
 
 type RunningSessionsApiPayload = {
@@ -98,7 +104,7 @@ function AppContentInner() {
 
   // Queued messages for sessions that finish while another session (or none)
   // is being viewed are sent from here; the viewed session's composer handles
-  // its own queue.
+  // its own queue. Include Shell activity so we do not dispatch into a live TUI.
   useQueuedMessageAutoSend({
     processingSessions,
     activeSessionId: selectedSession?.id ?? sessionId ?? null,
@@ -144,21 +150,33 @@ function AppContentInner() {
             return null;
           }
 
+          const source = session.source === 'shell' ? 'shell' as const : 'chat' as const;
           return {
             sessionId: session.sessionId,
             startedAt: parseStartedAt(session.startedAt),
-            statusText: typeof session.statusText === 'string' ? session.statusText : undefined,
-            canInterrupt: typeof session.canInterrupt === 'boolean' ? session.canInterrupt : undefined,
+            statusText: source === 'shell'
+              ? 'Shell'
+              : typeof session.statusText === 'string' ? session.statusText : undefined,
+            canInterrupt: source === 'shell'
+              ? false
+              : typeof session.canInterrupt === 'boolean' ? session.canInterrupt : undefined,
+            source,
+            title: typeof session.title === 'string' ? session.title : undefined,
+            projectId: typeof session.projectId === 'string' ? session.projectId : undefined,
+            projectDisplayName:
+              typeof session.projectDisplayName === 'string' ? session.projectDisplayName : undefined,
+            provider: typeof session.provider === 'string' ? session.provider : undefined,
+            isInternal: session.isInternal === true,
           };
         })
         .filter((session): session is NonNullable<typeof session> => Boolean(session));
 
       syncProcessingSessions(normalizedSessions);
 
-      if (normalizedSessions.length > 0) {
+      if (normalizedSessions.some((session) => session.source === 'chat')) {
         sendMessage({
           type: 'chat.subscribe',
-          sessions: normalizedSessions.map((session) => ({
+          sessions: normalizedSessions.filter((session) => session.source === 'chat').map((session) => ({
             sessionId: session.sessionId,
             lastSeq: runningSessionLastSeqRef.current.get(session.sessionId) ?? 0,
           })),
@@ -180,6 +198,14 @@ function AppContentInner() {
 
     return () => window.clearInterval(interval);
   }, [refreshRunningSessions]);
+
+  useEffect(() => {
+    return subscribe((event) => {
+      if (event.kind === 'running_sessions_changed') {
+        void refreshRunningSessions();
+      }
+    });
+  }, [refreshRunningSessions, subscribe]);
 
   usePaletteOpsRegister({
     openSettings,

@@ -22,7 +22,7 @@ import { parseIncomingJsonObject } from '@/shared/utils.js';
 // Re-exported so existing tests (and callers) keep importing it from here.
 export { filterImagesToUploadStore };
 
-type ChatWebSocketDependencies = {
+export type ChatWebSocketDependencies = {
   /** Provider runtimes keyed by provider id. */
   spawnFns: Record<LLMProvider, ProviderSpawnFn>;
   /**
@@ -49,6 +49,10 @@ type ChatWebSocketDependencies = {
   ) => void;
   /** Claude-only today: pending tool approvals included in `chat_subscribed`. */
   getPendingApprovalsForSession: (providerSessionId: string) => unknown[];
+  /** True while an interactive provider TUI owns the app session's PTY. */
+  isShellSessionActive?: (appSessionId: string) => boolean;
+  /** Cancels Agent Relay workers dispatched by a lead when that lead stops. */
+  cancelRelayJobsForSession?: (appSessionId: string) => void | Promise<void>;
 };
 
 const MAX_DELEGATED_REQUEST_CHARS = 8000;
@@ -142,6 +146,16 @@ async function handleChatSend(
       ws,
       'SESSION_NOT_INTERACTIVE',
       `Session "${sessionId}" belongs to an internal automation run and cannot be opened or continued in chat.`,
+      sessionId,
+    );
+    return;
+  }
+
+  if (dependencies.isShellSessionActive?.(sessionId)) {
+    sendProtocolError(
+      ws,
+      'SHELL_SESSION_ACTIVE',
+      `Session "${sessionId}" is active in Shell. Finish or close the Shell session before sending from Chat.`,
       sessionId,
     );
     return;
@@ -363,7 +377,7 @@ async function handleChatSend(
  * terminal `complete` on its behalf (runtimes skip their own complete for
  * aborted runs, and the registry drops any duplicate).
  */
-async function handleChatAbort(
+export async function handleChatAbort(
   ws: WebSocket,
   data: AnyRecord,
   dependencies: ChatWebSocketDependencies
@@ -391,6 +405,18 @@ async function handleChatAbort(
     return;
   }
 
+  // Start cancelling this lead's Relay workers before waiting for the lead
+  // provider. Provider abort acknowledgements can be slow, while queued Relay
+  // jobs should be made terminal immediately and running workers should stop
+  // alongside the lead.
+  const relayCancellation = dependencies.cancelRelayJobsForSession
+    ? Promise.resolve()
+      .then(() => dependencies.cancelRelayJobsForSession?.(sessionId))
+      .catch((error) => {
+        console.error('[Chat] Failed to cancel Agent Relay workers for stopped lead:', error);
+      })
+    : Promise.resolve();
+
   const abortFn = dependencies.abortFns[run.provider];
   let success = false;
   if (abortFn && run.providerSessionId) {
@@ -401,6 +427,7 @@ async function handleChatAbort(
     exitCode: success ? 0 : 1,
     aborted: true,
   });
+  await relayCancellation;
 }
 
 /**
@@ -438,16 +465,18 @@ function handleChatSubscribe(
 
     const run = chatRunRegistry.getRun(sessionId);
     const isProcessing = chatRunRegistry.isProcessing(sessionId);
+    const isShellActive = dependencies.isShellSessionActive?.(sessionId) ?? false;
     const session = sessionsDb.getSessionById(sessionId);
 
-    // Internal swarm/automation streams are not an interactive chat surface.
-    // Silently omit them from subscription fan-out even if a browser learned
-    // an app-session id from stale local state or an old build.
-    if (!session || session.is_internal) {
+    // Missing sessions stay idle. Internal swarm/automation rows are still
+    // subscribed so Chat can render their transcript and Running can reflect
+    // live Chatbar/Shell activity; send/abort remain blocked elsewhere.
+    if (!session) {
       sendJson(ws, {
         kind: 'chat_subscribed',
         sessionId,
         isProcessing: false,
+        isShellActive: false,
         pendingPermissions: [],
       });
       continue;
@@ -476,6 +505,7 @@ function handleChatSubscribe(
       kind: 'chat_subscribed',
       sessionId,
       isProcessing,
+      isShellActive: !isProcessing && isShellActive,
       lastSeq: run?.lastSeq ?? 0,
       pendingPermissions,
       timestamp: new Date().toISOString(),

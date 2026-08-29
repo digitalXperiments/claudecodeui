@@ -15,6 +15,7 @@ export { projectSkillsService } from './services/project-skills.service.js';
 export { globalSkillsService } from './services/global-skills.service.js';
 export { projectMemoryService, getMemoryPreamble, configureMemoryCurationRuntimes } from './services/project-memory.service.js';
 export { providerCapabilitiesService } from './services/provider-capabilities.service.js';
+export { providerModelsService } from './services/provider-models.service.js';
 export { providerAuthService } from './services/provider-auth.service.js';
 export { providerRegistry } from './provider.registry.js';
 export {

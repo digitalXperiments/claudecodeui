@@ -152,7 +152,13 @@ export function useChatRealtimeHandlers({
           if (!sid) return;
 
           if (msg.isProcessing) {
-            onSessionProcessing?.(sid);
+            onSessionProcessing?.(sid, { source: 'chat' });
+          } else if (msg.isShellActive) {
+            onSessionProcessing?.(sid, {
+              source: 'shell',
+              statusText: 'Shell',
+              canInterrupt: false,
+            });
           } else {
             // Idle ack: ignore it if a newer request started after the
             // subscribe was sent — the ack describes the older state.

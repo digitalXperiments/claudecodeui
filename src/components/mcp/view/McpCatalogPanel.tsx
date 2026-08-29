@@ -83,6 +83,7 @@ const SOURCE_FILTERS: Array<{
 
 const sourceBadge = (item: McpInventoryItem): string => {
   if (item.kind === 'memory') return 'Memory · CloudCLI';
+  if (item.kind === 'agent-relay') return 'Agent Relay · CloudCLI';
   if (item.source === 'cloudcli') return 'CloudCLI';
   if (item.source === 'provider_cloud') return item.cloudLabel || 'Connected account';
   if (item.source === 'managed') return 'Managed feature';
@@ -195,7 +196,7 @@ function McpRow({
             </div>
           </div>
 
-          {isCloudcli && item.kind !== 'memory' && (
+          {isCloudcli && item.kind !== 'memory' && item.kind !== 'agent-relay' && (
             <div className="relative shrink-0">
               <Button
                 variant="ghost"
@@ -321,6 +322,9 @@ function McpRow({
               )}
               {item.kind === 'memory' && (
                 <p>Shared Obsidian MCP for project memory. Configure it under Settings → Memory.</p>
+              )}
+              {item.kind === 'agent-relay' && (
+                <p>Managed Agent Relay broker. Enable and bind lead agents under Settings → Agent Relay.</p>
               )}
               {item.source === 'provider_cloud' && (
                 <p>Hosted by {item.cloudLabel || 'the provider account'}. It is only available with that agent.</p>

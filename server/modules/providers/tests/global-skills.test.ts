@@ -28,7 +28,7 @@ const pathExists = async (target: string): Promise<boolean> => {
   }
 };
 
-const FAN_OUT_ROOTS = ['.claude', '.agents', '.cursor', '.grok', '.kimi-code', '.cline/data', '.qwen'] as const;
+const FAN_OUT_ROOTS = ['.claude', '.agents', '.cursor', '.grok', '.kimi-code', '.cline/data', '.qwen', '.config/opencode', '.config/kilo'] as const;
 
 /**
  * Global skills are authored once and fanned out to every agent's user-scope
@@ -52,9 +52,9 @@ test('globalSkillsService fans one skill out to every agent user folder', { conc
     const skill = created[0];
     assert.ok(skill);
     assert.equal(skill.directoryName, 'shared-global');
-    assert.deepEqual([...skill.providers].sort(), ['claude', 'cline', 'codex', 'cursor', 'grok', 'kimi', 'pi', 'qwencode']);
+    assert.deepEqual([...skill.providers].sort(), ['claude', 'cline', 'codex', 'cursor', 'grok', 'kilo', 'kimi', 'opencode', 'pi', 'qwencode']);
     assert.deepEqual(skill.conflicts, []);
-    assert.deepEqual([...skill.unsupported].sort(), ['kilo', 'opencode']);
+    assert.deepEqual(skill.unsupported, []);
     assert.equal(skill.scope, 'all');
     assert.deepEqual(skill.projects, []);
 
@@ -75,7 +75,7 @@ test('globalSkillsService fans one skill out to every agent user folder', { conc
     const listed = await globalSkillsService.listGlobalSkills();
     const listedSkill = listed.find((entry) => entry.directoryName === 'shared-global');
     assert.ok(listedSkill);
-    assert.deepEqual([...listedSkill.providers].sort(), ['claude', 'cline', 'codex', 'cursor', 'grok', 'kimi', 'pi', 'qwencode']);
+    assert.deepEqual([...listedSkill.providers].sort(), ['claude', 'cline', 'codex', 'cursor', 'grok', 'kilo', 'kimi', 'opencode', 'pi', 'qwencode']);
 
     const removed = await globalSkillsService.removeGlobalSkill({ directoryName: 'shared-global' });
     assert.equal(removed.removed, true);

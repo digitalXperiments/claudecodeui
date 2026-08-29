@@ -129,6 +129,21 @@ function toolNameLooksLike(toolName: string | null, keywords: string[]): boolean
   return keywords.some((keyword) => lowered.includes(keyword));
 }
 
+const NAMED_PERMISSION_TOOLS = new Set([
+  'bash', 'shell', 'exec', 'command', 'terminal', 'run',
+  'read', 'grep', 'glob', 'write', 'edit', 'filechanges',
+  'codexpermissions', 'askuserquestion', 'exitplanmode',
+]);
+
+function toolNameLooksLikeCommandLine(toolName: string | null): boolean {
+  if (!toolName) return false;
+  const trimmed = toolName.trim();
+  if (!trimmed) return false;
+  const normalized = trimmed.toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (NAMED_PERMISSION_TOOLS.has(normalized)) return false;
+  return /\s/.test(trimmed) || trimmed.includes('/') || trimmed.includes('\\');
+}
+
 export function extractPermissionRequestDetails(message: AnyRecord): PermissionRequestDetails {
   const rawInput = message.input ?? message.toolInput ?? null;
   const inputObj =
@@ -149,6 +164,13 @@ export function extractPermissionRequestDetails(message: AnyRecord): PermissionR
   }
   if (!command && typeof rawInput === 'string' && toolNameLooksLike(toolName, EXEC_TOOL_KEYWORDS)) {
     command = rawInput;
+  }
+  // OpenCode/Grok ACP often put the shell line in `toolCall.title` and leave
+  // `command` empty. "git status" then looks like an unknown tool and every
+  // explorer bash is denied. Treat a title that is clearly a command line as
+  // the command itself.
+  if (!command && toolNameLooksLikeCommandLine(toolName)) {
+    command = toolName;
   }
 
   const paths: string[] = [];
@@ -223,7 +245,10 @@ const READ_COMMANDS = new Set([
   'cat', 'head', 'tail', 'less', 'more', 'grep', 'rg', 'ugrep', 'egrep', 'fgrep', 'ls', 'pwd',
   'wc', 'which', 'whereis', 'file', 'stat', 'du', 'df', 'tree', 'echo', 'printf', 'sort',
   'uniq', 'cut', 'diff', 'cmp', 'basename', 'dirname', 'md5sum', 'shasum', 'sha256sum',
-  'realpath', 'readlink', 'type', 'true', 'date', 'uname', 'nproc', 'jq', 'awk', 'column', 'xxd',
+  'realpath', 'readlink', 'type', 'true', 'false', 'test', 'date', 'uname', 'nproc', 'jq', 'awk', 'column', 'xxd',
+  // Formatting and pacing helpers commonly used in inspection pipelines.
+  'nl', 'sleep',
+  'fd', 'fdfind', 'bat', 'ag', 'ack',
   // Platform/repository inspection commonly emitted by Grok explorers.
   'lpstat', 'system_profiler', 'otool', 'nm', 'strings', 'sw_vers',
 ]);
@@ -522,10 +547,18 @@ function classifyGitSegment(tokens: string[], workspaceRoot: string, cwd: string
     return { category: 'read', reason: 'git remote inspection is read-only' };
   }
   if (sub === 'config') {
-    if (rest.some((token) => token === '--get' || token === '--list' || token === '-l')) {
+    if (rest.some((token) => token === '--get'
+      || token === '--get-all'
+      || token === '--get-regexp'
+      || token === '--get-urlmatch'
+      || token === '--list'
+      || token === '-l')) {
       return { category: 'read', reason: 'git config read' };
     }
-    return { category: 'workspace-write', reason: 'git config write (local repo scope)' };
+    // Even without --global/--system, a linked worktree's local config lives
+    // in shared git metadata outside the isolated checkout. Treat every config
+    // mutation as an envelope crossing instead of guessing its eventual scope.
+    return { category: 'risky', reason: 'git config mutation can write outside the isolated worktree' };
   }
   if (sub === 'stash' && rest.length > 0 && !['push', 'pop', 'apply', 'drop', 'clear', ''].includes(rest[0])) {
     return { category: 'read', reason: 'git stash inspection' };
@@ -583,7 +616,10 @@ function classifyNodePackageManager(
     return { category: 'risky', reason: `${head} exec with no inspectable command` };
   }
   if (['test', 't', 'run', 'lint', 'build', 'check', 'typecheck', 'tsc', 'format', 'fmt'].includes(sub)) {
-    return { category: 'read', reason: `${head} ${sub} is a project test/lint/build script` };
+    // package.json scripts are arbitrary shell programs. Their friendly name
+    // does not make them read-only: a build can curl, delete, or rewrite
+    // anything, so never let a read-only seat auto-approve one.
+    return { category: 'risky', reason: `${head} ${sub} runs an arbitrary project script` };
   }
   if (['ls', 'list', 'why', 'root', 'bin', 'pkg', 'view', 'outdated', 'audit'].includes(sub)) {
     return { category: 'read', reason: `${head} ${sub} is informational` };
@@ -735,14 +771,39 @@ function classifyCommandSegment(
       : { category: 'risky', reason: `"${head}" reaches the network beyond localhost` };
   } else if (READ_COMMANDS.has(head) || SAFE_EXEC_COMMANDS.has(head)) {
     const sensitive = tokens.slice(1).find((token) => isSensitivePath(token));
-    result = sensitive
-      ? { category: 'risky', reason: `"${head}" reads a sensitive path: ${sensitive}` }
-      : { category: 'read', reason: `"${head}" is read-only or a local test/build tool` };
+    if (sensitive) {
+      result = { category: 'risky', reason: `"${head}" reads a sensitive path: ${sensitive}` };
+    } else if (['node', 'tsx', 'ts-node', 'deno'].includes(head)) {
+      const versionOrHelp = tokens.slice(1).every((token) => ['-v', '--version', '-h', '--help'].includes(token));
+      result = versionOrHelp
+        ? { category: 'read', reason: `"${head}" version/help is read-only` }
+        : { category: 'risky', reason: `"${head}" can execute arbitrary code` };
+    } else if (head === 'make') {
+      result = tokens.slice(1).includes('-n') || tokens.slice(1).includes('--dry-run')
+        ? { category: 'read', reason: 'make dry-run is read-only' }
+        : { category: 'risky', reason: 'make runs arbitrary project recipes' };
+    } else if (head === 'xcodebuild') {
+      result = { category: 'risky', reason: 'xcodebuild can write build products and invoke scripts' };
+    } else if (head === 'prettier' && tokens.slice(1).some((token) => token === '--write' || token === '-w')) {
+      result = { category: 'workspace-write', reason: 'prettier --write mutates project files' };
+    } else if (head === 'eslint' && tokens.slice(1).includes('--fix')) {
+      result = { category: 'workspace-write', reason: 'eslint --fix mutates project files' };
+    } else if (head === 'tsc' && !tokens.slice(1).includes('--noEmit')) {
+      result = { category: 'workspace-write', reason: 'tsc emits project files' };
+    } else {
+      result = { category: 'read', reason: `"${head}" is a read-only local check` };
+    }
   } else if (WRITE_COMMANDS.has(head)) {
     const paths = pathLikeArgs(tokens);
+    // Bare filenames such as `tee secretfile` are intentionally not treated
+    // as path-like by the generic argument extractor. When that happens, the
+    // command still inherits its cwd: approve only if that cwd is provably
+    // inside the worker workspace.
     result = paths.length > 0
       ? classifyPathSet(paths, workspaceRoot, cwd, `"${head}"`)
-      : { category: 'workspace-write', reason: `"${head}" mutates files (no explicit target; assumed cwd)` };
+      : cwd
+        ? classifyPathSet(['.'], workspaceRoot, cwd, `"${head}" cwd`)
+        : { category: 'risky', reason: `"${head}" mutates files but supplied no cwd to scope the write` };
   } else {
     result = { category: 'risky', reason: `unrecognized command "${head}"` };
   }
@@ -797,10 +858,13 @@ export function classifyPermissionRequest(input: {
   const toolName = input.toolName ?? null;
   const cwd = input.cwd ?? null;
   const paths = (input.paths ?? []).filter(Boolean);
+  const normalizedToolName = toolName?.toLowerCase().replace(/[^a-z0-9]/g, '') ?? '';
+  const command = input.command
+    || (toolNameLooksLikeCommandLine(toolName) ? toolName : null);
 
   let categorized: CategoryResult;
-  if (input.command) {
-    categorized = classifyCommand(input.command, input.workspaceRoot, cwd);
+  if (command) {
+    categorized = classifyCommand(command, input.workspaceRoot, cwd);
   } else if (toolNameLooksLike(toolName, NETWORK_TOOL_KEYWORDS)) {
     const url = typeof input.rawInput === 'object' && input.rawInput !== null
       ? asString((input.rawInput as AnyRecord).url)
@@ -808,6 +872,17 @@ export function classifyPermissionRequest(input: {
     categorized = url && LOCALHOST_PATTERN.test(url)
       ? { category: 'read', reason: 'network tool limited to localhost' }
       : { category: 'risky', reason: `tool "${toolName}" reaches the network beyond localhost` };
+  } else if (normalizedToolName === 'codexpermissions') {
+    // Codex asks once for a session capability grant. The sandbox/envelope
+    // still applies to later execs; denying this grant blocks every explorer
+    // bash even when the sandbox is already read-only.
+    categorized = { category: 'read', reason: 'Codex session permission grant (sandbox/envelope still apply per command)' };
+  } else if (normalizedToolName === 'filechanges' && paths.length === 0 && cwd) {
+    // Codex emits a synthetic FileChanges approval after applying a patch. It
+    // carries the worktree cwd but no individual paths, so classify that cwd
+    // against the host-enforced envelope instead of escalating every patch as
+    // an unknown tool.
+    categorized = classifyPathSet(['.'], input.workspaceRoot, cwd, 'tool "FileChanges"');
   } else if (toolNameLooksLike(toolName, WRITE_TOOL_KEYWORDS)) {
     categorized = paths.length > 0
       ? classifyPathSet(paths, input.workspaceRoot, cwd, `tool "${toolName}"`)

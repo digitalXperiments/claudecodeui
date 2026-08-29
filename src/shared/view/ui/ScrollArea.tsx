@@ -5,7 +5,7 @@ import { cn } from '../../../lib/utils';
 type ScrollAreaProps = React.HTMLAttributes<HTMLDivElement>;
 
 const ScrollArea = React.forwardRef<HTMLDivElement, ScrollAreaProps>(
-  ({ className, children, ...props }, ref) => (
+  ({ className, children, onScroll, ...props }, ref) => (
     <div className={cn(className, 'relative overflow-hidden')} {...props}>
       {/* Inner container keeps border radius while allowing momentum scrolling on touch devices. */}
       <div
@@ -15,6 +15,7 @@ const ScrollArea = React.forwardRef<HTMLDivElement, ScrollAreaProps>(
           WebkitOverflowScrolling: 'touch',
           touchAction: 'pan-y',
         }}
+        onScroll={onScroll}
       >
         {children}
       </div>

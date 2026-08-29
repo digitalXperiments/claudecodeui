@@ -3,13 +3,20 @@ import {
   AlertTriangle,
   ArrowDown,
   ArrowUp,
+  Bell,
+  Bot,
+  CalendarDays,
   CheckCircle2,
+  ChevronRight,
   Download,
+  ExternalLink,
+  Info,
   Play,
   Plus,
   RefreshCw,
   Save,
   ShieldAlert,
+  Sparkles,
   Trash2,
   Users,
   Wrench,
@@ -161,6 +168,8 @@ type RecipeFormState = {
   enabled: boolean;
   triggerType: 'manual' | 'cron' | 'kanban_event' | 'run_completed' | 'webhook_inbound' | 'interrupt_created';
   cron: string;
+  schedulePreset: 'weekdays' | 'daily' | 'weekly' | 'custom';
+  scheduleTime: string;
   triggerEvent: string;
   /** When false, only the first step is used as a single linear action (compat). */
   multiStep: boolean;
@@ -236,14 +245,105 @@ function defaultStepForm(partial?: Partial<WorkflowStepForm>): WorkflowStepForm 
 
 function defaultRecipeForm(): RecipeFormState {
   return {
-    name: 'Manual notification',
+    name: 'Project reminder',
     enabled: true,
     triggerType: 'manual',
     cron: '0 9 * * 1-5',
-    triggerEvent: 'task.done',
+    schedulePreset: 'weekdays',
+    scheduleTime: '09:00',
+    triggerEvent: '',
     multiStep: false,
     steps: [defaultStepForm({ name: 'Notify' })],
   };
+}
+
+type AutomationStarter = {
+  id: 'reminder' | 'ai_check' | 'send_to_app' | 'approval';
+  label: string;
+  description: string;
+  icon: typeof Bell;
+  name: string;
+  actionType: WorkflowStepForm['actionType'];
+};
+
+const AUTOMATION_STARTERS: AutomationStarter[] = [
+  {
+    id: 'reminder',
+    label: 'Remind me',
+    description: 'Show me a notification at a time I choose.',
+    icon: Bell,
+    name: 'Regular reminder',
+    actionType: 'notify',
+  },
+  {
+    id: 'ai_check',
+    label: 'Ask AI to help',
+    description: 'Have an agent review or summarize this project.',
+    icon: Bot,
+    name: 'Project check-in',
+    actionType: 'start_agent_run',
+  },
+  {
+    id: 'send_to_app',
+    label: 'Send to another app',
+    description: 'Pass an update to a service outside CloudCLI.',
+    icon: ExternalLink,
+    name: 'Send project update',
+    actionType: 'http_webhook_out',
+  },
+  {
+    id: 'approval',
+    label: 'Ask me first',
+    description: 'Pause and ask for my attention before continuing.',
+    icon: Info,
+    name: 'Needs my attention',
+    actionType: 'create_interrupt',
+  },
+];
+
+function scheduleParts(cron: string): { preset: RecipeFormState['schedulePreset']; time: string } {
+  const match = cron.trim().match(/^(\d{1,2})\s+(\d{1,2})\s+\*\s+\*\s+(\*|1|1-5)$/);
+  if (!match) return { preset: 'custom', time: '09:00' };
+  const minute = match[1].padStart(2, '0');
+  const hour = match[2].padStart(2, '0');
+  return {
+    preset: match[3] === '1' ? 'weekly' : match[3] === '1-5' ? 'weekdays' : 'daily',
+    time: `${hour}:${minute}`,
+  };
+}
+
+function scheduleCron(form: RecipeFormState): string {
+  if (form.schedulePreset === 'custom') return form.cron.trim();
+  const [hour, minute] = form.scheduleTime.split(':').map(Number);
+  const safeHour = Number.isFinite(hour) ? Math.min(23, Math.max(0, hour)) : 9;
+  const safeMinute = Number.isFinite(minute) ? Math.min(59, Math.max(0, minute)) : 0;
+  const days = form.schedulePreset === 'weekdays' ? '1-5' : form.schedulePreset === 'weekly' ? '1' : '*';
+  return `${safeMinute} ${safeHour} * * ${days}`;
+}
+
+function triggerSummary(trigger: AutomationRecipe['trigger']): string {
+  if (trigger.type === 'manual') return 'When you press “Try it now”';
+  if (trigger.type === 'cron') {
+    const parts = scheduleParts(trigger.cron ?? '');
+    const label = parts.preset === 'weekdays' ? 'Every weekday' : parts.preset === 'daily' ? 'Every day' : parts.preset === 'weekly' ? 'Every Monday' : 'On a schedule';
+    return `${label} at ${parts.time}`;
+  }
+  if (trigger.type === 'run_completed') return 'When an AI run finishes';
+  if (trigger.type === 'webhook_inbound') return 'When an outside service sends an update';
+  if (trigger.type === 'interrupt_created') return 'When CloudCLI needs your attention';
+  if (trigger.type === 'kanban_event') return 'When something changes on the task board';
+  return 'When this automation is triggered';
+}
+
+function actionSummary(action: ActionFormFields | undefined): string {
+  switch (action?.type) {
+    case 'start_agent_run': return 'Ask an AI agent to work on it';
+    case 'http_webhook_out': return 'Send the update to another app';
+    case 'create_interrupt': return 'Ask you to review it';
+    case 'noop': return 'Do nothing';
+    case 'notify':
+    default: return 'Show you a notification';
+  }
 }
 
 function stepActionPayload(step: WorkflowStepForm): ActionFormFields {
@@ -353,6 +453,11 @@ function recipeToForm(recipe: AutomationRecipe): RecipeFormState {
   form.enabled = recipe.enabled;
   form.triggerType = (recipe.trigger?.type as RecipeFormState['triggerType']) || 'manual';
   form.cron = recipe.trigger?.cron || form.cron;
+  if (recipe.trigger?.cron) {
+    const schedule = scheduleParts(recipe.trigger.cron);
+    form.schedulePreset = schedule.preset;
+    form.scheduleTime = schedule.time;
+  }
   form.triggerEvent = recipe.trigger?.event || form.triggerEvent;
 
   if (recipe.graph?.steps?.length) {
@@ -396,7 +501,7 @@ function recipeToForm(recipe: AutomationRecipe): RecipeFormState {
 
 function formToRecipePayload(form: RecipeFormState, projectId: string): JsonRecord {
   const trigger: JsonRecord = { type: form.triggerType };
-  if (form.triggerType === 'cron') trigger.cron = form.cron.trim();
+  if (form.triggerType === 'cron') trigger.cron = scheduleCron(form);
   if (form.triggerType === 'kanban_event' || form.triggerType === 'run_completed' || form.triggerType === 'interrupt_created') {
     trigger.event = form.triggerEvent.trim() || undefined;
   }
@@ -628,52 +733,52 @@ function StepActionFields({
   if (step.kind !== 'action') return null;
   return (
     <div className="space-y-2">
-      <Field label="Action">
+      <Field label="Choose what to do">
         <select
           className={fieldClass}
           value={step.actionType}
           onChange={(e) => onChange({ actionType: e.target.value as WorkflowStepForm['actionType'] })}
         >
           <option value="notify">Send a notification</option>
-          <option value="start_agent_run">Start an agent run</option>
-          <option value="http_webhook_out">Call a webhook URL</option>
-          <option value="create_interrupt">Create a “Needs you” item</option>
-          <option value="noop">Do nothing (test only)</option>
+          <option value="start_agent_run">Ask an AI agent to help</option>
+          <option value="http_webhook_out">Send an update to another app</option>
+          <option value="create_interrupt">Ask me to review something</option>
+          <option value="noop">Just test the trigger</option>
         </select>
       </Field>
       {step.actionType === 'notify' ? (
         <>
-          <Field label="Notification title">
+          <Field label="Title">
             <input className={fieldClass} value={step.notifyTitle} onChange={(e) => onChange({ notifyTitle: e.target.value })} />
           </Field>
-          <Field label="Message">
+          <Field label="What should it say?">
             <textarea className={textareaClass} value={step.notifyMessage} onChange={(e) => onChange({ notifyMessage: e.target.value })} />
           </Field>
         </>
       ) : null}
       {step.actionType === 'start_agent_run' ? (
         <>
-          <Field label="Provider">
+          <Field label="Which AI should help?">
             <select className={fieldClass} value={step.agentProvider} onChange={(e) => onChange({ agentProvider: e.target.value })}>
               {PROVIDER_OPTIONS.map((provider) => (
                 <option key={provider} value={provider}>{provider}</option>
               ))}
             </select>
           </Field>
-          <Field label="Run title">
+          <Field label="What should the AI call this?">
             <input className={fieldClass} value={step.agentTitle} onChange={(e) => onChange({ agentTitle: e.target.value })} />
           </Field>
-          <Field label="Prompt">
+          <Field label="What should the AI do?" help="Describe the task in everyday language.">
             <textarea className={textareaClass} value={step.agentPrompt} onChange={(e) => onChange({ agentPrompt: e.target.value })} />
           </Field>
         </>
       ) : null}
       {step.actionType === 'http_webhook_out' ? (
         <>
-          <Field label="URL">
+          <Field label="Where should the update go?" help="Paste the link provided by the other app.">
             <input className={fieldClass} value={step.webhookUrl} onChange={(e) => onChange({ webhookUrl: e.target.value })} placeholder="https://…" />
           </Field>
-          <Field label="Method">
+          <Field label="Connection type">
             <select className={fieldClass} value={step.webhookMethod} onChange={(e) => onChange({ webhookMethod: e.target.value })}>
               <option value="POST">POST</option>
               <option value="PUT">PUT</option>
@@ -683,7 +788,7 @@ function StepActionFields({
           </Field>
           <div className="space-y-1">
             <div className="flex items-center justify-between gap-2">
-              <span className={labelClass}>Authorization header (optional)</span>
+              <span className={labelClass}>Extra access key (optional)</span>
               <SecretRefPicker label="Use secret" onPick={(ref) => onChange({ webhookAuthHeader: `Bearer ${ref}` })} />
             </div>
             <input
@@ -824,7 +929,7 @@ function AutomationPanel({ projectId }: { projectId: string }) {
         method: 'POST',
         body: JSON.stringify({ projectId, payload: { source: 'operations-ui', firedAt: new Date().toISOString(), ready: true } }),
       });
-      setMessage(`Ran “${recipe.name}”. ${payload.results?.length ?? 0} result(s).`);
+      setMessage(`Tried “${recipe.name}”. ${payload.results?.length ?? 0} action${payload.results?.length === 1 ? '' : 's'} completed.`);
       await refresh();
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Could not run the automation.');
@@ -833,70 +938,80 @@ function AutomationPanel({ projectId }: { projectId: string }) {
     }
   };
 
+  const applyStarter = (starter: AutomationStarter) => {
+    const triggerType: RecipeFormState['triggerType'] =
+      starter.id === 'reminder'
+        ? 'cron'
+        : starter.id === 'approval'
+            ? 'run_completed'
+            : 'manual';
+    setEditingId(null);
+    setMessage(null);
+    setError(null);
+    setForm({
+      ...defaultRecipeForm(),
+      name: starter.name,
+      triggerType,
+      steps: [defaultStepForm({
+        name: starter.label,
+        actionType: starter.actionType,
+      })],
+      multiStep: false,
+    });
+  };
+
+  const addAction = () => {
+    setForm((prev) => ({
+      ...prev,
+      multiStep: true,
+      steps: [...prev.steps, defaultStepForm({ name: `Action ${prev.steps.length + 1}` })],
+    }));
+  };
+
   return (
-    <div className="grid min-h-0 flex-1 grid-cols-1 overflow-y-auto lg:grid-cols-[minmax(280px,0.8fr)_minmax(0,1.2fr)]">
+    <div className="grid min-h-0 flex-1 grid-cols-1 overflow-y-auto lg:grid-cols-[minmax(300px,0.85fr)_minmax(0,1.15fr)]">
       <div className="border-b border-border/60 p-4 lg:border-b-0 lg:border-r">
-        <div className="mb-3 flex items-center justify-between">
+        <div className="mb-4 flex items-start justify-between gap-3">
           <div>
             <h3 className="text-sm font-semibold text-foreground">Your automations</h3>
-            <p className={helpClass}>Run when you click, on a schedule, or after board/run events.</p>
+            <p className={helpClass}>Saved instructions that make this project do routine work for you.</p>
           </div>
           <Button variant="ghost" size="icon" onClick={() => void refresh()} disabled={busy} aria-label="Refresh automations">
             <RefreshCw className={busy ? 'animate-spin' : ''} />
           </Button>
         </div>
         {recipes.length === 0 ? (
-          <div className="rounded-md border border-dashed border-border p-4 text-center text-xs text-muted-foreground">
-            No automations yet. Create one on the right.
+          <div className="rounded-lg border border-dashed border-border p-5 text-center">
+            <Sparkles className="mx-auto mb-2 h-5 w-5 text-primary" />
+            <p className="text-sm font-medium text-foreground">Nothing automated yet</p>
+            <p className={`${helpClass} mt-1`}>Pick a starting point on the right. You can change it later.</p>
           </div>
         ) : (
           <div className="space-y-2">
             {recipes.map((recipe) => {
               const last = lastRuns[recipe.recipe_id];
+              const firstAction = recipe.graph?.steps.find((step) => step.kind === 'action')?.action ?? recipe.actions?.[0];
               const stepCount = recipe.graph?.steps?.length ?? recipe.actions?.length ?? 0;
+              const lastStatus = last?.status === 'succeeded' ? 'Completed' : last?.status === 'failed' ? 'Needs attention' : last?.status === 'running' ? 'Running' : last?.status;
               return (
-                <div key={recipe.recipe_id} className="rounded-md border border-border/60 p-3">
-                  <div className="flex items-start justify-between gap-2">
+                <div key={recipe.recipe_id} className="rounded-lg border border-border/60 p-3 transition-colors hover:border-primary/40">
+                  <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
                       <div className="truncate text-sm font-medium text-foreground">{recipe.name}</div>
-                      <div className="mt-1 text-[11px] text-muted-foreground">
-                        When: {recipe.trigger?.type ?? 'manual'}
-                        {recipe.trigger?.cron ? ` (${recipe.trigger.cron})` : ''}
-                        {' · '}
-                        {stepCount} step{stepCount === 1 ? '' : 's'}
-                        {recipe.graph ? ' (workflow)' : ''}
+                      <div className="mt-2 space-y-1 text-[11px] text-muted-foreground">
+                        <div className="flex items-start gap-1.5"><CalendarDays className="mt-0.5 h-3 w-3 shrink-0" /><span>{triggerSummary(recipe.trigger)}</span></div>
+                        <div className="flex items-start gap-1.5"><ChevronRight className="mt-0.5 h-3 w-3 shrink-0" /><span>{actionSummary(firstAction)}{stepCount > 1 ? `, then ${stepCount - 1} more` : ''}</span></div>
                       </div>
-                      {last?.step_states && Object.keys(last.step_states).length > 0 ? (
-                        <div className="mt-1.5 flex flex-wrap gap-1">
-                          {Object.entries(last.step_states).map(([id, state]) => (
-                            <span
-                              key={id}
-                              className={`inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] ${
-                                state.status === 'succeeded'
-                                  ? 'bg-emerald-500/15 text-emerald-400'
-                                  : state.status === 'failed'
-                                    ? 'bg-red-500/15 text-red-400'
-                                    : 'bg-muted text-muted-foreground'
-                              }`}
-                              title={state.error || state.status || id}
-                            >
-                              {state.status === 'succeeded' ? <CheckCircle2 className="h-3 w-3" /> : null}
-                              {id}
-                            </span>
-                          ))}
-                        </div>
-                      ) : last?.status ? (
-                        <div className="mt-1 text-[10px] text-muted-foreground">Last run: {last.status}</div>
-                      ) : null}
+                      {lastStatus ? <div className={`mt-2 text-[10px] ${last?.status === 'failed' ? 'text-red-400' : 'text-muted-foreground'}`}>Last try: {lastStatus}</div> : null}
                     </div>
-                    <span className={`text-[11px] ${recipe.enabled ? 'text-emerald-400' : 'text-muted-foreground'}`}>
-                      {recipe.enabled ? 'On' : 'Off'}
+                    <span className={`shrink-0 text-[11px] ${recipe.enabled ? 'text-emerald-400' : 'text-muted-foreground'}`}>
+                      {recipe.enabled ? 'Active' : 'Paused'}
                     </span>
                   </div>
-                  <div className="mt-2 flex flex-wrap gap-1.5">
-                    <Button size="sm" variant="outline" onClick={() => void run(recipe)} disabled={busy}><Play />Run now</Button>
+                  <div className="mt-3 flex flex-wrap gap-1.5">
+                    <Button size="sm" variant="outline" onClick={() => void run(recipe)} disabled={busy}><Play />Try it now</Button>
                     <Button size="sm" variant="ghost" onClick={() => { setEditingId(recipe.recipe_id); setForm(recipeToForm(recipe)); setMessage(null); setError(null); }} disabled={busy}>Edit</Button>
-                    <Button size="sm" variant="ghost" onClick={() => void remove(recipe)} disabled={busy}><Trash2 /></Button>
+                    <Button size="sm" variant="ghost" onClick={() => void remove(recipe)} disabled={busy} aria-label={`Delete ${recipe.name}`}><Trash2 /></Button>
                   </div>
                 </div>
               );
@@ -906,10 +1021,48 @@ function AutomationPanel({ projectId }: { projectId: string }) {
       </div>
 
       <div className="space-y-4 p-4">
+        <div className="rounded-xl border border-primary/20 bg-primary/5 p-4">
+          <div className="flex items-start gap-3">
+            <Sparkles className="mt-0.5 h-5 w-5 shrink-0 text-primary" />
+            <div>
+              <h3 className="text-base font-semibold text-foreground">Make this project do things for you</h3>
+              <p className="mt-1 text-xs leading-relaxed text-muted-foreground">Choose what you want to happen. We’ll take care of the technical setup.</p>
+            </div>
+          </div>
+        </div>
+
+        {!editingId ? (
+          <div className="space-y-2">
+            <div className="text-xs font-semibold text-foreground">Start with a common task</div>
+            <div className="grid gap-2 sm:grid-cols-2">
+              {AUTOMATION_STARTERS.map((starter) => {
+                const Icon = starter.icon;
+                return (
+                  <button
+                    key={starter.id}
+                    type="button"
+                    onClick={() => applyStarter(starter)}
+                    className="flex items-start gap-3 rounded-lg border border-border/70 bg-background p-3 text-left transition-colors hover:border-primary/50 hover:bg-primary/5"
+                  >
+                    <Icon className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+                    <span className="min-w-0">
+                      <span className="block text-xs font-semibold text-foreground">{starter.label}</span>
+                      <span className="mt-1 block text-[11px] leading-relaxed text-muted-foreground">{starter.description}</span>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        ) : null}
+
         <div className="flex items-start justify-between gap-3">
           <div>
-            <h3 className="text-sm font-semibold text-foreground">{editingId ? 'Edit automation' : 'New automation'}</h3>
-            <p className={helpClass}>Describe when it runs and what it should do — no JSON required.</p>
+            <div className="flex items-center gap-2">
+              <span className="flex h-5 w-5 items-center justify-center rounded-full bg-primary text-[11px] font-semibold text-primary-foreground">1</span>
+              <h3 className="text-sm font-semibold text-foreground">When should this happen?</h3>
+            </div>
+            <p className={`${helpClass} mt-1 pl-7`}>Choose the event that should start this automation.</p>
           </div>
           {editingId ? (
             <Button size="sm" variant="ghost" onClick={() => { setEditingId(null); setForm(defaultRecipeForm()); }}>
@@ -918,171 +1071,131 @@ function AutomationPanel({ projectId }: { projectId: string }) {
           ) : null}
         </div>
 
-        <Field label="Name">
-          <input className={fieldClass} value={form.name} onChange={(e) => patch('name', e.target.value)} placeholder="Morning standup ping" />
-        </Field>
-        <Toggle checked={form.enabled} onChange={(value) => patch('enabled', value)} label="Enabled" />
-
-        <div className="rounded-md border border-border/60 p-3 space-y-3">
-          <h4 className="text-xs font-semibold text-foreground">When should this run?</h4>
-          <Field label="Trigger">
+        <div className="rounded-lg border border-border/60 p-4 space-y-3">
+          <Field label="Start it…">
             <select className={fieldClass} value={form.triggerType} onChange={(e) => patch('triggerType', e.target.value as RecipeFormState['triggerType'])}>
-              <option value="manual">Manual (Run now button)</option>
-              <option value="cron">Schedule (cron)</option>
-              <option value="kanban_event">Kanban board event</option>
-              <option value="run_completed">Agent run completed</option>
-              <option value="webhook_inbound">Inbound webhook</option>
-              <option value="interrupt_created">Needs-you interrupt created</option>
+              <option value="manual">When I press “Try it now”</option>
+              <option value="cron">On a regular schedule</option>
+              <option value="kanban_event">When a task changes on the board</option>
+              <option value="run_completed">When an AI run finishes</option>
+              <option value="webhook_inbound">When another app sends an update</option>
+              <option value="interrupt_created">When CloudCLI needs my attention</option>
             </select>
           </Field>
           {form.triggerType === 'cron' ? (
-            <Field label="Cron expression" help="Example: 0 9 * * 1-5 = weekdays at 9:00">
-              <input className={fieldClass} value={form.cron} onChange={(e) => patch('cron', e.target.value)} placeholder="0 9 * * 1-5" />
-            </Field>
+            <div className="grid gap-3 sm:grid-cols-[1.3fr_0.7fr]">
+              <Field label="How often">
+                <select className={fieldClass} value={form.schedulePreset} onChange={(e) => patch('schedulePreset', e.target.value as RecipeFormState['schedulePreset'])}>
+                  <option value="weekdays">Every weekday</option>
+                  <option value="daily">Every day</option>
+                  <option value="weekly">Every Monday</option>
+                  <option value="custom">A custom schedule</option>
+                </select>
+              </Field>
+              {form.schedulePreset === 'custom' ? (
+                <Field label="Schedule code" help="For advanced users">
+                  <input className={`${fieldClass} font-mono text-xs`} value={form.cron} onChange={(e) => patch('cron', e.target.value)} placeholder="0 9 * * 1-5" />
+                </Field>
+              ) : (
+                <Field label="At what time">
+                  <input className={fieldClass} type="time" value={form.scheduleTime} onChange={(e) => patch('scheduleTime', e.target.value)} />
+                </Field>
+              )}
+            </div>
           ) : null}
-          {form.triggerType === 'kanban_event' || form.triggerType === 'run_completed' || form.triggerType === 'interrupt_created' ? (
-            <Field label="Event name" help="Optional filter, e.g. task.done or run.failed">
-              <input className={fieldClass} value={form.triggerEvent} onChange={(e) => patch('triggerEvent', e.target.value)} />
+          {form.triggerType === 'kanban_event' ? (
+            <Field label="Which change?" help="Choose the board event that should start this automation.">
+              <select className={fieldClass} value={form.triggerEvent} onChange={(e) => patch('triggerEvent', e.target.value)}>
+                <option value="">Any task change</option>
+                <option value="task.done">When a task is completed</option>
+                <option value="task.failed">When a task fails</option>
+                <option value="task.aborted">When a task is stopped</option>
+              </select>
             </Field>
           ) : null}
         </div>
 
-        <div className="rounded-md border border-border/60 p-3 space-y-3">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <h4 className="text-xs font-semibold text-foreground">Workflow steps</h4>
-            <Toggle
-              checked={form.multiStep}
-              onChange={(value) => {
-                patch('multiStep', value);
-                if (value && form.steps.length < 2) {
-                  setForm((prev) => ({
-                    ...prev,
-                    multiStep: true,
-                    steps: [...prev.steps, defaultStepForm({ name: `Step ${prev.steps.length + 1}` })],
-                  }));
-                }
-              }}
-              label="Multi-step workflow"
-            />
+        <div className="rounded-lg border border-border/60 p-4 space-y-3">
+          <div className="flex items-start gap-2">
+            <span className="flex h-5 w-5 items-center justify-center rounded-full bg-primary text-[11px] font-semibold text-primary-foreground">2</span>
+            <div>
+              <h3 className="text-sm font-semibold text-foreground">What should CloudCLI do?</h3>
+              <p className={`${helpClass} mt-1`}>Start with one action. You can add more later if you need them.</p>
+            </div>
           </div>
-          <p className={helpClass}>
-            Cards run top-to-bottom. Order with arrows; multi-step auto-wires dependencies.
-          </p>
 
           {form.steps.map((step, index) => (
-            <div key={step.localId} className="rounded-md border border-border/50 bg-muted/10 p-3 space-y-2">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-[11px] font-medium text-muted-foreground">#{index + 1}</span>
-                <input
-                  className={`${fieldClass} min-w-[8rem] flex-1`}
-                  value={step.name}
-                  onChange={(e) => patchStep(step.localId, { name: e.target.value })}
-                  placeholder="Step name"
-                />
-                <select
-                  className={fieldClass}
-                  value={step.kind}
-                  onChange={(e) => patchStep(step.localId, { kind: e.target.value as WorkflowStepForm['kind'] })}
-                >
-                  <option value="action">Do something</option>
-                  <option value="parallel">Wait for several</option>
-                  <option value="branch">If condition</option>
-                </select>
-                {form.multiStep ? (
+            <div key={step.localId} className="rounded-lg border border-border/50 bg-muted/10 p-3 space-y-3">
+              {form.multiStep ? (
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-[11px] font-semibold text-muted-foreground">Action {index + 1}</span>
+                  <input
+                    className={`${fieldClass} min-w-[10rem] flex-1`}
+                    value={step.name}
+                    onChange={(e) => patchStep(step.localId, { name: e.target.value })}
+                    placeholder="Name this action"
+                  />
+                  <select
+                    className={fieldClass}
+                    value={step.kind}
+                    onChange={(e) => patchStep(step.localId, { kind: e.target.value as WorkflowStepForm['kind'] })}
+                    aria-label="Action type"
+                  >
+                    <option value="action">Do this</option>
+                    <option value="parallel">Run several together</option>
+                    <option value="branch">Choose based on a condition</option>
+                  </select>
                   <div className="flex gap-1">
-                    <Button size="sm" variant="ghost" disabled={index === 0 || busy} onClick={() => moveStep(index, -1)} aria-label="Move up">
-                      <ArrowUp className="h-3.5 w-3.5" />
-                    </Button>
-                    <Button size="sm" variant="ghost" disabled={index === form.steps.length - 1 || busy} onClick={() => moveStep(index, 1)} aria-label="Move down">
-                      <ArrowDown className="h-3.5 w-3.5" />
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      disabled={form.steps.length <= 1 || busy}
-                      onClick={() => setForm((prev) => ({ ...prev, steps: prev.steps.filter((s) => s.localId !== step.localId) }))}
-                      aria-label="Remove step"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </Button>
+                    <Button size="sm" variant="ghost" disabled={index === 0 || busy} onClick={() => moveStep(index, -1)} aria-label="Move action up"><ArrowUp className="h-3.5 w-3.5" /></Button>
+                    <Button size="sm" variant="ghost" disabled={index === form.steps.length - 1 || busy} onClick={() => moveStep(index, 1)} aria-label="Move action down"><ArrowDown className="h-3.5 w-3.5" /></Button>
+                    <Button size="sm" variant="ghost" disabled={form.steps.length <= 1 || busy} onClick={() => setForm((prev) => ({ ...prev, steps: prev.steps.filter((s) => s.localId !== step.localId) }))} aria-label="Remove action"><Trash2 className="h-3.5 w-3.5" /></Button>
                   </div>
-                ) : null}
-              </div>
-
-              {step.kind === 'action' ? (
-                <StepActionFields step={step} onChange={(partial) => patchStep(step.localId, partial)} />
-              ) : null}
-
-              {step.kind === 'parallel' ? (
-                <div className="space-y-1">
-                  <span className={labelClass}>Run these steps together</span>
-                  <div className="flex flex-wrap gap-2">
-                    {form.steps.filter((s) => s.localId !== step.localId && s.kind === 'action').map((candidate) => {
-                      const checked = step.parallelOf.includes(candidate.localId);
-                      return (
-                        <label key={candidate.localId} className="flex items-center gap-1.5 rounded border border-border/60 px-2 py-1 text-xs">
-                          <input
-                            type="checkbox"
-                            checked={checked}
-                            onChange={() => {
-                              const next = checked
-                                ? step.parallelOf.filter((id) => id !== candidate.localId)
-                                : [...step.parallelOf, candidate.localId];
-                              patchStep(step.localId, { parallelOf: next });
-                            }}
-                          />
-                          {candidate.name}
-                        </label>
-                      );
-                    })}
-                  </div>
-                  <p className={helpClass}>If none selected, the next two action steps are used.</p>
                 </div>
               ) : null}
 
+              {step.kind === 'action' ? <StepActionFields step={step} onChange={(partial) => patchStep(step.localId, partial)} /> : null}
+              {step.kind === 'parallel' ? (
+                <div className="space-y-2">
+                  <p className={helpClass}>Choose the actions that should happen at the same time.</p>
+                  <div className="flex flex-wrap gap-2">
+                    {form.steps.filter((s) => s.localId !== step.localId && s.kind === 'action').map((candidate) => {
+                      const checked = step.parallelOf.includes(candidate.localId);
+                      return <label key={candidate.localId} className="flex items-center gap-1.5 rounded border border-border/60 px-2 py-1 text-xs"><input type="checkbox" checked={checked} onChange={() => patchStep(step.localId, { parallelOf: checked ? step.parallelOf.filter((id) => id !== candidate.localId) : [...step.parallelOf, candidate.localId] })} />{candidate.name}</label>;
+                    })}
+                  </div>
+                </div>
+              ) : null}
               {step.kind === 'branch' ? (
-                <div className="grid gap-2 sm:grid-cols-3">
-                  <Field label="If path">
-                    <input className={fieldClass} value={step.branchPath} onChange={(e) => patchStep(step.localId, { branchPath: e.target.value })} placeholder="payload.ready" />
-                  </Field>
-                  <Field label="Equals">
-                    <input className={fieldClass} value={step.branchEquals} onChange={(e) => patchStep(step.localId, { branchEquals: e.target.value })} placeholder="true" />
-                  </Field>
-                  <Field label="Then go to step">
-                    <select
-                      className={fieldClass}
-                      value={step.branchNextLocalId}
-                      onChange={(e) => patchStep(step.localId, { branchNextLocalId: e.target.value })}
-                    >
-                      <option value="">Next in list</option>
-                      {form.steps.filter((s) => s.localId !== step.localId).map((s) => (
-                        <option key={s.localId} value={s.localId}>{s.name}</option>
-                      ))}
-                    </select>
-                  </Field>
+                <div className="grid gap-2 rounded-md border border-amber-500/20 bg-amber-500/5 p-3 sm:grid-cols-3">
+                  <Field label="Advanced: check this value"><input className={fieldClass} value={step.branchPath} onChange={(e) => patchStep(step.localId, { branchPath: e.target.value })} placeholder="payload.ready" /></Field>
+                  <Field label="It should equal"><input className={fieldClass} value={step.branchEquals} onChange={(e) => patchStep(step.localId, { branchEquals: e.target.value })} placeholder="true" /></Field>
+                  <Field label="Then continue with"><select className={fieldClass} value={step.branchNextLocalId} onChange={(e) => patchStep(step.localId, { branchNextLocalId: e.target.value })}><option value="">The next action</option>{form.steps.filter((s) => s.localId !== step.localId).map((s) => <option key={s.localId} value={s.localId}>{s.name}</option>)}</select></Field>
                 </div>
               ) : null}
             </div>
           ))}
 
-          {form.multiStep ? (
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => setForm((prev) => ({
-                ...prev,
-                steps: [...prev.steps, defaultStepForm({ name: `Step ${prev.steps.length + 1}` })],
-              }))}
-            >
-              <Plus className="h-3.5 w-3.5" /> Add step
-            </Button>
-          ) : null}
+          {!form.multiStep ? (
+            <button type="button" onClick={addAction} className="flex items-center gap-1.5 text-xs font-medium text-primary hover:underline"><Plus className="h-3.5 w-3.5" /> Add another action</button>
+          ) : (
+            <Button size="sm" variant="outline" onClick={() => setForm((prev) => ({ ...prev, steps: [...prev.steps, defaultStepForm({ name: `Action ${prev.steps.length + 1}` })] }))}><Plus className="h-3.5 w-3.5" /> Add action</Button>
+          )}
+        </div>
+
+        <div className="rounded-lg border border-border/60 bg-muted/10 p-3">
+          <Field label="Give this automation a name" help="Use words you’ll recognize later, like “Morning project check”.">
+            <input className={fieldClass} value={form.name} onChange={(e) => patch('name', e.target.value)} placeholder="Morning project check" />
+          </Field>
+          <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+            <Toggle checked={form.enabled} onChange={(value) => patch('enabled', value)} label="Turn it on immediately" />
+            <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground"><Sparkles className="h-3.5 w-3.5" />{triggerSummary({ type: form.triggerType, cron: form.triggerType === 'cron' ? scheduleCron(form) : undefined })} → {actionSummary(stepActionPayload(form.steps[0]))}</div>
+          </div>
         </div>
 
         <Feedback message={error} error />
         <Feedback message={message} />
-        <Button onClick={() => void save()} disabled={busy}>
-          <Save />{busy ? 'Saving…' : editingId ? 'Update automation' : 'Create automation'}
+        <Button onClick={() => void save()} disabled={busy} className="w-full sm:w-auto">
+          <Save />{busy ? 'Saving…' : editingId ? 'Save changes' : 'Save automation'}
         </Button>
       </div>
     </div>

@@ -38,6 +38,15 @@ rm(staging);
 run('npx', ['tsc', '-p', 'server/tsconfig.json', '--outDir', 'dist-server.next']);
 run('npx', ['tsc-alias', '-p', 'server/tsconfig.json', '--outDir', 'dist-server.next']);
 
+// TypeScript does not emit non-code assets. Agent Relay installs this managed
+// skill at runtime, including in the source-free local-server bundle, so keep
+// its Markdown/YAML payload beside the compiled service.
+fs.cpSync(
+  path.join(root, 'server', 'modules', 'agent-relay', 'skill'),
+  path.join(staging, 'server', 'modules', 'agent-relay', 'skill'),
+  { recursive: true },
+);
+
 rm(previous);
 if (fs.existsSync(dest)) {
   fs.renameSync(dest, previous);

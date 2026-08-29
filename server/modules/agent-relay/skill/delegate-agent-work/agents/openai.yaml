@@ -1,0 +1,4 @@
+interface:
+  display_name: "Delegate Agent Work"
+  short_description: "Delegate work across provider agents"
+  default_prompt: "You are the orchestrator. Do not search, edit, test, or implement in this session. Use $delegate-agent-work: split the goal, dispatch workers with relay_*, wait, and synthesize from their results."

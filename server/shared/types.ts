@@ -80,6 +80,12 @@ export type ProviderModelOption = {
    * a running session be matched back to its catalog entry.
   */
   resolvedModel?: string;
+  /** Context budget currently advertised by the installed provider runtime. */
+  runtimeContextWindow?: number;
+  /** Largest runtime context mode advertised locally, when distinct from the active budget. */
+  runtimeMaxContextWindow?: number;
+  /** Published provider capacity; kept separate from the locally active runtime budget. */
+  officialContextWindow?: number;
   /** Whether the provider advertises Codex Fast mode for this model. */
   supportsFastMode?: boolean;
   effort?: {
@@ -295,6 +301,8 @@ export type FetchHistoryOptions = {
   limit?: number | null;
   offset?: number;
   providerSessionId?: string;
+  /** Indexed transcript/summary path; Grok uses the sibling `chat_history.jsonl`. */
+  jsonlPath?: string | null;
 };
 
 /**
@@ -678,7 +686,7 @@ export type McpCatalogDefinition = {
    * Optional managed kind. `memory` = Obsidian MCP owned by project-memory
    * (user-scope, CloudCLI catalog, shared across all memory-enabled projects).
    */
-  kind?: 'memory';
+  kind?: 'memory' | 'agent-relay';
 };
 
 export type McpCatalogUpsertInput = {
@@ -697,7 +705,7 @@ export type McpCatalogUpsertInput = {
   envHttpHeaders?: Record<string, string>;
   /** Providers to enable. Empty array = catalog-only (no fan-out). */
   providers?: LLMProvider[];
-  kind?: 'memory';
+  kind?: 'memory' | 'agent-relay';
 };
 
 export type McpCatalogBindingsUpdateInput = {
@@ -739,7 +747,7 @@ export type McpInventoryItem = {
   needsAuth?: boolean;
   /** Provider that owns a cloud/native-only row. */
   originProvider?: LLMProvider;
-  kind?: 'memory';
+  kind?: 'memory' | 'agent-relay';
   /** Human-friendly cloud origin label when source is provider_cloud. */
   cloudLabel?: string;
   /**

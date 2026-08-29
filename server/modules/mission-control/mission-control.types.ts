@@ -11,6 +11,7 @@ export const MC_PROVIDERS = [
   'kimi',
   'qwencode',
   'pi',
+
 ] as const satisfies readonly LLMProvider[];
 
 export type McProvider = (typeof MC_PROVIDERS)[number];
@@ -106,6 +107,8 @@ export type McSection = {
   actions: McAction[];
   /** On approve, also create a card on the global kanban backlog. */
   create_kanban_task: boolean;
+  /** On approve, also launch an autonomous swarm for this item. */
+  create_swarm_on_approve: boolean;
   /** Default implementation agent pre-assigned to bridged kanban cards. */
   kanban_assignee_provider: McProvider | null;
   /** Default review agent pre-assigned to bridged kanban cards. */
@@ -161,6 +164,7 @@ export type CreateMcSectionInput = {
   resolve_tools?: string[];
   actions?: McAction[];
   create_kanban_task?: boolean;
+  create_swarm_on_approve?: boolean;
   kanban_assignee_provider?: McProvider | null;
   kanban_review_provider?: McProvider | null;
   kanban_mcp_tools?: string[];

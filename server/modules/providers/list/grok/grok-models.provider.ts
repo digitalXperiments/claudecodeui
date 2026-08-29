@@ -119,15 +119,17 @@ const refreshGrokModelsCacheIfStale = async (): Promise<void> => {
   await refreshInFlight;
 };
 
-type GrokCachedModelInfo = {
+export type GrokCachedModelInfo = {
   id?: string;
   name?: string;
   description?: string;
   hidden?: boolean;
   reasoning_efforts?: Array<{ value?: string; description?: string; default?: boolean }>;
+  context_window?: number;
+  max_context_window?: number;
 };
 
-const mapGrokModel = (id: string, info: GrokCachedModelInfo): ProviderModelOption => {
+export const mapGrokModel = (id: string, info: GrokCachedModelInfo): ProviderModelOption => {
   const effortValues = Array.isArray(info.reasoning_efforts)
     ? info.reasoning_efforts
         .filter((entry): entry is { value: string; description?: string; default?: boolean } => typeof entry?.value === 'string')
@@ -140,6 +142,8 @@ const mapGrokModel = (id: string, info: GrokCachedModelInfo): ProviderModelOptio
     value: id,
     label: info.name || id,
     description: info.description,
+    runtimeContextWindow: typeof info.context_window === 'number' ? info.context_window : undefined,
+    runtimeMaxContextWindow: typeof info.max_context_window === 'number' ? info.max_context_window : undefined,
     effort: effortValues.length > 0
       ? { default: defaultEffort, values: effortValues }
       : undefined,

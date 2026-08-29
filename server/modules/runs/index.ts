@@ -14,4 +14,5 @@ export {
   resolveModelPriceRate,
 } from '@/modules/runs/model-pricing.js';
 export type { ModelPriceRate } from '@/modules/runs/model-pricing.js';
+export { downgradeModelForSoftCap, evaluateSpend, raiseSpendCapInterrupt, type SpendVerdict } from '@/modules/runs/spend-governor.service.js';
 export * from '@/modules/runs/runs.types.js';

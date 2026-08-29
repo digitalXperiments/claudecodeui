@@ -69,6 +69,13 @@ export async function deleteOrArchiveProject(projectId: string, force: boolean):
     return;
   }
 
+
+  // Stop every Relay owned by the project before cascading away the sessions
+  // and project row. Cancellation returns immediately while provider aborts
+  // are reaped in the background.
+  const { agentRelayService } = await import('@/modules/agent-relay/index.js');
+  await Promise.all(agentRelayService.activeForProject(projectId).map((job) => agentRelayService.cancel(job.relay_id)));
+
   await deleteSessionJsonlFilesForProjectPath(row.project_path);
   sessionsDb.deleteSessionsByProjectPath(row.project_path);
   projectsDb.deleteProjectById(projectId);

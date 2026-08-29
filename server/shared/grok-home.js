@@ -92,6 +92,23 @@ function applyPermissionModeToConfigToml(tomlText, configPermissionMode) {
 }
 
 /**
+ * Relay workers receive MCPs only through their task's explicit mcpServers
+ * list. Remove every inherited `[mcp_servers.*]` table (including nested env
+ * tables) from their managed overlay while retaining unrelated user config.
+ */
+function stripMcpServersFromConfigToml(tomlText) {
+  const lines = String(tomlText || '').split(/\r?\n/);
+  const kept = [];
+  let insideMcpTable = false;
+  for (const line of lines) {
+    const section = line.trim().match(/^\[+\s*([^\]]+)\s*\]+$/)?.[1]?.trim() || null;
+    if (section) insideMcpTable = section === 'mcp_servers' || section.startsWith('mcp_servers.');
+    if (!insideMcpTable) kept.push(line);
+  }
+  return `${kept.join('\n').trimEnd()}\n`;
+}
+
+/**
  * Patch the user's real ~/.grok/config.toml so interactive `grok` (and /mcps)
  * also stop importing Claude MCP files. Idempotent.
  */
@@ -307,7 +324,7 @@ function unifySessionsDir(sourceHome, managedRoot) {
  * `permission_mode = "always-approve"` would otherwise make every chatbar mode
  * behave like Bypass Permissions.
  */
-function ensureManagedGrokHome(configPermissionMode) {
+function ensureManagedGrokHome(configPermissionMode, options = {}) {
   const userGrokHome = process.env.GROK_HOME || path.join(os.homedir(), '.grok');
   // If CloudCLI is already nested under a managed home, use the original user
   // home for sources (avoid stacking overlays).
@@ -316,7 +333,8 @@ function ensureManagedGrokHome(configPermissionMode) {
     : userGrokHome;
 
   const managedRoot = path.join(os.homedir(), '.cloudcli', 'grok-runtime');
-  const managedHome = path.join(managedRoot, configPermissionMode);
+  const relayWorker = options.relayWorker === true;
+  const managedHome = path.join(managedRoot, relayWorker ? `${configPermissionMode}-relay-worker` : configPermissionMode);
 
   fs.mkdirSync(managedHome, { recursive: true });
 
@@ -361,9 +379,13 @@ function ensureManagedGrokHome(configPermissionMode) {
   }
 
   const configPath = path.join(managedHome, 'config.toml');
+  const managedConfig = applyPermissionModeToConfigToml(
+    relayWorker ? stripMcpServersFromConfigToml(userConfig) : userConfig,
+    configPermissionMode,
+  );
   fs.writeFileSync(
     configPath,
-    applyPermissionModeToConfigToml(userConfig, configPermissionMode),
+    managedConfig,
     'utf8',
   );
 
@@ -376,5 +398,6 @@ export {
   ensureManagedGrokHome,
   ensureUserGrokMcpIsolation,
   mergeDirNewestWins,
+  stripMcpServersFromConfigToml,
   unifySessionsDir,
 };

@@ -12,8 +12,9 @@ import type {
   McItem,
   McSection,
 } from '@/modules/mission-control/mission-control.types.js';
-import { isKanbanEnabled } from '@/modules/app-features/app-features.service.js';
+import { isKanbanEnabled } from '@/modules/app-features/index.js';
 import { kanbanDb, COLUMN_BACKLOG } from '@/modules/kanban/index.js';
+import { swarmService } from '@/modules/swarm/index.js';
 import { AppError } from '@/shared/utils.js';
 import { resolveProviderAuthFailure } from '@/shared/provider-auth-failure.js';
 import {
@@ -791,6 +792,60 @@ function maybeBridgeToKanban(
   }
 }
 
+/**
+ * Mission Control → Swarm bridge (PRD swarm-studio-v2). When an approved item
+ * resolves and its section opts in, launch an autonomous swarm whose goal is
+ * the item title + summary. Requires a project-scoped section; global sections
+ * have no workspace to run in and are skipped. Idempotent via
+ * `result.swarmId`; never fails the approval.
+ */
+function maybeBridgeToSwarm(
+  section: McSection,
+  action: McAction,
+  item: McItem,
+): McItem {
+  if (!section.create_swarm_on_approve || action.kind !== 'approve' || item.status !== 'resolved') {
+    return item;
+  }
+  const alreadyLaunched =
+    item.result && typeof item.result.swarmId === 'string' && item.result.swarmId;
+  if (alreadyLaunched) {
+    return item;
+  }
+  const projectId = section.scope === 'project' && section.project_id?.trim() ? section.project_id.trim() : '';
+  if (!projectId) {
+    return missionControlDb.setItemStatus(item.item_id, 'resolved', {
+      result: {
+        ...(item.result ?? {}),
+        swarmError: 'Section has no project scope — swarm bridge requires a project',
+      },
+    });
+  }
+  try {
+    const goal = [item.title, item.summary].filter(Boolean).join(' — ').slice(0, 2000);
+    const swarm = swarmService.start({
+      projectId,
+      goal: goal || item.title,
+      autonomous: true,
+      idempotencyKey: `mc-item:${item.item_id}`,
+    });
+    return missionControlDb.setItemStatus(item.item_id, 'resolved', {
+      result: { ...(item.result ?? {}), swarmId: swarm.swarm_id, swarmStatus: swarm.status },
+    });
+  } catch (error) {
+    console.error(
+      '[mission-control] swarm bridge failed:',
+      error instanceof Error ? error.message : error,
+    );
+    return missionControlDb.setItemStatus(item.item_id, 'resolved', {
+      result: {
+        ...(item.result ?? {}),
+        swarmError: error instanceof Error ? error.message.slice(0, 500) : String(error),
+      },
+    });
+  }
+}
+
 export async function applyItemAction(
   itemId: string,
   actionId: string,
@@ -864,7 +919,7 @@ export async function applyItemAction(
       resolvedAt: new Date().toISOString(),
       error: null,
     });
-    const bridged = maybeBridgeToKanban(section, action, resolved);
+    const bridged = maybeBridgeToSwarm(section, action, maybeBridgeToKanban(section, action, resolved));
     await resolveMissionControlInterrupts(itemId, actionId);
     return bridged;
   }
@@ -876,7 +931,7 @@ export async function applyItemAction(
       resolvedAt: new Date().toISOString(),
       error: null,
     });
-    const bridged = maybeBridgeToKanban(section, action, resolved);
+    const bridged = maybeBridgeToSwarm(section, action, maybeBridgeToKanban(section, action, resolved));
     await resolveMissionControlInterrupts(itemId, actionId);
     return bridged;
   }
@@ -943,7 +998,7 @@ export async function applyItemAction(
       resolvedAt: new Date().toISOString(),
       error: null,
     });
-    const bridged = maybeBridgeToKanban(section, action, resolved);
+    const bridged = maybeBridgeToSwarm(section, action, maybeBridgeToKanban(section, action, resolved));
     await resolveMissionControlInterrupts(itemId, actionId);
     return bridged;
   } catch (error) {

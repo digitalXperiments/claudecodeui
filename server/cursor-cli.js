@@ -7,6 +7,7 @@ import { providerAuthService } from './modules/providers/services/provider-auth.
 import { providerModelsService } from './modules/providers/services/provider-models.service.js';
 import { createCompleteMessage, createNormalizedMessage, flattenPromptForWindowsShell } from './shared/utils.js';
 import { stripAnsiSequences } from './utils/url-detection.js';
+import { leadSessionEnv } from './shared/lead-session-env.js';
 
 // cross-spawn resolves .cmd shims/PATHEXT on Windows and delegates to
 // child_process.spawn everywhere else.
@@ -151,7 +152,9 @@ async function spawnCursor(command, options = {}, ws) {
       const cursorProcess = spawnFunction('cursor-agent', args, {
         cwd: workingDir,
         stdio: ['pipe', 'pipe', 'pipe'],
-        env: { ...process.env } // Inherit all environment variables
+        // Inherit all environment variables, plus the owning chat session so
+        // CloudCLI-managed MCP children can attribute their calls.
+        env: { ...process.env, ...leadSessionEnv(options.appSessionId) }
       });
 
       activeCursorProcesses.set(processKey, cursorProcess);

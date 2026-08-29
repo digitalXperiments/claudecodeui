@@ -877,11 +877,23 @@ export function useChatComposerState({
             method: 'POST',
             body: JSON.stringify({
               provider,
+              projectId: selectedProject.projectId,
               projectPath: resolvedProjectPath,
             }),
           });
           if (!response.ok) {
-            throw new Error(`Failed to create session (${response.status})`);
+            let serverMessage = '';
+            try {
+              const errorBody = await response.json();
+              serverMessage =
+                errorBody?.error?.message
+                || (typeof errorBody?.error === 'string' ? errorBody.error : '')
+                || errorBody?.message
+                || '';
+            } catch {
+              // Non-JSON error body — fall through to the status-only message.
+            }
+            throw new Error(serverMessage || `Failed to create session (${response.status})`);
           }
           const body = await response.json();
           targetSessionId = body?.data?.sessionId || null;

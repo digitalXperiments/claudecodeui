@@ -1,10 +1,16 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import {
   AlertCircle,
+  ArrowRight,
+  Bot,
+  CalendarClock,
   Check,
+  CheckCircle2,
   Clock,
   Download,
   Eye,
+  Globe2,
+  Layers3,
   Loader2,
   Pencil,
   Play,
@@ -12,7 +18,10 @@ import {
   Radar,
   RefreshCw,
   RotateCw,
+  ShieldCheck,
+  Sparkles,
   Trash2,
+  Workflow,
   X,
 } from 'lucide-react';
 
@@ -24,10 +33,12 @@ import {
   type McItem,
   type McSection,
   type McSectionInput,
+  type McSectionWorkshopDraft,
 } from '../api/missionControlApi';
 import { isXArticleBody } from '../utils/xArticle';
 
 import ArticleDraftCard from './subcomponents/ArticleDraftCard';
+import SectionArchitect from './subcomponents/SectionArchitect';
 
 export type WorkThisSessionRequest = {
   sessionId: string;
@@ -50,6 +61,47 @@ type ModelOption = { value: string; label: string };
 
 const PROVIDERS = ['claude', 'grok', 'opencode', 'kilo', 'cline', 'codex', 'cursor', 'kimi', 'pi'] as const;
 
+const SECTION_STARTERS: Array<{
+  label: string;
+  description: string;
+  patch: Partial<McSectionInput>;
+}> = [
+  {
+    label: 'Review inbox',
+    description: 'Gather signals, draft actions, then ask for approval.',
+    patch: {
+      title: 'Review inbox',
+      mode: 'review',
+      schedule_cron: '0 9 * * 1-5',
+      produce_prompt: 'Collect the newest relevant signals, group duplicates, and draft concise action items with evidence and a stable source identifier.',
+      resolve_prompt: 'Carry out the approved action using the selected tools and return a concise result with links or identifiers.',
+    },
+  },
+  {
+    label: 'Daily briefing',
+    description: 'Produce a reviewable weekday digest at 9:00.',
+    patch: {
+      title: 'Daily briefing',
+      mode: 'review',
+      schedule_cron: '0 9 * * 1-5',
+      produce_prompt: 'Create a factual daily briefing from the selected sources. Prioritize changes, blockers, decisions, and next actions. Include stable source identifiers.',
+      resolve_prompt: '',
+    },
+  },
+  {
+    label: 'Delivery pipeline',
+    description: 'Turn approved findings into implementation work.',
+    patch: {
+      title: 'Delivery pipeline',
+      mode: 'review',
+      schedule_cron: null,
+      produce_prompt: 'Find actionable implementation opportunities, explain impact and acceptance criteria, and return one bounded draft per opportunity with a stable dedupe key.',
+      resolve_prompt: 'Validate the approved work item and prepare it for engineering handoff.',
+      create_kanban_task: true,
+    },
+  },
+];
+
 const emptyForm = (): McSectionInput => ({
   title: '',
   scope: 'global',
@@ -66,6 +118,7 @@ const emptyForm = (): McSectionInput => ({
   resolve_prompt: '',
   resolve_tools: [],
   create_kanban_task: false,
+  create_swarm_on_approve: false,
   kanban_assignee_provider: null,
   kanban_review_provider: null,
   kanban_mcp_tools: [],
@@ -86,6 +139,21 @@ function statusBadgeClass(status: McItem['status']): string {
       return 'bg-muted text-muted-foreground';
     default:
       return 'bg-muted text-muted-foreground';
+  }
+}
+
+function itemAccentClass(status: McItem['status']): string {
+  switch (status) {
+    case 'pending':
+      return 'border-l-amber-500';
+    case 'resolving':
+      return 'border-l-sky-500';
+    case 'resolved':
+      return 'border-l-emerald-500';
+    case 'failed':
+      return 'border-l-red-500';
+    default:
+      return 'border-l-muted-foreground/30';
   }
 }
 
@@ -378,6 +446,7 @@ export default function MissionControlPanel({
       resolve_prompt: section.resolve_prompt,
       resolve_tools: section.resolve_tools,
       create_kanban_task: section.create_kanban_task,
+      create_swarm_on_approve: section.create_swarm_on_approve,
       kanban_assignee_provider: section.kanban_assignee_provider,
       kanban_review_provider: section.kanban_review_provider,
       kanban_mcp_tools: section.kanban_mcp_tools ?? [],
@@ -414,9 +483,42 @@ export default function MissionControlPanel({
     }
   };
 
+  const applyStarter = (patch: Partial<McSectionInput>) => {
+    setForm((current) => ({ ...current, ...patch }));
+  };
+
+  const applyArchitectDraft = (draft: McSectionWorkshopDraft) => {
+    const recommended = draft.recommendedMcpServers.filter((name) => mcpServers.includes(name));
+    setForm((current) => ({
+      ...current,
+      title: draft.title,
+      scope: draft.scope,
+      mode: draft.mode,
+      schedule_cron: draft.scheduleCron,
+      produce_prompt: draft.producePrompt,
+      resolve_prompt: draft.resolvePrompt,
+      create_kanban_task: draft.createKanbanTask,
+    }));
+    setProduceMcp(recommended);
+    setResolveMcp(draft.mode === 'review' ? recommended : []);
+    if (draft.createKanbanTask) setKanbanMcp(recommended);
+  };
+
   const saveSection = async () => {
     if (!form.title?.trim()) {
       setError('Section title is required');
+      return;
+    }
+    if (!form.produce_prompt?.trim()) {
+      setError('Add a produce prompt so Mission Control knows what to run');
+      return;
+    }
+    if (form.scope === 'project' && !form.project_id) {
+      setError('Select a project for this project-scoped section');
+      return;
+    }
+    if (form.schedule_cron?.trim() && form.schedule_cron.trim().split(/\s+/).length !== 5) {
+      setError('Schedule must be a five-field cron expression, for example 0 9 * * 1-5');
       return;
     }
     setSaving(true);
@@ -683,6 +785,17 @@ export default function MissionControlPanel({
     selectedSectionId === 'all'
       ? null
       : sections.find((s) => s.section_id === selectedSectionId) ?? null;
+  const enabledSectionCount = sections.filter((section) => section.enabled).length;
+  const scheduledSectionCount = sections.filter((section) => Boolean(section.schedule_cron)).length;
+  const failedSectionCount = sections.filter((section) => Boolean(section.last_run_error)).length;
+  const currentProjectName = form.project_id
+    ? projectNameById.get(form.project_id) ?? null
+    : null;
+  const sectionReady = Boolean(
+    form.title?.trim()
+      && form.produce_prompt?.trim()
+      && (form.scope !== 'project' || form.project_id),
+  );
 
   return (
     <div
@@ -691,32 +804,50 @@ export default function MissionControlPanel({
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="relative flex h-dvh max-h-dvh w-full flex-col overflow-hidden border-0 bg-background shadow-none md:h-[92vh] md:max-h-[92vh] md:max-w-6xl md:rounded-xl md:border md:border-border md:shadow-2xl">
+      <div className="relative flex h-dvh max-h-dvh w-full flex-col overflow-hidden border-0 bg-background shadow-none md:h-[94vh] md:max-h-[94vh] md:max-w-[min(1600px,98vw)] md:rounded-2xl md:border md:border-border/70 md:shadow-2xl">
         {/* Header */}
-        <div className="flex flex-shrink-0 items-center justify-between gap-2 border-b border-border px-3 py-2.5 pt-[max(0.625rem,env(safe-area-inset-top))] md:px-5 md:py-3">
-          <div className="flex min-w-0 items-center gap-2.5">
-            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/10">
-              <Radar className="h-4 w-4 text-primary" />
+        <div className="relative flex flex-shrink-0 items-center justify-between gap-3 overflow-hidden border-b border-border/50 bg-background/85 px-3 py-3 pr-14 pt-[max(0.75rem,env(safe-area-inset-top))] backdrop-blur-xl md:px-6 md:py-5 md:pr-5">
+          <div className="pointer-events-none absolute -left-24 -top-32 h-64 w-64 rounded-full bg-primary/10 blur-3xl" />
+          <div className="pointer-events-none absolute right-24 top-0 h-40 w-40 rounded-full bg-violet-500/10 blur-3xl" />
+          <div className="relative flex min-w-0 items-center gap-3">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-primary to-violet-600 text-white shadow-lg shadow-primary/20">
+              <Radar className="h-5 w-5" />
             </div>
             <div className="min-w-0">
-              <h2 className="truncate text-base font-semibold text-foreground">Mission Control</h2>
-              <p className="hidden truncate text-[11px] text-muted-foreground sm:block">
-                Produce → review → resolve automations
-                {pendingCount > 0 ? ` · ${pendingCount} need attention` : ''}
+              <div className="flex flex-wrap items-center gap-2">
+                <h2 className="truncate text-lg font-semibold tracking-tight text-foreground">Mission Control</h2>
+                <span className="hidden rounded-full border border-emerald-500/20 bg-emerald-500/10 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.14em] text-emerald-700 dark:text-emerald-300 sm:inline-flex">
+                  Automation studio
+                </span>
+              </div>
+              <p className="hidden max-w-2xl truncate text-xs leading-relaxed text-muted-foreground sm:block">
+                Turn recurring signals into reviewable decisions, resolved actions, and engineering work.
               </p>
-              {pendingCount > 0 ? (
-                <p className="truncate text-[11px] text-muted-foreground sm:hidden">
-                  {pendingCount} need attention
-                </p>
-              ) : null}
+              <p className="truncate text-[11px] text-muted-foreground sm:hidden">{pendingCount} need attention</p>
+              <div className="mt-2 hidden flex-wrap gap-2 lg:flex">
+                <span className="inline-flex items-center gap-1.5 rounded-full border border-border/50 bg-background/60 px-2.5 py-1 text-[10px] text-muted-foreground shadow-sm">
+                  <Layers3 className="h-3 w-3 text-primary" /> {enabledSectionCount} active
+                </span>
+                <span className="inline-flex items-center gap-1.5 rounded-full border border-border/50 bg-background/60 px-2.5 py-1 text-[10px] text-muted-foreground shadow-sm">
+                  <CalendarClock className="h-3 w-3 text-violet-500" /> {scheduledSectionCount} scheduled
+                </span>
+                <span className="inline-flex items-center gap-1.5 rounded-full border border-border/50 bg-background/60 px-2.5 py-1 text-[10px] text-muted-foreground shadow-sm">
+                  <ShieldCheck className="h-3 w-3 text-emerald-500" /> Human review gates
+                </span>
+                {failedSectionCount > 0 ? (
+                  <span className="inline-flex items-center gap-1.5 rounded-full border border-red-500/20 bg-red-500/10 px-2.5 py-1 text-[10px] text-red-700 shadow-sm dark:text-red-300">
+                    <AlertCircle className="h-3 w-3" /> {failedSectionCount} need repair
+                  </span>
+                ) : null}
+              </div>
             </div>
           </div>
-          <div className="flex shrink-0 items-center gap-1">
+          <div className="relative flex shrink-0 items-center gap-1">
             <Button
               variant="ghost"
               size="sm"
               onClick={() => void openImport()}
-              className="h-10 touch-manipulation gap-1.5 px-2 text-xs md:h-9"
+              className="hidden h-10 touch-manipulation gap-1.5 rounded-xl px-3 text-xs sm:inline-flex md:h-9"
               title="Import from legacy Mission Control DB"
             >
               <Download className="h-3.5 w-3.5" />
@@ -727,7 +858,7 @@ export default function MissionControlPanel({
               size="sm"
               onClick={() => void refresh()}
               disabled={loading}
-              className="h-10 w-10 touch-manipulation p-0 md:h-9 md:w-9"
+              className="h-10 w-10 touch-manipulation rounded-xl p-0 md:h-9 md:w-9"
               title="Refresh"
             >
               <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
@@ -736,7 +867,7 @@ export default function MissionControlPanel({
               variant="ghost"
               size="sm"
               onClick={onClose}
-              className="h-10 w-10 touch-manipulation p-0 md:h-9 md:w-9"
+              className="h-10 w-10 touch-manipulation rounded-xl p-0 md:h-9 md:w-9"
             >
               <X className="h-5 w-5 md:h-4 md:w-4" />
             </Button>
@@ -770,7 +901,7 @@ export default function MissionControlPanel({
           </div>
         ) : null}
 
-        <div className="flex min-h-0 min-w-0 flex-1 flex-col md:flex-row">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-gradient-to-b from-background via-background to-muted/20 md:flex-row">
           {/* Mobile: horizontal section pills */}
           <div className="flex flex-shrink-0 flex-col gap-2 border-b border-border px-3 py-2 md:hidden">
             <div className="flex items-center gap-2">
@@ -849,44 +980,49 @@ export default function MissionControlPanel({
           </div>
 
           {/* Desktop: vertical sections sidebar */}
-          <aside className="hidden w-64 flex-shrink-0 flex-col border-r border-border md:flex">
-            <div className="flex items-center justify-between px-3 py-2">
+          <aside className="hidden w-72 flex-shrink-0 flex-col border-r border-border/60 bg-card/35 md:flex xl:w-80">
+            <div className="flex items-center justify-between px-4 py-3">
               <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
                 Sections
               </span>
-              <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={openCreate} title="New section">
-                <Plus className="h-3.5 w-3.5" />
+              <Button variant="ghost" size="sm" className="h-8 gap-1 rounded-lg px-2 text-[11px] text-primary" onClick={openCreate} title="New section">
+                <Plus className="h-3.5 w-3.5" /> New
               </Button>
             </div>
-            <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto px-2 pb-3">
+            <div className="min-h-0 flex-1 space-y-2 overflow-y-auto px-3 pb-4">
               <button
                 type="button"
                 onClick={() => setSelectedSectionId('all')}
-                className={`flex w-full items-center rounded-lg px-2.5 py-2 text-left text-sm transition-colors ${
+                className={`flex w-full items-center justify-between rounded-xl border px-3 py-3 text-left text-sm transition-all ${
                   selectedSectionId === 'all'
-                    ? 'bg-accent text-foreground'
-                    : 'text-muted-foreground hover:bg-accent/60 hover:text-foreground'
+                    ? 'border-primary/30 bg-primary/[0.08] text-foreground shadow-sm'
+                    : 'border-transparent text-muted-foreground hover:border-border/60 hover:bg-background/70 hover:text-foreground'
                 }`}
               >
-                All items
+                <span className="flex items-center gap-2">
+                  <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-primary/10 text-primary"><Globe2 className="h-3.5 w-3.5" /></span>
+                  <span><span className="block font-medium">All items</span><span className="block text-[10px] font-normal text-muted-foreground">Across every automation</span></span>
+                </span>
+                <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold text-amber-700 dark:text-amber-300">{pendingCount}</span>
               </button>
               {sections.map((section) => (
                 <div
                   key={section.section_id}
-                  className={`group rounded-lg ${
-                    selectedSectionId === section.section_id ? 'bg-accent' : 'hover:bg-accent/60'
+                  className={`group overflow-hidden rounded-xl border transition-all ${
+                    selectedSectionId === section.section_id
+                      ? 'border-primary/30 bg-gradient-to-br from-primary/[0.09] via-card to-violet-500/[0.05] shadow-sm'
+                      : 'border-transparent hover:border-border/60 hover:bg-background/70'
                   }`}
                 >
                   <button
                     type="button"
                     onClick={() => setSelectedSectionId(section.section_id)}
-                    className="flex w-full flex-col gap-0.5 px-2.5 py-2 text-left"
+                    className="flex w-full flex-col gap-1 px-3 py-3 text-left"
                   >
-                    <span className="truncate text-sm font-medium text-foreground">
-                      {section.title}
-                      {!section.enabled ? (
-                        <span className="ml-1 text-[10px] text-muted-foreground">(off)</span>
-                      ) : null}
+                    <span className="flex w-full items-center gap-2">
+                      <span className={`h-2 w-2 shrink-0 rounded-full ${section.last_run_error ? 'bg-red-500' : section.enabled ? 'bg-emerald-500' : 'bg-muted-foreground/40'}`} />
+                      <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">{section.title}</span>
+                      {!section.enabled ? <span className="rounded-full bg-muted px-1.5 py-0.5 text-[9px] text-muted-foreground">Off</span> : null}
                     </span>
                     <span className="truncate text-[10px] text-muted-foreground">
                       {section.scope === 'project'
@@ -906,7 +1042,7 @@ export default function MissionControlPanel({
                       </span>
                     ) : null}
                   </button>
-                  <div className="flex gap-1 px-2 pb-2 opacity-80 group-hover:opacity-100">
+                  <div className="flex gap-1 border-t border-border/30 px-2.5 py-2 opacity-80 group-hover:opacity-100">
                     <button
                       type="button"
                       className="rounded px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-background hover:text-foreground"
@@ -1016,7 +1152,7 @@ export default function MissionControlPanel({
                 return (
                   <article
                     key={item.item_id}
-                    className="rounded-xl border border-border bg-card p-3 shadow-sm sm:p-4"
+                    className={`rounded-2xl border border-l-[3px] border-border/60 bg-card/80 p-3 shadow-sm transition-shadow hover:shadow-md sm:p-4 ${itemAccentClass(item.status)}`}
                   >
                     <div className="mb-2 flex flex-wrap items-start justify-between gap-2">
                       <div className="min-w-0 flex-1">
@@ -1215,11 +1351,18 @@ export default function MissionControlPanel({
         {/* Section editor — full screen on mobile */}
         {showEditor ? (
           <div className="absolute inset-0 z-10 flex items-stretch justify-center bg-background md:items-center md:bg-background/70 md:p-6 md:backdrop-blur-sm">
-            <div className="flex h-full max-h-dvh w-full flex-col overflow-hidden border-0 bg-background shadow-none md:h-auto md:max-h-[85vh] md:max-w-2xl md:rounded-xl md:border md:border-border md:shadow-2xl">
-              <div className="flex items-center justify-between border-b border-border px-4 py-3 pt-[max(0.75rem,env(safe-area-inset-top))] md:pt-3">
-                <h3 className="text-sm font-semibold">
-                  {editingId ? 'Edit section' : 'New section'}
-                </h3>
+            <div className="flex h-full max-h-dvh w-full flex-col overflow-hidden border-0 bg-gradient-to-b from-background via-background to-muted/20 shadow-none md:h-[88vh] md:max-h-[88vh] md:max-w-6xl md:rounded-2xl md:border md:border-border/70 md:shadow-2xl">
+              <div className="relative flex items-center justify-between overflow-hidden border-b border-border/60 bg-background/85 px-4 py-3 pt-[max(0.75rem,env(safe-area-inset-top))] md:px-5 md:py-4 md:pt-4">
+                <div className="pointer-events-none absolute -left-16 -top-24 h-44 w-44 rounded-full bg-primary/10 blur-3xl" />
+                <div className="relative flex items-center gap-3">
+                  <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-primary to-violet-600 text-white shadow-md shadow-primary/20">
+                    <Workflow className="h-4 w-4" />
+                  </span>
+                  <div>
+                    <h3 className="text-sm font-semibold">{editingId ? 'Edit section' : 'Create an automation section'}</h3>
+                    <p className="text-[10px] text-muted-foreground">Describe the outcome, connect its sources, then choose the review path.</p>
+                  </div>
+                </div>
                 <Button
                   variant="ghost"
                   size="sm"
@@ -1229,7 +1372,54 @@ export default function MissionControlPanel({
                   <X className="h-4 w-4" />
                 </Button>
               </div>
-              <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
+              <div className="min-h-0 flex-1 overflow-y-auto p-4 pb-[max(1rem,env(safe-area-inset-bottom))] md:p-5">
+                <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_320px]">
+                  <div className="space-y-4">
+                    {!editingId ? (
+                      <SectionArchitect
+                        provider={form.provider || 'claude'}
+                        model={form.model ?? null}
+                        projectId={form.scope === 'project' ? form.project_id ?? null : null}
+                        projectName={currentProjectName}
+                        currentDraft={{
+                          title: form.title,
+                          scope: form.scope,
+                          mode: form.mode,
+                          scheduleCron: form.schedule_cron ?? null,
+                          producePrompt: form.produce_prompt,
+                          resolvePrompt: form.resolve_prompt,
+                          createKanbanTask: form.create_kanban_task,
+                        }}
+                        availableMcpServers={mcpServers}
+                        onApply={applyArchitectDraft}
+                      />
+                    ) : null}
+
+                    {!editingId ? (
+                      <div className="rounded-2xl border border-border/60 bg-card/70 p-4 shadow-sm">
+                        <div className="mb-3 flex items-center gap-2">
+                          <Sparkles className="h-4 w-4 text-primary" />
+                          <div><p className="text-xs font-semibold text-foreground">Quick starts</p><p className="text-[10px] text-muted-foreground">Start with a proven shape, then tune the details.</p></div>
+                        </div>
+                        <div className="grid gap-2 sm:grid-cols-3">
+                          {SECTION_STARTERS.map((starter) => (
+                            <button
+                              key={starter.label}
+                              type="button"
+                              className="rounded-xl border border-border/60 bg-background/70 p-3 text-left transition hover:border-primary/30 hover:bg-primary/[0.05]"
+                              onClick={() => applyStarter(starter.patch)}
+                            >
+                              <span className="block text-xs font-semibold text-foreground">{starter.label}</span>
+                              <span className="mt-1 block text-[10px] leading-relaxed text-muted-foreground">{starter.description}</span>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
+
+                    <section className="rounded-2xl border border-border/60 bg-card/70 p-4 shadow-sm md:p-5">
+                      <StepHeading number="01" title="Purpose and scope" description="Name the workflow and decide where it belongs." />
+                      <div className="mt-4 space-y-3">
                 <Field label="Title">
                   <input
                     className="field-input"
@@ -1290,6 +1480,12 @@ export default function MissionControlPanel({
                     </select>
                   </Field>
                 ) : null}
+                      </div>
+                    </section>
+
+                    <section className="rounded-2xl border border-border/60 bg-card/70 p-4 shadow-sm md:p-5">
+                      <StepHeading number="02" title="Produce cycle" description="Choose the agent, cadence, sources, and draft instructions." />
+                      <div className="mt-4 space-y-3">
 
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                   <Field label="Provider">
@@ -1357,9 +1553,13 @@ export default function MissionControlPanel({
                     onToggle={(name) => toggleMcp(produceMcp, setProduceMcp, name)}
                   />
                 </Field>
+                      </div>
+                    </section>
 
                 {form.mode === 'review' ? (
-                  <>
+                  <section className="rounded-2xl border border-border/60 bg-card/70 p-4 shadow-sm md:p-5">
+                    <StepHeading number="03" title="Review and handoff" description="Define what approval does and whether work should enter Kanban." />
+                    <div className="mt-4 space-y-3">
                     <Field label="Resolve prompt (on Approve)">
                       <textarea
                         className="field-input min-h-[80px] font-mono text-xs"
@@ -1379,7 +1579,7 @@ export default function MissionControlPanel({
                       />
                     </Field>
 
-                    <div className="rounded-md border border-border p-3">
+                    <div className="rounded-xl border border-border/60 bg-background/55 p-3">
                       <label className="flex items-center gap-2 text-xs font-medium">
                         <input
                           type="checkbox"
@@ -1452,10 +1652,29 @@ export default function MissionControlPanel({
                         </div>
                       ) : null}
                     </div>
-                  </>
+                    </div>
+                  </section>
                 ) : null}
 
-                <div className="flex flex-wrap gap-4 text-xs">
+                    <section className="rounded-2xl border border-border/60 bg-card/70 p-4 shadow-sm md:p-5">
+                      <StepHeading number={form.mode === 'review' ? '04' : '03'} title="Guardrails" description="Control permissions, testing, and automatic approval." />
+                      <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                        <Field label="Permission mode">
+                          <select
+                            className="field-input"
+                            value={form.permission_mode ?? 'default'}
+                            onChange={(e) => setForm((f) => ({ ...f, permission_mode: e.target.value }))}
+                          >
+                            <option value="default">Ask when needed</option>
+                            <option value="acceptEdits">Accept file edits</option>
+                            <option value="bypassPermissions">Run unattended</option>
+                          </select>
+                        </Field>
+                        <div className="rounded-xl border border-border/60 bg-background/60 p-3 text-[10px] leading-relaxed text-muted-foreground">
+                          <span className="font-semibold text-foreground">Safety note:</span> unattended mode can use selected tools without a live prompt. Start with dry run for new automations.
+                        </div>
+                      </div>
+                <div className="mt-4 flex flex-wrap gap-4 text-xs">
                   <label className="flex items-center gap-2">
                     <input
                       type="checkbox"
@@ -1482,15 +1701,73 @@ export default function MissionControlPanel({
                     />
                     Auto-approve
                   </label>
+                  <label className="flex items-center gap-2" title="Launch an autonomous swarm for the item when it is approved (project-scoped sections only)">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(form.create_swarm_on_approve)}
+                      onChange={(e) =>
+                        setForm((f) => ({ ...f, create_swarm_on_approve: e.target.checked }))
+                      }
+                    />
+                    Launch swarm on approval
+                  </label>
+                </div>
+                    </section>
+                  </div>
+
+                  <aside className="space-y-3 lg:sticky lg:top-0">
+                    <div className="overflow-hidden rounded-2xl border border-border/60 bg-card/80 shadow-xl shadow-black/[0.04]">
+                      <div className="border-b border-border/50 bg-gradient-to-br from-primary/[0.10] via-card to-violet-500/[0.08] px-4 py-4">
+                        <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
+                          <span className="flex h-8 w-8 items-center justify-center rounded-xl bg-primary/15 text-primary"><Radar className="h-4 w-4" /></span>
+                          Section brief
+                        </div>
+                        <p className="mt-1 text-[10px] text-muted-foreground">A quick preflight before this automation goes live.</p>
+                      </div>
+                      <div className="space-y-4 p-4">
+                        <div className="space-y-2">
+                          {[
+                            { ready: Boolean(form.title?.trim()), label: form.title?.trim() || 'Name the section' },
+                            { ready: Boolean(form.produce_prompt?.trim()), label: form.produce_prompt?.trim() ? 'Produce instructions ready' : 'Describe what to produce' },
+                            { ready: form.scope !== 'project' || Boolean(form.project_id), label: form.scope === 'project' ? currentProjectName || 'Select a project' : 'Global workspace' },
+                          ].map((item) => (
+                            <div key={item.label} className="flex items-center gap-2 text-[11px]">
+                              <span className={`flex h-4 w-4 items-center justify-center rounded-full ${item.ready ? 'bg-emerald-500/15 text-emerald-600' : 'bg-muted text-muted-foreground'}`}>
+                                {item.ready ? <CheckCircle2 className="h-3 w-3" /> : <span className="h-1.5 w-1.5 rounded-full bg-current" />}
+                              </span>
+                              <span className={item.ready ? 'text-foreground' : 'text-muted-foreground'}>{item.label}</span>
+                            </div>
+                          ))}
+                        </div>
+                        <div className="grid grid-cols-2 gap-2">
+                          <SummaryTile icon={<CalendarClock className="h-3.5 w-3.5 text-violet-500" />} value={form.schedule_cron?.trim() || 'Manual'} label="cadence" />
+                          <SummaryTile icon={<Bot className="h-3.5 w-3.5 text-primary" />} value={form.provider || 'claude'} label={form.model || 'provider default'} />
+                        </div>
+                        <div className="rounded-xl border border-border/50 bg-muted/20 p-3 text-[10px] leading-relaxed text-muted-foreground">
+                          <div className="flex items-center justify-between gap-2"><span>Flow</span><span className="font-semibold text-foreground">{form.mode === 'review' ? 'Produce → Review → Resolve' : 'Scheduled action'}</span></div>
+                          <div className="mt-1 flex items-center justify-between gap-2"><span>Connected tools</span><span className="font-semibold text-foreground">{new Set([...produceMcp, ...resolveMcp, ...kanbanMcp]).size}</span></div>
+                          <div className="mt-1 flex items-center justify-between gap-2"><span>Kanban handoff</span><span className="font-semibold text-foreground">{form.create_kanban_task ? 'On approval' : 'Off'}</span></div>
+                          <div className="mt-1 flex items-center justify-between gap-2"><span>Swarm handoff</span><span className="font-semibold text-foreground">{form.create_swarm_on_approve ? 'On approval' : 'Off'}</span></div>
+                        </div>
+                        <Button
+                          className="h-11 w-full rounded-xl bg-gradient-to-r from-primary to-violet-600 px-4 font-semibold shadow-lg shadow-primary/20"
+                          onClick={() => void saveSection()}
+                          disabled={saving || !sectionReady}
+                        >
+                          {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Sparkles className="mr-2 h-4 w-4" />}
+                          {saving ? 'Saving section…' : editingId ? 'Save section' : 'Create section'}
+                          {!saving ? <ArrowRight className="ml-auto h-4 w-4" /> : null}
+                        </Button>
+                        <p className="text-center text-[9px] text-muted-foreground">You can run it manually before enabling a schedule.</p>
+                      </div>
+                    </div>
+                  </aside>
                 </div>
               </div>
-              <div className="flex justify-end gap-2 border-t border-border px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:pb-3">
-                <Button variant="ghost" size="sm" className="touch-manipulation" onClick={() => setShowEditor(false)}>
-                  Cancel
-                </Button>
-                <Button size="sm" className="touch-manipulation" onClick={() => void saveSection()} disabled={saving}>
-                  {saving ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : null}
-                  {editingId ? 'Save' : 'Create'}
+              <div className="flex justify-end gap-2 border-t border-border/60 bg-background/85 px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] lg:hidden">
+                <Button variant="ghost" size="sm" className="touch-manipulation" onClick={() => setShowEditor(false)}>Cancel</Button>
+                <Button size="sm" className="touch-manipulation" onClick={() => void saveSection()} disabled={saving || !sectionReady}>
+                  {saving ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : null}{editingId ? 'Save' : 'Create'}
                 </Button>
               </div>
             </div>
@@ -1553,6 +1830,38 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
       <span className="text-xs font-medium text-muted-foreground">{label}</span>
       {children}
     </label>
+  );
+}
+
+function StepHeading({
+  number,
+  title,
+  description,
+}: {
+  number: string;
+  title: string;
+  description: string;
+}) {
+  return (
+    <div className="flex items-center gap-3">
+      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-[10px] font-bold text-primary">
+        {number}
+      </span>
+      <div>
+        <h4 className="text-sm font-semibold text-foreground">{title}</h4>
+        <p className="text-[10px] text-muted-foreground">{description}</p>
+      </div>
+    </div>
+  );
+}
+
+function SummaryTile({ icon, value, label }: { icon: ReactNode; value: string; label: string }) {
+  return (
+    <div className="min-w-0 rounded-xl border border-border/50 bg-muted/25 p-2.5">
+      {icon}
+      <div className="mt-1 truncate text-xs font-semibold text-foreground" title={value}>{value}</div>
+      <div className="truncate text-[9px] text-muted-foreground" title={label}>{label}</div>
+    </div>
   );
 }
 

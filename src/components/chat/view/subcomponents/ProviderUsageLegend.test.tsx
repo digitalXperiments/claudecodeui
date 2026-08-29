@@ -142,7 +142,7 @@ test('Kimi provider renders native quota windows instead of N/A', () => {
   assert.match(html, /Kimi/);
   assert.match(html, />82%<\/span>/);
   assert.match(html, /5h window/);
-  assert.match(html, /18% used/);
+  assert.match(html, /82% remaining/);
   assert.doesNotMatch(html, /usage unavailable/);
   assert.doesNotMatch(html, />N\/A</);
 });
@@ -186,7 +186,7 @@ test('accessible control labels are present for refresh, collapse, and rows', ()
   assert.equal(queryByAriaLabel(html, 'Refresh provider usage'), true);
   assert.equal(queryByAriaLabel(html, 'Close provider usage'), true);
   assert.equal(queryByAriaLabel(html, 'Claude usage details'), true);
-  assert.equal(queryByAriaLabel(html, 'Claude Current session used quota'), true);
+  assert.equal(queryByAriaLabel(html, 'Claude Current session remaining quota'), true);
   assert.equal(queryByRole(html, 'progressbar'), true);
   assert.match(html, /type="button"/);
   assert.match(html, /aria-expanded="true"/);
@@ -229,9 +229,9 @@ test('legend UI controller persists collapse and expands rows', () => {
   assert.match(expandedHtml, /Current session/);
   assert.match(expandedHtml, /All models/);
   assert.match(expandedHtml, /Fable/);
-  assert.match(expandedHtml, /4% used/);
-  assert.match(expandedHtml, /58% used/);
-  assert.match(expandedHtml, /3% used/);
+  assert.match(expandedHtml, /96% remaining/);
+  assert.match(expandedHtml, /42% remaining/);
+  assert.match(expandedHtml, /97% remaining/);
   assert.equal((expandedHtml.match(/role="progressbar"/g) ?? []).length, 3);
 });
 
@@ -250,7 +250,7 @@ test('legend UI controller keyboard activation toggles collapse and rows', () =>
   assert.equal(storage.get('provider-usage-legend-collapsed'), 'false');
 });
 
-test('expanded percent-only windows render distinct used bars without invented counts', () => {
+test('expanded windows render remaining bars without invented percent counts', () => {
   const percentOnly = provider().windows[0];
   assert.equal(formatExpandedWindowValue(percentOnly), '96% remaining');
 
@@ -258,12 +258,12 @@ test('expanded percent-only windows render distinct used bars without invented c
     ...percentOnly,
     unit: 'requests' as const,
   };
-  assert.equal(formatExpandedWindowValue(counted), '96% remaining · 4 / 100 requests');
+  assert.equal(formatExpandedWindowValue(counted), '96% remaining · 96 / 100 requests');
 
   const html = renderLegend({ expandedProvider: 'claude' });
-  assert.match(html, /4% used/);
-  assert.match(html, /58% used/);
-  assert.match(html, /3% used/);
+  assert.match(html, /96% remaining/);
+  assert.match(html, /42% remaining/);
+  assert.match(html, /97% remaining/);
   assert.doesNotMatch(html, /4 \/ 100/);
 });
 

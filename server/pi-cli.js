@@ -8,6 +8,7 @@ import { sessionsService } from './modules/providers/services/sessions.service.j
 import { providerAuthService } from './modules/providers/services/provider-auth.service.js';
 import { providerModelsService } from './modules/providers/services/provider-models.service.js';
 import { createCompleteMessage, createNormalizedMessage } from './shared/utils.js';
+import { leadSessionEnv } from './shared/lead-session-env.js';
 
 // cross-spawn resolves .cmd shims/PATHEXT on Windows and delegates to
 // child_process.spawn everywhere else.
@@ -198,12 +199,12 @@ function createPiRpcClient(child) {
   };
 }
 
-async function createPiRpcSession(workingDir, resumeSessionId, model, permissionMode, thinkingLevel) {
+async function createPiRpcSession(workingDir, resumeSessionId, model, permissionMode, thinkingLevel, extraEnv = {}) {
   const args = buildPiSpawnArgs({ model, permissionMode, resumeSessionId, thinkingLevel });
   const child = spawnFunction('pi', args, {
     cwd: workingDir,
     stdio: ['pipe', 'pipe', 'pipe'],
-    env: { ...process.env, PI_CODING_AGENT: 'true' },
+    env: { ...process.env, PI_CODING_AGENT: 'true', ...extraEnv },
   });
 
   const rpc = createPiRpcClient(child);
@@ -310,7 +311,7 @@ async function spawnPi(command, options = {}, ws) {
   let capturedSessionId = sessionId;
 
   if (!handle || handle.child.exitCode !== null || handle.child.killed) {
-    handle = await createPiRpcSession(workingDir, sessionId, resolvedModel, permissionMode, resolvedEffort);
+    handle = await createPiRpcSession(workingDir, sessionId, resolvedModel, permissionMode, resolvedEffort, leadSessionEnv(options.appSessionId));
     rpcSessions.set(processKey, handle);
 
     if (!capturedSessionId && handle.piSessionId) {

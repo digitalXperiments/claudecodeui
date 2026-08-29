@@ -225,6 +225,27 @@ export const interruptsService = {
           `Swarm action ${input.key} must be executed with actAndWait`,
         );
       }
+      case 'approve_relay':
+      case 'deny_relay': {
+        const approvalId =
+          typeof interrupt.meta.approvalId === 'string' ? interrupt.meta.approvalId : null;
+        if (!approvalId) {
+          throw new CloudError('INTERRUPT_NOT_FOUND', 'The relay approval is no longer active');
+        }
+        void import('@/modules/agent-relay/index.js').then(({ agentRelayService }) => {
+          try {
+            agentRelayService.decideApproval(approvalId, {
+              allow: input.key === 'approve_relay',
+              reason: input.key === 'approve_relay' ? 'Approved from Needs you.' : 'Denied from Needs you.',
+              decidedBy: 'operator',
+            });
+          } catch {
+            // Already settled from the Relay panel or MCP — the interrupt still closes.
+          }
+        });
+        resolved = interruptsDb.resolve(id, 'resolved', input.actor ?? null, input.key)!;
+        break;
+      }
       case 'dismiss':
       case 'open_href':
       case 'resume_run':
@@ -333,6 +354,21 @@ export const interruptsService = {
       }
     }
     return resolved;
+  },
+
+  resolveRelayApproval(approvalId: string, outcome = 'settled'): Interrupt[] {
+    if (!approvalId.trim()) return [];
+    const linked = interruptsDb.listByMeta('approvalId', approvalId);
+    const settled: Interrupt[] = [];
+    for (const interrupt of linked) {
+      if (interrupt.status !== 'open' && interrupt.status !== 'snoozed') continue;
+      const next = interruptsDb.resolve(interrupt.interrupt_id, 'resolved', 'system', `relay_${outcome}`);
+      if (next) {
+        settled.push(next);
+        emitInterrupt('interrupt_updated', next);
+      }
+    }
+    return settled;
   },
 
   /**

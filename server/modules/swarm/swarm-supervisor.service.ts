@@ -1,13 +1,12 @@
 /**
  * Hybrid supervisor for Agent Swarm.
  *
- * The initial orchestrator plan still runs as a DAG. The first friction
- * (reviewer needs_changes, empty implementer diff, crash after the attempt
- * budget, validation red) switches the swarm into supervisor mode. From then
- * on the orchestrator stays on shift: policy picks the *legal* next role,
- * the LLM writes the brief and chooses the seat, and a hard SHA/fingerprint
- * invariant refuses another review of an unchanged tree.
+ * Classic (dynamicEngine off): the seed DAG runs first; friction switches
+ * the swarm into supervisor mode. Dynamic engine: the seed is a suggestion
+ * and the orchestrator replans after every harvest — this module still
+ * classifies worker events onto the goal card.
  */
+import { digestDecisions } from '@/modules/swarm/swarm-guardrails.service.js';
 import { parseJsonFromAgentText } from '@/modules/mission-control/index.js';
 import {
   looksLikeReviewApproval,
@@ -746,6 +745,9 @@ export function buildSupervisorPrompt(input: {
     '## Seats',
     rosterLines || '(no worker seats — pick a kind and a profile will be provisioned)',
     '',
+    input.card.decisionsDigest
+      ? `- older history: ${input.card.decisionsDigest}`
+      : '',
     lastDecisions ? `## Recent supervisor decisions\n${lastDecisions}\n` : '',
     '## Your job',
     'Return ONLY a JSON object (no markdown fences):',
@@ -789,10 +791,16 @@ export function appendSupervisorDecision(
     coerced: decision.coerced,
     stepId: decision.stepId,
   };
+  const appended = [...card.decisions, entry];
+  // P1 (guardrails): cap the persisted decision log and keep a one-line
+  // summary of what was dropped so long supervisor sessions stay bounded
+  // without losing the arc of the story.
+  const digested = digestDecisions(appended);
   return {
     ...card,
     ticksUsed: Math.max(card.ticksUsed, tick),
-    decisions: [...card.decisions, entry].slice(-40),
+    decisions: digested.kept,
+    decisionsDigest: digested.digest ?? card.decisionsDigest ?? null,
     updatedAt: new Date().toISOString(),
   };
 }

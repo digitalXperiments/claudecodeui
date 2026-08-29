@@ -170,5 +170,24 @@ test('internal sessions are excluded from interactive session lists', async () =
 
     assert.equal(sessionsDb.getSessionById('swarm-worker')?.is_internal, 1);
     assert.deepEqual(sessionsDb.getAllSessions().map((row) => row.session_id), ['chat-session']);
+
+    // Project session pages power the sidebar and the session picker, so
+    // internal rows are excluded. They were listed here originally so their
+    // transcripts could be opened, but that put delegate prompts ("You are a
+    // delegated sidekick…") in the user's own session list. Transcripts stay
+    // reachable by direct id instead — the Agent Relay panel and the Running
+    // rail both link straight to /session/:id.
+    assert.deepEqual(
+      sessionsDb.getSessionsByProjectPathPage('/workspace/article-studio', 20, 0).map((row) => row.session_id),
+      [],
+    );
+    assert.equal(sessionsDb.countSessionsByProjectPath('/workspace/article-studio'), 0);
+    // Still addressable, which is what transcript viewing actually needs.
+    assert.equal(sessionsDb.getSessionById('swarm-worker')?.session_id, 'swarm-worker');
+    // A user-facing session in its own project is unaffected.
+    assert.deepEqual(
+      sessionsDb.getSessionsByProjectPathPage('/workspace/cloudcli', 20, 0).map((row) => row.session_id),
+      ['chat-session'],
+    );
   });
 });

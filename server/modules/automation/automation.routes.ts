@@ -150,10 +150,17 @@ router.post(
   '/automation/recipes/:recipeId/run',
   asyncHandler(async (req, res) => {
     try {
+      const recipeId = stringValue(req.params.recipeId);
+      const recipe = automationService.get(recipeId);
+      if (!recipe)
+        throw new AppError('Recipe not found', { code: 'AUTOMATION_NOT_FOUND', statusCode: 404 });
       const body = (req.body ?? {}) as Record<string, unknown>;
       const results = await automationService.fire({
-        type: 'manual',
-        recipeId: stringValue(req.params.recipeId),
+        // “Try it now” should exercise the saved recipe regardless of whether
+        // its normal trigger is a schedule, webhook, or lifecycle event.
+        type: recipe.trigger.type,
+        event: recipe.trigger.event,
+        recipeId,
         projectId: optionalString(body.projectId),
         payload:
           body.payload && typeof body.payload === 'object'

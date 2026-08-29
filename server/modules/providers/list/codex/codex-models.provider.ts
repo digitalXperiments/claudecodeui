@@ -52,7 +52,7 @@ export const CODEX_FALLBACK_MODELS: ProviderModelsDefinition = {
   DEFAULT: 'gpt-5.4',
 };
 
-type CodexCachedModel = {
+export type CodexCachedModel = {
   slug?: string;
   display_name?: string;
   description?: string;
@@ -65,6 +65,8 @@ type CodexCachedModel = {
     description?: string;
   }>;
   additional_speed_tiers?: string[];
+  context_window?: number;
+  max_context_window?: number;
 };
 
 const CODEX_MODELS_CACHE_PATH = path.join(os.homedir(), '.codex', 'models_cache.json');
@@ -102,6 +104,8 @@ const mapCodexModel = (model: CodexCachedModel): ProviderModelOption => {
     description: readOptionalString(model.description),
     supportsFastMode: Array.isArray(model.additional_speed_tiers)
       && model.additional_speed_tiers.includes('fast'),
+    runtimeContextWindow: typeof model.context_window === 'number' ? model.context_window : undefined,
+    runtimeMaxContextWindow: typeof model.max_context_window === 'number' ? model.max_context_window : undefined,
     effort: effortValues.length > 0
       ? {
           default: readOptionalString(model.default_reasoning_level) ?? undefined,
@@ -111,7 +115,7 @@ const mapCodexModel = (model: CodexCachedModel): ProviderModelOption => {
   };
 };
 
-const buildCodexModelsDefinition = (models: CodexCachedModel[]): ProviderModelsDefinition => {
+export const buildCodexModelsDefinition = (models: CodexCachedModel[]): ProviderModelsDefinition => {
   const sortedModels = [...models]
     .filter((model) => model.visibility === 'list' && model.supported_in_api !== false)
     .sort((left, right) => readCodexPriority(left.priority) - readCodexPriority(right.priority));

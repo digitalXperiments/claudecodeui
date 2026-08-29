@@ -5,6 +5,7 @@ import { Badge, Button, Dialog, DialogContent, DialogTitle, Input } from '../../
 import { cn } from '../../../lib/utils';
 import type { LLMProvider } from '../../../types/app';
 import { authenticatedFetch } from '../../../utils/api';
+import ContextPackPanel from '../../context-packs/ContextPackPanel';
 import PermissionsContent from '../../settings/view/tabs/agents-settings/sections/content/PermissionsContent';
 import type { CodexPermissionMode, PiPermissionMode } from '../../settings/types/types';
 import {
@@ -21,6 +22,9 @@ import {
 } from '../types';
 import { kanbanApi, type TaskPatch } from '../api/kanbanApi';
 
+import TaskComments from './TaskComments';
+import TaskRunOutput from './TaskRunOutput';
+
 const GENERATE_PROVIDER_KEY = 'kanban.generateTaskFields.provider';
 
 function readStoredGenerateProvider(): LLMProvider {
@@ -34,10 +38,6 @@ function readStoredGenerateProvider(): LLMProvider {
   }
   return 'claude';
 }
-
-import TaskRunOutput from './TaskRunOutput';
-import TaskComments from './TaskComments';
-import ContextPackPanel from '../../context-packs/ContextPackPanel';
 
 type TaskDraft = {
   columnId?: string;
@@ -673,14 +673,18 @@ export default function TaskEditor(props: TaskEditorProps) {
   return (
     <Dialog open={open} onOpenChange={(next) => (!next ? onClose() : undefined)}>
       <DialogContent
-        className="z-50 flex h-dvh max-h-dvh w-full max-w-none flex-col overflow-hidden rounded-none border-0 p-0 shadow-none sm:h-auto sm:max-h-[85vh] sm:max-w-xl sm:rounded-xl sm:border sm:shadow-lg"
+        className="z-50 flex h-dvh max-h-dvh w-full max-w-none flex-col overflow-hidden rounded-none border-0 bg-gradient-to-b from-background via-background to-muted/20 p-0 shadow-none sm:h-auto sm:max-h-[90vh] sm:max-w-4xl sm:rounded-2xl sm:border sm:border-border/70 sm:shadow-2xl"
         onEscapeKeyDown={onClose}
         onPointerDownOutside={onClose}
       >
         <DialogTitle>{isEdit ? 'Edit task' : 'New task'}</DialogTitle>
         <div className="flex min-h-0 flex-1 flex-col">
-          <div className="flex flex-shrink-0 items-center justify-between border-b border-border px-4 py-3 pt-[max(0.75rem,env(safe-area-inset-top))] md:pt-3">
-            <h3 className="text-sm font-semibold">{isEdit ? 'Edit task' : 'New task'}</h3>
+          <div className="relative flex flex-shrink-0 items-center justify-between overflow-hidden border-b border-border/60 bg-background/85 px-4 py-4 pt-[max(0.75rem,env(safe-area-inset-top))] md:pt-4">
+            <div className="pointer-events-none absolute -left-14 -top-24 h-40 w-40 rounded-full bg-sky-500/10 blur-3xl" />
+            <div className="relative">
+              <h3 className="text-sm font-semibold">{isEdit ? 'Edit task' : 'Create a task'}</h3>
+              <p className="mt-0.5 text-[10px] text-muted-foreground">Shape the brief, connect context, and choose the agent handoff.</p>
+            </div>
             {isEdit && props.onRun ? (
               <Button size="sm" variant="secondary" className="touch-manipulation" onClick={handleRun} disabled={running}>
                 {running ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}

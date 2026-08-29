@@ -5,15 +5,16 @@ import { promises as fsPromises } from 'node:fs';
 import chokidar, { type FSWatcher } from 'chokidar';
 
 import { projectsDb, sessionsDb } from '@/modules/database/index.js';
+import { grokSessionsRoot } from '@/modules/providers/list/grok/grok-sessions.provider.js';
 import {
   getDisabledProviderIds,
   sessionSynchronizerService,
 } from '@/modules/providers/services/session-synchronizer.service.js';
+import { qwenRuntimeRoot } from '@/modules/providers/list/qwencode/qwencode-sessions.provider.js';
 import { WS_OPEN_STATE, connectedClients } from '@/modules/websocket/index.js';
 import type { LLMProvider } from '@/shared/types.js';
 import { generateDisplayName } from '@/modules/projects/index.js';
-import { getKiloDataDirectory } from '@/shared/utils.js';
-import { getClineDataDirectory } from '@/shared/utils.js';
+import { getClineDataDirectory, getKiloDatabasePath } from '@/shared/utils.js';
 
 type WatcherEventType = 'add' | 'change';
 
@@ -36,7 +37,7 @@ const PROVIDER_WATCH_PATHS: Array<{ provider: LLMProvider; rootPath: string }> =
   },
   {
     provider: 'kilo',
-    rootPath: getKiloDataDirectory(),
+    rootPath: path.dirname(getKiloDatabasePath()),
   },
   {
     provider: 'cline',
@@ -48,11 +49,15 @@ const PROVIDER_WATCH_PATHS: Array<{ provider: LLMProvider; rootPath: string }> =
   },
   {
     provider: 'qwencode',
-    rootPath: path.join(process.env.QWEN_RUNTIME_DIR || process.env.QWEN_HOME || path.join(os.homedir(), '.qwen'), 'projects'),
+    rootPath: qwenRuntimeRoot(),
   },
   {
     provider: 'pi',
     rootPath: path.join(os.homedir(), '.pi', 'agent', 'sessions'),
+  },
+  {
+    provider: 'grok',
+    rootPath: grokSessionsRoot(),
   },
 ];
 
@@ -91,7 +96,7 @@ let watcherRescheduleAfterRefresh = false;
 /**
  * Filters watcher events to provider-specific session artifact file types.
  */
-function isWatcherTargetFile(provider: LLMProvider, filePath: string): boolean {
+export function isWatcherTargetFile(provider: LLMProvider, filePath: string): boolean {
   if (provider === 'opencode' || provider === 'kilo') {
     return path.basename(filePath) === `${provider}.db`;
   }
@@ -102,6 +107,10 @@ function isWatcherTargetFile(provider: LLMProvider, filePath: string): boolean {
 
   if (provider === 'kimi') {
     return path.basename(filePath) === 'state.json' || filePath.endsWith('wire.jsonl');
+  }
+
+  if (provider === 'grok') {
+    return path.basename(filePath) === 'summary.json' || path.basename(filePath) === 'chat_history.jsonl';
   }
 
   return filePath.endsWith('.jsonl');

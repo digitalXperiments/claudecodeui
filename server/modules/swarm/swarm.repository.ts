@@ -1,6 +1,7 @@
 import { getConnection } from '@/modules/database/index.js';
 import { broadcastSystemEvent } from '@/modules/websocket/index.js';
 import { newSwarmId, newSwarmMemberId } from '@/shared/ids.js';
+import { estimateCostUsd } from '@/modules/runs/index.js';
 import type {
   SwarmAgentSpec,
   SwarmArtifact,
@@ -610,6 +611,127 @@ export const swarmDb = {
     }).immediate();
     if (updated) broadcastSwarmUpdate(updated);
     return updated;
+  },
+
+  /** Append-only machine event stream (PRD swarm-studio-v2 G1). */
+  appendEvent(
+    swarmId: string,
+    kind: string,
+    opts?: { stepId?: string | null; level?: 'info' | 'warn' | 'error'; data?: Record<string, unknown> },
+  ): void {
+    try {
+      const db = getConnection();
+      const next = db
+        .prepare(`SELECT COALESCE(MAX(seq), 0) + 1 AS seq FROM swarm_events WHERE swarm_id = ?`)
+        .get(swarmId) as { seq: number };
+      db.prepare(
+        `INSERT INTO swarm_events (swarm_id, seq, kind, step_id, level, data)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      ).run(swarmId, next.seq, kind, opts?.stepId ?? null, opts?.level ?? 'info', JSON.stringify(opts?.data ?? {}));
+    } catch {
+      // Event logging must never break pipeline execution.
+    }
+  },
+
+  listEventsForSwarm(
+    swarmId: string,
+    opts?: { sinceSeq?: number; limit?: number },
+  ): Array<{ seq: number; kind: string; stepId: string | null; level: string; data: Record<string, unknown>; createdAt: string }> {
+    try {
+      const limit = Math.min(Math.max(opts?.limit ?? 500, 1), 2000);
+      const rows = (opts?.sinceSeq != null
+        ? getConnection()
+            .prepare(`SELECT * FROM swarm_events WHERE swarm_id = ? AND seq > ? ORDER BY seq ASC LIMIT ?`)
+            .all(swarmId, opts.sinceSeq, limit)
+        : getConnection()
+            .prepare(`SELECT * FROM swarm_events WHERE swarm_id = ? ORDER BY seq ASC LIMIT ?`)
+            .all(swarmId, limit)) as Array<{
+        seq: number;
+        kind: string;
+        step_id: string | null;
+        level: string;
+        data: string;
+        created_at: string;
+      }>;
+      return rows.map((row) => {
+        let data: Record<string, unknown> = {};
+        try {
+          data = JSON.parse(row.data || '{}') as Record<string, unknown>;
+        } catch {
+          data = {};
+        }
+        return {
+          seq: row.seq,
+          kind: row.kind,
+          stepId: row.step_id,
+          level: row.level,
+          data,
+          createdAt: row.created_at,
+        };
+      });
+    } catch {
+      return [];
+    }
+  },
+
+  /**
+   * Fast spend total for budget/finish-mode checks. Uses a single SQL
+   * aggregation over member child runs and only falls back to per-run cost
+   * estimation when rows are missing stored estimates.
+   */
+  sumSpendUsd(swarmId: string): number {
+    try {
+      const rows = getConnection()
+        .prepare(
+          `SELECT ar.cost_usd_estimate AS costUsd, ar.token_total AS tokenTotal,
+                  ar.token_input AS tokenInput, ar.token_output AS tokenOutput,
+                  ar.provider AS provider, ar.model AS model,
+                  m.provider AS memberProvider, m.model AS memberModel,
+                  ar.started_at AS startedAt, ar.created_at AS createdAt,
+                  ar.token_cache_read AS cacheRead, ar.token_cache_write AS cacheWrite
+             FROM swarm_members m
+             JOIN agent_runs ar ON ar.run_id = m.run_id
+            WHERE m.swarm_id = ?`,
+        )
+        .all(swarmId) as Array<{
+        costUsd: number | null;
+        tokenTotal: number | null;
+        tokenInput: number | null;
+        tokenOutput: number | null;
+        provider: string | null;
+        model: string | null;
+        memberProvider: string | null;
+        memberModel: string | null;
+        startedAt: string | null;
+        createdAt: string | null;
+        cacheRead: number | null;
+        cacheWrite: number | null;
+      }>;
+      let total = 0;
+      let needsEstimate = false;
+      for (const row of rows) {
+        if ((row.costUsd ?? 0) > 0) {
+          total += row.costUsd!;
+          continue;
+        }
+        const tokens = (row.tokenTotal ?? 0) || (row.tokenInput ?? 0) + (row.tokenOutput ?? 0);
+        if (!(tokens > 0)) continue;
+        needsEstimate = true;
+        const priced = estimateCostUsd(
+          row.provider ?? row.memberProvider,
+          row.model ?? row.memberModel,
+          row.tokenInput || tokens,
+          row.tokenOutput ?? 0,
+          row.startedAt ?? row.createdAt ?? undefined,
+          row.cacheRead,
+          row.cacheWrite,
+        );
+        if (priced != null) total += priced;
+      }
+      return total;
+    } catch {
+      return 0;
+    }
   },
 
   createMember(input: {

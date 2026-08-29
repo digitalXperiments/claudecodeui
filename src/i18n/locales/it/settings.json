@@ -87,6 +87,9 @@
   "mainTabs": {
     "label": "Impostazioni",
     "agents": "Agenti",
+    "agentProfiles": "Profili agente",
+    "modelProfiles": "Profili modello",
+    "agentRelay": "Agent Relay",
     "globalSkills": "Skill globali",
     "appearance": "Aspetto",
     "git": "Git",

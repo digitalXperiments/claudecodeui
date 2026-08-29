@@ -42,6 +42,7 @@ const SOURCE_OPTIONS = [
   { value: 'webhook', label: 'Webhook' },
   { value: 'automation', label: 'Automation' },
   { value: 'swarm', label: 'Agent swarm' },
+  { value: 'agent_relay', label: 'Agent Relay' },
   { value: 'ship', label: 'Ship' },
   { value: 'system', label: 'System' },
 ];
@@ -112,7 +113,7 @@ function strPayload(payload: Record<string, unknown>, key: string): string | nul
 }
 
 /** Human-friendly timeline labels — no raw JSON for users. */
-function describeEvent(event: RunEvent): { label: string; detail: string | null; kv: Array<{ k: string; v: string }> } {
+export function describeEvent(event: RunEvent): { label: string; detail: string | null; kv: Array<{ k: string; v: string }> } {
   const p = event.payload ?? {};
   const kv: Array<{ k: string; v: string }> = [];
   const add = (k: string, v: unknown) => {

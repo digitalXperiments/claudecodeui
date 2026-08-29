@@ -21,7 +21,7 @@
 
 ## 🍴 About this fork
 
-This is a fork of [siteboon/claudecodeui](https://github.com/siteboon/claudecodeui) that adds two more CLI vendors as full, first-class providers and layers several cross-agent capabilities on top — all actually wired into chat, sessions, MCP, and permissions, not UI decoration.
+This is a fork of [siteboon/claudecodeui](https://github.com/siteboon/claudecodeui) that adds more CLI vendors as first-class providers and layers several cross-agent capabilities on top — all actually wired into chat, sessions, and provider-native capabilities, not UI decoration.
 
 ### New providers
 
@@ -30,6 +30,7 @@ This is a fork of [siteboon/claudecodeui](https://github.com/siteboon/claudecode
 
 ### Cross-agent capabilities (work across every provider)
 
+- **Dynamic swarm engine + Model Capability Registry** — swarms now run on a dynamic engine by default: a step failure no longer abandons the remaining plan (only the failed task's dependents are held back while independent branches keep running), disjoint writer steps fan out in parallel through isolated child worktrees by default, and an optional whole-swarm wall-clock budget (`wallClockMs`) bounds long runs. Staffing is automated: every model across all installed providers is discovered, scored from public coding benchmarks (`server/modules/swarm/model-benchmarks.snapshot.json`), corrected by real swarm outcomes in the cost ledger, and cached in the `model_capabilities` table — so Agent Swarm auto-roster works with zero user-maintained agent profiles and adapts when new models ship. Manage it under Settings → Model registry; the spend governor's soft-cap downgrade now uses the same registry instead of model-name regex. See `docs/prd/dynamic-swarm-and-model-registry.md`.
 - **Cross-agent skills** — author a skill once and either scope it to a project or make it **global**; CloudCLI fans it out into each installed agent's own skill directory (`~/.claude/skills`, `~/.kimi-code/skills`, …) and tracks exactly which copies it wrote, so removal is precise and your hand-authored skills are never clobbered. Skills are editable in place from the UI.
 - **Per-project memory (Obsidian second brain)** — an optional Obsidian-backed memory that agents read at the start of a task and write decisions/entities/session notes back to. Includes a connection test against the Obsidian Local REST API and a live vault-stats panel.
 - **Interactive prompts, provider-neutral** — `AskUserQuestion` and `ExitPlanMode` are recognized across Claude, Grok, Kimi, and the other adapters (including provider-native aliases), so any agent can pause mid-run to ask a question or hand back a plan for approval, with the prompt attributed to the right agent.

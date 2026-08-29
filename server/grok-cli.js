@@ -24,6 +24,7 @@ import {
 } from './modules/providers/list/grok/grok-acp-managed-mcp.js';
 import { createCompleteMessage, createNormalizedMessage } from './shared/utils.js';
 import { ensureManagedGrokHome } from './shared/grok-home.js';
+import { leadSessionEnv } from './shared/lead-session-env.js';
 
 // cross-spawn resolves .cmd shims/PATHEXT on Windows and delegates to
 // child_process.spawn everywhere else.
@@ -729,6 +730,7 @@ async function spawnGrok(command, options = {}, ws) {
     mcpServers: requestedMcpServerNames = [],
     unattended = false,
     approvalTimeoutMs,
+    relayWorker = false,
   } = options;
 
   const workingDir = cwd || projectPath || process.cwd();
@@ -751,8 +753,8 @@ async function spawnGrok(command, options = {}, ws) {
   const acpMcpServers = toGrokAcpMcpServers(resolvedMcpServers);
 
   const permissionRuntime = resolveGrokPermissionRuntime(permissionMode);
-  const managedGrokHome = ensureManagedGrokHome(permissionRuntime.configPermissionMode);
-  const spawnEnv = { GROK_HOME: managedGrokHome };
+  const managedGrokHome = ensureManagedGrokHome(permissionRuntime.configPermissionMode, { relayWorker });
+  const spawnEnv = { GROK_HOME: managedGrokHome, ...leadSessionEnv(options.appSessionId) };
   const spawnArgs = buildSpawnArgs({
     model: resolvedModel,
     effort: resolvedEffort,

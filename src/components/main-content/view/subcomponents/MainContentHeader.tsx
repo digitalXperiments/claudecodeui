@@ -25,6 +25,7 @@ export default function MainContentHeader({
   onNewSession,
   onLoadMoreSessions,
   isLoadingMoreSessions = false,
+  processingSessions,
 }: MainContentHeaderProps) {
   const { t } = useTranslation();
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -60,6 +61,7 @@ export default function MainContentHeader({
       isLoadingMoreSessions={isLoadingMoreSessions}
       isMobile={isMobile}
       className="min-w-0 flex-1"
+      processingSessions={processingSessions}
     />
   ) : (
     <MainContentTitle

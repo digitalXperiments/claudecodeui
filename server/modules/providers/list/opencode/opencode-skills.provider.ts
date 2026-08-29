@@ -36,6 +36,23 @@ export class OpenCodeSkillsProvider extends SkillsProvider {
     this.userSkillDirs = options.userSkillDirs ?? OPENCODE_USER_SKILL_DIRS;
   }
 
+  /**
+   * The provider's own canonical user skill directory (the first entry of its
+   * user search dirs). Without this, OpenCode-family providers have no global
+   * skill write target, so managed skills (like the Agent Relay delegation
+   * playbook) silently never reach an OpenCode-only lead — they were only
+   * visible incidentally through the shared `~/.claude/skills` read path.
+   */
+  protected async getGlobalSkillSource(): Promise<ProviderSkillSource | null> {
+    const ownDir = this.userSkillDirs[0];
+    if (!ownDir) return null;
+    return {
+      scope: 'user',
+      rootDir: path.join(os.homedir(), ...ownDir),
+      commandPrefix: '/',
+    };
+  }
+
   protected async getSkillSources(workspacePath: string): Promise<ProviderSkillSource[]> {
     const sources: ProviderSkillSource[] = [];
     const seenRootDirs = new Set<string>();

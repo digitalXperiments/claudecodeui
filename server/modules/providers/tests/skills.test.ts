@@ -660,26 +660,33 @@ test('providerSkillsService adds global skills for claude, codex, and cursor', {
 });
 
 /**
- * OpenCode reuses other providers' skill folders, so it should not accept
- * direct skill writes through the managed provider endpoint.
+ * OpenCode has its own canonical user skill directory
+ * (`~/.config/opencode/skills`), so managed skill writes land there instead of
+ * being rejected. Without this target, managed skills (like the Agent Relay
+ * delegation playbook) never reached an OpenCode-only lead.
  */
-test('providerSkillsService rejects managed skill creation for opencode', { concurrency: false }, async () => {
-  await assert.rejects(
-    providerSkillsService.addProviderSkills('opencode', {
+test('providerSkillsService writes managed skills to the opencode user directory', { concurrency: false }, async () => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'llm-opencode-skills-'));
+  const restoreHomeDir = patchHomeDir(tempRoot);
+  try {
+    await providerSkillsService.addProviderSkills('opencode', {
       entries: [
         {
           directoryName: 'opencode-global-dir',
-          content: '---\nname: opencode-global\ndescription: Unsupported skill\n---\n\nOpenCode body.\n',
+          content: '---\nname: opencode-global\ndescription: OpenCode-managed skill\n---\n\nOpenCode body.\n',
         },
       ],
-    }),
-    /does not support managed global skills/i,
-  );
+    });
+    const skillPath = path.join(tempRoot, '.config', 'opencode', 'skills', 'opencode-global-dir', 'SKILL.md');
+    const written = await fs.readFile(skillPath, 'utf8');
+    assert.match(written, /OpenCode body\./);
 
-  await assert.rejects(
-    providerSkillsService.removeProviderSkill('opencode', {
+    await providerSkillsService.removeProviderSkill('opencode', {
       directoryName: 'opencode-global-dir',
-    }),
-    /does not support managed global skills/i,
-  );
+    });
+    await assert.rejects(fs.stat(skillPath));
+  } finally {
+    restoreHomeDir();
+    await fs.rm(tempRoot, { recursive: true, force: true });
+  }
 });

@@ -87,6 +87,9 @@
   "mainTabs": {
     "label": "设置",
     "agents": "智能体",
+    "agentProfiles": "智能体配置",
+    "modelProfiles": "模型配置",
+    "agentRelay": "Agent Relay",
     "globalSkills": "全局技能",
     "appearance": "外观",
     "git": "Git",

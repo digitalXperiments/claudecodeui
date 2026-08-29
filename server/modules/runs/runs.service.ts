@@ -51,7 +51,7 @@ export interface RunService {
   ): void;
   appendEvent(runId: string, event: Omit<RunEventEnvelope, 'event_id' | 'seq'>): RunEventEnvelope;
   recordMessage(runId: string, message: NormalizedMessage, source: RunEventEnvelope['source']): void;
-  listEvents(runId: string, opts?: { afterSeq?: number; limit?: number }): RunEventEnvelope[];
+  listEvents(runId: string, opts?: { afterSeq?: number; limit?: number; newest?: boolean }): RunEventEnvelope[];
   attachUsage(runId: string, usage: TokenUsage): void;
   linkSession(runId: string, appSessionId: string): void;
   linkWorkspace(runId: string, workspaceId: string): void;
@@ -417,7 +417,7 @@ export const runService: RunService = {
     });
   },
 
-  listEvents(runId: string, opts: { afterSeq?: number; limit?: number } = {}): RunEventEnvelope[] {
+  listEvents(runId: string, opts: { afterSeq?: number; limit?: number; newest?: boolean } = {}): RunEventEnvelope[] {
     requireRun(runId);
     return runsDb.listEvents(runId, opts);
   },

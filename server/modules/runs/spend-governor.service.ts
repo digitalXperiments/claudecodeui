@@ -5,8 +5,9 @@
  * in-flight swarm or chat and either cheapens the next seat or stops it.
  */
 
-import { getAppFeatures } from '@/modules/app-features/app-features.service.js';
+import { getAppFeatures } from '@/modules/app-features/index.js';
 import { interruptsService } from '@/modules/interrupt-queue/index.js';
+import { rankCandidatesForTask } from '@/modules/swarm/index.js';
 
 export type SpendVerdict = {
   spentUsd: number;
@@ -34,11 +35,37 @@ const FABLE_RE = /\bfable\b/i;
 const SONNET_RE = /\bsonnet\b/i;
 
 /**
- * Cheapen the next Claude seat when the soft cap has tripped.
- * Other providers stay put — they are already the cheaper shop.
+ * Cheapen the next seat when the soft cap has tripped.
+ *
+ * Primary path: Model Capability Registry lookup — find a cheaper model from
+ * the same provider that still clears the basic-difficulty bar. This works
+ * across every provider, not just Claude name families, and adapts as new
+ * models ship. The legacy regex rewrite stays as the offline fallback when the
+ * registry has no cheaper same-provider candidate.
  */
-export function downgradeModelForSoftCap(model: string | null | undefined): string | null {
+export function downgradeModelForSoftCap(
+  model: string | null | undefined,
+  options: { provider?: string | null } = {},
+): string | null {
   const current = (model ?? '').trim();
+  try {
+    const candidates = rankCandidatesForTask({ kind: 'implementer', difficulty: 'basic' }, {
+      allowedProviders: options.provider ? [options.provider] : undefined,
+      limit: 8,
+    });
+    const currentEntry = candidates.find((c) => c.modelId === current);
+    const cheaper = candidates.find((c) => {
+      if (c.modelId === current) return false;
+      if (currentEntry && c.outputCostPerMtok != null && currentEntry.outputCostPerMtok != null) {
+        return c.outputCostPerMtok < currentEntry.outputCostPerMtok;
+      }
+      // Without pricing data, "cheaper" means a strictly lower coding score.
+      return !currentEntry || c.codingScore < currentEntry.codingScore;
+    });
+    if (cheaper) return cheaper.modelId;
+  } catch {
+    // Registry unavailable (no DB, cold start) — fall through to regex.
+  }
   if (!current) return 'sonnet';
   if (OPUS_RE.test(current) || FABLE_RE.test(current)) {
     return current.replace(OPUS_RE, 'sonnet').replace(FABLE_RE, 'sonnet');

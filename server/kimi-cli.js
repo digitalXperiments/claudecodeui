@@ -14,6 +14,7 @@ import {
 } from './modules/providers/list/kimi/kimi-token-usage.js';
 import { createCompleteMessage, createNormalizedMessage } from './shared/utils.js';
 import { createAcpPermissionCancellation, findAcpPermissionOption } from './shared/acp-rpc.js';
+import { leadSessionEnv } from './shared/lead-session-env.js';
 
 // cross-spawn resolves .cmd shims/PATHEXT on Windows and delegates to
 // child_process.spawn everywhere else.
@@ -216,11 +217,11 @@ function createJsonRpcClient(child) {
   };
 }
 
-async function createAcpSession(workingDir, resumeSessionId) {
+async function createAcpSession(workingDir, resumeSessionId, extraEnv = {}) {
   const child = spawnFunction('kimi', ['acp'], {
     cwd: workingDir,
     stdio: ['pipe', 'pipe', 'pipe'],
-    env: { ...process.env },
+    env: { ...process.env, ...extraEnv },
   });
 
   // createJsonRpcClient attaches child 'error'/'exit' handlers that reject
@@ -367,7 +368,7 @@ async function spawnKimi(command, options = {}, ws) {
   let capturedSessionId = sessionId;
 
   if (!handle || handle.child.exitCode !== null || handle.child.killed) {
-    handle = await createAcpSession(workingDir, sessionId);
+    handle = await createAcpSession(workingDir, sessionId, leadSessionEnv(options.appSessionId));
     acpSessions.set(processKey, handle);
 
     if (!capturedSessionId) {
@@ -565,7 +566,7 @@ async function spawnKimi(command, options = {}, ws) {
       if (acpSessions.get(key) === handle) acpSessions.delete(key);
       try { handle.rpc.close(); } catch { /* already closed */ }
       try { handle.child.kill('SIGTERM'); } catch { /* already gone */ }
-      const fresh = await createAcpSession(workingDir, finalSessionId);
+      const fresh = await createAcpSession(workingDir, finalSessionId, leadSessionEnv(options.appSessionId));
       handle = fresh;
       acpSessions.set(key, fresh);
       fresh.child.stderr.on('data', (data) => console.error('Kimi ACP stderr:', data.toString()));

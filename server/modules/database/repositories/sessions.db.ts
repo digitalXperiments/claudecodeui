@@ -475,6 +475,7 @@ export const sessionsDb = {
     return normalizeSessionRows(rows);
   },
 
+  /** User-facing sessions for a project; internal delegate rows are excluded. */
   getSessionsByProjectPath(projectPath: string): SessionRow[] {
     const db = getConnection();
     const normalizedProjectPath = normalizeProjectPath(projectPath);
@@ -483,7 +484,8 @@ export const sessionsDb = {
         `SELECT ${SESSION_ROW_COLUMNS}
          FROM sessions
          WHERE project_path = ?
-           AND isArchived = 0`
+           AND isArchived = 0
+           AND is_internal = 0`
       )
       .all(normalizedProjectPath) as SessionRow[];
 
@@ -508,6 +510,16 @@ export const sessionsDb = {
     return normalizeSessionRows(rows);
   },
 
+  /**
+   * One page of a project's user-facing sessions.
+   *
+   * Internal rows (swarm members, Agent Relay workers, automation runs) are
+   * excluded: they are real provider sessions with real transcripts, but they
+   * belong to a delegating session rather than to the user's session list.
+   * Leaking them here is what put "You are a delegated sidekick…" rows in the
+   * session picker. Their transcripts stay reachable by direct id, and the
+   * Running rail still counts them via `listRunningSessions`.
+   */
   getSessionsByProjectPathPage(projectPath: string, limit: number, offset: number): SessionRow[] {
     const db = getConnection();
     const normalizedProjectPath = normalizeProjectPath(projectPath);
@@ -517,6 +529,7 @@ export const sessionsDb = {
          FROM sessions
          WHERE project_path = ?
            AND isArchived = 0
+           AND is_internal = 0
          ORDER BY datetime(COALESCE(updated_at, created_at)) DESC, session_id DESC
          LIMIT ? OFFSET ?`
       )
@@ -525,6 +538,7 @@ export const sessionsDb = {
     return normalizeSessionRows(rows);
   },
 
+  /** Must match `getSessionsByProjectPathPage` exactly or pagination drifts. */
   countSessionsByProjectPath(projectPath: string): number {
     const db = getConnection();
     const normalizedProjectPath = normalizeProjectPath(projectPath);
@@ -533,7 +547,8 @@ export const sessionsDb = {
         `SELECT COUNT(*) AS count
          FROM sessions
          WHERE project_path = ?
-           AND isArchived = 0`
+           AND isArchived = 0
+           AND is_internal = 0`
       )
       .get(normalizedProjectPath) as { count: number } | undefined;
 

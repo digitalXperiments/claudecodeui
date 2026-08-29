@@ -5,6 +5,7 @@ import test from 'node:test';
 
 import { makeScratchDir } from './shared/scratch.js';
 import { resolveToolApproval } from './claude-sdk.js';
+import { mcpCatalogService } from './modules/providers/services/mcp-catalog.service.js';
 import {
   disposeKiloSessions,
   disposeOpenCodeSessions,
@@ -15,6 +16,7 @@ import {
   spawnQwenCode,
   spawnKilo,
   spawnOpenCode,
+  toOpenCodeAcpMcpServers,
 } from './opencode-cli.js';
 
 const findEnvKey = (name) =>
@@ -38,6 +40,8 @@ const capture = {
   args: process.argv.slice(2),
   permissionEnv: process.env.OPENCODE_PERMISSION ?? null,
   kiloPermissionEnv: process.env.KILO_PERMISSION ?? null,
+  leadSessionId: process.env.CLOUDCLI_LEAD_SESSION_ID ?? null,
+  mcpServers: [],
   configOptions: [],
   prompts: [],
   permissionDecision: undefined,
@@ -87,6 +91,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
 
   if (msg.method === 'session/new' || msg.method === 'session/load') {
     capture.sessionMethods = (capture.sessionMethods || []).concat(msg.method);
+    capture.mcpServers = msg.params?.mcpServers ?? [];
     writeCapture();
     // OPENCODE_FAKE_MODES simulates a CLI whose default agent is named
     // differently (Kilo's "code" vs OpenCode's "build").
@@ -201,8 +206,14 @@ async function withFakeAgent(prefix, body) {
   const previousArgsCapture = process.env.OPENCODE_ARGS_CAPTURE;
   const previousRejectedConfig = process.env.OPENCODE_REJECT_CONFIG_ID;
   const previousFakeModes = process.env.OPENCODE_FAKE_MODES;
+  const previousListEnabled = mcpCatalogService.listEnabledNames;
+  const previousResolve = mcpCatalogService.resolveForProvider;
 
   try {
+    // Isolate ACP tests from the developer's real catalog (this machine has
+    // Obsidian bound to OpenCode). Individual tests override these stubs.
+    mcpCatalogService.listEnabledNames = async () => [];
+    mcpCatalogService.resolveForProvider = async () => [];
     await createFakeOpenCodeAcpAgent(tempRoot);
     process.env[pathKey] = `${tempRoot}${path.delimiter}${previousPath || ''}`;
     if (process.platform === 'win32') {
@@ -224,6 +235,8 @@ async function withFakeAgent(prefix, body) {
     else process.env.OPENCODE_REJECT_CONFIG_ID = previousRejectedConfig;
     if (previousFakeModes === undefined) delete process.env.OPENCODE_FAKE_MODES;
     else process.env.OPENCODE_FAKE_MODES = previousFakeModes;
+    mcpCatalogService.listEnabledNames = previousListEnabled;
+    mcpCatalogService.resolveForProvider = previousResolve;
     await rm(tempRoot, { recursive: true, force: true });
   }
 }
@@ -275,6 +288,7 @@ test('spawnOpenCode streams ACP updates and emits session_created first', { conc
     // No permission mode requested → the relaying "ask" policy is the default.
     assert.equal(capture.permissionEnv, JSON.stringify({ edit: 'ask', bash: 'ask', webfetch: 'ask', external_directory: 'ask' }));
     assert.ok(capture.configOptions.some((option) => option.configId === 'mode' && option.value === 'build'));
+    assert.deepEqual(capture.mcpServers, []);
   });
 });
 
@@ -377,6 +391,25 @@ test('an unanswered unattended permission request is denied, not left hanging', 
     assert.equal(capture.permissionDecision, 'reject');
     assert.ok(messages.some((message) => message.kind === 'stream_delta' && message.content === 'DENIED'));
     assert.ok(messages.some((message) => message.kind === 'complete'));
+  });
+});
+
+test('unattended plan auto-approves inspect bash without asking the client', { concurrency: false }, async () => {
+  await withFakeAgent('opencode-cli-plan-unattended-', async (tempRoot) => {
+    const argsCapturePath = path.join(tempRoot, 'capture.json');
+    process.env.OPENCODE_ARGS_CAPTURE = argsCapturePath;
+    const messages = [];
+
+    await spawnOpenCode(
+      'NEEDS_PERMISSION',
+      { cwd: tempRoot, permissionMode: 'plan', unattended: true },
+      createWriter(messages),
+    );
+
+    const capture = JSON.parse(await readFile(argsCapturePath, 'utf8'));
+    assert.equal(capture.permissionDecision, 'once');
+    assert.equal(messages.some((message) => message.kind === 'permission_request'), false);
+    assert.ok(capture.configOptions.some((option) => option.configId === 'mode' && option.value === 'plan'));
   });
 });
 
@@ -554,4 +587,125 @@ test('spawnQwenCode uses the official qwen --acp entry point and ACP model contr
 test('resolveQwenPermissionPolicy maps bypass to yolo and keeps plan interactive', () => {
   assert.equal(resolveQwenPermissionPolicy('bypassPermissions').mode, 'yolo');
   assert.equal(resolveQwenPermissionPolicy('plan').autoApprove, false);
+});
+
+test('toOpenCodeAcpMcpServers converts stdio without a type tag and stamps the lead session', () => {
+  const converted = toOpenCodeAcpMcpServers([
+    {
+      name: 'cloudcli-agent-relay',
+      transport: 'stdio',
+      command: 'node',
+      args: ['relay.js'],
+      env: { CLOUDCLI_AGENT_RELAY_MCP_TOKEN: 'tok' },
+    },
+    {
+      name: 'remote-tools',
+      transport: 'http',
+      url: 'https://example.com/mcp',
+      headers: { Authorization: 'Bearer x' },
+    },
+  ], { CLOUDCLI_LEAD_SESSION_ID: 'sess-lead-1' });
+
+  assert.deepEqual(converted, [
+    {
+      name: 'cloudcli-agent-relay',
+      command: 'node',
+      args: ['relay.js'],
+      env: [
+        { name: 'CLOUDCLI_AGENT_RELAY_MCP_TOKEN', value: 'tok' },
+        { name: 'CLOUDCLI_LEAD_SESSION_ID', value: 'sess-lead-1' },
+      ],
+    },
+    {
+      name: 'remote-tools',
+      type: 'http',
+      url: 'https://example.com/mcp',
+      headers: [{ name: 'Authorization', value: 'Bearer x' }],
+    },
+  ]);
+  assert.equal('type' in converted[0], false);
+});
+
+test('OpenCode lead sessions attach catalog MCP including Agent Relay', { concurrency: false }, async () => {
+  await withFakeAgent('opencode-cli-lead-mcp-', async (tempRoot) => {
+    const argsCapturePath = path.join(tempRoot, 'capture.json');
+    process.env.OPENCODE_ARGS_CAPTURE = argsCapturePath;
+    mcpCatalogService.listEnabledNames = async (provider) => {
+      assert.equal(provider, 'opencode');
+      return ['cloudcli-agent-relay', 'obsidian'];
+    };
+    mcpCatalogService.resolveForProvider = async (provider, names) => {
+      assert.equal(provider, 'opencode');
+      const wanted = new Set(names);
+      return [
+        wanted.has('cloudcli-agent-relay') ? {
+          name: 'cloudcli-agent-relay',
+          transport: 'stdio',
+          command: 'node',
+          args: ['relay.js'],
+          env: { CLOUDCLI_AGENT_RELAY_MCP_TOKEN: 'tok' },
+        } : null,
+        wanted.has('obsidian') ? {
+          name: 'obsidian',
+          transport: 'stdio',
+          command: 'npx',
+          args: ['obsidian-mcp'],
+        } : null,
+      ].filter(Boolean);
+    };
+
+    await spawnOpenCode('Hi', { cwd: tempRoot, appSessionId: 'app-lead-1' }, createWriter([]));
+
+    const capture = JSON.parse(await readFile(argsCapturePath, 'utf8'));
+    assert.equal(capture.leadSessionId, 'app-lead-1');
+    assert.equal(capture.mcpServers.length, 2);
+    assert.equal(capture.mcpServers[0].name, 'cloudcli-agent-relay');
+    assert.equal('type' in capture.mcpServers[0], false);
+    assert.ok(capture.mcpServers[0].env.some((entry) => entry.name === 'CLOUDCLI_LEAD_SESSION_ID' && entry.value === 'app-lead-1'));
+    assert.equal(capture.mcpServers[1].name, 'obsidian');
+  });
+});
+
+test('OpenCode relay workers attach opt-in MCP and never inherit Agent Relay', { concurrency: false }, async () => {
+  await withFakeAgent('opencode-cli-worker-mcp-', async (tempRoot) => {
+    const argsCapturePath = path.join(tempRoot, 'capture.json');
+    process.env.OPENCODE_ARGS_CAPTURE = argsCapturePath;
+    mcpCatalogService.listEnabledNames = async () => {
+      throw new Error('relay workers must not inherit the OpenCode lead catalog');
+    };
+    mcpCatalogService.resolveForProvider = async (provider, names) => {
+      assert.equal(provider, 'opencode');
+      assert.deepEqual(names, ['obsidian']);
+      return [{ name: 'obsidian', transport: 'stdio', command: 'npx', args: ['obsidian-mcp'] }];
+    };
+
+    await spawnOpenCode(
+      'Hi',
+      {
+        cwd: tempRoot,
+        relayWorker: true,
+        mcpServers: ['cloudcli-agent-relay', 'obsidian'],
+        appSessionId: 'worker-session',
+      },
+      createWriter([]),
+    );
+
+    const capture = JSON.parse(await readFile(argsCapturePath, 'utf8'));
+    assert.deepEqual(capture.mcpServers.map((server) => server.name), ['obsidian']);
+  });
+});
+
+test('Kilo ACP sessions do not auto-attach the OpenCode catalog', { concurrency: false }, async () => {
+  await withFakeAgent('kilo-cli-no-opencode-catalog-', async (tempRoot) => {
+    const argsCapturePath = path.join(tempRoot, 'capture.json');
+    process.env.OPENCODE_ARGS_CAPTURE = argsCapturePath;
+    mcpCatalogService.listEnabledNames = async () => {
+      throw new Error('kilo must not load the OpenCode catalog');
+    };
+
+    await spawnKilo('Hi', { cwd: tempRoot }, createWriter([]));
+
+    const capture = JSON.parse(await readFile(argsCapturePath, 'utf8'));
+    assert.deepEqual(capture.mcpServers, []);
+  });
 });

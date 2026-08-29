@@ -11,6 +11,7 @@ export const WEBHOOK_PROVIDERS = [
   'kimi',
   'qwencode',
   'pi',
+
 ] as const satisfies readonly LLMProvider[];
 
 export type WebhookProvider = (typeof WEBHOOK_PROVIDERS)[number];

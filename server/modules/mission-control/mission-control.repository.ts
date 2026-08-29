@@ -37,6 +37,7 @@ type SectionRow = {
   resolve_tools_json: string;
   actions_json: string;
   create_kanban_task: number | null;
+  create_swarm_on_approve: number | null;
   kanban_assignee_provider: string | null;
   kanban_review_provider: string | null;
   kanban_mcp_tools_json: string | null;
@@ -133,6 +134,7 @@ function mapSection(row: SectionRow): McSection {
     resolve_tools: parseTools(row.resolve_tools_json),
     actions: parseActions(row.actions_json),
     create_kanban_task: Boolean(row.create_kanban_task),
+    create_swarm_on_approve: Boolean(row.create_swarm_on_approve),
     kanban_assignee_provider: (row.kanban_assignee_provider || null) as McProvider | null,
     kanban_review_provider: (row.kanban_review_provider || null) as McProvider | null,
     kanban_mcp_tools: parseTools(row.kanban_mcp_tools_json),
@@ -211,13 +213,13 @@ export const missionControlDb = {
         section_id, title, icon, sort_order, enabled, scope, project_id, mode,
         schedule_cron, provider, model, permission_mode, dry_run, auto_approve,
         produce_prompt, produce_tools_json, resolve_prompt, resolve_tools_json,
-        actions_json, create_kanban_task, kanban_assignee_provider, kanban_review_provider,
+        actions_json, create_kanban_task, create_swarm_on_approve, kanban_assignee_provider, kanban_review_provider,
         kanban_mcp_tools_json, created_at, updated_at
       ) VALUES (
         ?, ?, ?, ?, ?, ?, ?, ?,
         ?, ?, ?, ?, ?, ?,
         ?, ?, ?, ?,
-        ?, ?, ?, ?,
+        ?, ?, ?, ?, ?,
         ?, ?, ?
       )`,
     ).run(
@@ -241,6 +243,7 @@ export const missionControlDb = {
       JSON.stringify(input.resolve_tools ?? []),
       JSON.stringify(actions),
       input.create_kanban_task ? 1 : 0,
+      input.create_swarm_on_approve ? 1 : 0,
       input.kanban_assignee_provider ?? null,
       input.kanban_review_provider ?? null,
       JSON.stringify(input.kanban_mcp_tools ?? []),
@@ -294,6 +297,10 @@ export const missionControlDb = {
         input.create_kanban_task !== undefined
           ? input.create_kanban_task
           : existing.create_kanban_task,
+      create_swarm_on_approve:
+        input.create_swarm_on_approve !== undefined
+          ? input.create_swarm_on_approve
+          : existing.create_swarm_on_approve,
       kanban_assignee_provider:
         input.kanban_assignee_provider !== undefined
           ? input.kanban_assignee_provider
@@ -315,7 +322,7 @@ export const missionControlDb = {
         mode = ?, schedule_cron = ?, provider = ?, model = ?, permission_mode = ?,
         dry_run = ?, auto_approve = ?, produce_prompt = ?, produce_tools_json = ?,
         resolve_prompt = ?, resolve_tools_json = ?, actions_json = ?,
-        create_kanban_task = ?, kanban_assignee_provider = ?, kanban_review_provider = ?,
+        create_kanban_task = ?, create_swarm_on_approve = ?, kanban_assignee_provider = ?, kanban_review_provider = ?,
         kanban_mcp_tools_json = ?,
         updated_at = ?
        WHERE section_id = ?`,
@@ -339,6 +346,7 @@ export const missionControlDb = {
       JSON.stringify(next.resolve_tools),
       JSON.stringify(next.actions),
       next.create_kanban_task ? 1 : 0,
+      next.create_swarm_on_approve ? 1 : 0,
       next.kanban_assignee_provider ?? null,
       next.kanban_review_provider ?? null,
       JSON.stringify(next.kanban_mcp_tools ?? []),

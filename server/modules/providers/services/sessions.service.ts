@@ -3,7 +3,7 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 
 import { projectsDb, sessionsDb } from '@/modules/database/index.js';
-import { chatRunRegistry } from '@/modules/websocket/index.js';
+import { chatRunRegistry, shellSessionRegistry } from '@/modules/websocket/index.js';
 import { providerRegistry } from '@/modules/providers/provider.registry.js';
 import type {
   FetchHistoryOptions,
@@ -96,10 +96,52 @@ export const sessionsService = {
     provider: LLMProvider;
     startedAt: number;
     lastSeq: number;
+    source: 'chat' | 'shell';
+    canInterrupt: boolean;
+    /**
+     * True for swarm members, Agent Relay workers, and automation runs. The
+     * Running rail counts them; the project session picker must not list them.
+     */
+    isInternal: boolean;
+    title: string;
+    projectId: string | null;
+    projectDisplayName: string;
+    projectPath: string | null;
   }> {
-    return chatRunRegistry.listRunningRuns().filter(({ sessionId }) => {
-      const row = sessionsDb.getSessionById(sessionId);
-      return Boolean(row && !row.is_internal);
+    const chatSessions = chatRunRegistry.listRunningRuns().map((session) => {
+      const row = sessionsDb.getSessionById(session.sessionId);
+      return {
+        ...session,
+        source: 'chat' as const,
+        // Swarm/automation rows are viewable but not abortable from Chat.
+        canInterrupt: Boolean(row && !row.is_internal),
+        isInternal: Boolean(row?.is_internal),
+      };
+    });
+    const chatSessionIds = new Set(chatSessions.map(({ sessionId }) => sessionId));
+    const shellSessions = shellSessionRegistry.listRunning()
+      .filter(({ sessionId }) => !chatSessionIds.has(sessionId))
+      .map((session) => ({
+        ...session,
+        lastSeq: 0,
+        source: 'shell' as const,
+        canInterrupt: false,
+        isInternal: Boolean(sessionsDb.getSessionById(session.sessionId)?.is_internal),
+      }));
+
+    // Keep rows even when the DB lookup misses (brand-new chat before the
+    // watcher writes the row). Dropping them undercounted the rail badge.
+    return [...chatSessions, ...shellSessions].map((session) => {
+      const row = sessionsDb.getSessionById(session.sessionId);
+      const projectPath = row?.project_path?.trim() ? row.project_path : null;
+      const project = projectPath ? projectsDb.getProjectPath(projectPath) : null;
+      return {
+        ...session,
+        title: row?.custom_name?.trim() || session.sessionId,
+        projectId: project?.project_id ?? null,
+        projectDisplayName: resolveProjectDisplayName(projectPath, project?.custom_project_name),
+        projectPath,
+      };
     });
   },
 
@@ -168,13 +210,8 @@ export const sessionsService = {
       });
     }
 
-    if (session.is_internal) {
-      throw new AppError(`Session "${sessionId}" was not found.`, {
-        code: 'SESSION_NOT_FOUND',
-        statusCode: 404,
-      });
-    }
-
+    // Internal swarm/automation rows stay read-only for send/abort, but their
+    // transcripts are visible in Chat whenever the user opens the session.
     // App-created sessions that never produced a provider transcript yet
     // (e.g. first message still streaming) simply have no history.
     if (!session.provider_session_id) {
@@ -195,6 +232,7 @@ export const sessionsService = {
       // may live inside the isolated worktree recorded separately here.
       projectPath: session.runtime_project_path ?? session.project_path ?? '',
       providerSessionId: session.provider_session_id,
+      jsonlPath: session.jsonl_path,
     });
 
     return {
@@ -272,6 +310,12 @@ export const sessionsService = {
         deletedFromDisk: false,
       };
     }
+
+    // A force-deleted lead or worker session must not leave provider processes
+    // running without an owner/transcript. Dynamic import avoids making the
+    // providers module statically depend on the optional Relay feature.
+    const { agentRelayService } = await import('@/modules/agent-relay/index.js');
+    await Promise.all(agentRelayService.activeForSession(sessionId).map((job) => agentRelayService.cancel(job.relay_id)));
 
     let removedFromDisk = false;
     if (options.deletedFromDisk && session.jsonl_path) {

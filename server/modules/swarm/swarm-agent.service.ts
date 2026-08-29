@@ -64,7 +64,7 @@ export function getSwarmSpawnFn(provider: LLMProvider): ProviderSpawnFn | undefi
   return runtimeSpawnFns[provider];
 }
 
-const SWARM_PROVIDERS: LLMProvider[] = [
+export const SWARM_PROVIDERS: LLMProvider[] = [
   'claude',
   'codex',
   'cursor',

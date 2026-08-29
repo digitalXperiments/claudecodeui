@@ -379,10 +379,21 @@ export const runsDb = {
 
   listEvents(
     runId: string,
-    opts: { afterSeq?: number; limit?: number } = {},
+    opts: { afterSeq?: number; limit?: number; newest?: boolean } = {},
   ): RunEventEnvelope[] {
     const db = getConnection();
     const limit = clampLimit(opts.limit, DEFAULT_EVENT_LIMIT, MAX_EVENT_LIMIT);
+    if (opts.newest) {
+      const newest = db
+        .prepare(
+          `SELECT * FROM agent_run_events
+           WHERE run_id = ?
+           ORDER BY seq DESC
+           LIMIT ?`,
+        )
+        .all(runId, limit) as EventRow[];
+      return newest.reverse().map(mapEvent);
+    }
     const rows = db
       .prepare(
         `SELECT * FROM agent_run_events

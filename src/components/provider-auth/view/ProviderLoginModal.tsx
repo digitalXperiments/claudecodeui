@@ -4,7 +4,6 @@ import StandaloneShell from '../../standalone-shell/view/StandaloneShell';
 import { DEFAULT_PROJECT_FOR_EMPTY_SHELL, IS_PLATFORM } from '../../../constants/config';
 import type { LLMProvider } from '../../../types/app';
 import { PROVIDER_USAGE_AUTH_CHANGED_EVENT } from '../../../utils/providerUsagePreferences';
-
 type ProviderLoginModalProps = {
   isOpen: boolean;
   onClose: () => void;
@@ -119,7 +118,7 @@ export default function ProviderLoginModal({
         </div>
 
         <div className="flex-1 overflow-hidden">
-          <StandaloneShell project={DEFAULT_PROJECT_FOR_EMPTY_SHELL} command={command} onComplete={handleComplete} minimal={true} />
+            <StandaloneShell project={DEFAULT_PROJECT_FOR_EMPTY_SHELL} command={command} onComplete={handleComplete} minimal={true} />
         </div>
       </div>
     </div>

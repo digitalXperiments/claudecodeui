@@ -74,6 +74,8 @@ type ActiveLoginProvider = AgentProvider | '';
 const KNOWN_MAIN_TABS: SettingsMainTab[] = [
   'agents',
   'agent-profiles',
+  'model-registry',
+  'agent-relay',
   'studio',
   'evals',
   'mcp',

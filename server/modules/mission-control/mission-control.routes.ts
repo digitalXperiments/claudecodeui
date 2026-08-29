@@ -30,6 +30,11 @@ import {
   clearSeedSuppressionByTitle,
   suppressSeedByTitle,
 } from '@/modules/mission-control/mission-control-seed.service.js';
+import {
+  runSectionWorkshop,
+  type SectionWorkshopMessage,
+  type SectionWorkshopDraft,
+} from '@/modules/mission-control/mission-control-section-workshop.service.js';
 
 const router = express.Router();
 
@@ -176,6 +181,9 @@ function parseSectionBody(body: Record<string, unknown>, partial: boolean): Crea
     ...(body.create_kanban_task !== undefined
       ? { create_kanban_task: readBoolean(body.create_kanban_task, false) }
       : {}),
+    ...(body.create_swarm_on_approve !== undefined
+      ? { create_swarm_on_approve: readBoolean(body.create_swarm_on_approve, false) }
+      : {}),
     ...(body.kanban_assignee_provider !== undefined
       ? { kanban_assignee_provider: parseKanbanProvider(body.kanban_assignee_provider) }
       : {}),
@@ -210,6 +218,44 @@ router.get(
       pendingCount: missionControlDb.countPending(),
       sectionCount: missionControlDb.listSections().length,
     });
+  }),
+);
+
+// POST /draft-section — conversational section architect
+router.post(
+  '/draft-section',
+  asyncHandler(async (req, res) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const rawMessages = Array.isArray(body.messages) ? body.messages : [];
+    const messages: SectionWorkshopMessage[] = [];
+    for (const entry of rawMessages) {
+      if (!entry || typeof entry !== 'object') continue;
+      const row = entry as Record<string, unknown>;
+      const role = row.role === 'assistant' ? 'assistant' : row.role === 'user' ? 'user' : null;
+      const content = readString(row.content).trim();
+      if (role && content) messages.push({ role, content });
+    }
+    const rawDraft = body.currentDraft;
+    const currentDraft = rawDraft && typeof rawDraft === 'object' && !Array.isArray(rawDraft)
+      ? rawDraft as Partial<SectionWorkshopDraft>
+      : undefined;
+    const availableMcpServers = Array.isArray(body.availableMcpServers)
+      ? body.availableMcpServers
+          .filter((value): value is string => typeof value === 'string')
+          .map((value) => value.trim())
+          .filter(Boolean)
+          .slice(0, 100)
+      : [];
+    const result = await runSectionWorkshop({
+      provider: readOptionalString(body.provider),
+      model: readOptionalString(body.model),
+      projectId: readOptionalString(body.projectId),
+      projectName: readOptionalString(body.projectName),
+      messages,
+      currentDraft,
+      availableMcpServers,
+    });
+    res.json({ success: true, ...result });
   }),
 );
 

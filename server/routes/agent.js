@@ -660,7 +660,7 @@ class ResponseCollector {
  *                          - Source for auto-generated branch names (if createBranch=true and no branchName)
  *                          - Fallback for PR title if no commits are made
  *
- * @param {string} provider - (Optional) AI provider to use. Options: 'claude' | 'cursor' | 'codex' | 'opencode' | 'kilo' | 'pi'
+ * @param {string} provider - (Optional) AI provider to use. Includes 'claude', 'cursor', 'codex', 'opencode', 'kilo', 'pi', and 'pi'.
  *                           Default: 'claude'
  *
  * @param {boolean} stream - (Optional) Enable Server-Sent Events (SSE) streaming for real-time updates.
@@ -783,7 +783,7 @@ class ResponseCollector {
  * Input Validations (400 Bad Request):
  *   - Either githubUrl OR projectPath must be provided (not neither)
  *   - message must be non-empty string
- *   - provider must be 'claude', 'cursor', 'codex', 'opencode', 'kilo', or 'pi'
+ *   - provider must be one of the supported agent provider ids
  *   - createBranch/createPR requires githubUrl OR projectPath (not neither)
  *   - branchName must pass Git naming rules (if provided)
  *
@@ -896,7 +896,7 @@ router.post('/', validateExternalApiKey, async (req, res) => {
   }
 
   if (!['claude', 'cursor', 'codex', 'opencode', 'kilo', 'cline', 'kimi', 'qwencode', 'pi'].includes(provider)) {
-    return res.status(400).json({ error: 'provider must be "claude", "cursor", "codex", "opencode", "kilo", "cline", "kimi", "qwencode", or "pi"' });
+    return res.status(400).json({ error: 'provider must be a supported CloudCLI agent id' });
   }
 
   // Validate GitHub branch/PR creation requirements

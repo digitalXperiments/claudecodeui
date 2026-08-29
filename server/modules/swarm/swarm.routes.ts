@@ -1,6 +1,17 @@
 import express from 'express';
 
 import { swarmService } from '@/modules/swarm/swarm.service.js';
+import {
+  getStaffingPrefs,
+  listModelCapabilities,
+  refreshModelRegistry,
+  registryIsStale,
+  setModelEnabled,
+  setStaffingPrefs,
+} from '@/modules/swarm/model-registry.service.js';
+import { previewAutoStaffRoster } from '@/modules/swarm/swarm-staffing.service.js';
+import { runGoalWorkshop, type GoalWorkshopMessage } from '@/modules/swarm/swarm-goal-workshop.service.js';
+import { swarmDb } from '@/modules/swarm/swarm.repository.js';
 import type {
   SwarmAgentSpec,
   SwarmAttachment,
@@ -108,7 +119,154 @@ router.get(
       success: true,
       roster: swarmService.defaultRoster(),
       kinds: ['orchestrator', 'explorer', 'implementer', 'reviewer', 'tester', 'security', 'docs', 'custom'],
+      staffing: getStaffingPrefs(),
+      autonomousDefault: true,
     });
+  }),
+);
+
+// ——— Model Capability Registry (automated staffing source) ———
+
+router.get(
+  '/model-registry',
+  asyncHandler(async (_req, res) => {
+    let capabilities = listModelCapabilities();
+    if (capabilities.length === 0) {
+      await refreshModelRegistry({});
+      capabilities = listModelCapabilities();
+    }
+    res.json({
+      success: true,
+      capabilities,
+      stale: registryIsStale(),
+    });
+  }),
+);
+
+router.patch(
+  '/model-registry/models',
+  asyncHandler(async (req, res) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const provider = typeof body.provider === 'string' ? body.provider.trim() : '';
+    const modelId = typeof body.modelId === 'string' ? body.modelId.trim() : '';
+    if (!provider || !modelId) {
+      throw new AppError('provider and modelId are required', { code: 'BAD_REQUEST', statusCode: 400 });
+    }
+    const enabled = body.enabled !== false;
+    const ok = setModelEnabled(provider, modelId, enabled);
+    if (!ok) {
+      throw new AppError('Model not found in registry', { code: 'NOT_FOUND', statusCode: 404 });
+    }
+    res.json({ success: true, capabilities: listModelCapabilities(), stale: registryIsStale() });
+  }),
+);
+
+router.get(
+  '/model-registry/prefs',
+  asyncHandler(async (_req, res) => {
+    res.json({ success: true, prefs: getStaffingPrefs() });
+  }),
+);
+
+router.put(
+  '/model-registry/prefs',
+  asyncHandler(async (req, res) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const allowedProviders = Array.isArray(body.allowedProviders)
+      ? body.allowedProviders.filter((item): item is string => typeof item === 'string')
+      : body.allowedProviders === null
+        ? null
+        : undefined;
+    const prefs = setStaffingPrefs({
+      allowedProviders,
+      defaultOrchestratorProvider:
+        body.defaultOrchestratorProvider === null
+          ? null
+          : typeof body.defaultOrchestratorProvider === 'string'
+            ? body.defaultOrchestratorProvider
+            : undefined,
+      defaultOrchestratorModel:
+        body.defaultOrchestratorModel === null
+          ? null
+          : typeof body.defaultOrchestratorModel === 'string'
+            ? body.defaultOrchestratorModel
+            : undefined,
+    });
+    res.json({ success: true, prefs });
+  }),
+);
+
+router.post(
+  '/model-registry/refresh',
+  asyncHandler(async (req, res) => {
+    const body = (req.body ?? {}) as { providers?: unknown };
+    const providers = Array.isArray(body.providers)
+      ? body.providers.filter((p): p is string => typeof p === 'string')
+      : undefined;
+    const result = await refreshModelRegistry({ providers });
+    res.json({ success: true, ...result, capabilities: listModelCapabilities(), stale: registryIsStale() });
+  }),
+);
+
+// Preview the auto-staffed roster for a set of task kinds before launching.
+router.post(
+  '/swarm/auto-staff-preview',
+  asyncHandler(async (req, res) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const kinds = Array.isArray(body.kinds)
+      ? body.kinds.filter(
+          (k): k is { kind: string; difficulty?: string } =>
+            Boolean(k) && typeof (k as Record<string, unknown>).kind === 'string',
+        )
+      : [];
+    const allowedProviders = Array.isArray(body.allowedProviders)
+      ? body.allowedProviders.filter((p): p is string => typeof p === 'string')
+      : undefined;
+    const seats = previewAutoStaffRoster({
+      kinds: kinds.map((entry) => ({
+        kind: entry.kind as never,
+        difficulty: (entry.difficulty ?? null) as never,
+      })),
+      allowedProviders,
+    });
+    res.json({ success: true, seats });
+  }),
+);
+
+router.post(
+  '/swarm/draft-goal',
+  asyncHandler(async (req, res) => {
+    const controller = new AbortController();
+    const abortIfDisconnected = () => {
+      if (!res.writableEnded) controller.abort();
+    };
+    req.once('aborted', abortIfDisconnected);
+    res.once('close', abortIfDisconnected);
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const rawMessages = Array.isArray(body.messages) ? body.messages : [];
+    const messages: GoalWorkshopMessage[] = [];
+    for (const entry of rawMessages) {
+      if (!entry || typeof entry !== 'object') continue;
+      const row = entry as Record<string, unknown>;
+      const role = row.role === 'assistant' ? 'assistant' : row.role === 'user' ? 'user' : null;
+      const content = typeof row.content === 'string' ? row.content : '';
+      if (!role || !content.trim()) continue;
+      messages.push({ role, content: content.trim() });
+    }
+    try {
+      const result = await runGoalWorkshop({
+        projectId: stringValue(body.projectId),
+        provider: optionalString(body.provider),
+        model: optionalString(body.model) ?? null,
+        messages,
+        currentGoal: optionalString(body.currentGoal),
+        signal: controller.signal,
+      });
+      res.json({ success: true, ...result });
+    } finally {
+      req.off('aborted', abortIfDisconnected);
+      res.off('close', abortIfDisconnected);
+    }
   }),
 );
 
@@ -154,7 +312,8 @@ router.post(
         prOnRedValidation: body.prOnRedValidation === false ? false : undefined,
         // Long-horizon unattended mode: raises step-attempt/replan-round
         // ceilings by an order of magnitude; only a crash/silence ends a step.
-        autonomous: body.autonomous === true,
+        // Long-horizon is the default; only an explicit false opts into short runs.
+        autonomous: body.autonomous === false ? false : undefined,
         maxReplanRounds:
           typeof body.maxReplanRounds === 'number' && body.maxReplanRounds > 0
             ? body.maxReplanRounds
@@ -192,6 +351,14 @@ router.post(
               ? Number(body.maxConcurrency)
               : undefined,
         parallelWriters: body.parallelWriters === true,
+        // Dynamic engine defaults ON; only an explicit false opts out.
+        dynamicEngine: body.dynamicEngine === false ? false : undefined,
+        wallClockMs:
+          typeof body.wallClockMs === 'number' && body.wallClockMs > 0
+            ? body.wallClockMs
+            : typeof body.wallClockMs === 'string' && Number(body.wallClockMs) > 0
+              ? Number(body.wallClockMs)
+              : undefined,
         provider: optionalString(body.provider) ?? null,
         model: optionalString(body.model) ?? null,
         effort: optionalString(body.effort) ?? null,
@@ -213,6 +380,40 @@ router.get(
     const swarm = swarmService.get(swarmId);
     if (!swarm) throw new AppError('Swarm not found', { code: 'SWARM_NOT_FOUND', statusCode: 404 });
     res.json({ success: true, artifacts: swarm.artifacts ?? [] });
+  }),
+);
+
+router.get(
+  '/swarm/:swarmId/events',
+  asyncHandler(async (req, res) => {
+    const swarmId = stringValue(req.params.swarmId);
+    if (!swarmService.get(swarmId))
+      throw new AppError('Swarm not found', { code: 'SWARM_NOT_FOUND', statusCode: 404 });
+    const sinceRaw = optionalString(req.query.since);
+    const limitRaw = optionalString(req.query.limit);
+    const events = swarmDb.listEventsForSwarm(swarmId, {
+      sinceSeq: sinceRaw ? Number(sinceRaw) || undefined : undefined,
+      limit: limitRaw ? Math.min(2000, Math.max(1, Number(limitRaw) || 500)) : 500,
+    });
+    res.json({ success: true, events });
+  }),
+);
+
+router.get(
+  '/swarm/:swarmId/metrics',
+  asyncHandler(async (req, res) => {
+    const metrics = swarmService.getMetrics(stringValue(req.params.swarmId));
+    if (!metrics) throw new AppError('Swarm not found', { code: 'SWARM_NOT_FOUND', statusCode: 404 });
+    res.json({ success: true, metrics });
+  }),
+);
+
+router.get(
+  '/swarm/:swarmId/activity',
+  asyncHandler(async (req, res) => {
+    const activity = swarmService.getActivity(stringValue(req.params.swarmId));
+    if (!activity) throw new AppError('Swarm not found', { code: 'SWARM_NOT_FOUND', statusCode: 404 });
+    res.json({ success: true, activity });
   }),
 );
 
@@ -258,6 +459,22 @@ router.get(
         statusCode: 404,
       });
     res.sendFile(report.summaryPath);
+  }),
+);
+
+router.post(
+  '/swarm/:swarmId/fork',
+  asyncHandler(async (req, res) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    let forked;
+    try {
+      forked = swarmService.fork(stringValue(req.params.swarmId), {
+        fromStepId: optionalString(body.fromStepId) ?? null,
+      });
+    } catch (error) {
+      mapError(error);
+    }
+    res.json({ success: true, swarm: forked });
   }),
 );
 

@@ -11,7 +11,7 @@ import path from 'node:path';
 import { projectsDb } from '@/modules/database/index.js';
 import { missionControlDb } from '@/modules/mission-control/mission-control.repository.js';
 import type { McItem, McSection } from '@/modules/mission-control/mission-control.types.js';
-import { sessionsService } from '@/modules/providers/services/sessions.service.js';
+import { sessionsService } from '@/modules/providers/index.js';
 import type { LLMProvider } from '@/shared/types.js';
 import { AppError } from '@/shared/utils.js';
 

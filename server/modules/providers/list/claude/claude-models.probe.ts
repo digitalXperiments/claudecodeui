@@ -1,10 +1,9 @@
-import { mkdtemp, rm } from 'node:fs/promises';
-import os from 'node:os';
-import path from 'node:path';
+import { rm } from 'node:fs/promises';
 
 import { query } from '@anthropic-ai/claude-agent-sdk';
 
 import { resolveClaudeCodeExecutablePath } from '@/shared/claude-cli-path.js';
+import { makeScratchDir } from '@/shared/scratch.js';
 import type { ProviderModelOption, ProviderModelsDefinition } from '@/shared/types.js';
 
 /**
@@ -44,7 +43,7 @@ const createIdlePrompt = async function* (): AsyncGenerator<never> {
  * touch the caller's project state.
  */
 export const probeClaudeCliModels = async (): Promise<ClaudeCliModelInfo[]> => {
-  const probeCwd = await mkdtemp(path.join(os.tmpdir(), 'cloudcli-claude-models-'));
+  const probeCwd = await makeScratchDir('claude-models-');
 
   let queryInstance: ReturnType<typeof query> | null = null;
   let timeoutHandle: NodeJS.Timeout | null = null;

@@ -610,6 +610,27 @@ function countPendingApprovalsForSession(sessionId) {
  * @param {string} cwd - Current working directory for project-specific configs
  * @returns {Object|null} MCP servers object or null if none found
  */
+/**
+ * Tells CloudCLI-managed MCP servers which chat session they are serving.
+ *
+ * The Agent Relay MCP needs this to attribute a delegation to the lead that
+ * asked for it — without it every relay job looks unattributed and every chat
+ * sees every other chat's workers. Claude spawns MCP children itself from this
+ * config object, so the value has to travel on the server entry rather than on
+ * the (process-wide, run-shared) `process.env`.
+ */
+function stampLeadSessionOnMcpServers(mcpServers, appSessionId) {
+  if (!appSessionId) return mcpServers;
+  const stamped = {};
+  for (const [name, entry] of Object.entries(mcpServers)) {
+    // Only stdio children inherit an env; remote transports have no process.
+    stamped[name] = entry && typeof entry === 'object' && entry.command
+      ? { ...entry, env: { ...(entry.env || {}), CLOUDCLI_LEAD_SESSION_ID: appSessionId } }
+      : entry;
+  }
+  return stamped;
+}
+
 async function loadMcpConfig(cwd) {
   try {
     const claudeConfigPath = path.join(os.homedir(), '.claude.json');
@@ -774,9 +795,21 @@ async function queryClaudeSDK(command, options = {}, ws) {
       effortModels,
     });
 
-    const mcpServers = await loadMcpConfig(options.cwd);
+    let mcpServers = await loadMcpConfig(options.cwd);
+    if (options.relayWorker && mcpServers) {
+      const allowed = Array.isArray(options.mcpServers)
+        ? new Set(options.mcpServers.filter((name) => typeof name === 'string' && name.trim()))
+        : new Set();
+      const filtered = {};
+      for (const [name, entry] of Object.entries(mcpServers)) {
+        if (name === 'cloudcli-agent-relay') continue;
+        if (!allowed.has(name)) continue;
+        filtered[name] = entry;
+      }
+      mcpServers = Object.keys(filtered).length > 0 ? filtered : null;
+    }
     if (mcpServers) {
-      sdkOptions.mcpServers = mcpServers;
+      sdkOptions.mcpServers = stampLeadSessionOnMcpServers(mcpServers, options.appSessionId);
     }
 
     // One-shot path (headless/git): string or single-yield image generator.

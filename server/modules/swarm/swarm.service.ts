@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs';
+import { existsSync, readdirSync as fsReaddirSync, readFileSync as fsReadFileSync, rmSync as fsRmSync } from 'node:fs';
 import { copyFile, mkdir } from 'node:fs/promises';
 import { basename as pathBasename, extname as pathExtname, join as pathJoin } from 'node:path';
 
@@ -12,12 +12,13 @@ import {
   type AgentRunProfile,
 } from '@/modules/database/index.js';
 import { interruptsService } from '@/modules/interrupt-queue/index.js';
-import { runService } from '@/modules/runs/index.js';
 import {
   downgradeModelForSoftCap,
   evaluateSpend,
   raiseSpendCapInterrupt,
-} from '@/modules/runs/spend-governor.service.js';
+  runService,
+  estimateCostUsd,
+} from '@/modules/runs/index.js';
 import { providerCapabilitiesService } from '@/modules/providers/index.js';
 import {
   collectProjectGitContext,
@@ -36,7 +37,6 @@ import {
   stepRequiresSourceChanges,
   type ParsedMemberFindings,
 } from '@/modules/swarm/swarm-agent.service.js';
-import { estimateCostUsd } from '@/modules/runs/model-pricing.js';
 import { parseJsonFromAgentText } from '@/modules/mission-control/index.js';
 import { swarmDb } from '@/modules/swarm/swarm.repository.js';
 import {
@@ -71,6 +71,26 @@ import {
   shouldRefuseReviewer,
   type SupervisorEvent,
 } from '@/modules/swarm/swarm-supervisor.service.js';
+import {
+  buildDispatchPrompt,
+  parseDispatchDecision,
+  planDigest,
+  shouldUseSeedFirstWave,
+  toPlanSteps,
+  usesDynamicDispatchLoop,
+} from '@/modules/swarm/swarm-dispatch.service.js';
+import { getStaffingPrefs } from '@/modules/swarm/model-registry.service.js';
+import { formatRegistrySummary, staffPlanSeats, staffTask } from '@/modules/swarm/swarm-staffing.service.js';
+import {
+  ProgressTracker,
+  finishModeVerdict,
+  isSlowFailure,
+  needsDriftAudit,
+  reviewHasEvidence,
+  splitCanaryGroup,
+  stepLineageDepth,
+  MAX_REMEDIATION_LINEAGE,
+} from '@/modules/swarm/swarm-guardrails.service.js';
 import type {
   StartSwarmInput,
   SwarmAgentLevel,
@@ -152,11 +172,18 @@ const DEFAULT_MAX_REPLAN_ROUNDS = 1;
 const MAX_REPLAN_ROUNDS_HARD_CAP = 1;
 const AUTONOMOUS_MAX_REPLAN_ROUNDS_DEFAULT = 8;
 const AUTONOMOUS_MAX_REPLAN_ROUNDS_HARD_CAP = 15;
-const DEFAULT_MAX_CONCURRENCY = 4;
+const DEFAULT_MAX_CONCURRENCY = 6;
 const MAX_CONCURRENCY = 8;
 const TERMINAL_SWARM_STATUSES = new Set(['succeeded', 'failed', 'aborted']);
 const PIPELINE_LEASE_TTL_MS = 30_000;
 const PIPELINE_OWNER = `swarm-worker:${process.pid}:${Math.random().toString(36).slice(2, 10)}`;
+/** Per-swarm wall-clock deadlines so in-flight steps can be clamped (PRD swarm-studio-v2 G4). */
+const pipelineDeadlines = new Map<string, number>();
+/** Recovery admission pool size after a restart. */
+const RECOVERY_CONCURRENCY = Math.max(
+  1,
+  Number.parseInt(process.env.CLOUDCLI_SWARM_RECOVERY_CONCURRENCY ?? '', 10) || 4,
+);
 
 const KIND_INSTRUCTIONS: Record<string, string> = {
   orchestrator:
@@ -218,7 +245,7 @@ const PLAN_ENVELOPE = `Return ONLY a JSON object (no markdown fences):
 }
 Rules:
 - You are the ONLY orchestrator. Do not assign work to yourself as implementer/explorer.
-- Use only roster labels in assignTo. You may assign multiple steps to different agents of the same kind when the roster has multiple explorers/implementers/reviewers.
+- assignTo may be the seat id, the seat label, or the kind (explorer / implementer / …). Prefer the exact roster label when several seats share a kind.
 - Every step needs a "difficulty" and must go to an agent whose level is >= it (see the capability model above).
 - Every step needs a "scope": the files, globs or areas that step exclusively owns. Two steps in the same wave MUST have disjoint scopes.
 - Every step needs 1-5 concrete acceptanceCriteria. Add verificationCommands only for safe, read-only project checks.
@@ -255,6 +282,35 @@ function defaultSwarmBranch(swarmId: string, goal: string): string {
   const shortId = swarmId.replace(/^swarm_/, '').slice(0, 8);
   return `swarm/${slugifyGoal(goal)}-${shortId}`;
 }
+
+/**
+ * Mechanical verifier (PRD swarm-studio-v2): run a step's declared
+ * verificationCommands in the workspace and require exit 0 from each. This is
+ * an objective gate — no LLM judgment — so a green report that fails `npm test`
+ * cannot pass. Returns the list of failed commands with output tails.
+ */
+async function runMechanicalVerification(
+  commands: string[],
+  cwd: string,
+  timeoutMs = 180_000,
+): Promise<Array<{ command: string; code: number | null; output: string }>> {
+  const failures: Array<{ command: string; code: number | null; output: string }> = [];
+  for (const command of commands.slice(0, 10)) {
+    const isWindows = process.platform === 'win32';
+    const result = await runCli(
+      isWindows ? 'cmd' : 'sh',
+      [isWindows ? '/d /s /c' : '-c', command],
+      cwd,
+      timeoutMs,
+    );
+    if (result.code !== 0) {
+      const tail = `${result.stdout}\n${result.stderr}`.trim().slice(-1500);
+      failures.push({ command, code: result.code, output: tail });
+    }
+  }
+  return failures;
+}
+
 
 function runCli(
   command: string,
@@ -562,12 +618,37 @@ function validateBoundedText(name: string, value: unknown, max: number, required
   return text;
 }
 
+/**
+ * Bind a planner assignTo to a worker seat. Orchestrators often emit the kind
+ * ("Explorer") or a generated id ("explorer-1") instead of the exact label.
+ */
+export function matchRosterSeat(
+  assignTo: string | null | undefined,
+  roster: SwarmAgentSpec[],
+): SwarmAgentSpec | null {
+  const needle = typeof assignTo === 'string' ? assignTo.trim() : '';
+  if (!needle) return null;
+  const workers = roster.filter((a) => a.kind !== 'orchestrator');
+  const lower = needle.toLowerCase();
+  const byId = workers.find((a) => a.id && a.id.toLowerCase() === lower);
+  if (byId) return byId;
+  const byLabel = workers.find((a) => a.label.toLowerCase() === lower);
+  if (byLabel) return byLabel;
+  const byLabelPrefix = workers.find((a) => {
+    const label = a.label.toLowerCase();
+    return label.startsWith(`${lower} `) || label.startsWith(`${lower}(`) || label.startsWith(`${lower} -`);
+  });
+  if (byLabelPrefix) return byLabelPrefix;
+  const byKind = workers.find((a) => String(a.kind).toLowerCase() === lower);
+  if (byKind) return byKind;
+  return null;
+}
+
 function validatePlan(plan: SwarmPlan, roster: SwarmAgentSpec[]): SwarmPlan {
   if (!Array.isArray(plan.steps) || plan.steps.length < 1 || plan.steps.length > MAX_PLAN_STEPS) {
     throw new Error(`Swarm plan must contain between 1 and ${MAX_PLAN_STEPS} steps`);
   }
   const ids = new Set<string>();
-  const rosterLabels = new Set(roster.filter((a) => a.kind !== 'orchestrator').flatMap((a) => [a.id, a.label.toLowerCase()].filter(Boolean) as string[]));
   for (const step of plan.steps) {
     step.requiresChanges = stepRequiresSourceChanges(step.kind, step.requiresChanges);
     validateBoundedText('plan step id', step.id, 80, true);
@@ -581,8 +662,12 @@ function validatePlan(plan: SwarmPlan, roster: SwarmAgentSpec[]): SwarmPlan {
     }
     if (ids.has(step.id)) throw new Error(`Duplicate swarm plan step id: ${step.id}`);
     ids.add(step.id);
-    if (step.assignTo && !rosterLabels.has(step.assignTo) && !rosterLabels.has(step.assignTo.toLowerCase())) {
-      throw new Error(`Step ${step.id} assigns unknown roster seat: ${step.assignTo}`);
+    if (step.assignTo) {
+      const seat = matchRosterSeat(step.assignTo, roster);
+      if (!seat) {
+        throw new Error(`Step ${step.id} assigns unknown roster seat: ${step.assignTo}`);
+      }
+      step.assignTo = seat.label;
     }
     if (step.dependsOn && (!Array.isArray(step.dependsOn) || step.dependsOn.length > MAX_PLAN_STEPS)) {
       throw new Error(`Invalid dependencies for step ${step.id}`);
@@ -787,11 +872,24 @@ export function resolveRoster(input: StartSwarmInput): {
     });
   }
 
-  const orchestrator =
+  let orchestrator =
     roster.find((a) => a.kind === 'orchestrator') ||
     normalizeAgentSpec(DEFAULT_ROSTER[0], fallback);
+  try {
+    const prefs = getStaffingPrefs();
+    if (!orchestrator.model && prefs.defaultOrchestratorModel) {
+      orchestrator = {
+        ...orchestrator,
+        provider: prefs.defaultOrchestratorProvider || orchestrator.provider,
+        model: prefs.defaultOrchestratorModel,
+      };
+    }
+  } catch {
+    /* prefs table may not exist in early tests */
+  }
 
-  // Auto-roster: the orchestrator selects worker seats from swarm-tagged
+  // Auto-roster: workers are staffed from enabled Model Profiles (registry),
+  // not hand-tagged agent profiles. The operator picks only the orchestrator.
   // agent profiles at plan time. Enabled explicitly (autoRoster: true) or
   // implied when the user supplied ONLY orchestrator seat(s) — either as an
   // explicit agents/roles list without workers, or via the `orchestrator`
@@ -837,7 +935,7 @@ export function resolveRoster(input: StartSwarmInput): {
     throw new CloudError('RUN_NOT_FOUND', `Swarm may use at most ${MAX_SKILLS} skills`);
   }
 
-  const autonomous = input.autonomous === true;
+  const autonomous = input.autonomous !== false;
   const stepAttemptsHardCap = autonomous ? AUTONOMOUS_STEP_MAX_ATTEMPTS_HARD_CAP : STEP_MAX_ATTEMPTS_HARD_CAP;
   const validationAttemptsHardCap = autonomous
     ? AUTONOMOUS_VALIDATION_MAX_ATTEMPTS_HARD_CAP
@@ -896,6 +994,18 @@ export function resolveRoster(input: StartSwarmInput): {
     skills: Array.isArray(input.skills)
       ? [...new Set(input.skills.filter(Boolean).map((skill) => validateBoundedText('skill', skill, MAX_SKILL_CHARS, true)))]
       : [],
+    // Dynamic dispatch is an explicit API capability. Swarm Studio always
+    // requests it, while older API clients that do not know the dispatch JSON
+    // contract keep the compatible classic pipeline.
+    dynamicEngine: input.dynamicEngine === true,
+    wallClockMs:
+      typeof input.wallClockMs === 'number' &&
+      Number.isFinite(input.wallClockMs) &&
+      input.wallClockMs > 0
+        ? Math.trunc(input.wallClockMs)
+        : null,
+    // Fork-from-checkpoint: skip planning and execute the pre-seeded plan.
+    resumeWithPersistedPlan: Boolean(input.planOverride),
   };
 
   return { roster, orchestrator, config };
@@ -1125,9 +1235,35 @@ function buildPlanPrompt(input: {
   candidateProfiles?: AgentRunProfile[] | null;
   /** Measured per-profile cost/performance history, when any exists. */
   costLedger?: SwarmCostLedger | null;
+  dynamicEngine?: boolean;
 }): string {
   const autoRoster = Boolean(input.candidateProfiles && input.candidateProfiles.length > 0);
   const attachmentsBlock = formatAttachmentsForPrompt(input.attachments);
+  const dynamic = input.dynamicEngine === true;
+  const job = dynamic
+    ? [
+        '## Your job',
+        'This swarm uses a DYNAMIC workflow. The plan you emit is a SEED SUGGESTION for the first batch only.',
+        'Do not write a complete serial pipeline (implement then review then test). After each harvest the',
+        'orchestrator will replan. Prefer 1–4 PARALLEL first-wave tasks with disjoint scopes.',
+        'Writers run in isolated git worktrees and may run concurrently. Skip seats that are not useful.',
+        'Do not execute the work yourself — only seed the first batch. Do NOT run terminal, git, or file tools.',
+      ].join('\n')
+    : [
+        '## Your job',
+        'Create the SMALLEST plan that fully covers the goal with top-quality output.',
+        'Use the fewest agents that can do it well — every extra agent must own a disjoint slice',
+        'you can name. Skip seats that are not useful; an unused seat costs nothing, a redundant',
+        'one costs a full context load. Agents share a blackboard and will see prior step results.',
+        'All agents work inside a dedicated git worktree (not the primary checkout).',
+        'Do not execute the work yourself in this step — only plan. There is no Kanban board;',
+        'your later handoff is the conclusion, then the system opens a PR from the worktree.',
+        'Do NOT run terminal, git, or file tools. The Project snapshot already includes',
+        'workspace path, branch, status, and worktrees. A denied tool aborts this entire turn.',
+      ].join('\n');
+  const sizing = dynamic
+    ? `${SIZING_RULES}\n\nDynamic override: implementers with disjoint scopes MAY run in parallel (isolated worktrees). Prefer a first batch of independent work over a 12-step relay.`
+    : SIZING_RULES;
   return [
     KIND_INSTRUCTIONS.orchestrator,
     '',
@@ -1148,22 +1284,13 @@ function buildPlanPrompt(input: {
     '',
     CAPABILITY_RULES,
     '',
-    SIZING_RULES,
+    sizing,
     input.skills.length ? `\n## Skills available\n${input.skills.map((s) => `- ${s}`).join('\n')}` : '',
     '',
     '## Project snapshot',
     input.gitContext,
     '',
-    '## Your job',
-    'Create the SMALLEST plan that fully covers the goal with top-quality output.',
-    'Use the fewest agents that can do it well — every extra agent must own a disjoint slice',
-    'you can name. Skip seats that are not useful; an unused seat costs nothing, a redundant',
-    'one costs a full context load. Agents share a blackboard and will see prior step results.',
-    'All agents work inside a dedicated git worktree (not the primary checkout).',
-    'Do not execute the work yourself in this step — only plan. There is no Kanban board;',
-    'your later handoff is the conclusion, then the system opens a PR from the worktree.',
-    'Do NOT run terminal, git, or file tools. The Project snapshot already includes',
-    'workspace path, branch, status, and worktrees. A denied tool aborts this entire turn.',
+    job,
     '',
     autoRoster ? `${PLAN_ENVELOPE}\n${AUTO_ROSTER_PLAN_RULES}` : PLAN_ENVELOPE,
   ]
@@ -1359,6 +1486,66 @@ function resolveAutoRosterFromPlan(input: {
   };
 }
 
+/**
+ * Peer mailbox (PRD swarm-studio-v2 phase 3): a file-based channel any CLI
+ * agent can use without provider-specific tooling. Agents drop short notes
+ * under `tmp/cloudcli/swarm-mailbox/to-<label-or-kind>-<topic>.md` in the
+ * workspace; the pipeline injects addressed notes into the recipient's next
+ * step prompt and deletes them after delivery.
+ */
+const MAILBOX_DIR = 'tmp/cloudcli/swarm-mailbox';
+
+function mailboxTokens(agent: SwarmAgentSpec): string[] {
+  const tokens = [agent.label, agent.kind].filter(Boolean).map((t) => t.toLowerCase());
+  return [...new Set(tokens)];
+}
+
+function collectMailboxForSeat(
+  workPath: string,
+  agent: SwarmAgentSpec,
+): { section: string; consumed: string[] } {
+  const dir = pathJoin(workPath, MAILBOX_DIR);
+  let entries: string[] = [];
+  try {
+    entries = fsReaddirSync(dir).filter((name) => name.toLowerCase().endsWith('.md'));
+  } catch {
+    return { section: '', consumed: [] };
+  }
+  const tokens = mailboxTokens(agent);
+  const matched: Array<{ file: string; content: string }> = [];
+  for (const name of entries) {
+    const lower = name.toLowerCase();
+    const addressed =
+      lower.startsWith('to-all') ||
+      lower.startsWith('broadcast') ||
+      tokens.some((token) => lower.includes(`to-${token}`) || lower.includes(`for-${token}`));
+    if (!addressed) continue;
+    try {
+      const content = fsReadFileSync(pathJoin(dir, name), 'utf8').trim();
+      if (content) matched.push({ file: name, content: content.slice(0, 4000) });
+    } catch {
+      /* unreadable note — skip */
+    }
+  }
+  if (matched.length === 0) return { section: '', consumed: [] };
+  const section = [
+    '## Messages addressed to you (peer mailbox)',
+    ...matched.map((note) => `### ${note.file}\n${note.content}`),
+    'These notes were left by teammate agents mid-run. Act on anything relevant; they are deleted after this read.',
+  ].join('\n');
+  return { section, consumed: matched.map((note) => pathJoin(dir, note.file)) };
+}
+
+function consumeMailbox(workPath: string, files: string[]): void {
+  for (const file of files) {
+    try {
+      fsRmSync(file, { force: true });
+    } catch {
+      /* best effort */
+    }
+  }
+}
+
 function buildStepPrompt(input: {
   agent: SwarmAgentSpec;
   step: SwarmPlanStep;
@@ -1367,6 +1554,8 @@ function buildStepPrompt(input: {
   gitContext: string;
   blackboard: SwarmMessage[];
   attachments?: SwarmAttachment[] | null;
+  /** Peer-mailbox notes addressed to this seat, collected at dispatch time. */
+  mailbox?: string | null;
 }): string {
   const kindBlurb = KIND_INSTRUCTIONS[input.agent.kind] || KIND_INSTRUCTIONS.custom;
   const attachmentsBlock = formatAttachmentsForPrompt(input.attachments);
@@ -1413,6 +1602,12 @@ function buildStepPrompt(input: {
     '',
     '## Shared blackboard (messages from other agents)',
     formatBlackboard(input.blackboard),
+    input.mailbox ? '' : '',
+    input.mailbox || '',
+    '',
+    '## Peer mailbox (talk to teammates mid-run)',
+    `If a teammate needs something from you (a decision, an interface detail, a warning), write a short note to ${MAILBOX_DIR}/to-<their-label-or-kind>-<topic>.md inside this workspace — e.g. tmp/cloudcli/swarm-mailbox/to-implementer-api-shape.md. Address it by seat label or kind ('implementer', 'explorer', …) or 'all' to broadcast. Notes are delivered at the recipient's next step start and deleted after they read them. Keep notes under ~40 lines and actionable.`,
+    '',
     '',
     '## Project snapshot (isolated swarm worktree)',
     input.gitContext,
@@ -1772,14 +1967,8 @@ function pickAgentForStep(
   roster: SwarmAgentSpec[],
 ): SwarmAgentSpec {
   const workers = roster.filter((a) => a.kind !== 'orchestrator');
-  if (step.assignTo) {
-    const byLabel = roster.find(
-      (a) => a.label.toLowerCase() === step.assignTo!.toLowerCase(),
-    );
-    if (byLabel) return byLabel;
-    const byId = roster.find((a) => a.id === step.assignTo);
-    if (byId) return byId;
-  }
+  const assigned = matchRosterSeat(step.assignTo, roster);
+  if (assigned) return assigned;
   const byKind = workers.find((a) => a.kind === step.kind);
   if (byKind) return byKind;
   return workers[0] || roster[0];
@@ -2029,6 +2218,19 @@ export const swarmService = {
     }).immediate();
     const swarm = created.swarm;
     if (!created.created) return this.withUsage(swarm);
+    if (input.planOverride) {
+      try {
+        validatePlan(input.planOverride, roster);
+      } catch (error) {
+        swarmDb.update(swarm.swarm_id, {
+          status: 'failed',
+          finished: true,
+          lastError: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
+      }
+      swarmDb.update(swarm.swarm_id, { plan: input.planOverride });
+    }
     const parentRunId = swarm.parent_run_id;
 
     swarmDb.appendMessage(swarm.swarm_id, {
@@ -2077,6 +2279,61 @@ export const swarmService = {
     });
 
     return swarmDb.get(swarm.swarm_id)!;
+  },
+
+  /**
+   * Fork-from-checkpoint (PRD swarm-studio-v2 phase 2): launch a fresh swarm
+   * that reuses the source's plan, roster, and completed steps, resetting work
+   * at/below a checkpoint step (or just failed branches when no step given).
+   * Completed steps are skipped by the pipeline; the fork runs the remaining
+   * DAG deterministically on the classic engine.
+   */
+  fork(swarmId: string, input: { fromStepId?: string | null } = {}): SwarmRun {
+    const source = swarmDb.get(swarmId);
+    if (!source) {
+      throw new CloudError('SWARM_NOT_FOUND', `Swarm ${swarmId} not found`);
+    }
+    const plan = source.plan;
+    if (!plan || !Array.isArray(plan.steps) || plan.steps.length === 0) {
+      throw new CloudError('SWARM_FORK_INVALID', 'Source swarm has no persisted plan to fork from');
+    }
+    let cutoff = -1;
+    if (input.fromStepId) {
+      cutoff = plan.steps.findIndex((step) => step.id === input.fromStepId);
+      if (cutoff < 0) {
+        throw new CloudError('SWARM_FORK_INVALID', `Step ${input.fromStepId} is not part of this swarm's plan`);
+      }
+    }
+    const forkedSteps = plan.steps.map((step, index) => {
+      if (cutoff >= 0 && index >= cutoff) return { ...step, status: 'queued' as const };
+      if (step.status === 'failed' || step.status === 'needs_changes') {
+        return { ...step, status: 'queued' as const };
+      }
+      return step;
+    });
+    if (!forkedSteps.some((step) => !step.status || step.status === 'queued')) {
+      throw new CloudError('SWARM_FORK_INVALID', 'Nothing to fork — every step already succeeded');
+    }
+    const orchestrator = source.roles.find((seat) => seat.kind === 'orchestrator');
+    const workers = source.roles.filter((seat) => seat.kind !== 'orchestrator');
+    return this.start({
+      projectId: source.project_id,
+      goal: source.goal,
+      ...(orchestrator ? { orchestrator } : {}),
+      ...(workers.length ? { agents: workers } : {}),
+      skills: source.skills ?? [],
+      maxConcurrency: source.config?.maxConcurrency ?? undefined,
+      stepTimeoutMs: source.config?.stepTimeoutMs ?? undefined,
+      stallTimeoutMs: source.config?.stallTimeoutMs ?? undefined,
+      autoRoster: workers.length === 0,
+      // Deterministic completion of the remaining DAG beats re-planning here.
+      dynamicEngine: false,
+      autonomous: true,
+      requireApproval: false,
+      requirePlanApproval: false,
+      idempotencyKey: `fork:${source.swarm_id}:${input.fromStepId ?? 'tail'}`,
+      planOverride: { ...plan, steps: forkedSteps },
+    });
   },
 
   /**
@@ -2560,7 +2817,8 @@ export const swarmService = {
       // ——— Phase 1: Orchestrator plan (or persisted restart continuation) ———
       let plan = swarm.plan;
       const resumingPersistedPlan = Boolean(
-        plan && ['running', 'handing_off'].includes(swarm.status),
+        (plan && ['running', 'handing_off'].includes(swarm.status)) ||
+          (plan && swarm.config?.resumeWithPersistedPlan === true),
       );
       // Auto-roster: only the orchestrator seat exists — the plan staffs the
       // worker seats from swarm-tagged agent profiles. Resumed pipelines that
@@ -2572,8 +2830,9 @@ export const swarmService = {
       let candidateProfiles: AgentRunProfile[] | null = null;
       if (autoRosterPending) {
         try {
-          // Disabled profiles stay usable for explicit assignment but are
-          // never offered to the orchestrator for automatic seating.
+          // Preserve existing swarm-tagged Agent Profiles as explicit seating
+          // policy. The model registry is the fallback for projects that have
+          // not curated role-specific profiles yet.
           candidateProfiles = agentRunProfilesDb
             .list({ enabledOnly: true })
             .filter((profile) => profile.swarm_roles.length > 0);
@@ -2606,6 +2865,7 @@ export const swarmService = {
           defaultModel: opts.defaultModel ?? null,
           candidateProfiles,
           costLedger,
+          dynamicEngine: swarm.config?.dynamicEngine !== false,
           signal: abortController.signal,
         });
         assertNotCancelled(swarmId);
@@ -2618,13 +2878,38 @@ export const swarmService = {
             defaultModel: opts.defaultModel ?? null,
             costLedger,
           });
+          let workers = resolved.workers;
+          const staffed = staffPlanSeats({
+            plan,
+            allowedProviders: getStaffingPrefs().allowedProviders ?? undefined,
+          });
+          if ((candidateProfiles?.length ?? 0) === 0 && staffed.length > 0) {
+            workers = [];
+            for (const seat of staffed) {
+              const spec = normalizeAgentSpec({
+                id: seat.label.toLowerCase().replace(/\s+/g, '-'),
+                kind: seat.kind,
+                label: seat.label,
+                provider: seat.provider,
+                model: seat.model,
+              }, { provider: defaultProvider, model: opts.defaultModel ?? null });
+              workers = [...workers, spec];
+              swarmDb.appendMessage(swarmId, {
+                id: newMsgId(),
+                from: 'Model registry',
+                kind: 'system',
+                content: `[staffing] ${seat.label} → ${seat.provider}/${seat.model} (${seat.rationale})`,
+                at: new Date().toISOString(),
+              });
+            }
+          }
           plan = resolved.plan;
-          if (resolved.workers.length > 0) {
-            roster = [orchestratorSpec, ...resolved.workers];
+          if (workers.length > 0) {
+            roster = [orchestratorSpec, ...workers];
             swarmDb.update(swarmId, { roles: roster });
             // Persist the seats so the UI roster renders and executeStep can
             // bind steps to members exactly like a manual roster.
-            for (const seat of resolved.workers) {
+            for (const seat of workers) {
               swarmDb.createMember({
                 swarmId,
                 role: seat.kind,
@@ -2643,7 +2928,7 @@ export const swarmService = {
               id: newMsgId(),
               from: 'Auto-roster',
               kind: 'system',
-              content: `Auto-selected ${resolved.workers.length} seat(s) from agent profiles:\n${resolved.workers
+              content: `Auto-selected ${workers.length} seat(s):\n${workers
                 .map(
                   (seat) =>
                     `- ${seat.label} (${seat.kind}, ${seat.provider}${seat.model ? `, ${seat.model}` : ''}${seat.permissionMode ? `, permissions=${seat.permissionMode}` : ''})`,
@@ -2792,13 +3077,27 @@ export const swarmService = {
       const stepMaxAttempts = resolveStepMaxAttempts(swarm.config ?? null);
       const maxConcurrency = opts.maxConcurrency ?? swarm.config?.maxConcurrency ?? null;
       const autoRoster = swarm.config?.autoRoster === true;
+      // Dynamic engine (PRD §A1): failures no longer abandon the plan. Only
+      // the failed task's dependents are held back; independent branches keep
+      // running, and remediation happens in the supervisor pass afterwards.
+      const dynamicEngine = swarm.config?.dynamicEngine === true;
+      const wallClockMs = swarm.config?.wallClockMs ?? null;
+      const pipelineStartedAt = Date.now();
+      if (wallClockMs != null) {
+        pipelineDeadlines.set(swarmId, pipelineStartedAt + wallClockMs);
+      }
+      const failedStepIds = new Set<string>();
+      const blockedByFailure = (step: SwarmPlanStep): boolean =>
+        (step.dependsOn ?? []).some((dep) => failedStepIds.has(dep));
       // Shared handle so takeover seats provisioned mid-step are visible to
       // every later step (and get persisted onto the swarm row).
       const rosterRef: RosterRef = { current: roster };
-      const tickBudget = Math.max(
-        resolveSupervisorTickBudget(swarm.config ?? null),
-        resolveMaxReplanRounds(swarm.config ?? null) * 2,
-      );
+      const tickBudget = dynamicEngine
+        ? 10_000
+        : Math.max(
+            resolveSupervisorTickBudget(swarm.config ?? null),
+            resolveMaxReplanRounds(swarm.config ?? null) * 2,
+          );
       let goalCard: SwarmGoalCard = swarm.goalCard
         ? { ...swarm.goalCard, tickBudget }
         : emptyGoalCard(tickBudget);
@@ -2807,16 +3106,83 @@ export const swarmService = {
       let lastSupervisorEvent: SupervisorEvent | null = supervisorMode
         ? eventFromGoalCard(goalCard)
         : null;
+      // ——— Guardrails (PRD §9) ———
+      let writerSuccesses = 0;                       // P4 canary arming
+      const progressTracker = new ProgressTracker(); // P2 anti-thrash
+      let rethinkTriggered = false;
+      let finishMode = false;                        // P7 escape reserve
+      let worldRevision = 0;                         // P5 staleness stamping
+      const dispatchRevisions = new Map<string, number>();
+      // Dynamic engine: the seed DAG is a suggestion. Do not execute it as a
+      // contract — the dispatch loop asks "what next?" after every harvest.
+      const skipSeedWaves = usesDynamicDispatchLoop(dynamicEngine, opts.retryStepId);
+      if (skipSeedWaves && livePlan.steps.length > 0) {
+        swarmDb.appendMessage(swarmId, {
+          id: newMsgId(),
+          from: 'Swarm policy',
+          kind: 'system',
+          content:
+            `[dispatch] dynamic workflow — seed plan (${livePlan.steps.length} step(s)) is a suggestion. ` +
+            `The orchestrator will pick the next batch after each harvest instead of running the DAG to completion.`,
+          at: new Date().toISOString(),
+        });
+      }
 
-      for (const plannedWave of waves) {
-        if (supervisorMode) break;
+      if (!skipSeedWaves) for (const plannedWave of waves) {
+        if (supervisorMode && !dynamicEngine) break;
         assertNotCancelled(swarmId);
+        if (
+          dynamicEngine &&
+          wallClockMs != null &&
+          Date.now() - pipelineStartedAt > wallClockMs
+        ) {
+          swarmDb.appendMessage(swarmId, {
+            id: newMsgId(),
+            from: 'Swarm policy',
+            kind: 'system',
+            content: `[budget] wall-clock budget exhausted (${Math.round(wallClockMs! / 60_000)}m) — stopping further waves; remaining work is reported as unresolved.`,
+            at: new Date().toISOString(),
+          });
+          swarmDb.appendEvent(swarmId, 'budget_stop', { data: { mode: 'wall-clock', phase: 'seed' } });
+          break;
+        }
+        // P7 (guardrails): when spend enters the escape reserve before the soft
+        // cap, stop starting new feature work — consolidate, validate, ship.
+        if (dynamicEngine && !finishMode) {
+          const finishCheck = finishModeVerdict(
+            swarmDb.sumSpendUsd(swarmId),
+            evaluateSpend(0).softUsd,
+          );
+          if (finishCheck.finishMode) {
+            finishMode = true;
+            swarmDb.appendEvent(swarmId, 'budget_stop', { data: { reason: finishCheck.reason, mode: 'finish' } });
+            swarmDb.appendMessage(swarmId, {
+              id: newMsgId(),
+              from: 'Swarm policy',
+              kind: 'system',
+              content: `[budget] FINISH MODE: ${finishCheck.reason}. No further feature waves will start — consolidating existing work for validation and handoff.`,
+              at: new Date().toISOString(),
+            });
+            break;
+          }
+        }
+        // Dynamic engine: skip steps whose dependencies failed this run —
+        // their subgraph goes to remediation, independent branches continue.
+        const waveCandidates = dynamicEngine
+          ? plannedWave.filter((step) => !blockedByFailure(step))
+          : plannedWave;
+        if (waveCandidates.length === 0) continue;
         // Same-kind steps only share a wave when their declared scopes are
         // disjoint. Overlapping (or unscoped) fan-out is the "several agents on
         // one thing" smell: it is split into consecutive groups and reported,
         // never dropped.
-        const { groups, conflicts } = splitWaveByScope(plannedWave);
+        const { groups, conflicts } = splitWaveByScope(waveCandidates);
         for (const conflict of conflicts) {
+          swarmDb.appendEvent(swarmId, 'scope_violation', {
+            stepId: conflict.step,
+            level: 'warn',
+            data: { against: conflict.against, kind: conflict.kind, overlap: conflict.overlap },
+          });
           swarmDb.appendMessage(swarmId, {
             id: newMsgId(),
             from: 'Swarm policy',
@@ -2854,37 +3220,75 @@ export const swarmService = {
           // explorer/reviewer seat), so they genuinely run concurrently — which
           // is what makes a parallel exploration wave worth planning at all.
           // A mixed group stays at 1: a writer in it invalidates what readers see.
+          // Dynamic engine: disjoint writer groups default to isolated child
+          // worktrees so implementer fan-out is parallel without opt-in.
           const allReadOnly = runnable.every((step) => isReadOnlyKind(step.kind));
           const allWriters = runnable.every((step) => step.kind === 'implementer' || step.kind === 'custom');
-          const parallelWriters = swarm.config?.parallelWriters === true && allWriters && runnable.length > 1;
+          // P4 (guardrails): echo-chamber canary. The first writer batch of a
+          // swarm validates the approach on ONE seat; only a canary success
+          // fans the rest out in parallel.
+          const canaryRequired = dynamicEngine && allWriters && runnable.length > 1 && writerSuccesses === 0;
+          const { canary, rest: canaryRest, canaryUsed } = splitCanaryGroup(runnable, canaryRequired);
+          if (canaryUsed) {
+            swarmDb.appendMessage(swarmId, {
+              id: newMsgId(),
+              from: 'Swarm policy',
+              kind: 'system',
+              content: `[canary] validating the approach with "${canary[0].title}" before fanning out ${canaryRest.length} parallel writer(s) — avoids N× waste if the shared assumption is wrong.`,
+              stepId: canary[0]?.id,
+              at: new Date().toISOString(),
+            });
+          }
+          const parallelWriters =
+            (swarm.config?.parallelWriters === true || dynamicEngine) &&
+            allWriters &&
+            runnable.length > 1 &&
+            !canaryUsed;
           const waveConcurrency = allReadOnly || parallelWriters
             ? Math.min(runnable.length, Math.max(1, maxConcurrency ?? DEFAULT_MAX_CONCURRENCY))
             : 1;
-          const groupResults = await this.runWaveWithConcurrency(
-            runnable,
-            (step) =>
-              this.runStepWithFeedbackRetries(swarmId, {
-                step,
-                goal: swarm.goal,
-                projectPath: workPath,
-                parentRunId: swarm.parent_run_id,
-                rosterRef,
-                skills,
-                gitContext,
-                defaultProvider,
-                defaultModel: opts.defaultModel ?? null,
-                timeoutMs: stepTimeoutMs,
-                stallTimeoutMs,
-                signal: abortController.signal,
-                maxAttempts: stepMaxAttempts,
-                autoRoster,
-                costLedger,
-                parallelWriterWorkspaces: parallelWriters,
-              }),
-            waveConcurrency,
-          );
-          results.push(...groupResults);
-          roster = rosterRef.current;
+          const executeBatches: SwarmPlanStep[][] = canaryUsed ? [canary, canaryRest] : [runnable];
+          for (const batch of executeBatches) {
+            if (batch.length === 0) continue;
+            for (const step of batch) dispatchRevisions.set(step.id, worldRevision);
+            const groupResults = await this.runWaveWithConcurrency(
+              batch,
+              (step) =>
+                this.runStepWithFeedbackRetries(swarmId, {
+                  step,
+                  goal: swarm.goal,
+                  projectPath: workPath,
+                  parentRunId: swarm.parent_run_id,
+                  rosterRef,
+                  skills,
+                  gitContext,
+                  defaultProvider,
+                  defaultModel: opts.defaultModel ?? null,
+                  timeoutMs: stepTimeoutMs,
+                  stallTimeoutMs,
+                  signal: abortController.signal,
+                  maxAttempts: stepMaxAttempts,
+                  autoRoster,
+                  costLedger,
+                  parallelWriterWorkspaces: parallelWriters,
+                }),
+              waveConcurrency,
+            );
+            results.push(...groupResults);
+            roster = rosterRef.current;
+            // P4: canary failed — defer the fan-out instead of N×-wasting it.
+            const canaryFailed = canaryUsed && batch === canary && groupResults.some((r) => r.failed);
+            if (canaryFailed) {
+              swarmDb.appendMessage(swarmId, {
+                id: newMsgId(),
+                from: 'Swarm policy',
+                kind: 'system',
+                content: `[canary] "${canary[0].title}" failed — deferring its ${canaryRest.length} sibling writer step(s). Fix the shared approach first (supervisor remediation), then re-run.`,
+                at: new Date().toISOString(),
+              });
+              break;
+            }
+          }
         }
         assertNotCancelled(swarmId);
 
@@ -2897,8 +3301,21 @@ export const swarmService = {
               status: r.needsChanges ? 'needs_changes' : r.failed ? 'failed' : 'succeeded',
             };
           }
+          if (
+            !r.failed &&
+            !r.needsChanges &&
+            (r.step.kind === 'implementer' || r.step.kind === 'custom')
+          ) {
+            writerSuccesses += 1;
+          }
+          // P5 (guardrails): results produced against an older world revision
+          // are recorded but do not drive remediation decisions.
+          const dispatchRevision = dispatchRevisions.get(r.step.id);
+          const staleResult =
+            dispatchRevision != null && worldRevision - dispatchRevision > 1;
           const fingerprint = await captureWorktreeFingerprint(workPath);
           const parsed = parseMemberFindings(r.output ?? r.finding.summary ?? '');
+          const critiquePackets = extractCritiquePackets(parsed, r.error ?? r.finding.summary);
           const event = classifySupervisorEvent({
             stepKind: r.step.kind,
             stepId: r.step.id,
@@ -2907,24 +3324,449 @@ export const swarmService = {
             error: r.error ?? r.finding.summary,
             failed: Boolean(r.failed),
             needsChanges: Boolean(r.needsChanges),
-            packets: extractCritiquePackets(parsed, r.error ?? r.finding.summary),
+            packets: critiquePackets,
             fingerprint,
           });
           goalCard = applySupervisorEvent(goalCard, event);
-          if (r.failed || r.needsChanges) {
-            supervisorMode = true;
-            lastSupervisorEvent = event;
+          if (!r.failed && !r.needsChanges) continue;
+          failedStepIds.add(r.step.id);
+          if (staleResult) {
+            swarmDb.appendMessage(swarmId, {
+              id: newMsgId(),
+              from: 'Swarm policy',
+              kind: 'system',
+              content: `[stale] failure of step ${r.step.id} was produced against revision ${dispatchRevision} (world now at ${worldRevision}) — recorded as evidence, not acted on.`,
+              stepId: r.step.id,
+              at: new Date().toISOString(),
+            });
+            continue;
           }
+          // P2 hysteresis: a "needs changes" verdict without cited specifics is
+          // advisory only — it must not flip the swarm into remediation.
+          if (
+            r.needsChanges &&
+            !r.failed &&
+            !reviewHasEvidence(critiquePackets, r.error ?? r.output)
+          ) {
+            swarmDb.appendMessage(swarmId, {
+              id: newMsgId(),
+              from: 'Swarm policy',
+              kind: 'system',
+              content: `[review] changes-requested from step ${r.step.id} cited no specific blockers — downgraded to an advisory note instead of triggering remediation.`,
+              stepId: r.step.id,
+              at: new Date().toISOString(),
+            });
+            continue;
+          }
+          supervisorMode = true;
+          lastSupervisorEvent = lastSupervisorEvent ?? event;
         }
         if (supervisorMode) {
           goalCard = { ...goalCard, mode: 'supervisor' };
         }
         persistGoalCard(swarmId, goalCard);
         swarmDb.update(swarmId, { findings: [...findings], plan: livePlan });
-        if (supervisorMode) break;
+        worldRevision += 1;
+        // P2 anti-thrash: two consecutive zero-progress cycles force a
+        // plan-level rethink (bounded orchestrator replan) instead of another
+        // round of local fixes.
+        if (dynamicEngine && !rethinkTriggered) {
+          const succeededThisCycle = results.filter((r) => !r.failed && !r.needsChanges).length;
+          const rethinkDue = progressTracker.recordCycle(succeededThisCycle);
+          if (rethinkDue) {
+            rethinkTriggered = true;
+            const failedSteps = livePlan.steps.filter((step) => step.status === 'failed');
+            if (failedSteps.length > 0) {
+              swarmDb.appendMessage(swarmId, {
+                id: newMsgId(),
+                from: 'Swarm policy',
+                kind: 'system',
+                content: `[thrash] two consecutive cycles without progress — forcing a bounded orchestrator replan of the ${failedSteps.length} failed step(s) instead of more local fixes.`,
+                at: new Date().toISOString(),
+              });
+              try {
+                const replanned = await this.replanFailedSteps(swarmId, {
+                  failedSteps,
+                  goal: swarm.goal,
+                  projectPath: workPath,
+                  parentRunId: swarm.parent_run_id,
+                  orchestrator: orchestratorSpec,
+                  roster,
+                  skills,
+                  gitContext,
+                  defaultProvider,
+                  defaultModel: opts.defaultModel ?? null,
+                  plan: livePlan,
+                  blackboard: [],
+                  signal: abortController.signal,
+                });
+                if (replanned) {
+                  livePlan = { ...livePlan, steps: replanned.steps };
+                  swarmDb.update(swarmId, { plan: livePlan });
+                }
+              } catch { /* replan is best-effort; the supervisor pass still runs */ }
+            }
+          }
+        }
+        // Classic engine abandons the remaining waves on first failure.
+        // Dynamic engine keeps executing independent branches; the failed
+        // subgraph is remediated by the supervisor pass below.
+        if (supervisorMode && !dynamicEngine) break;
       }
 
-      if (supervisorMode) {
+      // Dynamic continuation: after the seed waves, keep asking the orchestrator
+      // what to run next until it declares done or budgets run out.
+      if (
+        dynamicEngine &&
+        swarm.status !== 'handing_off' &&
+        !opts.retryStepId
+      ) {
+        // Resource budgets are the normal stop condition. This is only a
+        // runaway backstop, deliberately far above the old supervisor tick
+        // budget so a large task can keep harvesting and replanning.
+        const maxCycles = swarm.config?.autonomous !== false ? 200 : 40;
+        let dynamicStop: 'done' | 'wall-clock' | 'finish-mode' | null = null;
+        for (let cycle = 1; cycle <= maxCycles; cycle += 1) {
+          assertNotCancelled(swarmId);
+          if (
+            wallClockMs != null &&
+            Date.now() - pipelineStartedAt > wallClockMs
+          ) {
+            dynamicStop = 'wall-clock';
+            swarmDb.appendEvent(swarmId, 'budget_stop', { data: { mode: 'wall-clock', cycles: cycle - 1 } });
+            swarmDb.appendMessage(swarmId, {
+              id: newMsgId(),
+              from: 'Swarm policy',
+              kind: 'system',
+              content: `[budget] wall-clock budget reached after ${cycle - 1} dispatch cycle(s); consolidating completed work for validation and handoff.`,
+              at: new Date().toISOString(),
+            });
+            break;
+          }
+          if (finishMode) {
+            dynamicStop = 'finish-mode';
+            break;
+          }
+          const spendNow = swarmDb.sumSpendUsd(swarmId);
+          const finishCheck = finishModeVerdict(spendNow, evaluateSpend(0).softUsd);
+          if (finishCheck.finishMode) {
+            finishMode = true;
+            dynamicStop = 'finish-mode';
+            swarmDb.appendEvent(swarmId, 'budget_stop', { data: { reason: finishCheck.reason, mode: 'finish' } });
+            swarmDb.appendMessage(swarmId, {
+              id: newMsgId(),
+              from: 'Swarm policy',
+              kind: 'system',
+              content: `[budget] FINISH MODE: ${finishCheck.reason}. Stopping further dispatch cycles.`,
+              at: new Date().toISOString(),
+            });
+            break;
+          }
+
+          const findingsDigest = findings
+            .slice(-8)
+            .map((item) => `- ${item.role}: ${item.summary.slice(0, 280)}`)
+            .join('\n');
+          const decision = await this.decideNextDispatch(swarmId, {
+            goal: swarm.goal,
+            projectPath: workPath,
+            parentRunId: swarm.parent_run_id,
+            orchestrator: orchestratorSpec,
+            defaultProvider,
+            defaultModel: opts.defaultModel ?? null,
+            plan: livePlan,
+            findingsDigest,
+            signal: abortController.signal,
+          });
+          if (decision.blocked) {
+            swarmDb.appendMessage(swarmId, {
+              id: newMsgId(),
+              from: orchestratorSpec.label || 'Orchestrator',
+              kind: 'system',
+              content: `[blocked] ${decision.reason}`,
+              at: new Date().toISOString(),
+            });
+            throw new Error(`Dynamic orchestrator blocked: ${decision.reason}`);
+          }
+          const unusedSeed = livePlan.steps.filter(
+            (step) => !step.status || step.status === 'queued',
+          );
+          const seedFallback = shouldUseSeedFirstWave({
+            done: decision.done,
+            taskCount: decision.tasks.length,
+            findingsCount: findings.length,
+            unusedSeedCount: unusedSeed.length,
+          });
+          if ((decision.done || decision.tasks.length === 0) && !seedFallback) {
+            dynamicStop = 'done';
+            goalCard = appendSupervisorDecision(goalCard, {
+              action: 'done',
+              kind: null,
+              title: null,
+              reason: decision.reason || 'orchestrator marked the goal complete',
+              policy: 'dynamic-dispatch',
+              coerced: false,
+              stepId: null,
+              tick: goalCard.ticksUsed + 1,
+            });
+            persistGoalCard(swarmId, goalCard);
+            swarmDb.appendMessage(swarmId, {
+              id: newMsgId(),
+              from: orchestratorSpec.label || 'Orchestrator',
+              kind: 'system',
+              content: `[dispatch] ${decision.reason || 'no further tasks'}`,
+              at: new Date().toISOString(),
+            });
+            break;
+          }
+
+          const newSteps = seedFallback
+            ? (orderWaves(unusedSeed)[0] ?? unusedSeed.slice(0, 4))
+            : toPlanSteps(decision.tasks, cycle, livePlan.steps);
+          if (seedFallback) {
+            swarmDb.appendMessage(swarmId, {
+              id: newMsgId(),
+              from: 'Swarm policy',
+              kind: 'system',
+              content:
+                `[dispatch] orchestrator returned no first batch — running the seed's first wave ` +
+                `(${newSteps.map((step) => step.id).join(', ')}) then replanning.`,
+              at: new Date().toISOString(),
+            });
+          }
+          if (!seedFallback) {
+            livePlan = { ...livePlan, steps: [...livePlan.steps, ...newSteps] };
+          }
+          swarmDb.update(swarmId, { plan: livePlan });
+          swarmDb.appendEvent(swarmId, 'wave_dispatch', {
+            data: {
+              cycle,
+              steps: newSteps.map((step) => ({ id: step.id, kind: step.kind, title: step.title, wave: step.wave })),
+            },
+          });
+          swarmDb.appendMessage(swarmId, {
+            id: newMsgId(),
+            from: orchestratorSpec.label || 'Orchestrator',
+            kind: 'plan',
+            content: `[dispatch cycle ${cycle}] ${decision.reason}\n${newSteps
+              .map((step) => `- ${step.id} ${step.kind}: ${step.title}`)
+              .join('\n')}`,
+            at: new Date().toISOString(),
+          });
+
+          for (const step of newSteps) {
+            const [staffed] = staffTask({
+              kind: step.kind as never,
+              difficulty: (step.difficulty ?? 'medium') as never,
+              allowedProviders: getStaffingPrefs().allowedProviders ?? undefined,
+            });
+            if (!staffed) continue;
+            const already = rosterRef.current.some(
+              (seat) =>
+                seat.kind === staffed.kind &&
+                seat.provider === staffed.provider &&
+                seat.model === staffed.model,
+            );
+            if (already) {
+              const seat = rosterRef.current.find(
+                (entry) =>
+                  entry.kind === staffed.kind &&
+                  entry.provider === staffed.provider &&
+                  entry.model === staffed.model,
+              );
+              if (seat) {
+                const idx = livePlan.steps.findIndex((s) => s.id === step.id);
+                if (idx >= 0) livePlan.steps[idx] = { ...livePlan.steps[idx], assignTo: seat.label };
+              }
+              continue;
+            }
+            const spec = normalizeAgentSpec(
+              {
+                id: `reg-${staffed.provider}-${staffed.kind}-${rosterRef.current.length}`,
+                kind: staffed.kind,
+                label: staffed.label,
+                provider: staffed.provider,
+                model: staffed.model,
+              },
+              { provider: defaultProvider, model: opts.defaultModel ?? null },
+            );
+            rosterRef.current = [...rosterRef.current, spec];
+            roster = rosterRef.current;
+            swarmDb.update(swarmId, { roles: roster });
+            swarmDb.createMember({
+              swarmId,
+              role: spec.kind,
+              kind: spec.kind,
+              label: spec.label,
+              provider: resolveSwarmProvider(spec.provider || defaultProvider),
+              model: spec.model ?? null,
+              effort: spec.effort ?? null,
+              permissionMode: spec.permissionMode ?? null,
+              skills: spec.skills ?? [],
+              runId: null,
+              status: 'queued',
+            });
+            const idx = livePlan.steps.findIndex((s) => s.id === step.id);
+            if (idx >= 0) livePlan.steps[idx] = { ...livePlan.steps[idx], assignTo: spec.label };
+            swarmDb.appendMessage(swarmId, {
+              id: newMsgId(),
+              from: 'Model profiles',
+              kind: 'system',
+              content: `[staffing] ${staffed.label} → ${staffed.provider}/${staffed.model} (${staffed.rationale})`,
+              at: new Date().toISOString(),
+            });
+          }
+
+          const readers = newSteps.filter((step) => isReadOnlyKind(step.kind));
+          const writers = newSteps.filter((step) => !isReadOnlyKind(step.kind));
+          const executeGroups: SwarmPlanStep[][] = [];
+          for (const candidates of [readers, writers]) {
+            if (candidates.length === 0) continue;
+            const split = splitWaveByScope(candidates);
+            executeGroups.push(...split.groups);
+            for (const conflict of split.conflicts) {
+              swarmDb.appendEvent(swarmId, 'scope_violation', {
+                stepId: conflict.step,
+                level: 'warn',
+                data: { against: conflict.against, kind: conflict.kind, overlap: conflict.overlap, phase: 'dynamic' },
+              });
+              swarmDb.appendMessage(swarmId, {
+                id: newMsgId(),
+                from: 'Swarm policy',
+                kind: 'system',
+                content: `[dispatch] serialized ${conflict.step} behind ${conflict.against}: overlapping ${conflict.kind} scope (${conflict.overlap.join(', ')}).`,
+                stepId: conflict.step,
+                at: new Date().toISOString(),
+              });
+            }
+          }
+          const groupResults: Array<Awaited<ReturnType<typeof swarmService.runStepWithFeedbackRetries>>> = [];
+          for (const batch of executeGroups) {
+            const allWriters = batch.every(
+              (step) => step.kind === 'implementer' || step.kind === 'custom',
+            );
+            const allReadOnly = batch.every((step) => isReadOnlyKind(step.kind));
+            const canaryRequired = allWriters && batch.length > 1 && writerSuccesses === 0;
+            const canarySplit = splitCanaryGroup(batch, canaryRequired);
+            const batches = canarySplit.canaryUsed
+              ? [canarySplit.canary, canarySplit.rest]
+              : [batch];
+            if (canarySplit.canaryUsed) {
+              swarmDb.appendMessage(swarmId, {
+                id: newMsgId(),
+                from: 'Swarm policy',
+                kind: 'system',
+                content: `[canary] running ${canarySplit.canary[0].id} first before ${canarySplit.rest.length} disjoint writer(s).`,
+                stepId: canarySplit.canary[0].id,
+                at: new Date().toISOString(),
+              });
+            }
+            for (const executionBatch of batches) {
+              if (executionBatch.length === 0) continue;
+              const parallelWriters = allWriters && executionBatch.length > 1;
+              const waveConcurrency = allReadOnly || parallelWriters
+                ? Math.min(
+                    executionBatch.length,
+                    Math.max(1, maxConcurrency ?? DEFAULT_MAX_CONCURRENCY),
+                  )
+                : 1;
+              const batchResults = await this.runWaveWithConcurrency(
+                executionBatch,
+                (step) =>
+                  this.runStepWithFeedbackRetries(swarmId, {
+                    step,
+                    goal: swarm.goal,
+                    projectPath: workPath,
+                    parentRunId: swarm.parent_run_id,
+                    rosterRef,
+                    skills,
+                    gitContext,
+                    defaultProvider,
+                    defaultModel: opts.defaultModel ?? null,
+                    timeoutMs: stepTimeoutMs,
+                    stallTimeoutMs,
+                    signal: abortController.signal,
+                    maxAttempts: stepMaxAttempts,
+                    autoRoster,
+                    costLedger,
+                    parallelWriterWorkspaces: parallelWriters,
+                  }),
+                waveConcurrency,
+              );
+              groupResults.push(...batchResults);
+              if (canarySplit.canaryUsed && executionBatch === canarySplit.canary) {
+                const canaryFailed = batchResults.some((result) => result.failed);
+                if (canaryFailed) {
+                  swarmDb.appendMessage(swarmId, {
+                    id: newMsgId(),
+                    from: 'Swarm policy',
+                    kind: 'system',
+                    content: `[canary] ${canarySplit.canary[0].id} failed; deferred ${canarySplit.rest.length} sibling writer(s) until the orchestrator revises the approach.`,
+                    stepId: canarySplit.canary[0].id,
+                    at: new Date().toISOString(),
+                  });
+                  break;
+                }
+              }
+            }
+          }
+          for (const r of groupResults) {
+            findings.push(r.finding);
+            const idx = livePlan.steps.findIndex((s) => s.id === r.step.id);
+            if (idx >= 0) {
+              livePlan.steps[idx] = {
+                ...livePlan.steps[idx],
+                status: r.needsChanges ? 'needs_changes' : r.failed ? 'failed' : 'succeeded',
+              };
+            }
+            if (r.failed) failedStepIds.add(r.step.id);
+            if (
+              !r.failed &&
+              !r.needsChanges &&
+              (r.step.kind === 'implementer' || r.step.kind === 'custom')
+            ) {
+              writerSuccesses += 1;
+            }
+            const fingerprint = await captureWorktreeFingerprint(workPath);
+            const parsed = parseMemberFindings(r.output ?? r.finding.summary ?? '');
+            const critiquePackets = extractCritiquePackets(parsed, r.error ?? r.finding.summary);
+            const event = classifySupervisorEvent({
+              stepKind: r.step.kind,
+              stepId: r.step.id,
+              seatLabel: r.seat?.label ?? r.finding.role,
+              output: r.output ?? null,
+              error: r.error ?? r.finding.summary,
+              failed: Boolean(r.failed),
+              needsChanges: Boolean(r.needsChanges),
+              packets: critiquePackets,
+              fingerprint,
+            });
+            goalCard = applySupervisorEvent(goalCard, event);
+          }
+          goalCard = appendSupervisorDecision(goalCard, {
+            action: 'dispatch',
+            kind: newSteps[0]?.kind ?? null,
+            title: newSteps[0]?.title ?? null,
+            reason: seedFallback
+              ? `seed first wave (${newSteps.length} task(s))`
+              : decision.reason || `dispatch cycle ${cycle}`,
+            policy: 'dynamic-dispatch',
+            coerced: seedFallback,
+            stepId: newSteps[0]?.id ?? null,
+            tick: goalCard.ticksUsed + 1,
+          });
+          persistGoalCard(swarmId, goalCard);
+          swarmDb.update(swarmId, { findings: [...findings], plan: livePlan, roles: roster });
+          worldRevision += 1;
+        }
+        if (dynamicStop === null) {
+          throw new Error(
+            `Dynamic workflow safety cap reached after ${maxCycles} dispatch cycles without an explicit done decision`,
+          );
+        }
+      }
+
+      if (supervisorMode && !dynamicEngine) {
         if (!lastSupervisorEvent) {
           lastSupervisorEvent = eventFromGoalCard(goalCard);
         }
@@ -3529,10 +4371,136 @@ export const swarmService = {
         // Database may have been closed/replaced during test or shutdown.
       }
       activePipelines.delete(swarmId);
+      pipelineDeadlines.delete(swarmId);
       if (pipelineAbortControllers.get(swarmId) === abortController) {
         pipelineAbortControllers.delete(swarmId);
       }
     }
+  },
+
+  async decideNextDispatch(
+    swarmId: string,
+    input: {
+      goal: string;
+      projectPath: string;
+      parentRunId: string | null;
+      orchestrator: SwarmAgentSpec;
+      defaultProvider: LLMProvider | string;
+      defaultModel?: string | null;
+      plan: SwarmPlan;
+      findingsDigest: string;
+      signal?: AbortSignal | null;
+    },
+  ) {
+    const provider = resolveSwarmProvider(
+      input.orchestrator.provider || input.defaultProvider,
+    );
+    const model = input.orchestrator.model ?? input.defaultModel ?? null;
+    if (!getSwarmSpawnFn(provider)) {
+      throw new Error(`Dynamic orchestrator runtime "${provider}" is unavailable`);
+    }
+    const currentSwarm = swarmDb.get(swarmId);
+    const orchestratorEffort = resolveSeatEffort(
+      providerCapabilitiesService.getProviderCapabilities(provider),
+      input.orchestrator.effort ?? null,
+    ).effort;
+    const orchestratorPermissionMode = readOnlyPermissionMode(provider);
+    const basePrompt = buildDispatchPrompt({
+      goal: input.goal,
+      planDigest: planDigest(input.plan),
+      findings: input.findingsDigest,
+      registrySummary: formatRegistrySummary(),
+    });
+    const failures: string[] = [];
+
+    // One schema-repair retry keeps a transient provider error or malformed
+    // JSON from silently masquerading as "goal complete". If both attempts
+    // fail, the pipeline becomes truthfully resumable instead of handing off
+    // unfinished work as success.
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      const child = runService.create({
+        source: 'swarm',
+        projectId: currentSwarm?.project_id ?? null,
+        parentRunId: input.parentRunId,
+        rootRunId: input.parentRunId,
+        workspaceId: currentSwarm?.workspace_id ?? null,
+        provider,
+        model,
+        effort: orchestratorEffort,
+        permissionMode: orchestratorPermissionMode,
+        title: `Swarm dispatch: ${input.goal.slice(0, 80)}`,
+        trigger: `swarm-dispatch:${swarmId}:${attempt}`,
+        status: 'running',
+        meta: { swarmId, role: 'orchestrator', phase: 'dispatch', attempt },
+      });
+      try {
+          const repairHint = failures.length > 0
+          ? `\n\nThe previous dispatch was rejected: ${failures.at(-1)}. Return one valid JSON object matching the contract now.`
+          : '';
+      const outcome = await runSwarmAgent({
+          projectId: currentSwarm?.project_id ?? '',
+          projectPath: input.projectPath,
+          provider,
+          model,
+          effort: orchestratorEffort,
+          permissionMode: orchestratorPermissionMode,
+          prompt: `${basePrompt}${repairHint}`,
+          runId: child.run_id,
+          title: 'Swarm orchestrator dispatch',
+          signal: input.signal,
+          permission: {
+            swarmId,
+            memberId: null,
+            seatKind: 'orchestrator',
+            seatLabel: input.orchestrator.label || 'Orchestrator',
+            workspaceRoot: input.projectPath,
+          },
+        });
+        if (!outcome.success || !outcome.text.trim()) {
+          const reason = outcome.errorMessage || 'orchestrator emitted no dispatch';
+          failures.push(reason);
+          try {
+            const current = runService.get(child.run_id);
+            if (current && !['succeeded', 'failed', 'aborted', 'timed_out'].includes(current.status)) {
+              runService.markTerminal(child.run_id, { status: 'failed', errorSummary: reason });
+            }
+          } catch { /* provider events may already have closed it */ }
+          continue;
+        }
+        const decision = parseDispatchDecision(outcome.text);
+        if (!decision.valid) {
+          failures.push(decision.reason);
+          try {
+            const current = runService.get(child.run_id);
+            if (current && !['succeeded', 'failed', 'aborted', 'timed_out'].includes(current.status)) {
+              runService.markTerminal(child.run_id, {
+                status: 'failed',
+                errorSummary: decision.reason,
+              });
+            }
+          } catch { /* optional */ }
+          continue;
+        }
+        try {
+          const current = runService.get(child.run_id);
+          if (current && !['succeeded', 'failed', 'aborted', 'timed_out'].includes(current.status)) {
+            runService.markTerminal(child.run_id, { status: 'succeeded' });
+          }
+        } catch { /* provider events may already have closed it */ }
+        return decision;
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : 'dispatch failed';
+        failures.push(reason);
+        try {
+          const current = runService.get(child.run_id);
+          if (current && !['succeeded', 'failed', 'aborted', 'timed_out'].includes(current.status)) {
+            runService.markTerminal(child.run_id, { status: 'failed', errorSummary: reason });
+          }
+        } catch { /* optional */ }
+      }
+    }
+
+    throw new Error(`Dynamic orchestrator failed after 2 attempts: ${failures.join(' · ')}`);
   },
 
   async runOrchestratorPlan(
@@ -3551,6 +4519,7 @@ export const swarmService = {
       candidateProfiles?: AgentRunProfile[] | null;
       /** Measured per-profile cost/performance history, when any exists. */
       costLedger?: SwarmCostLedger | null;
+      dynamicEngine?: boolean;
       signal?: AbortSignal | null;
     },
   ): Promise<SwarmPlan> {
@@ -3630,6 +4599,7 @@ export const swarmService = {
           attachments: planAttachments,
           candidateProfiles: input.candidateProfiles ?? null,
           costLedger: input.costLedger ?? null,
+          dynamicEngine: input.dynamicEngine === true,
         }),
         images: providerImagesFromAttachments(planAttachments),
         runId,
@@ -3767,8 +4737,7 @@ export const swarmService = {
       providerCandidate,
     );
     const spendSwarm = swarmDb.get(swarmId);
-    const spendUsage = spendSwarm ? this.withUsage(spendSwarm) : null;
-    const spendVerdict = evaluateSpend(spendUsage?.usage?.totalCostUsd ?? 0);
+    const spendVerdict = evaluateSpend(swarmDb.sumSpendUsd(swarmId));
     if (spendVerdict.hard) {
       raiseSpendCapInterrupt({
         projectId: spendSwarm?.project_id,
@@ -3958,6 +4927,18 @@ export const swarmService = {
       }
 
       const stepAttachments = swarm.attachments ?? [];
+
+      // Peer mailbox: collect notes addressed to this seat before the prompt is
+      // built, then consume them so they are delivered exactly once.
+      const mailbox = collectMailboxForSeat(input.projectPath, agent);
+      if (mailbox.consumed.length > 0) {
+        consumeMailbox(input.projectPath, mailbox.consumed);
+        swarmDb.appendEvent(swarmId, 'mailbox_delivered', {
+          stepId: input.step.id,
+          data: { to: agent.label, notes: mailbox.consumed.map((file) => pathBasename(file)) },
+        });
+      }
+
       const prompt = buildStepPrompt({
         agent,
         step: input.feedback
@@ -3968,6 +4949,7 @@ export const swarmService = {
         gitContext: input.gitContext,
         blackboard,
         attachments: stepAttachments,
+        mailbox: mailbox.section,
       });
 
       // Capture immediately before dispatch. `git status` cannot validate a
@@ -3977,6 +4959,22 @@ export const swarmService = {
       const mutationBaseline = requiresDiff
         ? await captureWorkspaceMutationSnapshot(input.projectPath)
         : null;
+
+      // Wall-clock clamp (PRD swarm-studio-v2 G4): a single long step must not
+      // blow the whole-swarm budget. Preempt it at the remaining budget using
+      // the existing hard-timeout abort path.
+      const deadline = pipelineDeadlines.get(swarmId);
+      const wallClockRemainingMs = deadline != null ? deadline - Date.now() : null;
+      const effectiveTimeoutMs =
+        wallClockRemainingMs != null && wallClockRemainingMs > 0
+          ? input.timeoutMs != null
+            ? Math.min(input.timeoutMs, wallClockRemainingMs)
+            : wallClockRemainingMs
+          : input.timeoutMs ?? null;
+      swarmDb.appendEvent(swarmId, 'step_started', {
+        stepId: input.step.id,
+        data: { attemptNo, label: agent.label, kind: agent.kind, provider, model },
+      });
 
       const outcome = await runSwarmAgent({
         projectId: swarm.project_id,
@@ -3989,7 +4987,7 @@ export const swarmService = {
         images: providerImagesFromAttachments(stepAttachments),
         runId: child.run_id,
         title: `Swarm ${agent.label}`,
-        timeoutMs: input.timeoutMs ?? null,
+        timeoutMs: effectiveTimeoutMs,
         stallTimeoutMs: input.stallTimeoutMs,
         signal: input.signal,
         permission: {
@@ -4068,6 +5066,17 @@ export const swarmService = {
           error: err,
         });
         const content = outcome.text || err;
+        swarmDb.appendEvent(swarmId, isVerdictOnly ? 'step_needs_changes' : 'step_failed', {
+          stepId: input.step.id,
+          level: isVerdictOnly ? 'warn' : 'error',
+          data: {
+            attemptNo,
+            label: agent.label,
+            error: err.slice(0, 500),
+            timedOut: Boolean(outcome.timedOut),
+            stalled: Boolean(outcome.stalled),
+          },
+        });
         swarmDb.appendMessage(swarmId, {
           id: newMsgId(),
           from: agent.label,
@@ -4093,6 +5102,71 @@ export const swarmService = {
           error: err,
           output: outcome.text || null,
         };
+      }
+
+      // Mechanical verifier gate (PRD swarm-studio-v2): declared verification
+      // commands must exit 0 in the workspace. An agent report that claims
+      // success but breaks `npm test` fails here, objectively.
+      const declaredVerification = (input.step.verificationCommands ?? []).filter(
+        (command): command is string => typeof command === 'string' && command.trim().length > 0,
+      );
+      if (declaredVerification.length > 0) {
+        const verificationFailures = await runMechanicalVerification(
+          declaredVerification,
+          input.projectPath,
+        );
+        if (verificationFailures.length > 0) {
+          const detail = verificationFailures
+            .map((failure) => `\`(${failure.code ?? 'signal'})\` ${failure.command}\n${failure.output}`)
+            .join('\n\n');
+          const err = `Mechanical verification failed (${verificationFailures.length}/${declaredVerification.length} command(s)): ${detail}`;
+          swarmDb.updateMember(member.member_id, {
+            status: 'failed',
+            error: err,
+            findingsSummary: findingsSummaryLine(parsed).slice(0, 1500) || null,
+            finished: true,
+          });
+          persistPlanStepStatus(swarmId, input.step.id, 'failed');
+          swarmDb.appendEvent(swarmId, 'step_failed', {
+            stepId: input.step.id,
+            level: 'error',
+            data: {
+              attemptNo,
+              label: agent.label,
+              error: err.slice(0, 500),
+              mechanical: true,
+              failedCommands: verificationFailures.map((failure) => failure.command),
+            },
+          });
+          swarmDb.appendMessage(swarmId, {
+            id: newMsgId(),
+            from: agent.label,
+            kind: 'result',
+            content: `FAILED step ${input.step.id} — verification commands failed: ${verificationFailures.map((failure) => failure.command).join('; ')}`,
+            stepId: input.step.id,
+            at: new Date().toISOString(),
+          });
+          return {
+            step: input.step,
+            finding: {
+              memberId: member.member_id,
+              role: agent.label,
+              summary: `Mechanical verification failed: ${verificationFailures.map((failure) => failure.command).join(', ')}`,
+              at: new Date().toISOString(),
+              stepId: input.step.id,
+            },
+            failed: true,
+            seat: agent,
+            timedOut: false,
+            stalled: false,
+            error: err,
+            output: outcome.text || null,
+          };
+        }
+        swarmDb.appendEvent(swarmId, 'step_finished', {
+          stepId: input.step.id,
+          data: { mechanicalVerification: { passed: true, commands: declaredVerification.length } },
+        });
       }
 
       const summary = findingsSummaryLine(parsed);
@@ -4133,6 +5207,10 @@ export const swarmService = {
         finished: true,
       });
       persistPlanStepStatus(swarmId, input.step.id, 'succeeded');
+      swarmDb.appendEvent(swarmId, 'step_finished', {
+        stepId: input.step.id,
+        data: { attemptNo, label: agent.label, kind: agent.kind, changedFiles: parsed.changedFiles.length },
+      });
       swarmDb.updateAttempt(attempt.attempt_id, { status: 'succeeded' });
       try {
         const current = runService.get(child.run_id);
@@ -4346,6 +5424,7 @@ export const swarmService = {
           at: new Date().toISOString(),
         });
       }
+      const attemptStartedAt = Date.now();
       let result = await swarmService.executeStep(swarmId, {
         step: input.step,
         goal: input.goal,
@@ -4508,6 +5587,35 @@ export const swarmService = {
       };
       history.push(record);
 
+      // P8 (guardrails): slow-fail preemption. A failure that took far longer
+      // than successful runs of this role typically do should not consume the
+      // remaining attempt budget on the same approach — escalate now.
+      const ledgerStats =
+        input.costLedger?.get(result.seat.profileId ?? '', input.step.kind) ??
+        null;
+      if (
+        attempt < input.maxAttempts &&
+        isSlowFailure(Date.now() - attemptStartedAt, ledgerStats?.medianDurationMs ?? null)
+      ) {
+        swarmDb.appendMessage(swarmId, {
+          id: newMsgId(),
+          from: 'Swarm policy',
+          kind: 'system',
+          content: `[slow-fail] step ${input.step.id} failed after ${Math.round((Date.now() - attemptStartedAt) / 60_000)}m (median for ${input.step.kind} is ~${Math.round((ledgerStats!.medianDurationMs ?? 0) / 60_000)}m) — preempting the remaining attempt(s) and escalating to the orchestrator.`,
+          stepId: input.step.id,
+          at: new Date().toISOString(),
+        });
+        return {
+          step: result.step,
+          finding: result.finding,
+          failed: true,
+          attempts: history,
+          output: result.output ?? null,
+          seat: result.seat,
+          error: `slow-fail preempted after ${history.length} attempt(s): ${(result.error ?? '').slice(0, 800)}`.trim(),
+        };
+      }
+
       if (attempt >= input.maxAttempts) {
         swarmDb.appendMessage(swarmId, {
           id: newMsgId(),
@@ -4626,6 +5734,11 @@ export const swarmService = {
     const plan: SwarmPlan = { ...input.livePlan, steps: [...input.livePlan.steps] };
     const findings = [...input.findings];
     persistGoalCard(swarmId, card);
+    // P6 (guardrails): track ticks without a recovered step; every
+    // DRIFT_AUDIT_EVERY_TICKS stale ticks re-ground the orchestrator against
+    // the actual worktree state.
+    let ticksSinceProgress = 0;
+    let recoveredCount = plan.steps.filter((entry) => entry.status === 'recovered').length;
 
     const hasKind = (kind: string) =>
       input.rosterRef.current.some((seat) => seat.kind === kind);
@@ -4664,10 +5777,17 @@ export const swarmService = {
         return finish('accepted', policy.reason);
       }
 
-      if (card.ticksUsed >= card.tickBudget) {
+      const dynamicEngine = swarmDb.get(swarmId)?.config?.dynamicEngine === true;
+      if (!dynamicEngine && card.ticksUsed >= card.tickBudget) {
         return finish(
           'blocked',
           `Supervisor tick budget exhausted (${card.tickBudget}). Last event: ${event.kind}.`,
+        );
+      }
+      if (dynamicEngine && card.ticksUsed >= 200) {
+        return finish(
+          'blocked',
+          `Supervisor safety cap reached after ${card.ticksUsed} ticks. Last event: ${event.kind}.`,
         );
       }
 
@@ -4694,6 +5814,26 @@ export const swarmService = {
         planSummary: input.livePlan.summary,
         signal: input.signal,
       });
+      // P6 (guardrails): periodic drift audit — when several ticks pass with no
+      // step recovered, force the next decision to re-ground against reality.
+      const recoveredNow = plan.steps.filter((entry) => entry.status === 'recovered').length;
+      if (recoveredNow > recoveredCount) {
+        ticksSinceProgress = 0;
+        recoveredCount = recoveredNow;
+      } else {
+        ticksSinceProgress += 1;
+      }
+      if (needsDriftAudit(ticksSinceProgress)) {
+        const fingerprint = await captureWorktreeFingerprint(input.projectPath);
+        swarmDb.appendMessage(swarmId, {
+          id: newMsgId(),
+          from: 'Swarm policy',
+          kind: 'system',
+          content: `[drift] ${ticksSinceProgress} supervisor tick(s) without a recovered step — re-grounding against worktree state (head ${fingerprint.head?.slice(0, 10) ?? 'unknown'}${fingerprint.dirty ? ', dirty' : ', clean'}). Verify claimed progress against actual files before the next dispatch.`,
+          at: new Date().toISOString(),
+        });
+        ticksSinceProgress = 0;
+      }
       const applied = applySupervisorPolicy(policy, draft);
       const coerced = Boolean(
         draft && (draft.kind !== applied.kind || draft.action !== applied.action),
@@ -4754,6 +5894,31 @@ export const swarmService = {
           .filter((seat) => seat.kind === 'implementer' || seat.kind === 'custom')
           .sort((a, b) => LEVEL_RANK[levelOf(b.level)] - LEVEL_RANK[levelOf(a.level)]);
         if (writers[0] && !applied.assignTo) applied.assignTo = writers[0].label;
+      }
+
+      // P2 (guardrails): remediation lineage cap. A task already recreated
+      // this many times may not spawn another "retry harder" clone — change
+      // scope/approach or stop.
+      const replacedStep = plan.steps.find((entry) => entry.id === event.stepId);
+      const lineageExhausted =
+        applied.action === 'dispatch' &&
+        Boolean(replacedStep) &&
+        stepLineageDepth(replacedStep!, plan.steps) + 1 >= MAX_REMEDIATION_LINEAGE;
+      if (lineageExhausted) {
+        card = appendSupervisorDecision(card, {
+          tick,
+          action: 'blocked',
+          kind: null,
+          title: 'Remediation lineage exhausted',
+          reason: `step ${event.stepId} is ${MAX_REMEDIATION_LINEAGE - 1} remediation generation(s) deep; further clones are refused — the goal needs a different approach and this swarm stops for operator review.`,
+          policy: policy.policy,
+          coerced: true,
+          stepId: null,
+        });
+        return finish(
+          'blocked',
+          `Remediation lineage exhausted for step ${event.stepId} (${MAX_REMEDIATION_LINEAGE - 1} generations) — stopped instead of thrashing.`,
+        );
       }
 
       const step = buildSupervisorStep({
@@ -6684,6 +7849,219 @@ export const swarmService = {
   },
 
   /**
+   * Lightweight live-activity snapshot for cheap polling (PRD
+   * swarm-studio-v2 G2): running-agent count, per-agent cards, and wave
+   * progress — without the full usage rollup.
+   */
+  /**
+   * Swarm effectiveness metrics (PRD swarm-studio-v2 evaluation loop):
+   * derived from the swarm_events stream — parallel ratio, wave timings,
+   * retry/failure taxonomy, serialization cost, mailbox usage. This is how we
+   * measure "are we actually running like a dynamic workflow?".
+   */
+  getMetrics(swarmId: string) {
+    if (!swarmDb.get(swarmId)) return null;
+    const events = swarmDb.listEventsForSwarm(swarmId);
+    const started = new Map<string, number>(); // stepId -> ms
+    const intervals: Array<{ stepId: string; start: number; end: number }> = [];
+    let retries = 0;
+    let failures = 0;
+    let successes = 0;
+    let needsChanges = 0;
+    const taxonomy: Record<string, number> = {};
+    let scopeViolations = 0;
+    let budgetStops = 0;
+    let mailboxNotes = 0;
+    const waveDispatches: number[] = [];
+    let firstTs: number | null = null;
+    let lastTs: number | null = null;
+
+    for (const event of events) {
+      const tsMs = new Date(event.createdAt).getTime();
+      if (Number.isFinite(tsMs)) {
+        firstTs = firstTs == null ? tsMs : Math.min(firstTs, tsMs);
+        lastTs = lastTs == null ? tsMs : Math.max(lastTs, tsMs);
+      }
+      switch (event.kind) {
+        case 'wave_dispatch':
+          waveDispatches.push(tsMs);
+          break;
+        case 'step_started': {
+          const attemptNo = Number(event.data.attemptNo ?? 1);
+          if (attemptNo > 1) retries += 1;
+          if (Number.isFinite(tsMs)) started.set(event.stepId ?? '', tsMs);
+          break;
+        }
+        case 'step_finished': {
+          successes += 1;
+          const startMs = started.get(event.stepId ?? '');
+          if (startMs != null && Number.isFinite(tsMs)) {
+            intervals.push({ stepId: event.stepId ?? '', start: startMs, end: tsMs });
+          }
+          break;
+        }
+        case 'step_failed': {
+          failures += 1;
+          taxonomy.mechanical = (taxonomy.mechanical ?? 0) + (event.data.mechanical === true ? 1 : 0);
+          taxonomy.timedOut = (taxonomy.timedOut ?? 0) + (event.data.timedOut === true ? 1 : 0);
+          taxonomy.stalled = (taxonomy.stalled ?? 0) + (event.data.stalled === true ? 1 : 0);
+          taxonomy.other = (taxonomy.other ?? 0) + 1;
+          const startMs = started.get(event.stepId ?? '');
+          if (startMs != null && Number.isFinite(tsMs)) {
+            intervals.push({ stepId: event.stepId ?? '', start: startMs, end: tsMs });
+          }
+          break;
+        }
+        case 'step_needs_changes':
+          needsChanges += 1;
+          break;
+        case 'scope_violation':
+          scopeViolations += 1;
+          break;
+        case 'budget_stop':
+          budgetStops += 1;
+          break;
+        case 'mailbox_delivered':
+          mailboxNotes += 1;
+          break;
+      }
+    }
+
+    // Concurrency over time from execution intervals (sweep line).
+    intervals.sort((a, b) => a.start - b.start);
+    const points: Array<{ t: number; delta: number }> = [];
+    for (const interval of intervals) {
+      points.push({ t: interval.start, delta: 1 });
+      points.push({ t: interval.end, delta: -1 });
+    }
+    points.sort((a, b) => a.t - b.t || a.delta - b.delta);
+    let current = 0;
+    let maxConcurrent = 0;
+    let concurrencyArea = 0;
+    let prevT = points.length > 0 ? points[0].t : 0;
+    for (const point of points) {
+      if (point.t > prevT) {
+        concurrencyArea += current * (point.t - prevT);
+        prevT = point.t;
+      }
+      current += point.delta;
+      maxConcurrent = Math.max(maxConcurrent, current);
+    }
+    const busyMs = concurrencyArea;
+    const wallClockMs =
+      firstTs != null && lastTs != null && lastTs > firstTs ? lastTs - firstTs : null;
+    const avgConcurrent =
+      wallClockMs && wallClockMs > 0 ? busyMs / wallClockMs : maxConcurrent;
+
+    const stepsTotal = successes + failures + needsChanges;
+    return {
+      swarmId,
+      stepsTotal,
+      stepsSucceeded: successes,
+      stepsFailed: failures,
+      stepsNeedsChanges: needsChanges,
+      retries,
+      retryRate: stepsTotal > 0 ? retries / stepsTotal : 0,
+      // Share of elapsed time with ≥2 agents working — the headline "did it
+      // actually run in parallel?" number. 1.0 = always parallel.
+      parallelRatio:
+        wallClockMs && wallClockMs > 0
+          ? Math.min(1, busyMs / wallClockMs)
+          : 0,
+      avgConcurrent: Math.round(avgConcurrent * 100) / 100,
+      maxConcurrent,
+      wallClockMs,
+      dispatchCycles: waveDispatches.length,
+      scopeViolations,
+      budgetStops,
+      mailboxNotes,
+      failureTaxonomy: taxonomy,
+      firstTrySuccessRate:
+        stepsTotal > 0 ? Math.max(0, (successes - retries) / stepsTotal) : null,
+    };
+  },
+
+  getActivity(swarmId: string) {
+    const swarm = swarmDb.get(swarmId);
+    if (!swarm) return null;
+    const members = swarmDb.listMembers(swarmId);
+    const steps = swarm.plan?.steps ?? [];
+    const now = Date.now();
+    const stepRunningIds = new Set(
+      members.filter((m) => m.status === 'running' && m.step_id).map((m) => m.step_id as string),
+    );
+    const agents = members
+      .filter((m) => m.status === 'running')
+      .map((m) => {
+        let startedAtMs: number | null = null;
+        let tokens = 0;
+        let costUsd = 0;
+        if (m.run_id) {
+          try {
+            const child = runService.get(m.run_id);
+            if (child) {
+              const start = child.started_at ?? child.created_at;
+              startedAtMs = start ? new Date(start).getTime() : null;
+              tokens = (child.token_total ?? 0) || (child.token_input ?? 0) + (child.token_output ?? 0);
+              costUsd = child.cost_usd_estimate ?? 0;
+            }
+          } catch {
+            /* child run may already be gone */
+          }
+        }
+        if (startedAtMs == null && m.created_at) {
+          startedAtMs = new Date(m.created_at).getTime();
+        }
+        return {
+          memberId: m.member_id,
+          runId: m.run_id ?? null,
+          stepId: m.step_id ?? null,
+          label: m.label,
+          kind: m.kind ?? m.role,
+          provider: m.provider,
+          model: m.model,
+          startedAtMs,
+          elapsedMs: startedAtMs != null ? Math.max(0, now - startedAtMs) : null,
+          tokens,
+          costUsd,
+        };
+      });
+    const waveMap = new Map<number, { wave: number; total: number; done: number; running: number; failed: number; queued: number }>();
+    for (const step of steps) {
+      const wave = typeof step.wave === 'number' ? step.wave : 0;
+      let bucket = waveMap.get(wave);
+      if (!bucket) {
+        bucket = { wave, total: 0, done: 0, running: 0, failed: 0, queued: 0 };
+        waveMap.set(wave, bucket);
+      }
+      bucket.total += 1;
+      if (step.status === 'succeeded') bucket.done += 1;
+      else if (step.status === 'failed' || step.status === 'needs_changes') bucket.failed += 1;
+      else if (stepRunningIds.has(step.id)) bucket.running += 1;
+      else if (!step.status || step.status === 'queued') bucket.queued += 1;
+      else bucket.queued += 1;
+    }
+    return {
+      swarmId,
+      projectId: swarm.project_id,
+      status: swarm.status,
+      runningCount: agents.length,
+      agents,
+      waves: [...waveMap.values()].sort((a, b) => a.wave - b.wave),
+      totals: {
+        stepsTotal: steps.length,
+        stepsDone: steps.filter((s) => s.status === 'succeeded').length,
+        stepsFailed: steps.filter((s) => s.status === 'failed' || s.status === 'needs_changes').length,
+      },
+      wallClockRemainingMs: (() => {
+        const deadline = pipelineDeadlines.get(swarmId);
+        return deadline != null ? Math.max(0, deadline - now) : null;
+      })(),
+      spendUsd: swarmDb.sumSpendUsd(swarmId),
+    };
+  },
+
+  /**
    * Locate a swarm's validation-report artifacts (written by the pre-PR gate
    * under the PRIMARY project's tmp/cloudcli/swarm-reports/<swarmId>/).
    */
@@ -6832,44 +8210,58 @@ export async function recoverActiveSwarms(): Promise<void> {
   const recoverable = swarmDb
     .listAll(500, { includeArchived: false })
     .filter((swarm) => ['queued', 'planning', 'running', 'handing_off'].includes(swarm.status));
-  // Bounded sequential admission avoids a restart stampede. Each pipeline may
-  // fan out internally according to its own safe concurrency limit.
-  for (const swarm of recoverable) {
-    try {
-      if (swarm.cancel_requested_at) {
-        await swarmService.abort(swarm.swarm_id);
-        continue;
-      }
-      const leaseExpiry = swarm.lease_expires_at ? new Date(swarm.lease_expires_at).getTime() : 0;
-      if (swarm.lease_owner && swarm.lease_owner !== PIPELINE_OWNER && leaseExpiry > Date.now()) {
-        const retryDelay = Math.min(PIPELINE_LEASE_TTL_MS + 250, Math.max(50, leaseExpiry - Date.now() + 50));
-        const timer = setTimeout(() => {
-          void swarmService.executePipeline(swarm.swarm_id, {
-            requireApproval: swarm.config?.requireApproval,
-            requirePlanApproval: swarm.config?.requirePlanApproval,
-            stepTimeoutMs: swarm.config?.stepTimeoutMs,
-            maxConcurrency: swarm.config?.maxConcurrency,
-            defaultProvider: swarm.config?.orchestrator.provider,
-            defaultModel: swarm.config?.orchestrator.model,
-          }).catch((error) => {
-            console.error('[Swarm] deferred recovery failed', swarm.swarm_id, error);
-            persistRecoveryFailure(swarm.swarm_id, error);
-          });
-        }, retryDelay);
-        timer.unref?.();
-        continue;
-      }
-      await swarmService.executePipeline(swarm.swarm_id, {
-        requireApproval: swarm.config?.requireApproval,
-        requirePlanApproval: swarm.config?.requirePlanApproval,
-        stepTimeoutMs: swarm.config?.stepTimeoutMs,
-        maxConcurrency: swarm.config?.maxConcurrency,
-        defaultProvider: swarm.config?.orchestrator.provider,
-        defaultModel: swarm.config?.orchestrator.model,
-      });
-    } catch (error) {
-      console.error('[Swarm] recovery failed', swarm.swarm_id, error);
-      persistRecoveryFailure(swarm.swarm_id, error);
+  // Bounded parallel admission (PRD swarm-studio-v2 G5): a small worker pool
+  // avoids a restart stampede while no longer serializing unrelated swarms.
+  // Each pipeline may fan out internally according to its own safe concurrency
+  // limit; leases prevent duplicate execution across owners.
+  const resumeSwarm = async (swarm: (typeof recoverable)[number]): Promise<void> => {
+    if (swarm.cancel_requested_at) {
+      await swarmService.abort(swarm.swarm_id);
+      return;
     }
-  }
+    const leaseExpiry = swarm.lease_expires_at ? new Date(swarm.lease_expires_at).getTime() : 0;
+    if (swarm.lease_owner && swarm.lease_owner !== PIPELINE_OWNER && leaseExpiry > Date.now()) {
+      const retryDelay = Math.min(PIPELINE_LEASE_TTL_MS + 250, Math.max(50, leaseExpiry - Date.now() + 50));
+      const timer = setTimeout(() => {
+        void swarmService.executePipeline(swarm.swarm_id, {
+          requireApproval: swarm.config?.requireApproval,
+          requirePlanApproval: swarm.config?.requirePlanApproval,
+          stepTimeoutMs: swarm.config?.stepTimeoutMs,
+          maxConcurrency: swarm.config?.maxConcurrency,
+          defaultProvider: swarm.config?.orchestrator.provider,
+          defaultModel: swarm.config?.orchestrator.model,
+        }).catch((error) => {
+          console.error('[Swarm] deferred recovery failed', swarm.swarm_id, error);
+          persistRecoveryFailure(swarm.swarm_id, error);
+        });
+      }, retryDelay);
+      timer.unref?.();
+      return;
+    }
+    await swarmService.executePipeline(swarm.swarm_id, {
+      requireApproval: swarm.config?.requireApproval,
+      requirePlanApproval: swarm.config?.requirePlanApproval,
+      stepTimeoutMs: swarm.config?.stepTimeoutMs,
+      maxConcurrency: swarm.config?.maxConcurrency,
+      defaultProvider: swarm.config?.orchestrator.provider,
+      defaultModel: swarm.config?.orchestrator.model,
+    });
+  };
+  let cursor = 0;
+  const workers = Array.from(
+    { length: Math.min(RECOVERY_CONCURRENCY, Math.max(recoverable.length, 1)) },
+    async () => {
+      while (cursor < recoverable.length) {
+        const swarm = recoverable[cursor];
+        cursor += 1;
+        try {
+          await resumeSwarm(swarm);
+        } catch (error) {
+          console.error('[Swarm] recovery failed', swarm.swarm_id, error);
+          persistRecoveryFailure(swarm.swarm_id, error);
+        }
+      }
+    },
+  );
+  await Promise.all(workers);
 }

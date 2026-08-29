@@ -6,6 +6,12 @@ export type ProviderModelOption = {
   description?: string;
   /** Concrete model id the provider resolves `value` to (e.g. `claude-opus-5[1m]`). */
   resolvedModel?: string;
+  /** Context budget currently advertised by the installed provider runtime. */
+  runtimeContextWindow?: number;
+  /** Largest runtime context mode advertised locally, when distinct from the active budget. */
+  runtimeMaxContextWindow?: number;
+  /** Published provider capacity; kept separate from the locally active runtime budget. */
+  officialContextWindow?: number;
   /** Whether the provider advertises Codex Fast mode for this model. */
   supportsFastMode?: boolean;
   effort?: {
@@ -45,6 +51,8 @@ export interface ProjectSession {
   // Tags the session with the owning project's DB `projectId` so UI handlers
   // (session switching, sidebar focus, etc.) can match against selectedProject.
   __projectId?: string;
+  /** Swarm / Agent Relay / automation workers — viewable, not a user chat. */
+  isInternal?: boolean;
   [key: string]: unknown;
 }
 

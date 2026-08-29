@@ -58,16 +58,23 @@ export class KimiSessionSynchronizer implements IProviderSessionSynchronizer {
   }
 
   async synchronizeFile(filePath: string): Promise<string | null> {
-    if (!filePath.endsWith('state.json')) {
+    let statePath = filePath;
+    if (filePath.endsWith('wire.jsonl')) {
+      // wire.jsonl lives at <session>/agents/main/wire.jsonl; state.json is
+      // the stable session index anchor and carries the cwd/title metadata.
+      statePath = path.join(path.dirname(filePath), '..', '..', 'state.json');
+    }
+
+    if (!statePath.endsWith('state.json')) {
       return null;
     }
 
-    const parsed = await this.processStateFile(filePath);
+    const parsed = await this.processStateFile(statePath);
     if (!parsed) {
       return null;
     }
 
-    const timestamps = await readFileTimestamps(filePath);
+    const timestamps = await readFileTimestamps(filePath.endsWith('wire.jsonl') ? filePath : statePath);
     return sessionsDb.createSession(
       parsed.sessionId,
       this.provider,
@@ -75,7 +82,7 @@ export class KimiSessionSynchronizer implements IProviderSessionSynchronizer {
       parsed.sessionName,
       timestamps.createdAt,
       timestamps.updatedAt,
-      filePath
+      statePath
     );
   }
 

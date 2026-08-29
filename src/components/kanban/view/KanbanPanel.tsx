@@ -35,7 +35,7 @@ export default function KanbanPanel({
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="relative flex h-dvh max-h-dvh w-full flex-col overflow-hidden border-0 bg-background shadow-none md:h-[92vh] md:max-h-[92vh] md:max-w-[min(1400px,96vw)] md:rounded-xl md:border md:border-border md:shadow-2xl">
+      <div className="relative flex h-dvh max-h-dvh w-full flex-col overflow-hidden border-0 bg-background shadow-none md:h-[94vh] md:max-h-[94vh] md:max-w-[min(1700px,98vw)] md:rounded-2xl md:border md:border-border/70 md:shadow-2xl">
         <div className="absolute right-2 top-[max(0.5rem,env(safe-area-inset-top))] z-10 md:right-3 md:top-2.5">
           <Button
             variant="ghost"

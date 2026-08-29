@@ -1,5 +1,4 @@
 import fsSync from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
 
@@ -11,6 +10,8 @@ import {
   readObjectRecord,
 } from '@/shared/utils.js';
 import type { IProviderSessionSynchronizer } from '@/shared/interfaces.js';
+
+import { grokSessionsRoot } from './grok-sessions.provider.js';
 
 type ParsedSession = {
   sessionId: string;
@@ -30,7 +31,7 @@ type ParsedSession = {
  */
 export class GrokSessionSynchronizer implements IProviderSessionSynchronizer {
   private readonly provider = 'grok' as const;
-  private readonly grokSessionsRoot = path.join(os.homedir(), '.grok', 'sessions');
+  private readonly grokSessionsRoot = grokSessionsRoot();
 
   async synchronize(since?: Date): Promise<number> {
     const files = await findFilesRecursivelyCreatedAfter(this.grokSessionsRoot, 'summary.json', since ?? null);
@@ -59,16 +60,23 @@ export class GrokSessionSynchronizer implements IProviderSessionSynchronizer {
   }
 
   async synchronizeFile(filePath: string): Promise<string | null> {
-    if (!filePath.endsWith('summary.json')) {
+    const summaryPath = filePath.endsWith('summary.json')
+      ? filePath
+      : filePath.endsWith('chat_history.jsonl')
+        ? path.join(path.dirname(filePath), 'summary.json')
+        : null;
+    if (!summaryPath) {
       return null;
     }
 
-    const parsed = await this.processSummaryFile(filePath);
+    const parsed = await this.processSummaryFile(summaryPath);
     if (!parsed) {
       return null;
     }
 
-    const timestamps = await readFileTimestamps(filePath);
+    // History changes are the live activity signal; summary.json is only the
+    // stable indexing anchor and may not be rewritten for every turn.
+    const timestamps = await readFileTimestamps(summaryPath === filePath ? summaryPath : filePath);
     return sessionsDb.createSession(
       parsed.sessionId,
       this.provider,
@@ -76,7 +84,7 @@ export class GrokSessionSynchronizer implements IProviderSessionSynchronizer {
       parsed.sessionName,
       timestamps.createdAt,
       timestamps.updatedAt,
-      filePath
+      summaryPath
     );
   }
 

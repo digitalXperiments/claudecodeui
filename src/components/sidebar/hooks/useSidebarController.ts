@@ -19,6 +19,7 @@ import type {
 } from '../types/types';
 import {
   buildAccordionCollapsedCategoryIds,
+  buildRunningProjects,
   clearLegacyStarredProjectIds,
   enforceSingleExpandedCategory,
   filterProjects,
@@ -170,8 +171,7 @@ export function useSidebarController({
   const onRefreshRef = useRef(onRefresh);
 
   const isSidebarCollapsed = !isMobile && !sidebarVisible;
-  const activeSessionIds = useMemo(() => new Set(activeSessions.keys()), [activeSessions]);
-  const runningSessionsCount = activeSessionIds.size;
+  const runningSessionsCount = activeSessions.size;
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -893,31 +893,10 @@ export function useSidebarController({
     [projectSortOrder, projectsWithResolvedCategory],
   );
 
-  const runningProjects = useMemo(() => {
-    if (activeSessionIds.size === 0) {
-      return [];
-    }
-
-    return sortedProjects.reduce<Project[]>((acc, project) => {
-      const sessions = (project.sessions ?? []).filter((session) => activeSessionIds.has(String(session.id)));
-      const runningCount = sessions.length;
-
-      if (runningCount === 0) {
-        return acc;
-      }
-
-      acc.push({
-        ...project,
-        sessions,
-        sessionMeta: {
-          ...project.sessionMeta,
-          total: runningCount,
-          hasMore: false,
-        },
-      });
-      return acc;
-    }, []);
-  }, [activeSessionIds, sortedProjects]);
+  const runningProjects = useMemo(
+    () => buildRunningProjects(sortedProjects, activeSessions),
+    [activeSessions, sortedProjects],
+  );
 
   const filteredProjects = useMemo(
     () => filterProjects(searchMode === 'running' ? runningProjects : sortedProjects, debouncedSearchQuery),

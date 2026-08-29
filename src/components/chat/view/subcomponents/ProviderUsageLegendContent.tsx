@@ -123,12 +123,12 @@ export const formatExpandedWindowValue = (window: UsageWindow): string => {
   const ratio = getRemainingRatio(window);
   const percent = ratio !== null ? `${Math.round(ratio * 100)}% remaining` : null;
   const unitSuffix = window.unit === 'unknown' || window.unit === 'percent' ? '' : ` ${window.unit}`;
-  const rawUsedLimit = window.used !== null && window.limit !== null && window.unit !== 'percent'
-    ? `${formatUsageNumber(window.used)} / ${formatUsageNumber(window.limit)}${unitSuffix}`
+  const rawRemainingLimit = window.remaining !== null && window.limit !== null && window.unit !== 'percent'
+    ? `${formatUsageNumber(window.remaining)} / ${formatUsageNumber(window.limit)}${unitSuffix}`
     : null;
-  if (percent && rawUsedLimit) return `${percent} · ${rawUsedLimit}`;
+  if (percent && rawRemainingLimit) return `${percent} · ${rawRemainingLimit}`;
   if (percent) return percent;
-  if (rawUsedLimit) return rawUsedLimit;
+  if (rawRemainingLimit) return rawRemainingLimit;
   if (window.remaining !== null && window.limit !== null) {
     return `${formatUsageNumber(window.remaining)} / ${formatUsageNumber(window.limit)}${unitSuffix}`;
   }
@@ -233,8 +233,7 @@ function UsageWindowBar({
   now: number;
 }) {
   const remainingRatio = getRemainingRatio(window);
-  const usedRatio = remainingRatio === null ? null : 1 - remainingRatio;
-  const usedPercent = usedRatio === null ? null : Math.round(usedRatio * 100);
+  const remainingPercent = remainingRatio === null ? null : Math.round(remainingRatio * 100);
   const colors = toneClasses[getUsageTone(provider, window)];
   // Stale rows carry cached windows whose reset time has often already passed;
   // there "resets now" would linger forever, so mark the reset as overdue instead.
@@ -251,19 +250,19 @@ function UsageWindowBar({
           {countdown && <div className="text-[10px] text-muted-foreground">{countdown}</div>}
         </div>
         <span className="whitespace-nowrap text-muted-foreground">
-          {usedPercent === null ? formatExpandedWindowValue(window) : `${usedPercent}% used`}
+          {remainingPercent === null ? formatExpandedWindowValue(window) : `${remainingPercent}% remaining`}
         </span>
       </div>
-      {usedPercent !== null && (
+      {remainingPercent !== null && (
         <div
           className="h-1.5 overflow-hidden rounded-full bg-muted"
           role="progressbar"
-          aria-label={`${provider.displayName} ${window.label} used quota`}
+          aria-label={`${provider.displayName} ${window.label} remaining quota`}
           aria-valuemin={0}
           aria-valuemax={100}
-          aria-valuenow={usedPercent}
+          aria-valuenow={remainingPercent}
         >
-          <div className={`h-full rounded-full ${colors.bar}`} style={{ width: `${usedPercent}%` }} />
+          <div className={`h-full rounded-full ${colors.bar}`} style={{ width: `${remainingPercent}%` }} />
         </div>
       )}
     </div>

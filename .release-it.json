@@ -14,7 +14,7 @@
     "releaseName": "CloudCLI UI v${version}"
   },
   "hooks": {
-    "before:init": ["npm run build"]
+    "before:init": ["npm run build", "node scripts/refresh-model-snapshot.mjs"]
   },
   "plugins": {
     "@release-it/conventional-changelog": {

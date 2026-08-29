@@ -284,6 +284,21 @@ export type SwarmConfig = {
    * (cap 12); autonomous default 20 (cap 30).
    */
   maxSupervisorTicks?: number | null;
+  /**
+   * Dynamic engine (PRD: dynamic-swarm-and-model-registry.md). When true:
+   * a step failure no longer abandons the remaining planned waves — only the
+   * failed task's dependents are held back while independent branches keep
+   * running; disjoint writer groups run in parallel by default; and the
+   * supervisor tick budget is replaced by spend/wall-clock budgets.
+   */
+  dynamicEngine?: boolean;
+  /** Hard wall-clock budget for the whole swarm (ms). Dynamic engine only. */
+  wallClockMs?: number | null;
+  /**
+   * Fork-from-checkpoint: a plan was pre-seeded onto the row; the pipeline
+   * must execute it as-is instead of re-planning.
+   */
+  resumeWithPersistedPlan?: boolean;
   orchestrator: SwarmAgentSpec;
   agents: SwarmAgentSpec[];
   skills: string[];
@@ -400,6 +415,14 @@ export type StartSwarmInput = {
   maxConcurrency?: number;
   /** Run disjoint writer steps in isolated child worktrees and merge them back. */
   parallelWriters?: boolean;
+  /**
+   * Dynamic engine (default true): partial-failure isolation, parallel writer
+   * fan-out by default, wall-clock budget support. Explicit false restores the
+   * classic abandon-on-first-failure pipeline.
+   */
+  dynamicEngine?: boolean;
+  /** Hard wall-clock budget (ms) for the entire swarm run. */
+  wallClockMs?: number;
   /** Fallback when a roster seat omits provider. */
   provider?: string | null;
   model?: string | null;
@@ -418,9 +441,8 @@ export type StartSwarmInput = {
   /** Open the PR even if the gate stays red after every attempt (default true). */
   prOnRedValidation?: boolean;
   /**
-   * Long-horizon unattended mode: raises step-attempt and replan-round
-   * ceilings by an order of magnitude. Only a crashed/silent provider ends a
-   * step; reviewer/tester feedback just triggers another attempt.
+   * Long-horizon unattended mode (default true). Raises step-attempt and
+   * replan-round ceilings. Explicit false opts into a short, gated run.
    */
   autonomous?: boolean;
   /** Orchestrator replan rounds per wave (default/cap 1; 8/15 when autonomous). */
@@ -429,6 +451,12 @@ export type StartSwarmInput = {
   maxSupervisorTicks?: number;
   /** Optional request key: repeated starts for one project return the first swarm. */
   idempotencyKey?: string | null;
+  /**
+   * Pre-seeded plan (fork-from-checkpoint). When set, the pipeline skips
+   * orchestrator planning and executes this plan as-is; steps already marked
+   * succeeded/recovered are skipped.
+   */
+  planOverride?: SwarmPlan | null;
 };
 
 export type SwarmArtifact = {
@@ -542,5 +570,7 @@ export type SwarmGoalCard = {
   ticksUsed: number;
   tickBudget: number;
   decisions: SwarmSupervisorDecision[];
+  /** One-line summary of decisions dropped by the P1 context-budget cap. */
+  decisionsDigest?: string | null;
   updatedAt: string;
 };

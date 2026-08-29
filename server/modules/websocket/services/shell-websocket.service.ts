@@ -5,6 +5,7 @@ import path from 'node:path';
 import pty, { type IPty } from 'node-pty';
 import { WebSocket, type RawData } from 'ws';
 
+import { sessionsDb } from '@/modules/database/index.js';
 import { parseIncomingJsonObject } from '@/shared/utils.js';
 import { ensureManagedGrokHome } from '@/shared/grok-home.js';
 import { resolveAcpCliCommand } from '@/shared/acp-cli-path.js';
@@ -12,6 +13,12 @@ import { resolveAcpCliCommand } from '@/shared/acp-cli-path.js';
 // init does not create a circular load path through sessions → websocket.
 // eslint-disable-next-line boundaries/dependencies
 import { providerCapabilitiesService } from '@/modules/providers/services/provider-capabilities.service.js';
+import { shellSessionRegistry } from '@/modules/websocket/services/shell-session-registry.service.js';
+import {
+  classifyTuiActivity,
+  isTuiSubmitInput,
+} from '@/modules/websocket/services/shell-tui-activity.js';
+import { broadcastSystemEvent } from '@/modules/websocket/services/system-broadcast.service.js';
 import type { LLMProvider } from '@/shared/types.js';
 
 export type ShellIncomingMessage = {
@@ -38,11 +45,72 @@ type PtySessionEntry = {
   sessionId: string | null;
   provider: string;
   startedAt: number;
+  isAgentShell: boolean;
 };
 
 const ptySessionsMap = new Map<string, PtySessionEntry>();
 const PTY_SESSION_TIMEOUT = 30 * 60 * 1000;
 const SHELL_URL_PARSE_BUFFER_LIMIT = 32768;
+const TUI_IDLE_SETTLE_MS = 450;
+const tuiIdleTimers = new Map<string, NodeJS.Timeout>();
+
+shellSessionRegistry.subscribe(() => {
+  broadcastSystemEvent({ kind: 'running_sessions_changed' });
+});
+
+const clearTuiIdleTimer = (key: string): void => {
+  const timer = tuiIdleTimers.get(key);
+  if (!timer) {
+    return;
+  }
+  clearTimeout(timer);
+  tuiIdleTimers.delete(key);
+};
+
+const markAgentShellBusy = (key: string, session: PtySessionEntry): void => {
+  if (!session.sessionId) {
+    return;
+  }
+  clearTuiIdleTimer(key);
+  if (!shellSessionRegistry.isActive(session.sessionId)) {
+    session.startedAt = Date.now();
+  }
+  shellSessionRegistry.register(key, {
+    sessionId: session.sessionId,
+    provider: session.provider as LLMProvider,
+    startedAt: session.startedAt,
+  });
+};
+
+const markAgentShellIdle = (key: string): void => {
+  clearTuiIdleTimer(key);
+  tuiIdleTimers.set(
+    key,
+    setTimeout(() => {
+      tuiIdleTimers.delete(key);
+      shellSessionRegistry.unregister(key);
+    }, TUI_IDLE_SETTLE_MS),
+  );
+};
+
+const applyAgentTuiActivity = (
+  key: string,
+  session: PtySessionEntry,
+  stripAnsiSequences: (content: string) => string,
+): void => {
+  if (!session.sessionId) {
+    return;
+  }
+  const stripped = stripAnsiSequences(session.buffer.slice(-80).join(''));
+  const activity = classifyTuiActivity(stripped);
+  if (activity === 'busy') {
+    markAgentShellBusy(key, session);
+    return;
+  }
+  if (activity === 'idle') {
+    markAgentShellIdle(key);
+  }
+};
 
 export type ShellWebSocketDependencies = {
   resolveProviderSessionId: (
@@ -147,6 +215,14 @@ function resolveResumeSessionId(
     return '';
   }
 
+  try {
+    if (sessionsDb.getSessionById(sessionId)?.is_internal) {
+      return '';
+    }
+  } catch {
+    // Session lookup is best-effort; resume proceeds as before if the DB is unavailable.
+  }
+
   let resumeSessionId: string | null | undefined;
   try {
     resumeSessionId = dependencies.resolveProviderSessionId(sessionId, provider);
@@ -180,6 +256,12 @@ function resolveResumeSessionId(
 /** POSIX single-quote escape for embedding paths/ids in `bash -c` commands. */
 function shellSingleQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function resolveShellCli(command: string): string {
+  return os.platform() === 'win32'
+    ? command
+    : shellSingleQuote(resolveAcpCliCommand(command));
 }
 
 /**
@@ -370,8 +452,7 @@ export function buildShellCommand(
     // The installer drops kilo in ~/.kilo/bin, which a PTY spawned without the
     // user's shell profile never sees — resolve the absolute path so the
     // session starts instead of dying with "kilo: command not found".
-    const kiloBin =
-      os.platform() === 'win32' ? 'kilo' : shellSingleQuote(resolveAcpCliCommand('kilo'));
+    const kiloBin = resolveShellCli('kilo');
     if (resumeSessionId) {
       return `${modeEnvPrefix}${kiloBin} --session "${resumeSessionId}"${modeArgs}`;
     }
@@ -380,6 +461,32 @@ export function buildShellCommand(
 
   if (provider === 'grok') {
     return buildGrokShellCommand(resumeSessionId, projectPath, permissionMode);
+  }
+
+  if (provider === 'cline') {
+    // Cline's interactive terminal is explicitly enabled with --tui and its
+    // provider-native session id is passed through --id (see Cline CLI).
+    const clineBin = resolveShellCli('cline');
+    if (resumeSessionId) {
+      return `${clineBin} --tui --id "${resumeSessionId}"`;
+    }
+    return `${initialCommand || clineBin} --tui`;
+  }
+
+  if (provider === 'qwencode') {
+    // Qwen Code resumes a known session with --resume <id>. Its approval
+    // modes are CLI flags rather than the ACP session config used by Chatbar.
+    const qwenBin = resolveShellCli('qwen');
+    let modeArgs = '';
+    if (permissionMode === 'plan' || permissionMode === 'auto') {
+      modeArgs = ` --approval-mode ${permissionMode}`;
+    } else if (permissionMode === 'bypassPermissions') {
+      modeArgs = ' --yolo';
+    }
+    if (resumeSessionId) {
+      return `${qwenBin} --resume "${resumeSessionId}"${modeArgs}`;
+    }
+    return `${initialCommand || qwenBin}${modeArgs}`;
   }
 
   if (provider === 'kimi') {
@@ -671,6 +778,8 @@ export function handleShellConnection(
               // Already gone.
             }
             ptySessionsMap.delete(ptySessionKey);
+            clearTuiIdleTimer(ptySessionKey);
+            shellSessionRegistry.unregister(ptySessionKey);
           }
         }
 
@@ -679,6 +788,14 @@ export function handleShellConnection(
           shellProcess = existingSession.pty;
           if (existingSession.timeoutId) {
             clearTimeout(existingSession.timeoutId);
+          }
+
+          if (!isPlainShell && sessionId) {
+            applyAgentTuiActivity(
+              ptySessionKey,
+              existingSession,
+              dependencies.stripAnsiSequences,
+            );
           }
 
           ws.send(
@@ -752,6 +869,7 @@ export function handleShellConnection(
           sessionId,
           provider,
           startedAt: Date.now(),
+          isAgentShell: !isPlainShell,
         });
 
         shellProcess.onData((chunk) => {
@@ -769,6 +887,14 @@ export function handleShellConnection(
           } else {
             session.buffer.shift();
             session.buffer.push(chunk);
+          }
+
+          if (session.isAgentShell && session.sessionId) {
+            applyAgentTuiActivity(
+              ptySessionKey,
+              session,
+              dependencies.stripAnsiSequences,
+            );
           }
 
           if (session.ws && session.ws.readyState === WebSocket.OPEN) {
@@ -856,6 +982,8 @@ export function handleShellConnection(
           }
 
           ptySessionsMap.delete(ptySessionKey);
+          clearTuiIdleTimer(ptySessionKey);
+          shellSessionRegistry.unregister(ptySessionKey);
           shellProcess = null;
           captureShellSessionSync(dependencies, session);
         });
@@ -873,6 +1001,10 @@ export function handleShellConnection(
                     ? 'Kilo Code'
                   : provider === 'grok'
                     ? 'Grok Build'
+                    : provider === 'cline'
+                      ? 'Cline'
+                      : provider === 'qwencode'
+                        ? 'Qwen Code'
                     : provider === 'kimi'
                       ? 'Kimi'
                       : provider === 'pi'
@@ -896,8 +1028,15 @@ export function handleShellConnection(
       }
 
       if (data.type === 'input') {
+        const payload = readString(data.data);
         if (shellProcess) {
-          shellProcess.write(readString(data.data));
+          shellProcess.write(payload);
+        }
+        if (ptySessionKey && isTuiSubmitInput(payload)) {
+          const session = ptySessionsMap.get(ptySessionKey);
+          if (session?.isAgentShell) {
+            markAgentShellBusy(ptySessionKey, session);
+          }
         }
         return;
       }
@@ -944,6 +1083,8 @@ export function handleShellConnection(
 
       session.pty.kill();
       ptySessionsMap.delete(ptySessionKey as string);
+      clearTuiIdleTimer(ptySessionKey as string);
+      shellSessionRegistry.unregister(ptySessionKey as string);
     }, PTY_SESSION_TIMEOUT);
   });
 

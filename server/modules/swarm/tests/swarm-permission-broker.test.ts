@@ -168,7 +168,7 @@ test('classification: command tiers (read-only, installs, network, destructive, 
     const cases: Array<{ seat: string; command: string; tier: string }> = [
       { seat: 'explorer', command: 'git status --short', tier: 'approve' },
       { seat: 'explorer', command: 'grep -rn "todo" src/', tier: 'approve' },
-      { seat: 'explorer', command: 'npm test', tier: 'approve' },
+      { seat: 'explorer', command: 'npm test', tier: 'deny' },
       { seat: 'explorer', command: 'npm install lodash', tier: 'deny' },
       { seat: 'implementer', command: 'npm install lodash', tier: 'escalate' },
       { seat: 'implementer', command: 'rm -rf node_modules', tier: 'escalate' },
@@ -178,6 +178,9 @@ test('classification: command tiers (read-only, installs, network, destructive, 
       { seat: 'implementer', command: 'git push --force origin main', tier: 'escalate' },
       { seat: 'implementer', command: 'git branch -D main', tier: 'escalate' },
       { seat: 'implementer', command: 'git add -A', tier: 'approve' },
+      { seat: 'implementer', command: 'git config --get user.name', tier: 'approve' },
+      { seat: 'implementer', command: 'git config user.name relay-worker', tier: 'escalate' },
+      { seat: 'implementer', command: 'git config --global user.name relay-worker', tier: 'escalate' },
       { seat: 'implementer', command: 'cat .env', tier: 'escalate' },
       { seat: 'explorer', command: 'ls -la && git log -5', tier: 'approve' },
       // One risky segment poisons a compound command.
@@ -200,6 +203,40 @@ test('classification: command tiers (read-only, installs, network, destructive, 
       assert.equal(result.tier, entry.tier, `${entry.seat}: ${entry.command} → ${result.tier} (${result.reason})`);
     }
 
+    // ACP often sends the shell line as the tool title with no `command` field.
+    assert.equal(
+      classifyPermissionRequest({
+        seatKind: 'explorer',
+        workspaceRoot: ws,
+        toolName: 'git status --porcelain',
+        cwd: ws,
+      }).tier,
+      'approve',
+    );
+    assert.equal(
+      extractPermissionRequestDetails({ toolName: 'rg -n TODO src', cwd: ws }).command,
+      'rg -n TODO src',
+    );
+    assert.equal(
+      classifyPermissionRequest({
+        seatKind: 'explorer',
+        workspaceRoot: ws,
+        toolName: 'CodexPermissions',
+        cwd: ws,
+      }).tier,
+      'approve',
+    );
+    assert.equal(
+      classifyPermissionRequest({
+        seatKind: 'explorer',
+        workspaceRoot: ws,
+        toolName: 'fd',
+        command: 'fd --type f src',
+        cwd: ws,
+      }).tier,
+      'approve',
+    );
+
     // Unknown/unclassifiable requests are conservative per seat.
     assert.equal(
       classifyPermissionRequest({ seatKind: 'implementer', workspaceRoot: ws, toolName: 'MysteryTool' }).tier,
@@ -213,6 +250,9 @@ test('classification: command tiers (read-only, installs, network, destructive, 
     // Redirections count as writes against the target.
     assert.equal(classifyCommand(`echo hi > ${path.join(ws, 'out.txt')}`, ws, ws).category, 'workspace-write');
     assert.equal(classifyCommand('echo hi > /etc/hosts', ws, ws).category, 'risky');
+    assert.equal(classifyCommand('tee secretfile', ws, ws).category, 'workspace-write');
+    assert.equal(classifyCommand('tee secretfile', ws, '/etc').category, 'risky');
+    assert.equal(classifyCommand('tee secretfile', ws, null).category, 'risky');
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -227,13 +267,13 @@ test('classification: shell wrappers are classified by their payload, not the sh
     // codex/grok wrap every Bash call as `/bin/zsh -lc "<real command>"`.
     const cases: Array<{ seat: string; command: string; tier: string }> = [
       { seat: 'reviewer', command: `/bin/zsh -lc 'pnpm -F @app/web exec tsc --noEmit'`, tier: 'approve' },
-      { seat: 'reviewer', command: `/bin/zsh -lc 'pnpm -F @app/web lint'`, tier: 'approve' },
-      { seat: 'reviewer', command: `/bin/zsh -lc "npm run build"`, tier: 'approve' },
+      { seat: 'reviewer', command: `/bin/zsh -lc 'pnpm -F @app/web lint'`, tier: 'deny' },
+      { seat: 'reviewer', command: `/bin/zsh -lc "npm run build"`, tier: 'deny' },
       { seat: 'explorer', command: `/bin/zsh -lc "find src -maxdepth 4 -type f | sort && rg -n 'todo' src"`, tier: 'approve' },
       { seat: 'explorer', command: `/bin/zsh -lc 'git -C "/Users/example/repo" status --short'`, tier: 'approve' },
       { seat: 'explorer', command: `/bin/zsh -lc 'for d in .worktrees/*; do git -C "$d" status --short; done'`, tier: 'approve' },
-      { seat: 'implementer', command: `bash -c "npm run typecheck"`, tier: 'approve' },
-      { seat: 'implementer', command: `env NODE_ENV=test npm test`, tier: 'approve' },
+      { seat: 'implementer', command: `bash -c "npm run typecheck"`, tier: 'escalate' },
+      { seat: 'implementer', command: `env NODE_ENV=test npm test`, tier: 'escalate' },
       // Real risk inside a wrapper is still caught.
       { seat: 'reviewer', command: `/bin/zsh -lc "rm -rf node_modules"`, tier: 'deny' },
       { seat: 'implementer', command: `/bin/zsh -lc "npm install lodash"`, tier: 'escalate' },
@@ -332,7 +372,8 @@ test('classification: real Grok explorer command shapes remain read-only', async
         command,
         cwd: ws,
       });
-      assert.equal(result.tier, 'approve', `${command} → ${result.tier} (${result.reason})`);
+      const expectedTier = command.includes('node -e') ? 'deny' : 'approve';
+      assert.equal(result.tier, expectedTier, `${command} → ${result.tier} (${result.reason})`);
     }
 
     const denied = [

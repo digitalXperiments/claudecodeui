@@ -223,7 +223,10 @@ export function useChatSessionState({
   // open. Session ids are concrete before any send, so no pending
   // placeholder entry exists anymore.
   const sessionActivity = (activeSessionId && processingSessions?.get(activeSessionId)) || null;
-  const isProcessing = sessionActivity !== null;
+  // Shell activity is shown on the composer badge, but it is not a Chatbar
+  // run: treating it as `isProcessing` blocked history reloads and locked
+  // the pane on an empty transcript while the TUI was still open.
+  const isProcessing = sessionActivity !== null && sessionActivity.source !== 'shell';
   const canAbortSession = isProcessing && sessionActivity.canInterrupt;
 
   // Ref mirror so effects can read the latest map without re-running on
@@ -568,7 +571,8 @@ export function useChatSessionState({
     // selected project object and re-entered this effect.
     if (alreadyLoaded) {
       subscribeToSelectedSession(false);
-      if (sessionStore.isStale(selectedSessionId) && !processingSessionsRef.current?.has(selectedSessionId)) {
+      const viewedActivity = processingSessionsRef.current?.get(selectedSessionId);
+      if (sessionStore.isStale(selectedSessionId) && viewedActivity?.source !== 'chat') {
         void sessionStore.refreshFromServer(selectedSessionId).then(() => {
           const slot = sessionStore.getSessionSlot(selectedSessionId);
           if (slot) {
@@ -648,7 +652,8 @@ export function useChatSessionState({
 
     const reloadExternalMessages = async () => {
       try {
-        // Skip store refresh during active streaming
+        // Skip store refresh during an active Chatbar stream. Shell-owned
+        // sessions still need a disk reload so Chat can catch up with the TUI.
         if (!isProcessing) {
           await sessionStore.refreshFromServer(selectedSession.id);
 

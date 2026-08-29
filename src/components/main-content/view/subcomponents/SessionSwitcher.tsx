@@ -7,9 +7,11 @@ import SessionProviderLogo from '../../../llm-logo-provider/SessionProviderLogo'
 import { Input } from '../../../../shared/view/ui';
 import { cn } from '../../../../lib/utils';
 import type { Project, ProjectSession } from '../../../../types/app';
+import type { SessionActivityMap } from '../../../../hooks/useSessionProtection';
+import { useScrollPointerLock } from '../../../../hooks/useScrollPointerLock';
 import {
   createSessionViewModel,
-  getAllSessions,
+  getProjectSessionsWithActivity,
   getSessionName,
 } from '../../../sidebar/utils/utils';
 import type { SessionWithProvider } from '../../../sidebar/types/types';
@@ -25,6 +27,7 @@ type SessionSwitcherProps = {
   /** When true, open as a bottom sheet so it stays usable on narrow viewports. */
   isMobile?: boolean;
   className?: string;
+  processingSessions?: SessionActivityMap;
 };
 
 type SessionMenuPosition = {
@@ -75,6 +78,7 @@ export default function SessionSwitcher({
   isLoadingMoreSessions = false,
   isMobile = false,
   className,
+  processingSessions,
 }: SessionSwitcherProps) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
@@ -91,11 +95,16 @@ export default function SessionSwitcher({
   const openMenuSessionIdRef = useRef<string | null>(null);
   const sessionMenuId = useId();
   const listboxId = useId();
+  const { isScrolling, onScroll } = useScrollPointerLock();
 
   openMenuSessionIdRef.current = openMenuSessionId;
 
-  // getAllSessions already sorts by recency (newest first).
-  const sessions = useMemo(() => getAllSessions(project), [project]);
+  // Keep the picker project-local; only live rows owned by this project may
+  // be pinned above its paginated session list.
+  const sessions = useMemo(
+    () => getProjectSessionsWithActivity(project, processingSessions ?? new Map()),
+    [processingSessions, project],
+  );
   const hasMore = Boolean(project.sessionMeta?.hasMore);
 
   const filteredSessions = useMemo(() => {
@@ -350,6 +359,7 @@ export default function SessionSwitcher({
           'overflow-y-auto overscroll-contain p-1.5',
           isMobile ? 'max-h-[min(60dvh,28rem)]' : 'max-h-72',
         )}
+        onScroll={onScroll}
       >
         {filteredSessions.length === 0 ? (
           <div className="px-3 py-8 text-center text-xs text-muted-foreground">
@@ -361,6 +371,7 @@ export default function SessionSwitcher({
           filteredSessions.map((session) => {
             const view = createSessionViewModel(session, now, t);
             const isActive = selectedSession?.id === session.id;
+            const isLive = Boolean(processingSessions?.has(session.id));
             const age = formatCompactAge(view.sessionTime, now);
             const isMenuOpen = openMenuSessionId === session.id;
             const hasActions = Boolean(onArchiveSession || onDeleteSession);
@@ -372,6 +383,7 @@ export default function SessionSwitcher({
                 aria-selected={isActive}
                 className={cn(
                   'group relative flex w-full items-center gap-1 rounded-lg px-2 py-1.5 text-left transition-colors sm:gap-2 sm:px-2.5 sm:py-2',
+                  isScrolling && 'pointer-events-none',
                   isActive
                     ? 'bg-primary/10 text-primary'
                     : 'text-foreground hover:bg-accent/70 active:bg-accent/70',
@@ -390,6 +402,11 @@ export default function SessionSwitcher({
                     {view.sessionName}
                   </span>
                 </button>
+                {isLive ? (
+                  <span className="flex-shrink-0 rounded-full bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:text-emerald-300">
+                    {t('running.live', { defaultValue: 'Live' })}
+                  </span>
+                ) : null}
                 {age ? (
                   <span
                     className={cn(

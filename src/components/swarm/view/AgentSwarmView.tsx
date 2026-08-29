@@ -1,14 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Activity,
   Archive,
   ArchiveRestore,
+  ArrowRight,
+  Bot,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
+  Clock3,
   Compass,
   Code2,
   Eye,
   FileDown,
+  GitBranch,
+  GitFork,
+  Layers3,
   Loader2,
   Network,
   Paperclip,
@@ -21,14 +28,15 @@ import {
   Sparkles,
   Trash2,
   UserCog,
+  Workflow,
   XCircle,
+  Zap,
 } from 'lucide-react';
 
 import { authenticatedFetch } from '../../../utils/api';
 import { useWebSocket } from '../../../contexts/WebSocketContext';
 import { Button } from '../../../shared/view/ui';
 import type { Project, ProviderModelOption } from '../../../types/app';
-import { agentProfilesApi } from '../../settings/api/agentProfilesApi';
 import ImageAttachment from '../../chat/view/subcomponents/ImageAttachment';
 import FileAttachmentChip from '../../chat/view/subcomponents/FileAttachmentChip';
 import LiveSpendMeter from '../../chat/view/subcomponents/LiveSpendMeter';
@@ -48,6 +56,11 @@ import {
   type SwarmValidationSummary,
   type SwarmWorkspaceStatus,
 } from '../types';
+
+import { GoalWorkshop } from './GoalWorkshop';
+import SwarmActivityStrip, { type SwarmActivityAgent } from './SwarmActivityStrip';
+import SwarmAgentActivity from './SwarmAgentActivity';
+import SwarmMetricsPanel from './SwarmMetricsPanel';
 
 /** Max goal-context files per swarm (mirrors server cap). */
 const MAX_SWARM_ATTACHMENTS = 10;
@@ -240,8 +253,9 @@ function GoalCardPanel({ card, running }: { card: SwarmGoalCard; running: boolea
   const supervising = card.mode === 'supervisor' && running;
   const lastDecision = card.decisions.at(-1);
   const blockers = card.lastReview?.blockers ?? [];
+  const dispatchCycles = card.decisions.filter((decision) => decision.action === 'dispatch').length;
   return (
-    <div className="rounded-lg border border-sky-500/25 bg-sky-500/5 px-3 py-2.5">
+    <div className="overflow-hidden rounded-xl border border-sky-500/25 bg-gradient-to-br from-sky-500/[0.08] via-background to-violet-500/[0.05] px-3.5 py-3">
       <div className="mb-1.5 flex flex-wrap items-center gap-2">
         <div className="text-[11px] font-semibold uppercase tracking-wide text-sky-700 dark:text-sky-300">
           {supervising ? 'Orchestrator supervising' : 'Goal card'}
@@ -250,7 +264,7 @@ function GoalCardPanel({ card, running }: { card: SwarmGoalCard; running: boolea
           {supervising ? 'Supervising' : card.status}
         </span>
         <span className="text-[10px] text-muted-foreground">
-          tick {card.ticksUsed}/{card.tickBudget}
+          {dispatchCycles} harvest cycle{dispatchCycles === 1 ? '' : 's'}
           {card.fingerprint?.head ? ` · ${card.fingerprint.head.slice(0, 8)}` : ''}
           {card.fingerprint?.dirty ? ' · dirty' : ''}
         </span>
@@ -268,7 +282,7 @@ function GoalCardPanel({ card, running }: { card: SwarmGoalCard; running: boolea
         </p>
       ) : (
         <p className="text-[11px] text-muted-foreground">
-          The orchestrator will stay on shift after the first review or failed step.
+          Dynamic workflow: the orchestrator asks what to run next after each harvest.
         </p>
       )}
       {card.lastReview ? (
@@ -293,7 +307,7 @@ function GoalCardPanel({ card, running }: { card: SwarmGoalCard; running: boolea
         <ol className="mt-2 space-y-1 border-t border-sky-500/15 pt-1.5 text-[10px] text-muted-foreground">
           {card.decisions.slice(-6).map((decision) => (
             <li key={`${decision.tick}-${decision.at}`}>
-              <span className="font-medium text-foreground">Tick {decision.tick}</span>
+              <span className="font-medium text-foreground">Cycle {decision.tick}</span>
               {' · '}
               {decision.action}
               {decision.kind ? ` ${decision.kind}` : ''}
@@ -429,6 +443,10 @@ export default function AgentSwarmView({
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
+  /** Agent card clicked in the activity strip → show its live output feed. */
+  const [liveFeed, setLiveFeed] = useState<
+    { swarmId: string; runId: string; label: string; memberId: string } | null
+  >(null);
   // Persisted workspace status is preferred; this is a graceful fallback for
   // older servers that do not expose it on either workspace or swarm DTOs.
   const [cleanedWorkspaces, setCleanedWorkspaces] = useState<string[]>([]);
@@ -458,7 +476,7 @@ export default function AgentSwarmView({
   /** Pre-PR stability gate (static checks + smoke + PDF report). Default ON. */
   const [validateBeforePr, setValidateBeforePr] = useState(true);
   /** null until the profiles API answers; then whether any profile is swarm-tagged. */
-  const [hasSwarmProfiles, setHasSwarmProfiles] = useState<boolean | null>(null);
+
   /** Auto mode is fully hands-off, so it defaults to no plan-approval gate. */
   const [requirePlanApproval, setRequirePlanApproval] = useState(false);
   /**
@@ -473,7 +491,9 @@ export default function AgentSwarmView({
   /** Remediation rounds the orchestrator gets to turn a red gate green. */
   const [validationMaxAttempts, setValidationMaxAttempts] = useState(4);
   const [maxConcurrency, setMaxConcurrency] = useState(3);
-  const [parallelWriters, setParallelWriters] = useState(false);
+  const [parallelWriters, setParallelWriters] = useState(true);
+  /** Whole-swarm resource budget; dynamic dispatch stops cleanly at the boundary. */
+  const [wallClockMs, setWallClockMs] = useState(4 * 60 * 60 * 1000);
   /**
    * Long-horizon unattended mode: only a crashed/silent provider ends a step
    * — a reviewer/tester finding real issues just triggers another attempt.
@@ -481,7 +501,7 @@ export default function AgentSwarmView({
    * magnitude (still finite, so a genuinely circular disagreement stops
    * eventually instead of running unattended forever).
    */
-  const [autonomous, setAutonomous] = useState(false);
+  const [autonomous, setAutonomous] = useState(true);
   /** provider → model options cache */
   const [modelsByProvider, setModelsByProvider] = useState<Record<string, ModelOption[]>>({});
   const [modelsLoading, setModelsLoading] = useState<Record<string, boolean>>({});
@@ -546,24 +566,34 @@ export default function AgentSwarmView({
     };
   }, [isVisible]);
 
-  // Probe Agent Profiles for swarm-role tags so the auto-roster form can hint
-  // when the orchestrator would fall back to built-in defaults.
   useEffect(() => {
     if (!isVisible || tab !== 'create') return;
     let cancelled = false;
-    agentProfilesApi
-      .list()
-      .then((profiles) => {
-        if (cancelled) return;
-        setHasSwarmProfiles(
-          profiles.some(
-            (p) => p.enabled !== false && Array.isArray(p.swarm_roles) && p.swarm_roles.length > 0,
+    void authenticatedFetch('/api/model-registry/prefs')
+      .then(async (res) => {
+        if (!res.ok) return;
+        const body = (await res.json()) as {
+          prefs?: {
+            defaultOrchestratorProvider?: string | null;
+            defaultOrchestratorModel?: string | null;
+          };
+        };
+        const prefs = body.prefs;
+        if (cancelled || !prefs?.defaultOrchestratorModel) return;
+        setRoster((prev) =>
+          prev.map((seat) =>
+            seat.kind === 'orchestrator'
+              ? {
+                  ...seat,
+                  provider: prefs.defaultOrchestratorProvider || seat.provider,
+                  model: prefs.defaultOrchestratorModel || seat.model,
+                }
+              : seat,
           ),
         );
       })
       .catch(() => {
-        // Availability unknown — suppress the hint rather than mislead.
-        if (!cancelled) setHasSwarmProfiles(null);
+        /* keep form defaults */
       });
     return () => {
       cancelled = true;
@@ -1055,6 +1085,7 @@ export default function AgentSwarmView({
         validationMaxAttempts,
         maxConcurrency,
         parallelWriters,
+        wallClockMs,
         autonomous,
       });
       if (!startAttempt.current || startAttempt.current.fingerprint !== fingerprint) {
@@ -1089,6 +1120,8 @@ export default function AgentSwarmView({
           validationMaxAttempts: validationMaxAttempts > 0 ? validationMaxAttempts : undefined,
           maxConcurrency: maxConcurrency > 0 ? maxConcurrency : undefined,
           parallelWriters,
+          dynamicEngine: true,
+          wallClockMs: wallClockMs > 0 ? wallClockMs : undefined,
           autonomous,
         }),
       });
@@ -1152,6 +1185,26 @@ export default function AgentSwarmView({
       await refresh();
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Could not retry step.');
+    } finally {
+      setSwarmBusy(swarmId, null);
+    }
+  };
+
+  /** Fork the swarm from a step checkpoint (keeps completed work, re-runs the rest). */
+  const forkFromStep = async (swarmId: string, stepId: string) => {
+    if (busySwarmIds.current.has(swarmId)) return;
+    if (!window.confirm(`Fork this swarm from checkpoint ${stepId}? Completed steps are kept; this step and everything after it re-runs in a new swarm.`)) return;
+    setSwarmBusy(swarmId, 'fork');
+    setError(null);
+    try {
+      await requestJson(`/api/swarm/${encodeURIComponent(swarmId)}/fork`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fromStepId: stepId }),
+      });
+      await refresh();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Could not fork swarm.');
     } finally {
       setSwarmBusy(swarmId, null);
     }
@@ -1305,29 +1358,46 @@ export default function AgentSwarmView({
   return (
     <div className="flex h-full min-h-0 flex-col bg-gradient-to-b from-background via-background to-muted/20">
       {/* Header */}
-      <div className="border-b border-border/50 bg-background/80 px-5 py-4 pr-14 backdrop-blur-sm">
-        <div className="flex flex-wrap items-start justify-between gap-3">
+      <div className="relative overflow-hidden border-b border-border/50 bg-background/85 px-6 py-5 pr-14 backdrop-blur-xl">
+        <div className="pointer-events-none absolute -left-24 -top-32 h-64 w-64 rounded-full bg-primary/10 blur-3xl" />
+        <div className="pointer-events-none absolute right-20 top-0 h-40 w-40 rounded-full bg-violet-500/10 blur-3xl" />
+        <div className="relative flex flex-wrap items-center justify-between gap-4">
           <div className="min-w-0">
             <h2
               id="agent-swarm-title"
-              className="flex items-center gap-2 text-base font-semibold tracking-tight text-foreground"
+              className="flex flex-wrap items-center gap-2.5 text-lg font-semibold tracking-tight text-foreground"
             >
-              <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10 text-primary ring-1 ring-primary/20">
-                <Network className="h-4 w-4" />
+              <span className="flex h-10 w-10 items-center justify-center rounded-2xl bg-gradient-to-br from-primary to-violet-600 text-white shadow-lg shadow-primary/20">
+                <Workflow className="h-5 w-5" />
               </span>
-              Agent Swarm
+              Swarm Studio
+              <span className="rounded-full border border-emerald-500/20 bg-emerald-500/10 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.14em] text-emerald-700 dark:text-emerald-300">
+                Dynamic engine
+              </span>
             </h2>
-            <p className="mt-1.5 max-w-xl text-xs leading-relaxed text-muted-foreground">
-              One orchestrator plans and dispatches explorers, implementers, and reviewers — each with
-              its own provider, model, and permissions — then hands off with an automatic PR.
+            <p className="mt-1.5 max-w-2xl text-xs leading-relaxed text-muted-foreground">
+              One orchestrator continuously plans, fans out isolated workers, harvests evidence,
+              and adapts until the goal is validated.
             </p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {[
+                { icon: <Zap className="h-3 w-3" />, label: 'Replans after every harvest' },
+                { icon: <GitBranch className="h-3 w-3" />, label: 'Isolated writer branches' },
+                { icon: <ShieldCheck className="h-3 w-3" />, label: 'Self-healing validation' },
+              ].map((item) => (
+                <span key={item.label} className="inline-flex items-center gap-1.5 rounded-full border border-border/50 bg-background/60 px-2.5 py-1 text-[10px] text-muted-foreground shadow-sm">
+                  <span className="text-primary">{item.icon}</span>
+                  {item.label}
+                </span>
+              ))}
+            </div>
           </div>
-          <div className="flex items-center gap-1 rounded-lg border border-border/60 bg-muted/40 p-1 shadow-sm">
+          <div className="flex items-center gap-1 rounded-xl border border-border/60 bg-background/65 p-1.5 shadow-sm backdrop-blur">
             <button
               type="button"
               onClick={() => setTab('create')}
               aria-pressed={tab === 'create'}
-              className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-all ${
+              className={`flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-xs font-medium transition-all ${
                 tab === 'create'
                   ? 'bg-background text-foreground shadow-sm ring-1 ring-border/60'
                   : 'text-muted-foreground hover:text-foreground'
@@ -1340,7 +1410,7 @@ export default function AgentSwarmView({
               type="button"
               onClick={() => setTab('history')}
               aria-pressed={tab === 'history'}
-              className={`rounded-md px-3 py-1.5 text-xs font-medium transition-all ${
+              className={`rounded-lg px-3.5 py-2 text-xs font-medium transition-all ${
                 tab === 'history'
                   ? 'bg-background text-foreground shadow-sm ring-1 ring-border/60'
                   : 'text-muted-foreground hover:text-foreground'
@@ -1376,11 +1446,19 @@ export default function AgentSwarmView({
         </div>
       ) : null}
 
-      <div className="min-h-0 flex-1 overflow-y-auto p-5">
+      <div className="min-h-0 flex-1 overflow-y-auto p-5 sm:p-6">
         {tab === 'create' ? (
-          <div className="mx-auto max-w-3xl space-y-6">
+          <div className="mx-auto grid max-w-6xl items-start gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
+            <div className="space-y-5">
             {/* Project + Goal card */}
-            <section className="rounded-xl border border-border/60 bg-card/50 p-4 shadow-sm">
+            <section className="rounded-2xl border border-border/60 bg-card/70 p-5 shadow-sm">
+              <div className="mb-4 flex items-center gap-3">
+                <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-primary/10 text-[10px] font-bold text-primary">01</span>
+                <div>
+                  <h3 className="text-sm font-semibold text-foreground">Define the mission</h3>
+                  <p className="text-[10px] text-muted-foreground">Give the orchestrator a bounded, testable source of truth.</p>
+                </div>
+              </div>
               <div className="space-y-4">
                 <div>
                   <label
@@ -1412,11 +1490,20 @@ export default function AgentSwarmView({
                   </label>
                   <textarea
                     id="swarm-goal"
-                    className={`${fieldClass} min-h-[96px] resize-y`}
+                    className={`${fieldClass} min-h-[132px] resize-y text-[13px] leading-relaxed`}
                     placeholder="What should this swarm accomplish?"
                     value={goal}
                     onChange={(e) => setGoal(e.target.value)}
                   />
+                  <div className="mt-3">
+                    <GoalWorkshop
+                      projectId={projectId}
+                      provider={roster.find((seat) => seat.kind === 'orchestrator')?.provider || 'claude'}
+                      model={roster.find((seat) => seat.kind === 'orchestrator')?.model ?? null}
+                      currentGoal={goal}
+                      onApplyGoal={(next) => setGoal(next)}
+                    />
+                  </div>
                 </div>
                 <div>
                   <div className="flex items-center justify-between gap-2">
@@ -1496,15 +1583,18 @@ export default function AgentSwarmView({
             </section>
 
             {/* Skills */}
-            <section className="rounded-xl border border-border/60 bg-card/50 p-4 shadow-sm">
+            <section className="rounded-2xl border border-border/60 bg-card/70 p-5 shadow-sm">
               <div className="flex items-center justify-between gap-2">
-                <div>
-                  <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                    Project skills
+                <div className="flex items-center gap-3">
+                  <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-primary/10 text-[10px] font-bold text-primary">02</span>
+                  <div>
+                  <h3 className="text-sm font-semibold text-foreground">
+                    Context and skills
                   </h3>
-                  <p className="mt-0.5 text-[11px] text-muted-foreground">
-                    Skills agents should prefer — loaded from the selected project.
+                  <p className="mt-0.5 text-[10px] text-muted-foreground">
+                    Project-native instructions every dispatched worker should inherit.
                   </p>
+                  </div>
                 </div>
                 {skillOptions.length > 0 ? (
                   <div className="flex gap-2 text-[11px]">
@@ -1572,14 +1662,17 @@ export default function AgentSwarmView({
             </section>
 
             {/* Execution options */}
-            <section className="rounded-xl border border-border/60 bg-card/50 p-4 shadow-sm">
-              <div>
-                <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                  Execution options
+            <section className="rounded-2xl border border-border/60 bg-card/70 p-5 shadow-sm">
+              <div className="flex items-center gap-3">
+                <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-primary/10 text-[10px] font-bold text-primary">03</span>
+                <div>
+                <h3 className="text-sm font-semibold text-foreground">
+                  Runtime policy
                 </h3>
-                <p className="mt-0.5 text-[11px] text-muted-foreground">
-                  Auto-scale adds seats as waves demand parallel work.
+                <p className="mt-0.5 text-[10px] text-muted-foreground">
+                  Resource boundaries and recovery behavior for the live dispatch loop.
                 </p>
+                </div>
               </div>
               <div className="mt-3 grid gap-3 sm:grid-cols-2">
                 <div className="space-y-2">
@@ -1619,66 +1712,80 @@ export default function AgentSwarmView({
                 </div>
                 <div className="space-y-2">
                   <label className="block text-[11px] font-medium text-muted-foreground">
-                    Stall timeout (ms — no output for this long = reassign)
-                    <input
-                      type="number"
-                      min={0}
-                      step={30000}
+                    Reassign a silent worker after
+                    <select
                       className={fieldClass}
-                      value={stallTimeoutMs || ''}
-                      placeholder="300000"
-                      onChange={(e) => setStallTimeoutMs(Number(e.target.value) || 0)}
-                    />
+                      value={stallTimeoutMs}
+                      onChange={(e) => setStallTimeoutMs(Number(e.target.value))}
+                    >
+                      <option value={120000}>2 minutes</option>
+                      <option value={300000}>5 minutes</option>
+                      <option value={600000}>10 minutes</option>
+                      <option value={900000}>15 minutes</option>
+                    </select>
                   </label>
                   <label className="block text-[11px] font-medium text-muted-foreground">
-                    Hard per-step ceiling (ms, 0 = none)
-                    <input
-                      type="number"
-                      min={0}
-                      step={60000}
+                    Hard ceiling per worker task
+                    <select
                       className={fieldClass}
-                      value={stepTimeoutMs || ''}
-                      placeholder="0"
-                      onChange={(e) => setStepTimeoutMs(Number(e.target.value) || 0)}
-                    />
+                      value={stepTimeoutMs}
+                      onChange={(e) => setStepTimeoutMs(Number(e.target.value))}
+                    >
+                      <option value={1800000}>30 minutes</option>
+                      <option value={2700000}>45 minutes</option>
+                      <option value={5400000}>90 minutes</option>
+                      <option value={0}>No hard ceiling</option>
+                    </select>
                   </label>
                   <label className="block text-[11px] font-medium text-muted-foreground">
-                    Attempts per task (feedback + reassignment)
-                    <input
-                      type="number"
-                      min={1}
-                      max={5}
-                      step={1}
+                    Attempts before plan-level rethink
+                    <select
                       className={fieldClass}
-                      value={stepMaxAttempts || ''}
-                      placeholder="3"
-                      onChange={(e) => setStepMaxAttempts(Number(e.target.value) || 0)}
-                    />
+                      value={stepMaxAttempts}
+                      onChange={(e) => setStepMaxAttempts(Number(e.target.value))}
+                    >
+                      <option value={2}>2 · fast</option>
+                      <option value={3}>3 · balanced</option>
+                      <option value={6}>6 · resilient</option>
+                      <option value={10}>10 · long horizon</option>
+                    </select>
                   </label>
                   <label className="block text-[11px] font-medium text-muted-foreground">
-                    Validation remediation rounds
-                    <input
-                      type="number"
-                      min={1}
-                      max={8}
-                      step={1}
+                    Validation repair cycles
+                    <select
                       className={fieldClass}
-                      value={validationMaxAttempts || ''}
-                      placeholder="4"
-                      onChange={(e) => setValidationMaxAttempts(Number(e.target.value) || 0)}
-                    />
+                      value={validationMaxAttempts}
+                      onChange={(e) => setValidationMaxAttempts(Number(e.target.value))}
+                    >
+                      <option value={2}>2 · quick</option>
+                      <option value={4}>4 · balanced</option>
+                      <option value={6}>6 · thorough</option>
+                      <option value={10}>10 · long horizon</option>
+                    </select>
                   </label>
                   <label className="block text-[11px] font-medium text-muted-foreground">
-                    Max concurrent workers (0 = roster size)
-                    <input
-                      type="number"
-                      min={0}
-                      step={1}
+                    Maximum concurrent workers
+                    <select
                       className={fieldClass}
-                      value={maxConcurrency || ''}
-                      placeholder="0"
-                      onChange={(e) => setMaxConcurrency(Number(e.target.value) || 0)}
-                    />
+                      value={maxConcurrency}
+                      onChange={(e) => setMaxConcurrency(Number(e.target.value))}
+                    >
+                      {[1, 2, 3, 4, 6, 8].map((value) => <option key={value} value={value}>{value} worker{value === 1 ? '' : 's'}</option>)}
+                    </select>
+                  </label>
+                  <label className="block text-[11px] font-medium text-muted-foreground">
+                    Whole-swarm time budget
+                    <select
+                      className={fieldClass}
+                      value={wallClockMs}
+                      onChange={(e) => setWallClockMs(Number(e.target.value))}
+                    >
+                      <option value={3600000}>1 hour</option>
+                      <option value={7200000}>2 hours</option>
+                      <option value={14400000}>4 hours</option>
+                      <option value={28800000}>8 hours</option>
+                      <option value={0}>No time budget</option>
+                    </select>
                   </label>
                   <label className="flex cursor-pointer items-start gap-2 rounded-lg border border-border/60 px-2.5 py-2 text-[11px] transition hover:border-border hover:bg-muted/40">
                     <input
@@ -1704,9 +1811,9 @@ export default function AgentSwarmView({
                     <span>
                       <span className="font-medium text-foreground">Autonomous (long-horizon)</span>
                       <span className="block text-[10px] text-muted-foreground">
-                        Only a crashed or silent agent stops a step — a reviewer/tester finding
-                        real issues just triggers another attempt. Raises attempt and replan
-                        budgets so the swarm can keep working for hours unattended.
+                        On by default. Uncheck for a short, tightly budgeted run. Only a crashed
+                        or silent agent stops a step — reviewer/tester findings trigger another
+                        attempt so the swarm can keep working unattended.
                       </span>
                     </span>
                   </label>
@@ -1715,17 +1822,20 @@ export default function AgentSwarmView({
             </section>
 
             {/* Roster */}
-            <section className="space-y-3">
+            <section className="space-y-4 rounded-2xl border border-border/60 bg-card/70 p-5 shadow-sm">
               <div className="flex flex-wrap items-end justify-between gap-3">
-                <div>
-                  <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                    Agent roster
+                <div className="flex items-center gap-3">
+                  <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-primary/10 text-[10px] font-bold text-primary">04</span>
+                  <div>
+                  <h3 className="text-sm font-semibold text-foreground">
+                    Orchestrator and roster
                   </h3>
                   <p className="mt-0.5 text-[11px] text-muted-foreground">
                     {rosterMode === 'auto'
-                      ? 'Pick the orchestrator — it staffs the rest of the roster for you.'
+                      ? 'Pick the orchestrator model (strong). Workers are auto-staffed from enabled Model profiles.'
                       : 'Exactly one orchestrator. Add workers — they run in parallel waves.'}
                   </p>
+                  </div>
                 </div>
                 <div
                   role="group"
@@ -1771,35 +1881,23 @@ export default function AgentSwarmView({
                 <div className="space-y-2">
                   <div className="rounded-lg border border-primary/20 bg-primary/5 px-3 py-2 text-[11px] leading-relaxed text-muted-foreground">
                     <span className="font-medium text-foreground">Auto roster: </span>
-                    the orchestrator selects explorer, implementer, and reviewer seats from
-                    Agent Profiles tagged for swarm roles, then runs the goal end to end.
-                    You only review the final report and merge the PR.
+                    pick a strong orchestrator model. Worker models come from Settings → Model
+                    profiles (enabled models on allowed providers). The swarm replans after each
+                    harvest — long-horizon by default.
                   </div>
-                  {hasSwarmProfiles === false ? (
-                    <div
-                      role="note"
-                      className="flex flex-wrap items-center gap-x-1.5 gap-y-1 rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-800 dark:text-amber-300"
-                    >
-                      <ShieldAlert className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-                      <span>
-                        No Agent Profiles are tagged for swarm roles yet — the orchestrator
-                        will fall back to built-in defaults.
-                      </span>
-                      <button
-                        type="button"
-                        className="font-medium text-amber-900 underline underline-offset-2 hover:no-underline dark:text-amber-200"
-                        onClick={() =>
-                          window.dispatchEvent(
-                            new CustomEvent('cloudcli:open-settings', {
-                              detail: { tab: 'agent-profiles' },
-                            }),
-                          )
-                        }
-                      >
-                        Tag profiles in Settings → Agent Profiles
-                      </button>
-                    </div>
-                  ) : null}
+                  <button
+                    type="button"
+                    className="text-[11px] font-medium text-primary underline underline-offset-2"
+                    onClick={() =>
+                      window.dispatchEvent(
+                        new CustomEvent('cloudcli:open-settings', {
+                          detail: { tab: 'model-registry' },
+                        }),
+                      )
+                    }
+                  >
+                    Enable or disable worker models in Settings → Model profiles
+                  </button>
                 </div>
               ) : (
                 <div className="flex flex-wrap justify-end gap-1.5">
@@ -2017,19 +2115,82 @@ export default function AgentSwarmView({
               </div>
             </section>
 
-            <div className="sticky bottom-0 -mx-1 flex justify-end bg-gradient-to-t from-background via-background to-transparent pb-1 pt-4">
-              <Button
-                onClick={() => void start()}
-                disabled={starting}
-                className="h-10 rounded-lg px-5 shadow-md"
-              >
-                <Network className="mr-1.5 h-4 w-4" />
-                {starting ? 'Starting…' : 'Deploy Agent Swarm'}
-              </Button>
             </div>
+            <aside className="space-y-3 lg:sticky lg:top-0">
+              <div className="overflow-hidden rounded-2xl border border-border/60 bg-card/80 shadow-xl shadow-black/[0.04]">
+                <div className="border-b border-border/50 bg-gradient-to-br from-primary/[0.10] via-card to-violet-500/[0.08] px-4 py-4">
+                  <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
+                    <span className="flex h-8 w-8 items-center justify-center rounded-xl bg-primary/15 text-primary">
+                      <Network className="h-4 w-4" />
+                    </span>
+                    Launch brief
+                  </div>
+                  <p className="mt-1 text-[10px] leading-relaxed text-muted-foreground">
+                    A quick preflight before the orchestrator takes over.
+                  </p>
+                </div>
+                <div className="space-y-4 p-4">
+                  <div className="space-y-2">
+                    {[
+                      { ready: Boolean(projectId), label: projectId ? projectName(projectId) : 'Select a project' },
+                      { ready: Boolean(goal.trim()), label: goal.trim() ? `${goal.trim().length} character goal contract` : 'Define the outcome' },
+                      { ready: roster.some((seat) => seat.kind === 'orchestrator'), label: 'Orchestrator configured' },
+                    ].map((item) => (
+                      <div key={item.label} className="flex items-center gap-2 text-[11px]">
+                        <span className={`flex h-4 w-4 items-center justify-center rounded-full ${item.ready ? 'bg-emerald-500/15 text-emerald-600' : 'bg-muted text-muted-foreground'}`}>
+                          {item.ready ? <CheckCircle2 className="h-3 w-3" /> : <span className="h-1.5 w-1.5 rounded-full bg-current" />}
+                        </span>
+                        <span className={item.ready ? 'text-foreground' : 'text-muted-foreground'}>{item.label}</span>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="rounded-xl border border-border/50 bg-muted/25 p-2.5">
+                      <Layers3 className="h-3.5 w-3.5 text-primary" />
+                      <div className="mt-1 text-sm font-semibold text-foreground">{maxConcurrency || 'Auto'}</div>
+                      <div className="text-[9px] text-muted-foreground">parallel seats</div>
+                    </div>
+                    <div className="rounded-xl border border-border/50 bg-muted/25 p-2.5">
+                      <Clock3 className="h-3.5 w-3.5 text-primary" />
+                      <div className="mt-1 text-sm font-semibold text-foreground">{wallClockMs ? `${Math.round(wallClockMs / 3_600_000)}h` : 'Open'}</div>
+                      <div className="text-[9px] text-muted-foreground">time budget</div>
+                    </div>
+                  </div>
+
+                  <div className="rounded-xl border border-border/50 bg-muted/20 p-3 text-[10px] leading-relaxed text-muted-foreground">
+                    <div className="flex items-center gap-1.5 font-semibold text-foreground">
+                      <Bot className="h-3.5 w-3.5 text-primary" />
+                      {roster.find((seat) => seat.kind === 'orchestrator')?.provider || 'claude'}
+                      {roster.find((seat) => seat.kind === 'orchestrator')?.model
+                        ? ` · ${roster.find((seat) => seat.kind === 'orchestrator')?.model}`
+                        : ' · provider default'}
+                    </div>
+                    <div className="mt-1">
+                      {rosterMode === 'auto' ? 'Auto-staffed workers' : `${Math.max(0, roster.length - 1)} custom workers`}
+                      {' · '}{selectedSkills.length} skill{selectedSkills.length === 1 ? '' : 's'}
+                      {' · '}{attachedFiles.length} attachment{attachedFiles.length === 1 ? '' : 's'}
+                    </div>
+                  </div>
+
+                  <Button
+                    onClick={() => void start()}
+                    disabled={starting || !projectId || !goal.trim()}
+                    className="h-11 w-full rounded-xl bg-gradient-to-r from-primary to-violet-600 px-4 font-semibold shadow-lg shadow-primary/20"
+                  >
+                    {starting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Activity className="mr-2 h-4 w-4" />}
+                    {starting ? 'Provisioning swarm…' : 'Launch dynamic swarm'}
+                    {!starting ? <ArrowRight className="ml-auto h-4 w-4" /> : null}
+                  </Button>
+                  <p className="text-center text-[9px] text-muted-foreground">
+                    Isolated workspace · durable recovery · automatic PR
+                  </p>
+                </div>
+              </div>
+            </aside>
           </div>
         ) : (
-          <div className="mx-auto max-w-3xl space-y-4">
+          <div className="mx-auto max-w-6xl space-y-4">
             {/* History toolbar */}
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="flex items-center gap-1 rounded-lg border border-border/60 bg-muted/30 p-0.5">
@@ -2382,6 +2543,36 @@ export default function AgentSwarmView({
                             </div>
                           ) : null}
 
+                          <SwarmActivityStrip
+                            swarmId={swarm.swarm_id}
+                            status={swarm.status}
+                            selectedMemberId={liveFeed?.swarmId === swarm.swarm_id ? liveFeed.memberId : null}
+                            onAgentSelect={(agent: SwarmActivityAgent) => {
+                              if (!agent.runId) return;
+                              setLiveFeed((current) =>
+                                current?.runId === agent.runId
+                                  ? null
+                                  : {
+                                      swarmId: swarm.swarm_id,
+                                      runId: agent.runId as string,
+                                      label: agent.label || agent.kind || 'Agent',
+                                      memberId: agent.memberId,
+                                    },
+                              );
+                            }}
+                          />
+
+                          {liveFeed?.swarmId === swarm.swarm_id ? (
+                            <SwarmAgentActivity
+                              runId={liveFeed.runId}
+                              label={liveFeed.label}
+                              running={swarm.status === 'running'}
+                              onClose={() => setLiveFeed(null)}
+                            />
+                          ) : null}
+
+                          <SwarmMetricsPanel swarmId={swarm.swarm_id} />
+
                           {swarm.goalCard ? <GoalCardPanel card={swarm.goalCard} running={swarm.status === 'running'} /> : null}
 
                           {swarm.last_error ? (
@@ -2418,8 +2609,36 @@ export default function AgentSwarmView({
                                   Cost: {swarm.plan.costNotes}
                                 </p>
                               ) : null}
-                              <ul className="mt-2 space-y-1.5">
-                                {(swarm.plan.steps ?? []).map((step) => {
+                              {(() => {
+                                // Wave-lane layout (PRD swarm-studio-v2 phase 3):
+                                // steps grouped into parallel lanes instead of a
+                                // flat list, so fan-out is visible at a glance.
+                                const allSteps = swarm.plan.steps ?? [];
+                                const lanes = new Map<number, typeof allSteps>();
+                                for (const step of allSteps) {
+                                  const wave = step.wave ?? 0;
+                                  const lane = lanes.get(wave);
+                                  if (lane) lane.push(step);
+                                  else lanes.set(wave, [step]);
+                                }
+                                const sortedLanes = [...lanes.entries()].sort((a, b) => a[0] - b[0]);
+                                return sortedLanes.map(([wave, laneSteps]) => {
+                                  const laneDone = laneSteps.filter(
+                                    (s) => s.status === 'succeeded' || s.status === 'recovered',
+                                  ).length;
+                                  const laneRunning = laneSteps.filter((s) => s.status === 'running').length;
+                                  return (
+                                  <div key={wave} className="mt-3 first:mt-2">
+                                    <div className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                                      <span>Wave {wave}</span>
+                                      <span className="h-px flex-1 bg-border/50" />
+                                      <span className="normal-case">
+                                        {laneRunning > 0 ? `${laneRunning} running · ` : ''}
+                                        {laneDone}/{laneSteps.length} done
+                                      </span>
+                                    </div>
+                                    <ul className="mt-1.5 space-y-1.5">
+                                {(laneSteps).map((step) => {
                                   const stepRuns = (swarm.usage?.memberRuns ?? []).filter(
                                     (run) => run.stepId === step.id,
                                   );
@@ -2476,10 +2695,27 @@ export default function AgentSwarmView({
                                         Retry
                                       </Button>
                                     ) : null}
+                                    {step.status && step.status !== 'queued' ? (
+                                      <Button
+                                        size="sm"
+                                        variant="ghost"
+                                        className="h-6 shrink-0 rounded-md px-2 text-[10px] text-muted-foreground"
+                                        title={`Fork from ${step.id}: keep completed work, re-run this step and everything after it`}
+                                        disabled={swarmBusy}
+                                        onClick={() => void forkFromStep(swarm.swarm_id, step.id)}
+                                      >
+                                        <GitFork className="mr-1 h-3 w-3" />
+                                        Fork
+                                      </Button>
+                                    ) : null}
                                   </li>
                                   );
                                 })}
-                              </ul>
+                                    </ul>
+                                  </div>
+                                  );
+                                });
+                              })()}
                             </div>
                           ) : swarm.status === 'planning' ? (
                             <div className="flex items-center gap-2 text-sky-600 dark:text-sky-400">
