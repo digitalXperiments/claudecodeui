@@ -780,7 +780,6 @@ function ChatInterface({
               mobileToolsOpen ? 'flex' : 'hidden sm:flex'
             }`}
           >
-            {!studioMode ? <LiveSpendMeter sessionId={selectedSession?.id || currentSessionId || null} /> : null}
             {!studioMode ? (
               <AgentRelayActivityControl
                 projectId={selectedProject?.projectId ?? null}
@@ -788,6 +787,7 @@ function ChatInterface({
                 newSessionTrigger={newSessionTrigger}
               />
             ) : null}
+            {!studioMode ? <LiveSpendMeter sessionId={selectedSession?.id || currentSessionId || null} /> : null}
           </div>
           {isUserScrolledUp && chatMessages.length > 0 && (
             <div className="pointer-events-none absolute -top-11 left-0 right-0 z-20 flex justify-center">
