@@ -749,6 +749,8 @@ function ChatInterface({
           setPiModel={setPiModel}
           providerModelCatalog={providerModelCatalog}
           providerModelsLoading={providerModelsLoading}
+          providerModelsRefreshing={providerModelsRefreshing}
+          onRefreshProviderModels={hardRefreshProviderModels}
           tasksEnabled={tasksEnabled}
           isTaskMasterInstalled={isTaskMasterInstalled}
           onShowAllTasks={onShowAllTasks}

@@ -20,7 +20,14 @@ import {
 } from '@/shared/utils.js';
 
 export const PROVIDER_MODELS_CACHE_TTL_MS = 3 * 24 * 60 * 60 * 1000;
-const PROVIDER_MODELS_CACHE_VERSION = 2;
+/**
+ * Bump whenever a provider adapter changes the *shape* of the models it
+ * returns (label format, added/renamed fields, etc.) so disk-persisted
+ * entries written under the old shape are treated as stale and refetched on
+ * next read, instead of surviving until their TTL (up to
+ * `PROVIDER_MODELS_CACHE_TTL_MS`) expires. See `readProviderModelsCacheFile`.
+ */
+export const PROVIDER_MODELS_CACHE_VERSION = 3;
 const UNCACHED_PROVIDERS = new Set<LLMProvider>(['claude', 'codex']);
 
 type ProviderModelsServiceDependencies = {

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -7,6 +7,7 @@ import test from 'node:test';
 import {
   createProviderModelsService,
   PROVIDER_MODELS_CACHE_TTL_MS,
+  PROVIDER_MODELS_CACHE_VERSION,
 } from '@/modules/providers/services/provider-models.service.js';
 import type {
   ProviderChangeActiveModelInput,
@@ -201,6 +202,52 @@ test('provider model cache is persisted across service instances', async () => {
     const models = await reader.getProviderModels('cursor');
     assert.equal(models.models.DEFAULT, 'cursor-cached');
     assert.equal(models.cache.source, 'disk');
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('a disk cache entry written under an older cache version is discarded and refetched', async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'provider-model-cache-version-'));
+  const cachePath = path.join(tempRoot, 'models-cache.json');
+
+  try {
+    // Simulates a cache file left on disk by a previous release whose adapter
+    // produced a different label shape (e.g. before the OpenCode provider-name
+    // prefix fix). Bumping PROVIDER_MODELS_CACHE_VERSION must make this stale
+    // entry unreadable so it can never resurrect the old labels.
+    await mkdir(path.dirname(cachePath), { recursive: true });
+    await writeFile(cachePath, JSON.stringify({
+      version: PROVIDER_MODELS_CACHE_VERSION - 1,
+      entries: {
+        opencode: {
+          updatedAt: 1,
+          expiresAt: Date.now() + PROVIDER_MODELS_CACHE_TTL_MS,
+          models: createModels('stale-label'),
+        },
+      },
+    }), 'utf8');
+
+    let loadCount = 0;
+    const service = createProviderModelsService({
+      cachePath,
+      resolveProvider: () => ({
+        models: {
+          getSupportedModels: async () => {
+            loadCount += 1;
+            return createModels('fresh-label');
+          },
+          getCurrentActiveModel: async () => createCurrentActiveModel('opencode-active'),
+          changeActiveModel: async (input) => createSessionActiveModelChange('opencode', input),
+        },
+      }),
+    });
+
+    const models = await service.getProviderModels('opencode');
+
+    assert.equal(loadCount, 1);
+    assert.equal(models.models.DEFAULT, 'fresh-label');
+    assert.equal(models.cache.source, 'fresh');
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }

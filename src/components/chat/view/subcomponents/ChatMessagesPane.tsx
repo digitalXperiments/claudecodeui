@@ -52,6 +52,8 @@ interface ChatMessagesPaneProps {
   setPiModel: (model: string) => void;
   providerModelCatalog: Partial<Record<LLMProvider, ProviderModelsDefinition>>;
   providerModelsLoading: boolean;
+  providerModelsRefreshing?: boolean;
+  onRefreshProviderModels?: () => void;
   tasksEnabled: boolean;
   isTaskMasterInstalled: boolean | null;
   onShowAllTasks?: (() => void) | null;
@@ -109,6 +111,8 @@ function ChatMessagesPane({
   setPiModel,
   providerModelCatalog,
   providerModelsLoading,
+  providerModelsRefreshing,
+  onRefreshProviderModels,
   tasksEnabled,
   isTaskMasterInstalled,
   onShowAllTasks,
@@ -218,6 +222,8 @@ function ChatMessagesPane({
           setPiModel={setPiModel}
           providerModelCatalog={providerModelCatalog}
           providerModelsLoading={providerModelsLoading}
+          providerModelsRefreshing={providerModelsRefreshing}
+          onRefreshProviderModels={onRefreshProviderModels}
           tasksEnabled={tasksEnabled}
           isTaskMasterInstalled={isTaskMasterInstalled}
           onShowAllTasks={onShowAllTasks}

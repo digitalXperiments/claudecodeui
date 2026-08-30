@@ -1,5 +1,5 @@
-import React, { useCallback, useMemo, useState } from "react";
-import { Check, ChevronDown } from "lucide-react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Check, ChevronDown, RefreshCw } from "lucide-react";
 import { Trans, useTranslation } from "react-i18next";
 
 import type {
@@ -78,6 +78,10 @@ type ProviderSelectionEmptyStateProps = {
   setPiModel: (model: string) => void;
   providerModelCatalog: Partial<Record<LLMProvider, ProviderModelsDefinition>>;
   providerModelsLoading: boolean;
+  /** True while a bypass-cache model catalog refresh is in flight. */
+  providerModelsRefreshing?: boolean;
+  /** Forces a bypass-cache refetch of every provider's model catalog. */
+  onRefreshProviderModels?: () => void;
   tasksEnabled: boolean;
   isTaskMasterInstalled: boolean | null;
   onShowAllTasks?: (() => void) | null;
@@ -162,6 +166,8 @@ export default function ProviderSelectionEmptyState({
   setPiModel,
   providerModelCatalog,
   providerModelsLoading,
+  providerModelsRefreshing = false,
+  onRefreshProviderModels,
   tasksEnabled,
   isTaskMasterInstalled,
   onShowAllTasks,
@@ -171,6 +177,26 @@ export default function ProviderSelectionEmptyState({
   const [dialogOpen, setDialogOpen] = useState(false);
   const { isAgentEnabled } = useAgentVisibility();
   const { hiddenModels } = useHiddenModels();
+
+  // A long-lived tab only fetches the model catalog once on mount, so a
+  // session left open across a provider's label-format update (or a stale
+  // disk cache) would keep showing outdated labels here indefinitely. One
+  // bypass-cache refresh per dialog open keeps this picker current without
+  // reloading the page or polling in the background.
+  const hasRefreshedOnOpenRef = useRef(false);
+  useEffect(() => {
+    if (!dialogOpen) {
+      hasRefreshedOnOpenRef.current = false;
+      return;
+    }
+
+    if (hasRefreshedOnOpenRef.current) {
+      return;
+    }
+
+    hasRefreshedOnOpenRef.current = true;
+    onRefreshProviderModels?.();
+  }, [dialogOpen, onRefreshProviderModels]);
 
   const visibleProviderGroups = useMemo<ProviderGroup[]>(() => {
     return PROVIDER_META.filter((p) => isAgentEnabled(p.id)).map((p) => ({
@@ -298,8 +324,20 @@ export default function ProviderSelectionEmptyState({
 
             <DialogContent className="max-w-md overflow-hidden p-0">
               <DialogTitle>Model Selector</DialogTitle>
-              <div className="border-b border-border/60 bg-muted/20 px-4 py-3">
+              <div className="flex items-center justify-between gap-2 border-b border-border/60 bg-muted/20 px-4 py-3">
                 <p className="text-sm font-semibold text-foreground">Choose a model</p>
+                {onRefreshProviderModels && (
+                  <button
+                    type="button"
+                    onClick={onRefreshProviderModels}
+                    disabled={providerModelsRefreshing}
+                    title="Refresh model list from providers"
+                    aria-label="Refresh model list from providers"
+                    className="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:text-foreground disabled:opacity-60"
+                  >
+                    <RefreshCw className={`h-3.5 w-3.5 ${providerModelsRefreshing ? "animate-spin" : ""}`} />
+                  </button>
+                )}
               </div>
               <Command filter={modelSearchFilter}>
                 <CommandInput
