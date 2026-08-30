@@ -43,6 +43,14 @@ type AgentRelayActivityControlProps = {
 
 type RelayNavigationState = {
   openAgentRelay?: boolean;
+  /**
+   * Worker sessions are always internal — this navigation already knows
+   * that before the session itself has loaded, so the chat view can fail
+   * the read-only gate closed instead of briefly rendering the composer
+   * enabled. `selectedSession.isInternal` remains the actual source of
+   * truth once it resolves; see `resolveReadOnlyWorkerSession`.
+   */
+  isInternal?: boolean;
 };
 
 export default function AgentRelayActivityControl({ projectId, sessionId, newSessionTrigger }: AgentRelayActivityControlProps) {
@@ -295,7 +303,9 @@ export default function AgentRelayActivityControl({ projectId, sessionId, newSes
   const openWorkerSession = (job: AgentRelayJob) => {
     if (!job.app_session_id) return;
     setOpen(false);
-    navigate(`/session/${job.app_session_id}`, { state: { openAgentRelay: true } satisfies RelayNavigationState });
+    navigate(`/session/${job.app_session_id}`, {
+      state: { openAgentRelay: true, isInternal: true } satisfies RelayNavigationState,
+    });
   };
 
   const openLeadSession = () => {

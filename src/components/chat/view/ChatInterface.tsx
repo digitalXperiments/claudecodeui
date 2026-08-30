@@ -11,11 +11,13 @@ import { useChatProviderState } from '../hooks/useChatProviderState';
 import { useChatSessionState } from '../hooks/useChatSessionState';
 import { useChatRealtimeHandlers } from '../hooks/useChatRealtimeHandlers';
 import { useChatComposerState } from '../hooks/useChatComposerState';
+import { useWorkerSessionReadOnly } from '../hooks/useWorkerSessionReadOnly';
 import { useSessionStore } from '../../../stores/useSessionStore';
 import { authenticatedFetch, createSessionHandoff } from '../../../utils/api';
 import { resolveProviderModelLabel } from '../../../utils/providerModels';
 import { readProviderToolsSettings, writeQueuedMessage } from '../utils/chatStorage';
 import { DEFAULT_EFFORT_VALUE } from '../constants/providerEffort';
+import { guardWhenReadOnly } from '../utils/workerSessionAccess';
 import { flattenTranscript } from '../../skills/lib/skillWizardPrompt';
 import SkillWizardDialog from '../../skills/view/SkillWizardDialog';
 
@@ -215,6 +217,11 @@ function ChatInterface({
     sessionStore,
   });
 
+  // Agent Relay/internal worker transcripts are opened for observation only —
+  // this is the single predicate every composer/header control below defers
+  // to; see resolveReadOnlyWorkerSession for the fail-closed navigation rules.
+  const isReadOnlyWorkerSession = useWorkerSessionReadOnly(selectedSession);
+
   const [skillWizardOpen, setSkillWizardOpen] = useState(false);
   const [skillWizardTranscript, setSkillWizardTranscript] = useState<string | undefined>(undefined);
   // Mobile-only composer overflow — collapses the relay/collab chips and the
@@ -231,6 +238,9 @@ function ChatInterface({
   }, [setCurrentSessionId, onSessionEstablished, onNavigateToSession]);
 
   const handleSaveAsSkill = useCallback(() => {
+    if (isReadOnlyWorkerSession) {
+      return;
+    }
     const activeSessionId = currentSessionId || selectedSession?.id || null;
     if (!activeSessionId) {
       return;
@@ -241,7 +251,7 @@ function ChatInterface({
     }
     setSkillWizardTranscript(transcript);
     setSkillWizardOpen(true);
-  }, [currentSessionId, selectedSession?.id, sessionStore]);
+  }, [currentSessionId, isReadOnlyWorkerSession, selectedSession?.id, sessionStore]);
 
   // Post-switch notice. The app has no global toast util, so this is a
   // transient inline banner (same pattern as SkillWizardDialog's toast).
@@ -636,7 +646,7 @@ function ChatInterface({
   });
 
   useEffect(() => {
-    if (!canAbortSession) {
+    if (!canAbortSession || isReadOnlyWorkerSession) {
       return;
     }
 
@@ -653,7 +663,7 @@ function ChatInterface({
     return () => {
       document.removeEventListener('keydown', handleGlobalEscape, { capture: true });
     };
-  }, [canAbortSession, handleAbortSession]);
+  }, [canAbortSession, handleAbortSession, isReadOnlyWorkerSession]);
 
   useEffect(() => {
     return () => {
@@ -806,71 +816,80 @@ function ChatInterface({
           )}
 
           <ChatComposer
+          readOnly={isReadOnlyWorkerSession}
           pendingPermissionRequests={pendingPermissionRequests}
           handlePermissionDecision={handlePermissionDecision}
           handleGrantToolPermission={handleGrantToolPermission}
           activity={sessionActivity}
           isLoading={isProcessing}
-          onAbortSession={handleAbortSession}
+          onAbortSession={guardWhenReadOnly(isReadOnlyWorkerSession, handleAbortSession)}
           provider={provider}
           permissionMode={composerPermissionMode}
-          onModeSwitch={studioMode ? () => undefined : cyclePermissionMode}
+          onModeSwitch={studioMode || isReadOnlyWorkerSession ? () => undefined : cyclePermissionMode}
           effort={currentProviderEffort}
           availableEffortOptions={currentProviderEffortOptions}
-          onSelectEffort={(nextEffort) =>
+          onSelectEffort={guardWhenReadOnly(isReadOnlyWorkerSession, (nextEffort: string) =>
             selectProviderEffort(provider, nextEffort, currentSessionId || selectedSession?.id || null)
-          }
+          )}
           fastMode={fastMode}
           supportsFastMode={supportsFastMode}
-          onToggleFastMode={() => selectCodexFastMode(!fastMode)}
+          onToggleFastMode={guardWhenReadOnly(isReadOnlyWorkerSession, () => selectCodexFastMode(!fastMode))}
           modelLabel={currentModelLabel}
-          onOpenModelSelector={openModelSelector}
+          onOpenModelSelector={guardWhenReadOnly(isReadOnlyWorkerSession, openModelSelector)}
           tokenBudget={tokenBudget}
           onShowTokenUsage={showCostModal}
           slashCommandsCount={slashCommandsCount}
-          onToggleCommandMenu={handleToggleCommandMenu}
-          onSaveAsSkill={onSaveAsSkill}
+          onToggleCommandMenu={guardWhenReadOnly(isReadOnlyWorkerSession, handleToggleCommandMenu)}
+          onSaveAsSkill={guardWhenReadOnly(isReadOnlyWorkerSession, onSaveAsSkill)}
           saveAsSkillDisabled={saveAsSkillDisabled}
           studioMode={studioMode}
-          hasInput={Boolean(input.trim())}
-          onClearInput={handleClearInput}
-          onSubmit={handleSubmit}
-          isDragActive={isDragActive}
-          queuedDraft={queuedDraft}
-          onEditQueuedDraft={editQueuedDraft}
-          onDeleteQueuedDraft={deleteQueuedDraft}
+          hasInput={!isReadOnlyWorkerSession && Boolean(input.trim())}
+          onClearInput={guardWhenReadOnly(isReadOnlyWorkerSession, handleClearInput)}
+          onSubmit={guardWhenReadOnly(isReadOnlyWorkerSession, handleSubmit)}
+          isDragActive={!isReadOnlyWorkerSession && isDragActive}
+          queuedDraft={isReadOnlyWorkerSession ? null : queuedDraft}
+          onEditQueuedDraft={guardWhenReadOnly(isReadOnlyWorkerSession, editQueuedDraft)}
+          onDeleteQueuedDraft={guardWhenReadOnly(isReadOnlyWorkerSession, deleteQueuedDraft)}
           attachedImages={attachedImages}
-          onRemoveImage={(index) =>
+          onRemoveImage={guardWhenReadOnly(isReadOnlyWorkerSession, (index: number) =>
             setAttachedImages((previous) =>
               previous.filter((_, currentIndex) => currentIndex !== index),
             )
-          }
+          )}
           uploadingImages={uploadingImages}
           imageErrors={imageErrors}
-          showFileDropdown={showFileDropdown}
+          showFileDropdown={!isReadOnlyWorkerSession && showFileDropdown}
           filteredFiles={filteredFiles}
           selectedFileIndex={selectedFileIndex}
-          onSelectFile={selectFile}
+          onSelectFile={guardWhenReadOnly(isReadOnlyWorkerSession, selectFile)}
           filteredCommands={filteredCommands}
           selectedCommandIndex={selectedCommandIndex}
-          onCommandSelect={handleCommandSelect}
+          onCommandSelect={guardWhenReadOnly(isReadOnlyWorkerSession, handleCommandSelect)}
           onCloseCommandMenu={resetCommandMenuState}
-          isCommandMenuOpen={showCommandMenu}
+          isCommandMenuOpen={!isReadOnlyWorkerSession && showCommandMenu}
           frequentCommands={commandQuery ? [] : frequentCommands}
-          getRootProps={getRootProps as (...args: unknown[]) => Record<string, unknown>}
-          getInputProps={getInputProps as (...args: unknown[]) => Record<string, unknown>}
-          openImagePicker={openImagePicker}
+          getRootProps={
+            isReadOnlyWorkerSession
+              ? (() => ({})) as (...args: unknown[]) => Record<string, unknown>
+              : (getRootProps as (...args: unknown[]) => Record<string, unknown>)
+          }
+          getInputProps={
+            isReadOnlyWorkerSession
+              ? (() => ({})) as (...args: unknown[]) => Record<string, unknown>
+              : (getInputProps as (...args: unknown[]) => Record<string, unknown>)
+          }
+          openImagePicker={guardWhenReadOnly(isReadOnlyWorkerSession, openImagePicker)}
           inputHighlightRef={inputHighlightRef}
           renderInputWithMentions={renderInputWithMentions}
           textareaRef={textareaRef}
-          input={input}
-          onVoiceTranscript={handleVoiceTranscript}
-          onInputChange={handleInputChange}
-          onTextareaClick={handleTextareaClick}
-          onTextareaKeyDown={handleKeyDown}
-          onTextareaPaste={handlePaste}
+          input={isReadOnlyWorkerSession ? '' : input}
+          onVoiceTranscript={isReadOnlyWorkerSession ? undefined : handleVoiceTranscript}
+          onInputChange={guardWhenReadOnly(isReadOnlyWorkerSession, handleInputChange)}
+          onTextareaClick={guardWhenReadOnly(isReadOnlyWorkerSession, handleTextareaClick)}
+          onTextareaKeyDown={guardWhenReadOnly(isReadOnlyWorkerSession, handleKeyDown)}
+          onTextareaPaste={guardWhenReadOnly(isReadOnlyWorkerSession, handlePaste)}
           onTextareaScrollSync={syncInputOverlayScroll}
-          onTextareaInput={handleTextareaInput}
+          onTextareaInput={guardWhenReadOnly(isReadOnlyWorkerSession, handleTextareaInput)}
           isInputFocused={isInputFocused}
           onInputFocusChange={handleInputFocusChange}
           mobileToolsOpen={mobileToolsOpen}

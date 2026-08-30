@@ -11,7 +11,7 @@ import type {
   RefObject,
   TouchEvent,
 } from 'react';
-import { Paperclip, MessageSquareIcon, XIcon, Loader2, ChevronDown, Check, ArrowUpIcon, Cpu, Sparkles, Gauge, Zap, GitFork, MoreHorizontal } from 'lucide-react';
+import { Paperclip, MessageSquareIcon, XIcon, Loader2, ChevronDown, Check, ArrowUpIcon, Cpu, Sparkles, Gauge, Zap, GitFork, Lock, MoreHorizontal } from 'lucide-react';
 
 import { useVoiceInput } from '../../hooks/useVoiceInput';
 import { useVoiceAvailable } from '../../hooks/useVoiceAvailable';
@@ -118,6 +118,14 @@ interface SlashCommand {
 }
 
 interface ChatComposerProps {
+  /**
+   * True for an Agent Relay/internal worker transcript opened for
+   * observation only. Every handler prop below is already a no-op in this
+   * case (see `guardWhenReadOnly` at the call site) — this flag exists only
+   * to hide/disable the composer's controls visually and show the
+   * read-only indicator in their place.
+   */
+  readOnly?: boolean;
   pendingPermissionRequests: PendingPermissionRequest[];
   handlePermissionDecision: (
     requestIds: string | string[],
@@ -195,6 +203,7 @@ interface ChatComposerProps {
 }
 
 export default function ChatComposer({
+  readOnly = false,
   pendingPermissionRequests,
   handlePermissionDecision,
   handleGrantToolPermission,
@@ -401,7 +410,7 @@ export default function ChatComposer({
         </div>
       )}
 
-      {queuedDraft && (
+      {queuedDraft && !readOnly && (
         <QueuedMessageCard
           content={queuedDraft.content}
           imageCount={queuedDraft.images.length}
@@ -457,7 +466,7 @@ export default function ChatComposer({
           ].filter(Boolean).join(' ')}
           {...getRootProps()}
         >
-          {isDragActive && (
+          {isDragActive && !readOnly && (
             <div className="absolute inset-0 z-50 flex items-center justify-center rounded-2xl border-2 border-dashed border-primary/50 bg-primary/15">
               <div className="rounded-xl border border-border/30 bg-card p-4 shadow-lg">
                 <svg className="mx-auto mb-2 h-8 w-8 text-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -501,7 +510,7 @@ export default function ChatComposer({
             </PromptInputHeader>
           )}
 
-          <input {...getInputProps()} />
+          {!readOnly && <input {...getInputProps()} />}
 
           <PromptInputBody>
             <div ref={inputHighlightRef} aria-hidden="true" className="pointer-events-none absolute inset-0 overflow-hidden rounded-xl">
@@ -514,6 +523,8 @@ export default function ChatComposer({
               ref={textareaRef}
               dir="auto"
               value={input}
+              disabled={readOnly}
+              readOnly={readOnly}
               onChange={onInputChange}
               onClick={onTextareaClick}
               onKeyDown={onTextareaKeyDown}
@@ -522,12 +533,30 @@ export default function ChatComposer({
               onFocus={() => onInputFocusChange?.(true)}
               onBlur={() => onInputFocusChange?.(false)}
               onInput={onTextareaInput}
-              placeholder={placeholder}
+              placeholder={
+                readOnly
+                  ? t('input.readOnlyWorkerPlaceholder', {
+                      defaultValue: 'Read-only worker session — this transcript cannot be edited here.',
+                    })
+                  : placeholder
+              }
             />
         </PromptInputBody>
 
         <PromptInputFooter>
           <PromptInputTools>
+            {readOnly ? (
+              <div
+                role="status"
+                className="flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-border/60 bg-muted/40 px-2.5 text-[11px] font-medium text-muted-foreground"
+              >
+                <Lock className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                <span>
+                  {t('input.readOnlyWorkerSession', { defaultValue: 'Read-only worker session' })}
+                </span>
+              </div>
+            ) : (
+              <>
             {/* Mobile-only overflow toggle — keeps the default row to just
                 textarea + send; every other tool lives behind this. */}
             <PromptInputButton
@@ -789,13 +818,14 @@ export default function ChatComposer({
               </PromptInputButton>
             )}
             </div>
-
+              </>
+            )}
           </PromptInputTools>
 
           <div className="flex shrink-0 items-center gap-2">
             {/* Keyboard shortcuts live on the send button tooltip only — a
                 long non-interactive hint next to send was crowding the footer. */}
-            <PromptInputSubmit
+            {!readOnly && <PromptInputSubmit
               onClick={
                 canQueueDraft
                   ? (e: MouseEvent<HTMLButtonElement>) => {
@@ -821,7 +851,7 @@ export default function ChatComposer({
               ) : canQueueDraft ? (
                 <ArrowUpIcon className="h-4 w-4" />
               ) : undefined}
-            </PromptInputSubmit>
+            </PromptInputSubmit>}
           </div>
         </PromptInputFooter>
       </PromptInput>
