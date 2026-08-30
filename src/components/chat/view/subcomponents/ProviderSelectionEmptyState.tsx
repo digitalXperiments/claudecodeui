@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Check, ChevronDown, RefreshCw } from "lucide-react";
+import { Check, ChevronDown, Lock, RefreshCw } from "lucide-react";
 import { Trans, useTranslation } from "react-i18next";
 
 import type {
@@ -53,6 +53,13 @@ function modelSearchFilter(value: string, search: string): number {
 }
 
 type ProviderSelectionEmptyStateProps = {
+  /**
+   * True for an Agent Relay worker transcript opened for observation only.
+   * The empty state's provider/model picker and "start the next task" banner
+   * both seed a message this session can never send, so read-only mode
+   * replaces the whole thing with a static notice.
+   */
+  readOnly?: boolean;
   selectedSession: ProjectSession | null;
   currentSessionId: string | null;
   provider: LLMProvider;
@@ -141,6 +148,7 @@ function getProviderDisplayName(p: LLMProvider) {
 }
 
 export default function ProviderSelectionEmptyState({
+  readOnly = false,
   selectedSession,
   currentSessionId,
   provider,
@@ -275,6 +283,29 @@ export default function ProviderSelectionEmptyState({
     },
     [setProvider, setModelForProvider, textareaRef],
   );
+
+  // Read-only worker transcripts get no picker and no task banner — both of
+  // them exist to start work this session cannot accept. Runs before the
+  // session/draft branches below so an unloaded worker session (fail-closed
+  // hint, no selectedSession yet) never flashes the provider picker.
+  if (readOnly) {
+    return (
+      <div className="flex h-full items-center justify-center px-4">
+        <div className="max-w-[34.25rem] text-center">
+          <Lock className="mx-auto mb-2 h-5 w-5 text-muted-foreground" aria-hidden />
+          <p className="mb-1.5 text-lg font-semibold text-foreground">
+            {t("session.readOnlyWorker.title", { defaultValue: "Read-only worker session" })}
+          </p>
+          <p className="text-sm leading-relaxed text-muted-foreground">
+            {t("session.readOnlyWorker.description", {
+              defaultValue:
+                "This Agent Relay worker transcript is shown for observation only. Nothing has been recorded here yet.",
+            })}
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   if (!selectedSession && !currentSessionId) {
     return (

@@ -15,12 +15,19 @@ export interface WorkerSessionLike {
  * Carried through router navigation state by callers that already know the
  * target session is an internal worker (e.g. opening a worker's transcript
  * from the Agent Relay panel, before that session has ever loaded here).
- * This is never trusted as an ongoing source of truth — it only fails the
- * gate closed for the brief window before `selectedSession.isInternal`
- * resolves for the routed session, and is superseded the instant it does.
+ *
+ * `workerSessionId` scopes the hint to the one session it was minted for.
+ * That matters because the app synthesizes a placeholder `selectedSession`
+ * for a routed id it has not heard of yet, and that placeholder reports
+ * `isInternal: false` until the `/meta` fetch resolves — an unscoped hint
+ * would be discarded during exactly the window it exists to cover. A hint
+ * whose id matches the route is authoritative (only worker transcripts are
+ * ever opened this way); one minted for a different session is ignored.
  */
 export interface WorkerSessionNavigationHint {
   isInternal?: boolean;
+  /** Session id this hint was minted for; absent on legacy/foreign state. */
+  workerSessionId?: string | null;
 }
 
 export interface ResolveReadOnlyWorkerSessionArgs {
@@ -34,18 +41,34 @@ export interface ResolveReadOnlyWorkerSessionArgs {
 }
 
 /**
- * Whether the currently viewed session must be treated as a read-only
- * worker transcript. Once the loaded session matches the routed session id,
- * its own `isInternal` field wins outright — including flipping a
- * fail-closed hint back to interactive. Until then, a stale loaded session's
- * `isInternal: true`, or a same-navigation hint, keeps the gate closed so
- * controls never flicker enabled for a worker session while it loads.
+ * Whether the currently viewed session must be treated as a read-only worker
+ * transcript. Resolution order, most authoritative first:
+ *
+ * 1. A navigation hint minted for *this* route's session id — the Agent Relay
+ *    panel only ever opens worker transcripts, and this outranks the loaded
+ *    session because the placeholder synthesized for an unknown routed id
+ *    reports `isInternal: false` until its metadata arrives.
+ * 2. The loaded session, once it matches the routed id: its own `isInternal`
+ *    wins outright, including flipping an unscoped hint back to interactive.
+ * 3. Otherwise fail closed on a stale worker session or an unscoped hint, so
+ *    controls never flicker enabled mid-navigation.
  */
 export function resolveReadOnlyWorkerSession({
   selectedSession,
   routeSessionId,
   navigationHint,
 }: ResolveReadOnlyWorkerSessionArgs): boolean {
+  const hintIsInternal = navigationHint?.isInternal === true;
+  const hintSessionId = navigationHint?.workerSessionId ?? null;
+  // An id-scoped hint applies only to the exact session it names; anywhere
+  // else (another session, or a brand-new draft with no routed id) it is
+  // leftover state that says nothing about what is on screen now.
+  const hintApplies = hintIsInternal && (hintSessionId === null || hintSessionId === routeSessionId);
+
+  if (hintApplies && hintSessionId !== null) {
+    return true;
+  }
+
   const sessionMatchesRoute =
     Boolean(selectedSession) && Boolean(routeSessionId) && selectedSession!.id === routeSessionId;
 
@@ -57,7 +80,7 @@ export function resolveReadOnlyWorkerSession({
     return true;
   }
 
-  return Boolean(navigationHint?.isInternal);
+  return hintApplies;
 }
 
 const NO_OP = (() => undefined) as (...args: unknown[]) => undefined;

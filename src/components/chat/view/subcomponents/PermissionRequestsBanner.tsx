@@ -20,6 +20,13 @@ registerPermissionPanel('AskUserQuestion', AskUserQuestionPanel);
 registerPermissionPanel('ask_user_question', AskUserQuestionPanel);
 
 interface PermissionRequestsBannerProps {
+  /**
+   * True for an Agent Relay worker transcript opened for observation only.
+   * The decision itself belongs to the lead session's relay panel, so this
+   * renders a static "waiting" notice instead of any approve/deny control or
+   * an interactive AskUserQuestion panel.
+   */
+  readOnly?: boolean;
   pendingPermissionRequests: PendingPermissionRequest[];
   handlePermissionDecision: (
     requestIds: string | string[],
@@ -29,6 +36,7 @@ interface PermissionRequestsBannerProps {
 }
 
 export default function PermissionRequestsBanner({
+  readOnly = false,
   pendingPermissionRequests,
   handlePermissionDecision,
   handleGrantToolPermission,
@@ -40,6 +48,32 @@ export default function PermissionRequestsBanner({
 
   if (!filteredRequests.length) {
     return null;
+  }
+
+  if (readOnly) {
+    return (
+      <div className="mb-3 space-y-2">
+        {filteredRequests.map((request) => (
+          <Confirmation key={request.requestId} approval="pending">
+            <ConfirmationTitle className="flex items-start gap-3">
+              <ShieldAlertIcon className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+              <ConfirmationRequest>
+                <div>
+                  <span className="font-medium text-foreground">Waiting for a decision</span>
+                  <span className="ml-2 text-muted-foreground">
+                    Tool: <code className="rounded bg-muted px-1.5 py-0.5 text-xs">{request.toolName}</code>
+                  </span>
+                </div>
+                <div className="mt-1 text-xs text-muted-foreground">
+                  This worker transcript is read-only. Approve or deny it from the Agent Relay
+                  panel in the lead session.
+                </div>
+              </ConfirmationRequest>
+            </ConfirmationTitle>
+          </Confirmation>
+        ))}
+      </div>
+    );
   }
 
   return (

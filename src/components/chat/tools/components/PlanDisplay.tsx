@@ -59,6 +59,10 @@ export const PlanDisplay: React.FC<PlanDisplayProps> = ({
   const pendingRequest = permissionCtx?.pendingPermissionRequests.find(
     (r) => r.toolName === 'ExitPlanMode' || r.toolName === 'exit_plan_mode'
   );
+  // A read-only worker transcript still reads the pending request (it may
+  // carry the only copy of the plan text), but its Build/Revise footer is an
+  // approve/deny control — that decision belongs to the lead session.
+  const canDecide = Boolean(pendingRequest) && !permissionCtx?.readOnly;
 
   // Grok may attach plan markdown on the permission request before (or instead
   // of) hydrating the tool_use card input. Prefer explicit content, then the
@@ -136,8 +140,8 @@ export const PlanDisplay: React.FC<PlanDisplayProps> = ({
           </CardContent>
         </CollapsibleContent>
 
-        {/* Footer — always visible when permission is pending */}
-        {pendingRequest && (
+        {/* Footer — always visible when permission is pending and decidable here */}
+        {canDecide && (
           <CardFooter className="justify-end gap-2 border-t border-border/40 px-4 pb-3 pt-3">
             <Button
               variant="ghost"

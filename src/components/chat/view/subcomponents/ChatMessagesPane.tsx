@@ -18,6 +18,12 @@ import ToolGroupContainer from './ToolGroupContainer';
 import LoadAllMessagesOverlay from './LoadAllMessagesOverlay';
 
 interface ChatMessagesPaneProps {
+  /**
+   * True for an Agent Relay worker transcript opened for observation only.
+   * Forwarded to the empty state so it never offers a provider/model picker
+   * for a session that cannot be started from here.
+   */
+  readOnly?: boolean;
   scrollContainerRef: RefObject<HTMLDivElement>;
   onWheel: () => void;
   onTouchMove: () => void;
@@ -80,6 +86,7 @@ interface ChatMessagesPaneProps {
 }
 
 function ChatMessagesPane({
+  readOnly = false,
   scrollContainerRef,
   onWheel,
   onTouchMove,
@@ -197,6 +204,7 @@ function ChatMessagesPane({
         </div>
       ) : chatMessages.length === 0 ? (
         <ProviderSelectionEmptyState
+          readOnly={readOnly}
           selectedSession={selectedSession}
           currentSessionId={currentSessionId}
           provider={provider}

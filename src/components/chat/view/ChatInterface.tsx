@@ -672,9 +672,10 @@ function ChatInterface({
   }, [resetStreamingState]);
 
   const permissionContextValue = useMemo(() => ({
+    readOnly: isReadOnlyWorkerSession,
     pendingPermissionRequests,
-    handlePermissionDecision,
-  }), [pendingPermissionRequests, handlePermissionDecision]);
+    handlePermissionDecision: guardWhenReadOnly(isReadOnlyWorkerSession, handlePermissionDecision),
+  }), [isReadOnlyWorkerSession, pendingPermissionRequests, handlePermissionDecision]);
 
   // Mirrors ChatComposer's own visibility check so the message pane can
   // reserve enough bottom space to keep the floating status tab from
@@ -727,6 +728,7 @@ function ChatInterface({
         <div className="chat-canvas-layout flex min-h-0 flex-1" data-testid="chat-canvas-layout">
           <div className="chat-transcript-column flex min-h-0 min-w-0 flex-1 flex-col" data-testid="chat-transcript-column">
         <ChatMessagesPane
+          readOnly={isReadOnlyWorkerSession}
           scrollContainerRef={scrollContainerRef}
           onWheel={handleScroll}
           onTouchMove={handleScroll}
@@ -787,9 +789,13 @@ function ChatInterface({
         />
 
         <div className="relative flex-shrink-0">
+          {/* On phones this row is normally revealed by the composer's More
+              tools toggle — which a read-only worker transcript hides. Keep it
+              pinned open there so the relay chip (the lead's control plane for
+              this worker) stays reachable without re-enabling the composer. */}
           <div
             className={`items-center justify-between gap-2 px-3 pb-1 ${
-              mobileToolsOpen ? 'flex' : 'hidden sm:flex'
+              mobileToolsOpen || isReadOnlyWorkerSession ? 'flex' : 'hidden sm:flex'
             }`}
           >
             {!studioMode ? (
@@ -818,7 +824,7 @@ function ChatInterface({
           <ChatComposer
           readOnly={isReadOnlyWorkerSession}
           pendingPermissionRequests={pendingPermissionRequests}
-          handlePermissionDecision={handlePermissionDecision}
+          handlePermissionDecision={guardWhenReadOnly(isReadOnlyWorkerSession, handlePermissionDecision)}
           handleGrantToolPermission={handleGrantToolPermission}
           activity={sessionActivity}
           isLoading={isProcessing}
