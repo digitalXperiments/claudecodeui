@@ -4,7 +4,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { agentRelayDb } from '@/modules/agent-relay/agent-relay.repository.js';
-import { agentRelayService, allowedWorkerModelsFor, configureAgentRelayRuntimes, providerHonorsRelayMcpGrants, providerSupportsReadOnlyRelay, relayPermissionMode, resolveRelayWorkerModel, sanitizeWorkerMcpServers } from '@/modules/agent-relay/index.js';
+import { agentRelayService, allowedWorkerModelsFor, configureAgentRelayRuntimes, providerHonorsRelayMcpGrants, providerSupportsReadOnlyRelay, relayPermissionMode, resolveRelayModelIdentity, resolveRelayWorkerModel, sanitizeWorkerMcpServers } from '@/modules/agent-relay/index.js';
 import { appConfigDb, closeConnection, getConnection, initializeDatabase, projectsDb, sessionsDb } from '@/modules/database/index.js';
 import { providerModelsService, sessionsService } from '@/modules/providers/index.js';
 import { runService } from '@/modules/runs/index.js';
@@ -36,12 +36,16 @@ test('Agent Relay dispatches a fresh internal provider session and returns struc
   const originalGetProviderModels = providerModelsService.getProviderModels;
   providerModelsService.getProviderModels = async () => ({
     models: {
-      DEFAULT: 'claude-default-model',
-      OPTIONS: [{
-        value: 'claude-test-model',
-        label: 'Claude Test Model',
-        effort: { default: 'medium', values: [{ value: 'low' }, { value: 'high' }] },
-      }],
+      DEFAULT: 'default',
+      OPTIONS: [
+        {
+          value: 'default',
+          label: 'Default (recommended)',
+          resolvedModel: 'claude-runtime-model',
+          effort: { default: 'medium', values: [{ value: 'low' }, { value: 'high' }] },
+        },
+        { value: 'claude-test-model', label: 'Claude Test Model' },
+      ],
     },
     cache: {
       updatedAt: new Date().toISOString(),
@@ -59,6 +63,15 @@ test('Agent Relay dispatches a fresh internal provider session and returns struc
       };
       relayWriter.setSessionId(`relay-native-${callCount}`);
       relayWriter.send({
+        id: `budget-${callCount}`,
+        sessionId: `relay-native-${callCount}`,
+        timestamp: new Date().toISOString(),
+        kind: 'status',
+        provider: 'claude',
+        text: 'token_budget',
+        tokenBudget: { model: 'claude-runtime-model' },
+      });
+      relayWriter.send({
         kind: 'text',
         provider: 'claude',
         content: `${command.slice(0, 20)}\n<agent_relay_result>{"status":"completed","summary":"Found the cause","evidence":["src/a.ts:4"],"filesTouched":[],"testsRun":["npm test"],"openQuestions":[]}</agent_relay_result>`,
@@ -69,8 +82,9 @@ test('Agent Relay dispatches a fresh internal provider session and returns struc
 
   try {
     const capabilities = await agentRelayService.getCapabilities();
-    assert.equal(capabilities.catalogs[0]?.defaultModel, 'claude-default-model');
-    assert.equal(capabilities.catalogs[0]?.models[0]?.value, 'claude-test-model');
+    assert.equal(capabilities.catalogs[0]?.defaultModel, 'default');
+    assert.equal(capabilities.catalogs[0]?.models[0]?.value, 'default');
+    assert.equal(capabilities.catalogs[0]?.models[0]?.resolvedModel, 'claude-runtime-model');
     assert.deepEqual(capabilities.catalogs[0]?.models[0]?.effort?.values, [{ value: 'low' }, { value: 'high' }]);
 
     await assert.rejects(
@@ -88,7 +102,7 @@ test('Agent Relay dispatches a fresh internal provider session and returns struc
 
     const submitted = await agentRelayService.submitBatch({
       projectPath,
-      tasks: [{ task: 'Investigate the failing test.', provider: 'claude', model: 'claude-test-model', effort: 'high' }],
+      tasks: [{ task: 'Investigate the failing test.', provider: 'claude', model: 'default', effort: 'high' }],
     });
     assert.equal(submitted.jobs.length, 1);
     assert.equal(submitted.jobs[0]?.status, 'queued');
@@ -104,9 +118,15 @@ test('Agent Relay dispatches a fresh internal provider session and returns struc
     assert.equal(completed.result?.summary, 'Found the cause');
     assert.deepEqual(completed.result?.evidence, ['src/a.ts:4']);
     assert.equal(completed.attempt, 1);
-    assert.equal(completed.model, 'claude-test-model');
+    assert.equal(completed.model, 'default');
+    assert.equal(completed.requested_model, 'default');
+    assert.equal(completed.model_label, 'Default (recommended)');
+    assert.equal(completed.catalog_default_model, 'default');
+    assert.equal(completed.catalog_resolved_model, 'claude-runtime-model');
+    assert.equal(completed.runtime_resolved_model, 'claude-runtime-model');
+    assert.equal(completed.model_selection_source, 'requested');
     assert.equal(completed.effort, 'high');
-    assert.equal(seenOptions[0]?.model, 'claude-test-model');
+    assert.equal(seenOptions[0]?.model, 'default');
     assert.equal(seenOptions[0]?.effort, 'high');
     assert.equal(seenOptions[0]?.permissionMode, 'plan');
     assert.equal(seenOptions[0]?.relayWorker, true);
@@ -125,9 +145,14 @@ test('Agent Relay dispatches a fresh internal provider session and returns struc
       .get(completed.run_id) as { source: string; source_ref: string; model: string; effort: string; status: string };
     assert.equal(run.source, 'agent_relay');
     assert.equal(run.source_ref, completed.relay_id);
-    assert.equal(run.model, 'claude-test-model');
+    assert.equal(run.model, 'claude-runtime-model');
     assert.equal(run.effort, 'high');
     assert.equal(run.status, 'succeeded');
+
+    const summary = agentRelayService.summarize(completed);
+    assert.equal(summary.selectedModel, 'default');
+    assert.equal(summary.runtimeResolvedModel, 'claude-runtime-model');
+    assert.equal(agentRelayService.getResult(completed.relay_id).modelLabel, 'Default (recommended)');
 
     const followed = await agentRelayService.followUp(completed.relay_id, 'Clarify the exact failure path.');
     assert.equal(followed.status, 'queued');
@@ -192,7 +217,7 @@ test('Agent Relay schema is additive and boot recovery preserves never-started j
   await initializeDatabase();
   try {
     const columns = new Set((getConnection().prepare('PRAGMA table_info(agent_relay_jobs)').all() as Array<{ name: string }>).map((column) => column.name));
-    for (const expected of ['relay_id', 'batch_id', 'project_id', 'app_session_id', 'run_id', 'workspace_id', 'model', 'effort', 'approval_policy', 'result_json', 'timeout_ms']) {
+    for (const expected of ['relay_id', 'batch_id', 'project_id', 'app_session_id', 'run_id', 'workspace_id', 'model', 'requested_model', 'model_label', 'catalog_default_model', 'catalog_resolved_model', 'runtime_resolved_model', 'model_selection_source', 'effort', 'approval_policy', 'result_json', 'timeout_ms']) {
       assert.ok(columns.has(expected), `missing agent_relay_jobs.${expected}`);
     }
     assert.equal(agentRelayService.recoverOnBoot(), 0);
@@ -386,8 +411,43 @@ test('resolveRelayWorkerModel enforces the Settings allowlist', () => {
   assert.equal(resolveRelayWorkerModel(restricted, 'claude', 'cheap-model'), 'cheap-model');
   assert.equal(resolveRelayWorkerModel(restricted, 'claude', null), 'cheap-model');
   assert.throws(() => resolveRelayWorkerModel(restricted, 'claude', 'secret-model'), /not allowlisted/);
+  assert.equal(resolveRelayWorkerModel({ allowedWorkerModels: {} }, 'claude', null, 'catalog-default'), 'catalog-default');
   assert.equal(resolveRelayWorkerModel({ allowedWorkerModels: {} }, 'claude', null), null);
   assert.equal(resolveRelayWorkerModel({ allowedWorkerModels: {} }, 'claude', 'any-model'), 'any-model');
+});
+
+test('Relay model identity preserves defaults, aliases, and provider-qualified OpenCode ids', () => {
+  const claude = resolveRelayModelIdentity(
+    { allowedWorkerModels: {} },
+    'claude',
+    null,
+    {
+      DEFAULT: 'default',
+      OPTIONS: [{ value: 'default', label: 'Default (recommended)', resolvedModel: 'claude-opus-5[1m]' }],
+    },
+  );
+  assert.deepEqual(claude, {
+    model: 'default',
+    requestedModel: null,
+    modelLabel: 'Default (recommended)',
+    catalogDefaultModel: 'default',
+    catalogResolvedModel: 'claude-opus-5[1m]',
+    modelSelectionSource: 'catalog_default',
+  });
+
+  const openCodeId = 'openrouter/z-ai/glm-5.2';
+  const opencode = resolveRelayModelIdentity(
+    { allowedWorkerModels: {} },
+    'opencode',
+    openCodeId,
+    {
+      DEFAULT: 'anthropic/claude-sonnet-4-5',
+      OPTIONS: [{ value: openCodeId, label: 'OpenRouter · GLM 5.2' }],
+    },
+  );
+  assert.equal(opencode.model, openCodeId);
+  assert.equal(opencode.requestedModel, openCodeId);
+  assert.equal(opencode.modelLabel, 'OpenRouter · GLM 5.2');
 });
 
 test('Agent Relay capabilities and dispatch honor the worker model allowlist', async () => {
@@ -454,6 +514,10 @@ test('Agent Relay capabilities and dispatch honor the worker model allowlist', a
       tasks: [{ task: 'Use the allowlisted default.', provider: 'claude' }],
     });
     assert.equal(omitted.jobs[0]?.model, 'claude-test-model');
+    assert.equal(omitted.jobs[0]?.requested_model, null);
+    assert.equal(omitted.jobs[0]?.model_label, 'Claude Test Model');
+    assert.equal(omitted.jobs[0]?.catalog_default_model, 'claude-default-model');
+    assert.equal(omitted.jobs[0]?.model_selection_source, 'allowlist_fallback');
 
     const persisted = await agentRelayService.updateSettings({
       allowedWorkerModels: { claude: ['claude-test-model', 'claude-default-model'] },

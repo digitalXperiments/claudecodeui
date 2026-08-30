@@ -6,6 +6,7 @@ export {
   providerHonorsRelayMcpGrants,
   providerSupportsReadOnlyRelay,
   relayPermissionMode,
+  resolveRelayModelIdentity,
   resolveRelayWorkerModel,
   sanitizeWorkerMcpServers,
 } from '@/modules/agent-relay/agent-relay.service.js';

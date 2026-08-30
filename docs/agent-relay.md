@@ -48,21 +48,22 @@ afterward so the MCP server and skill reload.
 The MCP server exposes twelve tools:
 
 - `relay_capabilities` reports allowed/available worker providers, their current
-  model catalogs and defaults, per-model effort levels, per-provider seats
+  model catalogs, labels, alias-resolved ids, and defaults, per-model effort levels, per-provider seats
   (`readOnlyPlanSeat`, `honorsMcpGrants`), and the hard limits (batch size,
   task characters, concurrency, timeouts, retries).
 - `relay_delegate` queues up to 20 assignments and immediately returns IDs with
   compact summaries. Each task may carry a `label`, an `outputSchema`, a
   `dependsOn` list, a `retries` budget, and an `approvalPolicy` override (see
   below).
-- `relay_status` reads durable job state as compact summaries — label, status,
-  truncated result summary, structured output, token/cost usage, pending
-  approvals. With no IDs it reports every job the calling chat owns.
+- `relay_status` reads durable job state as compact summaries — label, provider,
+  requested/selected/catalog-resolved/runtime-resolved model identity, effort,
+  status, truncated result summary, structured output, token/cost usage, and
+  pending approvals. With no IDs it reports every job the calling chat owns.
 - `relay_wait` waits up to 60 seconds for any or all selected jobs, and returns
   early when a worker is blocked on an approval the lead must answer.
-- `relay_result` returns one job's complete report: full summary, evidence,
-  validated structured output, and the worker's raw final text. Status and wait
-  deliberately truncate; this is the full-fidelity read.
+- `relay_result` returns one job's provider/model identity and complete report:
+  full summary, evidence, validated structured output, and the worker's raw
+  final text. Status and wait deliberately truncate; this is the full-fidelity read.
 - `relay_peek` shows elapsed/idle time, the recent tool trail, a compact result,
   and a live tail of the worker's streamed prose (`recentOutput`) for a running
   job. It never repeats the full raw result.
@@ -162,9 +163,18 @@ The lead can set `provider`, `model`, and `effort` independently for every task
 in a batch. Settings → Agent Relay can allowlist worker models per provider.
 `relay_capabilities` then returns only those models, and `relay_delegate`
 rejects anything outside the list. Omitting `model` uses that provider's
-reported default when it is allowlisted (or unrestricted); otherwise the first
-allowlisted model. Omitting `effort` uses the selected model's provider-native
-default. A provider with no limit keeps its full catalog.
+reported catalog default when it is allowlisted (or unrestricted); otherwise
+the first allowlisted model. Relay snapshots the catalog label, catalog default,
+and any catalog-resolved alias while keeping the existing `model` field as the
+selected id passed to the provider. `requestedModel` distinguishes an explicit
+lead choice from an omitted default; `runtimeResolvedModel` is added when the
+provider reports the concrete running id. This keeps Claude `default`/family
+aliases visible alongside their concrete generation and preserves opaque,
+provider-qualified OpenCode ids such as `openrouter/z-ai/glm-5.2` exactly.
+Legacy rows retain their old nullable `model`; absent identity metadata is
+shown as an unrecorded legacy default instead of guessing a concrete model.
+Omitting `effort` uses the selected model's provider-native default. A provider
+with no limit keeps its full catalog.
 
 `read_only` asks the delegate to inspect and report. `isolated_write` creates a
 separate CloudCLI worktree and feature branch for each writer. Writers do not

@@ -38,6 +38,8 @@ export const AGENT_RELAY_TERMINAL_STATUSES = new Set<AgentRelayStatus>([
 
 export type AgentRelayApprovalStatus = 'pending' | 'approved' | 'denied' | 'expired';
 
+export type AgentRelayModelSelectionSource = 'requested' | 'catalog_default' | 'allowlist_fallback';
+
 /**
  * One out-of-envelope worker permission request awaiting a lead decision.
  * Durable so a lead that reconnects (or the operator) can still answer it.
@@ -104,7 +106,19 @@ export type AgentRelayJob = {
   run_id: string | null;
   workspace_id: string | null;
   provider: LLMProvider;
+  /** Backward-compatible selected model id passed to the provider runtime. */
   model: string | null;
+  /** Explicit model supplied by the lead; null when the lead omitted it. */
+  requested_model: string | null;
+  /** Human label snapshotted from the provider catalog at submission time. */
+  model_label: string | null;
+  /** Provider catalog default observed when the job was submitted. */
+  catalog_default_model: string | null;
+  /** Concrete id advertised by the catalog for an alias such as Claude `default`. */
+  catalog_resolved_model: string | null;
+  /** Concrete id reported by the running provider, when available. */
+  runtime_resolved_model: string | null;
+  model_selection_source: AgentRelayModelSelectionSource | null;
   effort: string | null;
   mode: AgentRelayMode;
   approval_policy: AgentRelayApprovalPolicy;
@@ -140,6 +154,11 @@ export type CreateAgentRelayJobInput = {
   sourceSessionId?: string | null;
   provider: LLMProvider;
   model?: string | null;
+  requestedModel?: string | null;
+  modelLabel?: string | null;
+  catalogDefaultModel?: string | null;
+  catalogResolvedModel?: string | null;
+  modelSelectionSource?: AgentRelayModelSelectionSource | null;
   effort?: string | null;
   mode: AgentRelayMode;
   approvalPolicy?: AgentRelayApprovalPolicy;
@@ -180,6 +199,13 @@ export type AgentRelayJobSummary = {
   label: string | null;
   provider: LLMProvider;
   model: string | null;
+  requestedModel: string | null;
+  selectedModel: string | null;
+  modelLabel: string | null;
+  catalogDefaultModel: string | null;
+  catalogResolvedModel: string | null;
+  runtimeResolvedModel: string | null;
+  modelSelectionSource: AgentRelayModelSelectionSource | null;
   effort: string | null;
   mode: AgentRelayMode;
   approvalPolicy: AgentRelayApprovalPolicy;

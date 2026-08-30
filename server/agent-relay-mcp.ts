@@ -59,7 +59,7 @@ const tools: ToolDefinition[] = [
   },
   {
     name: 'relay_status',
-    description: 'Read compact status summaries (label, status, result summary, token usage, pending approvals) for this chat\'s relay jobs. Omit ids to list every relay this chat owns. Fetch one job\'s full raw output with relay_result.',
+    description: 'Read compact status summaries (label, provider, requested/selected/resolved model identity, effort, status, result summary, token usage, pending approvals) for this chat\'s relay jobs. Omit ids to list every relay this chat owns. Fetch one job\'s full raw output with relay_result.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -83,7 +83,7 @@ const tools: ToolDefinition[] = [
   },
   {
     name: 'relay_result',
-    description: 'Fetch one finished job\'s complete result: full summary, evidence, validated structured output, and the worker\'s raw final output (can be large — pull one job at a time, not the whole fleet).',
+    description: 'Fetch one finished job\'s complete result with provider, requested/selected/resolved model identity, effort, full summary, evidence, validated structured output, and the worker\'s raw final output (can be large — pull one job at a time, not the whole fleet).',
     inputSchema: {
       type: 'object',
       properties: {

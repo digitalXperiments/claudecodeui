@@ -12,6 +12,7 @@ export type AgentRelayStatus =
   | 'timed_out';
 
 export type AgentRelayApprovalStatus = 'pending' | 'approved' | 'denied' | 'expired';
+export type AgentRelayModelSelectionSource = 'requested' | 'catalog_default' | 'allowlist_fallback';
 
 /** One worker permission request that fell outside the task's declared envelope. */
 export type AgentRelayApproval = {
@@ -58,7 +59,14 @@ export type AgentRelayJob = {
   run_id: string | null;
   workspace_id: string | null;
   provider: LLMProvider;
+  /** Backward-compatible selected model id. */
   model: string | null;
+  requested_model: string | null;
+  model_label: string | null;
+  catalog_default_model: string | null;
+  catalog_resolved_model: string | null;
+  runtime_resolved_model: string | null;
+  model_selection_source: AgentRelayModelSelectionSource | null;
   effort: string | null;
   mode: AgentRelayMode;
   approval_policy: AgentRelayApprovalPolicy;

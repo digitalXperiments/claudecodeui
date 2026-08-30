@@ -44,7 +44,7 @@ import {
 import { expandMcpSelectionsToTools } from '@/shared/mcp-tool-expand.js';
 import { newRelayBatchId, newRelayJobId } from '@/shared/ids.js';
 import { TERMINAL_RUN_STATUSES, type RunStatus } from '@/shared/run-events.js';
-import type { AnyRecord, LLMProvider, NormalizedMessage } from '@/shared/types.js';
+import type { AnyRecord, LLMProvider, NormalizedMessage, ProviderModelsDefinition } from '@/shared/types.js';
 import { AppError } from '@/shared/utils.js';
 import { findAppRoot, findServerRoot, getModuleDir } from '@/utils/runtime-paths.js';
 
@@ -176,10 +176,10 @@ export function allowedWorkerModelsFor(
 }
 
 /**
- * Resolve the model a relay task will run. Unrestricted providers keep an
- * omitted model as `null` (provider-native default). Restricted providers pin
- * an omitted model to the provider default when it is allowlisted, otherwise
- * the first allowlisted id.
+ * Resolve the model a relay task will run. Omitted models are pinned to the
+ * provider catalog's current default so the durable job never loses which
+ * model "provider default" meant at dispatch time. Restricted providers use
+ * the first allowlisted id only when the catalog default is not allowed.
  */
 export function resolveRelayWorkerModel(
   settings: Pick<AgentRelaySettings, 'allowedWorkerModels'>,
@@ -189,7 +189,10 @@ export function resolveRelayWorkerModel(
 ): string | null {
   const allowed = allowedWorkerModelsFor(settings, provider);
   const trimmed = typeof requested === 'string' && requested.trim() ? requested.trim() : null;
-  if (allowed === null) return trimmed;
+  const normalizedDefault = typeof providerDefault === 'string' && providerDefault.trim()
+    ? providerDefault.trim()
+    : null;
+  if (allowed === null) return trimmed ?? normalizedDefault;
   if (allowed.length === 0) {
     throw new AppError(
       `Provider "${provider}" has no allowed Agent Relay models. Pick models in Settings → Agent Relay.`,
@@ -206,8 +209,46 @@ export function resolveRelayWorkerModel(
     }
     return trimmed;
   }
-  if (providerDefault && allowed.includes(providerDefault)) return providerDefault;
+  if (normalizedDefault && allowed.includes(normalizedDefault)) return normalizedDefault;
   return allowed[0] ?? null;
+}
+
+export function resolveRelayModelIdentity(
+  settings: Pick<AgentRelaySettings, 'allowedWorkerModels'>,
+  provider: LLMProvider,
+  requested: string | null | undefined,
+  catalog: ProviderModelsDefinition,
+) {
+  const requestedModel = typeof requested === 'string' && requested.trim() ? requested.trim() : null;
+  const catalogDefaultModel = typeof catalog.DEFAULT === 'string' && catalog.DEFAULT.trim()
+    ? catalog.DEFAULT.trim()
+    : null;
+  const model = resolveRelayWorkerModel(settings, provider, requestedModel, catalogDefaultModel);
+  if (!model) {
+    throw new AppError(
+      `Provider "${provider}" did not report a usable default model. Choose a model explicitly or refresh its catalog.`,
+      { code: 'RELAY_MODEL_DEFAULT_UNAVAILABLE', statusCode: 409 },
+    );
+  }
+  // Catalog ids are opaque. In particular, OpenCode ids may contain multiple
+  // slashes (`openrouter/z-ai/glm-5.2`), so matching and persistence must never
+  // split or reconstruct them.
+  const option = catalog.OPTIONS.find((candidate) => candidate.value === model)
+    ?? catalog.OPTIONS.find((candidate) => candidate.resolvedModel === model)
+    ?? null;
+  const allowed = allowedWorkerModelsFor(settings, provider);
+  return {
+    model,
+    requestedModel,
+    modelLabel: option?.label?.trim() || model,
+    catalogDefaultModel,
+    catalogResolvedModel: option?.resolvedModel?.trim() || null,
+    modelSelectionSource: requestedModel
+      ? 'requested' as const
+      : allowed !== null && model !== catalogDefaultModel
+        ? 'allowlist_fallback' as const
+        : 'catalog_default' as const,
+  };
 }
 
 export function mcpTokensEqual(left: string, right: string): boolean {
@@ -852,6 +893,14 @@ async function executeJob(relayId: string): Promise<void> {
     const onEvent = (message: NormalizedMessage) => {
       recordNormalizedRunEvent(canonicalRun.run_id, message, 'agent_relay');
       if (!budgetStopReason && message.kind === 'status' && message.text === 'token_budget') {
+        const tokenBudget = message.tokenBudget as { model?: unknown } | null | undefined;
+        const runtimeModel = typeof tokenBudget?.model === 'string' ? tokenBudget.model.trim() : '';
+        if (runtimeModel) {
+          // Keep the provider's exact id. OpenCode provider-qualified ids can
+          // contain multiple slashes and Claude aliases may resolve to a
+          // versioned id only after the process starts.
+          publish(agentRelayDb.setRuntimeResolvedModel(job!.relay_id, runtimeModel));
+        }
         budgetStopReason = projectBudgetExceeded(job!.project_id);
         if (budgetStopReason) {
           providerFailed = true;
@@ -1158,6 +1207,7 @@ async function getCapabilities() {
             value: model.value,
             label: model.label,
             description: model.description,
+            resolvedModel: model.resolvedModel,
             effort: model.effort,
           }));
         const unrestrictedDefault = result.models.DEFAULT;
@@ -1201,7 +1251,7 @@ async function getCapabilities() {
       maxRetries: MAX_RETRIES,
       maxOutputSchemaChars: 8_000,
     },
-    features: ['labels', 'outputSchema', 'dependsOn', 'retries', 'usage', 'liveOutputPeek', 'followUp', 'isolatedWriteWorktrees', 'approvals', 'approvalPolicy'],
+    features: ['labels', 'modelIdentity', 'outputSchema', 'dependsOn', 'retries', 'usage', 'liveOutputPeek', 'followUp', 'isolatedWriteWorktrees', 'approvals', 'approvalPolicy'],
   };
 }
 
@@ -1368,7 +1418,7 @@ export const agentRelayService = {
 
     // Normalize the complete batch before writing any rows. A malformed later
     // task must not strand earlier tasks as invisible queued work.
-    const normalizedTasks = input.tasks.map((task, index) => {
+    const normalizedTasks = await Promise.all(input.tasks.map(async (task, index) => {
       const text = typeof task.task === 'string' ? task.task.trim() : '';
       if (!text || text.length > MAX_TASK_CHARS) {
         throw new AppError(`Relay task ${index + 1} must contain 1-${MAX_TASK_CHARS} characters.`, { code: 'RELAY_TASK_INVALID', statusCode: 400 });
@@ -1405,18 +1455,23 @@ export const agentRelayService = {
         );
       }
       const normalizedEffort = typeof task.effort === 'string' ? task.effort.trim() : '';
-      let model: string | null;
+      let modelIdentity: ReturnType<typeof resolveRelayModelIdentity>;
       try {
-        model = resolveRelayWorkerModel(
+        const catalog = await providerModelsService.getProviderModels(provider);
+        modelIdentity = resolveRelayModelIdentity(
           settings,
           provider,
           typeof task.model === 'string' ? task.model : null,
+          catalog.models,
         );
       } catch (error) {
         if (error instanceof AppError) {
           throw new AppError(`Relay task ${index + 1}: ${error.message}`, { code: error.code, statusCode: error.statusCode });
         }
-        throw error;
+        throw new AppError(
+          `Relay task ${index + 1}: could not load the ${provider} model catalog: ${error instanceof Error ? error.message : String(error)}`,
+          { code: 'RELAY_MODEL_CATALOG_UNAVAILABLE', statusCode: 409 },
+        );
       }
       const label = typeof task.label === 'string' && task.label.trim() ? task.label.trim().slice(0, MAX_LABEL_CHARS) : null;
       let outputSchema: Record<string, unknown> | null = null;
@@ -1451,7 +1506,7 @@ export const agentRelayService = {
       }
       return {
         provider,
-        model,
+        ...modelIdentity,
         effort: normalizedEffort && normalizedEffort !== 'default' ? normalizedEffort : null,
         mode,
         approvalPolicy,
@@ -1464,7 +1519,7 @@ export const agentRelayService = {
         mcpServers,
         timeoutMs: timeoutMs(task.timeoutMs, settings.defaultTimeoutMs),
       };
-    });
+    }));
     const batchId = newRelayBatchId();
     // Ids are generated up front so in-batch dependency indices can be
     // resolved to durable relay ids before any row is written.
@@ -1554,6 +1609,13 @@ export const agentRelayService = {
       label: job.label,
       provider: job.provider,
       model: job.model,
+      requestedModel: job.requested_model,
+      selectedModel: job.model,
+      modelLabel: job.model_label,
+      catalogDefaultModel: job.catalog_default_model,
+      catalogResolvedModel: job.catalog_resolved_model,
+      runtimeResolvedModel: job.runtime_resolved_model,
+      modelSelectionSource: job.model_selection_source,
       effort: job.effort,
       mode: job.mode,
       approvalPolicy: job.approval_policy,
@@ -1607,6 +1669,14 @@ export const agentRelayService = {
       label: job.label,
       provider: job.provider,
       model: job.model,
+      requestedModel: job.requested_model,
+      selectedModel: job.model,
+      modelLabel: job.model_label,
+      catalogDefaultModel: job.catalog_default_model,
+      catalogResolvedModel: job.catalog_resolved_model,
+      runtimeResolvedModel: job.runtime_resolved_model,
+      modelSelectionSource: job.model_selection_source,
+      effort: job.effort,
       mode: job.mode,
       approvalPolicy: job.approval_policy,
       status: job.status,
@@ -1657,6 +1727,15 @@ export const agentRelayService = {
       relayId: job.relay_id,
       status: job.status,
       provider: job.provider,
+      model: job.model,
+      requestedModel: job.requested_model,
+      selectedModel: job.model,
+      modelLabel: job.model_label,
+      catalogDefaultModel: job.catalog_default_model,
+      catalogResolvedModel: job.catalog_resolved_model,
+      runtimeResolvedModel: job.runtime_resolved_model,
+      modelSelectionSource: job.model_selection_source,
+      effort: job.effort,
       mode: job.mode,
       label: job.label,
       task: job.task,

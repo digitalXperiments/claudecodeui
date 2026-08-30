@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 
 import { agentRelayApi } from '../../../agent-relay/api/agentRelayApi';
+import { formatAgentRelayModelIdentity } from '../../../agent-relay/modelIdentity';
 import type { AgentRelayApproval, AgentRelayJob } from '../../../agent-relay/types';
 import { formatCost, formatTokens } from '../../../stats/utils/format';
 import { useWebSocket } from '../../../../contexts/WebSocketContext';
@@ -463,8 +464,10 @@ export default function AgentRelayActivityControl({ projectId, sessionId, newSes
                     </div>
                     <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[10px] text-muted-foreground">
                       <span>{job.provider}</span>
-                      {job.model ? <><span>·</span><span>{job.model}</span></> : null}
-                      {job.effort ? <><span>·</span><span>{job.effort}</span></> : null}
+                      <span>·</span>
+                      <span title={formatAgentRelayModelIdentity(job)}>{formatAgentRelayModelIdentity(job)}</span>
+                      <span>·</span>
+                      <span>{job.effort || 'default effort'}</span>
                       <span>·</span>
                       <span>{job.mode === 'isolated_write' ? 'isolated write' : 'read only'}</span>
                       <span>·</span>

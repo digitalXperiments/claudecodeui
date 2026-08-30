@@ -78,10 +78,11 @@ export const agentRelayDb = {
     db.prepare(`
       INSERT INTO agent_relay_jobs (
         relay_id, batch_id, project_id, project_path, source_session_id,
-        provider, model, effort, mode, approval_policy, status, label, task, last_prompt,
+        provider, model, requested_model, model_label, catalog_default_model,
+        catalog_resolved_model, model_selection_source, effort, mode, approval_policy, status, label, task, last_prompt,
         mcp_servers_json, output_schema_json, depends_on_json, retries,
         timeout_ms, attempt
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, 0)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, 0)
     `).run(
       input.relayId,
       input.batchId,
@@ -90,6 +91,11 @@ export const agentRelayDb = {
       input.sourceSessionId ?? null,
       input.provider,
       input.model ?? null,
+      input.requestedModel ?? null,
+      input.modelLabel ?? null,
+      input.catalogDefaultModel ?? null,
+      input.catalogResolvedModel ?? null,
+      input.modelSelectionSource ?? null,
       input.effort ?? null,
       input.mode,
       input.approvalPolicy ?? 'auto',
@@ -198,6 +204,17 @@ export const agentRelayDb = {
     getConnection().prepare(`
       UPDATE agent_relay_jobs SET workspace_id = ?, updated_at = CURRENT_TIMESTAMP WHERE relay_id = ?
     `).run(workspaceId, relayId);
+  },
+
+  setRuntimeResolvedModel(relayId: string, model: string): AgentRelayJob | null {
+    const normalized = model.trim();
+    if (!normalized) return null;
+    const changes = getConnection().prepare(`
+      UPDATE agent_relay_jobs
+      SET runtime_resolved_model = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE relay_id = ? AND runtime_resolved_model IS NOT ?
+    `).run(normalized, relayId, normalized).changes;
+    return changes > 0 ? this.get(relayId) : null;
   },
 
   finish(relayId: string, status: AgentRelayStatus, input: {

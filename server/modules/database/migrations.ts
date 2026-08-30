@@ -760,6 +760,17 @@ const ensureAgentRelaySchema = (db: Database): void => {
   addColumnToTableIfNotExists(db, 'agent_relay_jobs', columnNames, 'effort', 'TEXT');
   addColumnToTableIfNotExists(db, 'agent_relay_jobs', columnNames, 'approval_policy', "TEXT NOT NULL DEFAULT 'auto'");
 
+  // Model identity snapshots preserve what the lead asked for, what Relay
+  // selected from the provider catalog, and what the runtime later reported.
+  // Existing `model` remains the selected id for API/database compatibility;
+  // all new columns stay null on legacy rows rather than inventing history.
+  addColumnToTableIfNotExists(db, 'agent_relay_jobs', columnNames, 'requested_model', 'TEXT');
+  addColumnToTableIfNotExists(db, 'agent_relay_jobs', columnNames, 'model_label', 'TEXT');
+  addColumnToTableIfNotExists(db, 'agent_relay_jobs', columnNames, 'catalog_default_model', 'TEXT');
+  addColumnToTableIfNotExists(db, 'agent_relay_jobs', columnNames, 'catalog_resolved_model', 'TEXT');
+  addColumnToTableIfNotExists(db, 'agent_relay_jobs', columnNames, 'runtime_resolved_model', 'TEXT');
+  addColumnToTableIfNotExists(db, 'agent_relay_jobs', columnNames, 'model_selection_source', 'TEXT');
+
   // Orchestration metadata: labels for compact fleet views, per-task output
   // schemas, in-batch dependencies, and automatic retry budgets.
   addColumnToTableIfNotExists(db, 'agent_relay_jobs', columnNames, 'label', 'TEXT');
