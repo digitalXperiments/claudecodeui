@@ -23,32 +23,32 @@ export const OPENCODE_FALLBACK_MODELS: ProviderModelsDefinition = {
   OPTIONS: [
     {
       value: 'anthropic/claude-sonnet-4-5',
-      label: 'Claude Sonnet 4.5',
+      label: 'Anthropic · Claude Sonnet 4.5',
       description: 'anthropic - anthropic/claude-sonnet-4-5',
     },
     {
       value: 'anthropic/claude-opus-4-1',
-      label: 'Claude Opus 4.1',
+      label: 'Anthropic · Claude Opus 4.1',
       description: 'anthropic - anthropic/claude-opus-4-1',
     },
     {
       value: 'anthropic/claude-haiku-4-5',
-      label: 'Claude Haiku 4.5',
+      label: 'Anthropic · Claude Haiku 4.5',
       description: 'anthropic - anthropic/claude-haiku-4-5',
     },
     {
       value: 'openai/gpt-5.1',
-      label: 'GPT-5.1',
+      label: 'OpenAI · GPT-5.1',
       description: 'openai - openai/gpt-5.1',
     },
     {
       value: 'openai/gpt-5.1-codex',
-      label: 'GPT-5.1 Codex',
+      label: 'OpenAI · GPT-5.1 Codex',
       description: 'openai - openai/gpt-5.1-codex',
     },
     {
       value: 'openai/gpt-5.4-mini',
-      label: 'GPT-5.4 Mini',
+      label: 'OpenAI · GPT-5.4 Mini',
       description: 'openai - openai/gpt-5.4-mini',
     },
   ],
@@ -75,6 +75,16 @@ const SIMPLE_NUMBER_TOKEN = /^\d$/;
 const VERSION_TOKEN = /^[a-z]\d+$/i;
 const NUMERIC_TOKEN = /^\d+(?:\.\d+)*$/;
 const SHORT_ACRONYM_TOKEN = /^[a-z]{2,3}$/;
+const OPENCODE_PROVIDER_DISPLAY_NAMES: Record<string, string> = {
+  anthropic: 'Anthropic',
+  google: 'Google',
+  nvidia: 'NVIDIA',
+  openai: 'OpenAI',
+  opencode: 'OpenCode',
+  'opencode-go': 'OpenCode Go',
+  openrouter: 'OpenRouter',
+  xai: 'xAI',
+};
 
 type OpenCodeVerboseModel = {
   id?: string;
@@ -247,6 +257,28 @@ const readOpenCodeModelParts = (id: string): { upstreamProvider: string; slug: s
   };
 };
 
+const formatOpenCodeProviderName = (providerId: string): string => {
+  const normalizedProviderId = providerId.trim().toLowerCase();
+  const knownName = OPENCODE_PROVIDER_DISPLAY_NAMES[normalizedProviderId];
+  if (knownName) {
+    return knownName;
+  }
+
+  return normalizedProviderId
+    .split(/[-_]+/)
+    .filter(Boolean)
+    .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
+    .join(' ') || 'OpenCode';
+};
+
+const formatOpenCodeModelLabel = (id: string, modelLabel: string): string => {
+  const { upstreamProvider } = readOpenCodeModelParts(id);
+  const providerName = formatOpenCodeProviderName(upstreamProvider);
+  const prefix = `${providerName} · `;
+
+  return modelLabel.startsWith(prefix) ? modelLabel : `${prefix}${modelLabel}`;
+};
+
 const isSupportedOpenCodeModelId = (id: string): boolean => (
   readOpenCodeModelParts(id).upstreamProvider.toLowerCase() !== 'google'
 );
@@ -286,12 +318,8 @@ const labelForOpenCodeModelId = (
   fallbackModels: ProviderModelsDefinition = OPENCODE_FALLBACK_MODELS,
 ): string => {
   const fallbackLabel = fallbackModels.OPTIONS.find((option) => option.value === id)?.label;
-  if (fallbackLabel) {
-    return fallbackLabel;
-  }
-
   const { slug } = readOpenCodeModelParts(id);
-  return formatOpenCodeModelSlug(slug);
+  return formatOpenCodeModelLabel(id, fallbackLabel ?? formatOpenCodeModelSlug(slug));
 };
 
 const descriptionForOpenCodeModelId = (id: string): string => {
@@ -338,7 +366,10 @@ const mapOpenCodeVerboseModel = (
 
   return {
     value,
-    label: readOptionalString(model.name) ?? labelForOpenCodeModelId(value, fallbackModels),
+    label: formatOpenCodeModelLabel(
+      value,
+      readOptionalString(model.name) ?? labelForOpenCodeModelId(value, fallbackModels),
+    ),
     description: descriptionForOpenCodeModelId(value),
     effort: effortValues.length > 0
       ? {

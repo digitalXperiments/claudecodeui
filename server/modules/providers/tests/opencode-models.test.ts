@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   buildOpenCodeDefinitionFromVerboseModels,
   buildOpenCodeDefinitionFromIds,
+  OPENCODE_FALLBACK_MODELS,
   parseOpenCodeModelsStdout,
   parseOpenCodeVerboseModelsStdout,
 } from '@/modules/providers/list/opencode/opencode-models.provider.js';
@@ -43,40 +44,87 @@ test('OpenCode models provider formats frontend labels from provider-prefixed id
   assert.deepEqual(definition.OPTIONS, [
     {
       value: 'opencode/deepseek-v4-flash-free',
-      label: 'Deepseek V4 Flash Free',
+      label: 'OpenCode · Deepseek V4 Flash Free',
       description: 'opencode - opencode/deepseek-v4-flash-free',
     },
     {
       value: 'opencode/nemotron-3-super-free',
-      label: 'Nemotron 3 Super Free',
+      label: 'OpenCode · Nemotron 3 Super Free',
       description: 'opencode - opencode/nemotron-3-super-free',
     },
     {
       value: 'anthropic/claude-3-5-sonnet-20241022',
-      label: 'Claude 3.5 Sonnet (2024-10-22)',
+      label: 'Anthropic · Claude 3.5 Sonnet (2024-10-22)',
       description: 'anthropic - anthropic/claude-3-5-sonnet-20241022',
     },
     {
       value: 'anthropic/claude-opus-4-7-fast',
-      label: 'Claude Opus 4.7 Fast',
+      label: 'Anthropic · Claude Opus 4.7 Fast',
       description: 'anthropic - anthropic/claude-opus-4-7-fast',
     },
     {
       value: 'openai/gpt-5.4-mini-fast',
-      label: 'GPT-5.4 Mini Fast',
+      label: 'OpenAI · GPT-5.4 Mini Fast',
       description: 'openai - openai/gpt-5.4-mini-fast',
     },
     {
       value: 'openai/gpt-5.5-pro',
-      label: 'GPT-5.5 Pro',
+      label: 'OpenAI · GPT-5.5 Pro',
       description: 'openai - openai/gpt-5.5-pro',
     },
     {
       value: 'newprovider/alpha-v12-special-20261231',
-      label: 'Alpha V12 Special (2026-12-31)',
+      label: 'Newprovider · Alpha V12 Special (2026-12-31)',
       description: 'newprovider - newprovider/alpha-v12-special-20261231',
     },
   ]);
+});
+
+test('OpenCode model labels distinguish same-named models by provider without changing values', () => {
+  const definition = buildOpenCodeDefinitionFromIds([
+    'nvidia/llama-3.3-70b',
+    'openrouter/llama-3.3-70b',
+    'xai/llama-3.3-70b',
+    'opencode-go/llama-3.3-70b',
+  ]);
+
+  assert.deepEqual(definition.OPTIONS, [
+    {
+      value: 'nvidia/llama-3.3-70b',
+      label: 'NVIDIA · Llama 3.3 70b',
+      description: 'nvidia - nvidia/llama-3.3-70b',
+    },
+    {
+      value: 'openrouter/llama-3.3-70b',
+      label: 'OpenRouter · Llama 3.3 70b',
+      description: 'openrouter - openrouter/llama-3.3-70b',
+    },
+    {
+      value: 'xai/llama-3.3-70b',
+      label: 'xAI · Llama 3.3 70b',
+      description: 'xai - xai/llama-3.3-70b',
+    },
+    {
+      value: 'opencode-go/llama-3.3-70b',
+      label: 'OpenCode Go · Llama 3.3 70b',
+      description: 'opencode-go - opencode-go/llama-3.3-70b',
+    },
+  ]);
+});
+
+test('OpenCode fallback labels include provider names without changing fallback values', () => {
+  assert.deepEqual(OPENCODE_FALLBACK_MODELS.OPTIONS.map((option) => ({
+    value: option.value,
+    label: option.label,
+  })), [
+    { value: 'anthropic/claude-sonnet-4-5', label: 'Anthropic · Claude Sonnet 4.5' },
+    { value: 'anthropic/claude-opus-4-1', label: 'Anthropic · Claude Opus 4.1' },
+    { value: 'anthropic/claude-haiku-4-5', label: 'Anthropic · Claude Haiku 4.5' },
+    { value: 'openai/gpt-5.1', label: 'OpenAI · GPT-5.1' },
+    { value: 'openai/gpt-5.1-codex', label: 'OpenAI · GPT-5.1 Codex' },
+    { value: 'openai/gpt-5.4-mini', label: 'OpenAI · GPT-5.4 Mini' },
+  ]);
+  assert.equal(OPENCODE_FALLBACK_MODELS.DEFAULT, 'anthropic/claude-sonnet-4-5');
 });
 
 test('OpenCode models provider maps verbose model variants to effort options', () => {
@@ -122,7 +170,7 @@ google/model-alpha
   assert.deepEqual(definition.OPTIONS, [
     {
       value: 'opencode/deepseek-v4-flash-free',
-      label: 'DeepSeek V4 Flash Free',
+      label: 'OpenCode · DeepSeek V4 Flash Free',
       description: 'opencode - opencode/deepseek-v4-flash-free',
       effort: {
         values: [
@@ -133,7 +181,7 @@ google/model-alpha
     },
     {
       value: 'anthropic/claude-sonnet-5',
-      label: 'Claude Sonnet 5',
+      label: 'Anthropic · Claude Sonnet 5',
       description: 'anthropic - anthropic/claude-sonnet-5',
       effort: {
         values: [
@@ -175,8 +223,11 @@ openrouter/openai/gpt-oss-20b:free
 
   const definition = buildOpenCodeDefinitionFromVerboseModels(models);
   assert.deepEqual(
-    definition.OPTIONS.map((option) => option.value),
-    ['openrouter/z-ai/glm-5.2', 'openrouter/openai/gpt-oss-20b:free'],
+    definition.OPTIONS.map((option) => ({ value: option.value, label: option.label })),
+    [
+      { value: 'openrouter/z-ai/glm-5.2', label: 'OpenRouter · GLM-5.2' },
+      { value: 'openrouter/openai/gpt-oss-20b:free', label: 'OpenRouter · GPT OSS 20B Free' },
+    ],
   );
 });
 
