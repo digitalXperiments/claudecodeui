@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -9,6 +9,7 @@ import {
   PROVIDER_MODELS_CACHE_TTL_MS,
   PROVIDER_MODELS_CACHE_VERSION,
 } from '@/modules/providers/services/provider-models.service.js';
+import { makeScratchDir } from '@/shared/scratch.js';
 import type {
   ProviderChangeActiveModelInput,
   LLMProvider,
@@ -208,7 +209,10 @@ test('provider model cache is persisted across service instances', async () => {
 });
 
 test('a disk cache entry written under an older cache version is discarded and refetched', async () => {
-  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'provider-model-cache-version-'));
+  // Isolated per-test scratch dir under the project's tmp/cloudcli/ root
+  // (the only sanctioned location for temporary activity), not the shared
+  // OS temp dir.
+  const tempRoot = await makeScratchDir('provider-model-cache-version-');
   const cachePath = path.join(tempRoot, 'models-cache.json');
 
   try {
@@ -216,7 +220,6 @@ test('a disk cache entry written under an older cache version is discarded and r
     // produced a different label shape (e.g. before the OpenCode provider-name
     // prefix fix). Bumping PROVIDER_MODELS_CACHE_VERSION must make this stale
     // entry unreadable so it can never resurrect the old labels.
-    await mkdir(path.dirname(cachePath), { recursive: true });
     await writeFile(cachePath, JSON.stringify({
       version: PROVIDER_MODELS_CACHE_VERSION - 1,
       entries: {
