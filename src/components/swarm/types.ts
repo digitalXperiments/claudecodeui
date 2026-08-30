@@ -306,6 +306,7 @@ export const SWARM_PROVIDERS = [
   'grok',
   'kimi',
   'pi',
+  'omp',
 ] as const;
 
 export const SWARM_EFFORTS = ['default', 'low', 'medium', 'high', 'xhigh', 'max'] as const;

@@ -26,7 +26,9 @@ export default function AgentsSettingsTab({
   kiloPermissionMode,
   onKiloPermissionModeChange,
   piPermissionMode,
+  ompPermissionMode,
   onPiPermissionModeChange,
+  onOmpPermissionModeChange,
   projects,
 }: AgentsSettingsTabProps) {
   const { t } = useTranslation('settings');
@@ -50,7 +52,7 @@ export default function AgentsSettingsTab({
   }, [visibleCategories, selectedCategory]);
 
   const visibleAgents = useMemo<AgentProvider[]>(() => {
-    return ['claude', 'cursor', 'codex', 'opencode', 'kilo', 'cline', 'grok', 'kimi', 'qwencode', 'pi'];
+    return ['claude', 'cursor', 'codex', 'opencode', 'kilo', 'cline', 'grok', 'kimi', 'qwencode', 'pi', 'omp'];
   }, []);
 
   const agentContextById = useMemo<Record<AgentProvider, AgentContext>>(() => {
@@ -108,6 +110,11 @@ export default function AgentsSettingsTab({
       onLogin: () => onProviderLogin('pi'),
       onRefresh: () => refresh('pi'),
     },
+    omp: {
+      authStatus: providerAuthStatus.omp,
+      onLogin: () => onProviderLogin('omp'),
+      onRefresh: () => refresh('omp'),
+    },
   };
   }, [
     onProviderLogin,
@@ -122,6 +129,7 @@ export default function AgentsSettingsTab({
     providerAuthStatus.kimi,
     providerAuthStatus.qwencode,
     providerAuthStatus.pi,
+    providerAuthStatus.omp,
   ]);
 
   useEffect(() => {
@@ -187,7 +195,9 @@ export default function AgentsSettingsTab({
           kiloPermissionMode={kiloPermissionMode}
           onKiloPermissionModeChange={onKiloPermissionModeChange}
           piPermissionMode={piPermissionMode}
+          ompPermissionMode={ompPermissionMode}
           onPiPermissionModeChange={onPiPermissionModeChange}
+          onOmpPermissionModeChange={onOmpPermissionModeChange}
           projects={projects}
         />
       </div>

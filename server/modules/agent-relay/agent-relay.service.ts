@@ -118,6 +118,7 @@ const READ_ONLY_PLAN_PROVIDERS = new Set<LLMProvider>([
   'kimi',
   'qwencode',
   'pi',
+  'omp',
 ]);
 
 /**

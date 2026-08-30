@@ -68,6 +68,7 @@ const PROVIDER_NAMES: Record<SkillsProvider, string> = {
   kimi: 'Kimi',
   qwencode: 'Qwen Code',
   pi: 'Pi',
+  omp: 'Oh My Pi',
 };
 
 const createProjectTargets = (projects: SkillsProject[]): ProjectTarget[] => {

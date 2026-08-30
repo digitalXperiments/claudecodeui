@@ -59,7 +59,7 @@ type MissionControlPanelProps = {
 
 type ModelOption = { value: string; label: string };
 
-const PROVIDERS = ['claude', 'grok', 'opencode', 'kilo', 'cline', 'codex', 'cursor', 'kimi', 'pi'] as const;
+const PROVIDERS = ['claude', 'grok', 'opencode', 'kilo', 'cline', 'codex', 'cursor', 'kimi', 'pi', 'omp'] as const;
 
 const SECTION_STARTERS: Array<{
   label: string;

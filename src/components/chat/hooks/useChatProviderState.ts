@@ -37,9 +37,10 @@ const FALLBACK_DEFAULT_MODEL: Record<LLMProvider, string> = {
   kimi: 'kimi-code/kimi-for-coding',
   qwencode: 'qwen3-coder-plus',
   pi: 'anthropic/claude-sonnet-4-20250514',
+  omp: 'anthropic/claude-sonnet-4-20250514',
 };
 
-const PROVIDERS: LLMProvider[] = ['claude', 'cursor', 'codex', 'opencode', 'kilo', 'cline', 'grok', 'kimi', 'qwencode', 'pi'];
+const PROVIDERS: LLMProvider[] = ['claude', 'cursor', 'codex', 'opencode', 'kilo', 'cline', 'grok', 'kimi', 'qwencode', 'pi', 'omp'];
 const CODEX_FAST_MODE_STORAGE_KEY = 'codex-fast-mode';
 
 const readStoredProvider = (): LLMProvider => {
@@ -79,6 +80,7 @@ const FALLBACK_PERMISSION_MODES: Record<LLMProvider, PermissionMode[]> = {
   kimi: ['default', 'plan', 'auto', 'bypassPermissions'],
   qwencode: ['default', 'plan', 'auto', 'bypassPermissions'],
   pi: ['plan', 'bypassPermissions'],
+  omp: ['plan', 'bypassPermissions'],
 };
 
 /**
@@ -98,6 +100,7 @@ const FALLBACK_SUPPORTS_IMAGES: Record<LLMProvider, boolean> = {
   kimi: true,
   qwencode: true,
   pi: true,
+  omp: true,
 };
 
 /** Fallback document-attachment support: every agent reads path-referenced files. */
@@ -112,6 +115,7 @@ const FALLBACK_SUPPORTS_FILES: Record<LLMProvider, boolean> = {
   kimi: true,
   qwencode: true,
   pi: true,
+  omp: true,
 };
 
 type ProviderCapabilities = {
@@ -201,6 +205,9 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
   const [piModel, setPiModel] = useState<string>(() => {
     return localStorage.getItem('pi-model') || FALLBACK_DEFAULT_MODEL.pi;
   });
+  const [ompModel, setOmpModel] = useState<string>(() => {
+    return localStorage.getItem('omp-model') || FALLBACK_DEFAULT_MODEL.omp;
+  });
 
   /**
    * Overrides for the currently open conversation, loaded from the
@@ -280,6 +287,12 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     if (targetProvider === 'pi') {
       setPiModel(model);
       localStorage.setItem('pi-model', model);
+      return;
+    }
+
+    if (targetProvider === 'omp') {
+      setOmpModel(model);
+      localStorage.setItem('omp-model', model);
       return;
     }
 
@@ -517,7 +530,8 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     kimi: kimiModel,
     qwencode: qwencodeModel,
     pi: piModel,
-  }), [claudeModel, cursorModel, codexModel, opencodeModel, kiloModel, grokModel, kimiModel, qwencodeModel, piModel]);
+    omp: ompModel,
+  }), [claudeModel, cursorModel, codexModel, opencodeModel, kiloModel, grokModel, kimiModel, qwencodeModel, piModel, ompModel]);
 
   /** Effective model for the open conversation: its own recorded choice, or the provider default. */
   const currentProviderModel = useMemo(
@@ -648,6 +662,19 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
       }
     }
   }, [providerModelCatalog.pi, piModel]);
+
+  useEffect(() => {
+    const omp = providerModelCatalog.omp;
+    if (omp) {
+      const next = pickStoredOrCurrent('omp-model', ompModel, omp);
+      if (next !== ompModel) {
+        setOmpModel(next);
+      }
+      if (localStorage.getItem('omp-model') !== next) {
+        localStorage.setItem('omp-model', next);
+      }
+    }
+  }, [providerModelCatalog.omp, ompModel]);
 
   useEffect(() => {
     const nextEfforts: Partial<Record<LLMProvider, string>> = {};
@@ -944,6 +971,8 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     setQwenCodeModel,
     piModel,
     setPiModel,
+    ompModel,
+    setOmpModel,
     permissionMode,
     setPermissionMode,
     pendingPermissionRequests,

@@ -11,8 +11,10 @@ import { spawnCursor } from '../cursor-cli.js';
 import { queryCodex } from '../openai-codex.js';
 import { spawnCline, spawnKilo, spawnOpenCode, spawnQwenCode } from '../opencode-cli.js';
 import { getPiSessionStats, spawnPi } from '../pi-cli.js';
+import { getOmpSessionStats, spawnOmp } from '../omp-cli.js';
 import { spawnKimi } from '../kimi-cli.js';
 import { buildPiTokenUsageFromStats } from '../modules/providers/list/pi/pi-token-usage.js';
+import { buildOmpTokenUsageFromStats } from '../modules/providers/list/omp/omp-token-usage.js';
 import { Octokit } from '@octokit/rest';
 import { providerModelsService } from '../modules/providers/services/provider-models.service.js';
 import { IS_PLATFORM } from '../constants/config.js';
@@ -660,7 +662,7 @@ class ResponseCollector {
  *                          - Source for auto-generated branch names (if createBranch=true and no branchName)
  *                          - Fallback for PR title if no commits are made
  *
- * @param {string} provider - (Optional) AI provider to use. Includes 'claude', 'cursor', 'codex', 'opencode', 'kilo', 'pi', and 'pi'.
+ * @param {string} provider - (Optional) AI provider to use. Includes 'claude', 'cursor', 'codex', 'opencode', 'kilo', 'pi', and 'omp'.
  *                           Default: 'claude'
  *
  * @param {boolean} stream - (Optional) Enable Server-Sent Events (SSE) streaming for real-time updates.
@@ -895,7 +897,7 @@ router.post('/', validateExternalApiKey, async (req, res) => {
     return res.status(400).json({ error: 'message is required' });
   }
 
-  if (!['claude', 'cursor', 'codex', 'opencode', 'kilo', 'cline', 'kimi', 'qwencode', 'pi'].includes(provider)) {
+  if (!['claude', 'cursor', 'codex', 'opencode', 'kilo', 'cline', 'kimi', 'qwencode', 'pi', 'omp'].includes(provider)) {
     return res.status(400).json({ error: 'provider must be a supported CloudCLI agent id' });
   }
 
@@ -1081,6 +1083,18 @@ router.post('/', validateExternalApiKey, async (req, res) => {
       console.log('Starting Pi RPC session');
 
       await spawnPi(message.trim(), {
+        projectPath: finalProjectPath,
+        cwd: finalProjectPath,
+        sessionId: sessionId || null,
+        model: model || undefined,
+        effort,
+        images,
+        permissionMode: 'bypassPermissions'
+      }, writer);
+    } else if (provider === 'omp') {
+      console.log('Starting Oh My Pi RPC session');
+
+      await spawnOmp(message.trim(), {
         projectPath: finalProjectPath,
         cwd: finalProjectPath,
         sessionId: sessionId || null,
@@ -1283,6 +1297,10 @@ router.post('/', validateExternalApiKey, async (req, res) => {
       if (provider === 'pi') {
         const piStats = await getPiSessionStats(writer.getSessionId()).catch(() => null);
         tokenSummary = buildPiTokenUsageFromStats(piStats) || tokenSummary;
+      }
+      if (provider === 'omp') {
+        const ompStats = await getOmpSessionStats(writer.getSessionId()).catch(() => null);
+        tokenSummary = buildOmpTokenUsageFromStats(ompStats) || tokenSummary;
       }
 
       const response = {

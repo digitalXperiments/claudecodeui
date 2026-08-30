@@ -36,6 +36,7 @@ const PROVIDER_META: { id: LLMProvider; name: string }[] = [
   { id: "kimi", name: "Moonshot AI" },
   { id: "qwencode", name: "Qwen" },
   { id: "pi", name: "Pi" },
+  { id: "omp", name: "Oh My Pi" },
 ];
 
 const MOD_KEY =
@@ -83,6 +84,8 @@ type ProviderSelectionEmptyStateProps = {
   setQwenCodeModel: (model: string) => void;
   piModel: string;
   setPiModel: (model: string) => void;
+  ompModel: string;
+  setOmpModel: (model: string) => void;
   providerModelCatalog: Partial<Record<LLMProvider, ProviderModelsDefinition>>;
   providerModelsLoading: boolean;
   /** True while a bypass-cache model catalog refresh is in flight. */
@@ -120,6 +123,7 @@ function getCurrentModel(
   k: string,
   q: string,
   pi: string,
+  omp: string,
 ) {
   if (p === "claude") return c;
   if (p === "codex") return co;
@@ -130,6 +134,7 @@ function getCurrentModel(
   if (p === "kimi") return k;
   if (p === "qwencode") return q;
   if (p === "pi") return pi;
+  if (p === "omp") return omp;
   return cu;
 }
 
@@ -144,6 +149,7 @@ function getProviderDisplayName(p: LLMProvider) {
   if (p === "kimi") return "Kimi";
   if (p === "qwencode") return "Qwen Code";
   if (p === "pi") return "Pi";
+  if (p === "omp") return "Oh My Pi";
   return "Claude";
 }
 
@@ -172,6 +178,8 @@ export default function ProviderSelectionEmptyState({
   setQwenCodeModel,
   piModel,
   setPiModel,
+  ompModel,
+  setOmpModel,
   providerModelCatalog,
   providerModelsLoading,
   providerModelsRefreshing = false,
@@ -229,6 +237,7 @@ export default function ProviderSelectionEmptyState({
     kimiModel,
     qwencodeModel,
     piModel,
+    ompModel,
   );
 
   const currentModelLabel = useMemo(() => {
@@ -262,6 +271,9 @@ export default function ProviderSelectionEmptyState({
       } else if (providerId === "pi") {
         setPiModel(modelValue);
         localStorage.setItem("pi-model", modelValue);
+      } else if (providerId === "omp") {
+        setOmpModel(modelValue);
+        localStorage.setItem("omp-model", modelValue);
       } else if (providerId === "grok") {
         setGrokModel(modelValue);
         localStorage.setItem("grok-model", modelValue);
@@ -270,7 +282,7 @@ export default function ProviderSelectionEmptyState({
         localStorage.setItem("cursor-model", modelValue);
       }
     },
-    [setClaudeModel, setCursorModel, setCodexModel, setOpenCodeModel, setKiloModel, setKimiModel, setQwenCodeModel, setPiModel, setGrokModel],
+    [setClaudeModel, setCursorModel, setCodexModel, setOpenCodeModel, setKiloModel, setKimiModel, setQwenCodeModel, setPiModel, setOmpModel, setGrokModel],
   );
 
   const handleModelSelect = useCallback(
@@ -475,6 +487,10 @@ export default function ProviderSelectionEmptyState({
                 pi: t("providerSelection.readyPrompt.pi", {
                   model: piModel,
                   defaultValue: "Ready with Pi {{model}}",
+                }),
+                omp: t("providerSelection.readyPrompt.omp", {
+                  model: ompModel,
+                  defaultValue: "Ready with Oh My Pi {{model}}",
                 }),
               }[provider]
             }

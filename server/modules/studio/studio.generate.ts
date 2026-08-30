@@ -177,7 +177,7 @@ function parseGenerateText(text: string, fallbackNotes: string, fallbackHandoff:
 
 function buildHeadlessOptions(provider: LLMProvider): AnyRecord {
   const options: AnyRecord = {
-    permissionMode: provider === 'claude' || provider === 'cursor' || provider === 'pi'
+    permissionMode: provider === 'claude' || provider === 'cursor' || provider === 'pi' || provider === 'omp'
       ? 'plan'
       : 'default',
     unattended: true,

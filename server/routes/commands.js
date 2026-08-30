@@ -15,7 +15,7 @@ const APP_ROOT = findAppRoot(__dirname);
 
 const router = express.Router();
 
-const MODEL_PROVIDERS = ["claude", "cursor", "codex", "opencode", "kilo", "cline", "grok", "kimi", "qwencode", "pi"];
+const MODEL_PROVIDERS = ["claude", "cursor", "codex", "opencode", "kilo", "cline", "grok", "kimi", "qwencode", "pi", "omp"];
 
 const MODEL_PROVIDER_LABELS = {
   claude: "Claude",

@@ -83,7 +83,7 @@ export const SETTINGS_MAIN_TABS: SettingsMainTabMeta[] = [
   { id: 'about', label: 'About', keywords: 'about version info', icon: Info },
 ];
 
-export const AGENT_PROVIDERS: AgentProvider[] = ['claude', 'cursor', 'codex', 'opencode', 'kilo', 'cline', 'grok', 'kimi', 'qwencode', 'pi'];
+export const AGENT_PROVIDERS: AgentProvider[] = ['claude', 'cursor', 'codex', 'opencode', 'kilo', 'cline', 'grok', 'kimi', 'qwencode', 'pi', 'omp'];
 export const AGENT_NAMES: Record<AgentProvider, string> = {
   claude: 'Claude',
   cursor: 'Cursor',
@@ -95,6 +95,7 @@ export const AGENT_NAMES: Record<AgentProvider, string> = {
   kimi: 'Kimi',
   qwencode: 'Qwen Code',
   pi: 'Pi',
+  omp: 'Oh My Pi',
 };
 export const AGENT_CATEGORIES: AgentCategory[] = ['account', 'permissions'];
 

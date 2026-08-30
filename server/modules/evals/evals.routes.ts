@@ -13,7 +13,7 @@ import { AppError, asyncHandler } from '@/shared/utils.js';
 
 const router = express.Router();
 const STATUSES: EvalSuiteStatus[] = ['draft', 'active', 'archived'];
-const PROVIDERS: LLMProvider[] = ['claude', 'cursor', 'codex', 'opencode', 'kilo', 'cline', 'grok', 'kimi', 'qwencode', 'pi'];
+const PROVIDERS: LLMProvider[] = ['claude', 'cursor', 'codex', 'opencode', 'kilo', 'cline', 'grok', 'kimi', 'qwencode', 'pi', 'omp'];
 
 function string(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';

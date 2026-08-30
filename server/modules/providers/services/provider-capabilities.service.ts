@@ -221,6 +221,28 @@ const PROVIDER_CAPABILITIES: Record<LLMProvider, ProviderCapabilities> = {
     // "thinking" column from `pi --list-models`).
     supportsEffort: true,
   },
+  omp: {
+    provider: 'omp',
+    // Oh My Pi is a Pi fork and inherits the same permission story: no built-in
+    // popups, "plan" maps to a read-only tool allowlist (`--tools read,grep,
+    // find,ls`), everything else runs with the full default tool set.
+    permissionModes: ['plan', 'bypassPermissions'],
+    defaultPermissionMode: 'bypassPermissions',
+    // Images accepted as base64 in RPC prompt payloads; path refs also work
+    // via appendImagesInputTag for non-image files.
+    supportsImages: true,
+    supportsFiles: true,
+    supportsAbort: true,
+    supportsPermissionRequests: false,
+    // Live sessions use RPC get_session_stats; idle sessions are read from
+    // Oh My Pi's persisted JSONL usage records by the token-usage route.
+    supportsTokenUsage: true,
+    // Thinking level maps to a real RPC control (`set_thinking_level` /
+    // `--thinking` at spawn) — omp-cli.js applies it per session, gated by
+    // the selected model's catalog entry (omp-models.provider surfaces the
+    // "thinking" column from `omp models`).
+    supportsEffort: true,
+  },
 };
 
 /**

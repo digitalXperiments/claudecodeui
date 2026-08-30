@@ -45,6 +45,7 @@ const PROVIDER_NAMES: Record<SkillsProvider, string> = {
   kimi: 'Kimi',
   qwencode: 'Qwen Code',
   pi: 'Pi',
+  omp: 'Oh My Pi',
 };
 
 const providerLabel = (provider: SkillsProvider): string => PROVIDER_NAMES[provider] ?? provider;

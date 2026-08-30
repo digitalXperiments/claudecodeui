@@ -8,6 +8,7 @@ import type {
   CodexPermissionMode,
   KiloPermissionMode,
   PiPermissionMode,
+  OmpPermissionMode,
   SettingsProject,
 } from '../../../types/types';
 
@@ -35,7 +36,9 @@ export type AgentsSettingsTabProps = {
   kiloPermissionMode: KiloPermissionMode;
   onKiloPermissionModeChange: (value: KiloPermissionMode) => void;
   piPermissionMode: PiPermissionMode;
+  ompPermissionMode: OmpPermissionMode;
   onPiPermissionModeChange: (value: PiPermissionMode) => void;
+  onOmpPermissionModeChange: (value: OmpPermissionMode) => void;
   projects: SettingsProject[];
 };
 
@@ -69,6 +72,8 @@ export type AgentCategoryContentSectionProps = {
   kiloPermissionMode: KiloPermissionMode;
   onKiloPermissionModeChange: (value: KiloPermissionMode) => void;
   piPermissionMode: PiPermissionMode;
+  ompPermissionMode: OmpPermissionMode;
   onPiPermissionModeChange: (value: PiPermissionMode) => void;
+  onOmpPermissionModeChange: (value: OmpPermissionMode) => void;
   projects: SettingsProject[];
 };

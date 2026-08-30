@@ -6,6 +6,7 @@ import chokidar, { type FSWatcher } from 'chokidar';
 
 import { projectsDb, sessionsDb } from '@/modules/database/index.js';
 import { grokSessionsRoot } from '@/modules/providers/list/grok/grok-sessions.provider.js';
+import { ompSessionsRoot } from '@/modules/providers/list/omp/omp-paths.js';
 import {
   getDisabledProviderIds,
   sessionSynchronizerService,
@@ -54,6 +55,10 @@ const PROVIDER_WATCH_PATHS: Array<{ provider: LLMProvider; rootPath: string }> =
   {
     provider: 'pi',
     rootPath: path.join(os.homedir(), '.pi', 'agent', 'sessions'),
+  },
+  {
+    provider: 'omp',
+    rootPath: ompSessionsRoot(),
   },
   {
     provider: 'grok',

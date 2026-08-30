@@ -57,6 +57,11 @@ import {
     abortPiSession,
     getPiSessionStats,
 } from './pi-cli.js';
+import {
+    spawnOmp,
+    abortOmpSession,
+    getOmpSessionStats,
+} from './omp-cli.js';
 
 import {
     queryCodex,
@@ -68,6 +73,11 @@ import {
     readPiSessionTokenUsage,
 } from './modules/providers/list/pi/pi-token-usage.js';
 import { findPiSessionFile } from './modules/providers/list/pi/pi-sessions.provider.js';
+import {
+    buildOmpTokenUsageFromStats,
+    readOmpSessionTokenUsage,
+} from './modules/providers/list/omp/omp-token-usage.js';
+import { findOmpSessionFile } from './modules/providers/list/omp/omp-sessions.provider.js';
 import {
     spawnOpenCode,
     spawnKilo,
@@ -229,6 +239,7 @@ const providerSpawnFns = {
     grok: spawnGrok,
     kimi: spawnKimi,
     pi: spawnPi,
+    omp: spawnOmp,
 };
 
 const providerAbortFns = {
@@ -242,6 +253,7 @@ const providerAbortFns = {
     grok: abortGrokSession,
     kimi: abortKimiSession,
     pi: abortPiSession,
+    omp: abortOmpSession,
 };
 
 configureAgentRelayRuntimes(providerSpawnFns, providerAbortFns);
@@ -342,6 +354,7 @@ const wss = createWebSocketServer(server, {
             grok: abortGrokSession,
             kimi: abortKimiSession,
             pi: abortPiSession,
+            omp: abortOmpSession,
         },
         resolveToolApproval,
         getPendingApprovalsForSession,
@@ -1579,6 +1592,22 @@ app.get('/api/projects/:projectId/sessions/:sessionId/token-usage', authenticate
                 return res.status(404).json({ error: 'Pi session not found', sessionId: safeSessionId });
             }
             return res.json(readPiSessionTokenUsage(piSessionFile));
+        }
+
+        // Handle Oh My Pi sessions — same RPC-first strategy as Pi, against the
+        // `omp` binary and `~/.omp` transcripts.
+        if (provider === 'omp') {
+            const liveStats = await getOmpSessionStats(providerNativeSessionId).catch(() => null);
+            const liveUsage = buildOmpTokenUsageFromStats(liveStats);
+            if (liveUsage) {
+                return res.json(liveUsage);
+            }
+
+            const ompSessionFile = findOmpSessionFile(providerNativeSessionId);
+            if (!ompSessionFile) {
+                return res.status(404).json({ error: 'Oh My Pi session not found', sessionId: safeSessionId });
+            }
+            return res.json(readOmpSessionTokenUsage(ompSessionFile));
         }
 
         // Handle Kimi sessions — context fill from latest usage.record turn,

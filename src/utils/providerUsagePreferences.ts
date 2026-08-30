@@ -15,6 +15,7 @@ export const PROVIDER_USAGE_PROVIDERS = [
   { id: 'kimi', label: 'Kimi' },
   { id: 'qwencode', label: 'Qwen Code' },
   { id: 'pi', label: 'Pi' },
+  { id: 'omp', label: 'Oh My Pi' },
 ] as const;
 
 export type ProviderUsageProviderId = typeof PROVIDER_USAGE_PROVIDERS[number]['id'];

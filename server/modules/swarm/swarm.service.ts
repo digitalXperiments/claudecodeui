@@ -422,7 +422,7 @@ function isReadOnlyKind(kind: string): boolean {
 }
 
 function readOnlyPermissionMode(provider: LLMProvider): string {
-  return ['claude', 'opencode', 'kilo', 'cline', 'grok', 'kimi', 'pi'].includes(provider)
+  return ['claude', 'opencode', 'kilo', 'cline', 'grok', 'kimi', 'pi', 'omp'].includes(provider)
     ? 'plan'
     : 'default';
 }

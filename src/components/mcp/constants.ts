@@ -11,6 +11,7 @@ export const MCP_PROVIDER_NAMES: Record<McpProvider, string> = {
   kimi: 'Kimi',
   qwencode: 'Qwen Code',
   pi: 'Pi',
+  omp: 'Oh My Pi',
 };
 
 export const MCP_SUPPORTED_SCOPES: Record<McpProvider, McpScope[]> = {
@@ -24,6 +25,7 @@ export const MCP_SUPPORTED_SCOPES: Record<McpProvider, McpScope[]> = {
   kimi: ['user', 'project'],
   qwencode: ['user', 'project'],
   pi: [],
+  omp: [],
 };
 
 export const MCP_SUPPORTED_TRANSPORTS: Record<McpProvider, McpTransport[]> = {
@@ -37,6 +39,7 @@ export const MCP_SUPPORTED_TRANSPORTS: Record<McpProvider, McpTransport[]> = {
   kimi: ['stdio', 'http'],
   qwencode: ['stdio', 'http', 'sse'],
   pi: [],
+  omp: [],
 };
 
 export const MCP_GLOBAL_SUPPORTED_SCOPES: McpScope[] = ['user', 'project'];
@@ -54,6 +57,7 @@ export const MCP_PROVIDER_BUTTON_CLASSES: Record<McpProvider, string> = {
   kimi: 'bg-primary text-primary-foreground hover:bg-primary/90',
   qwencode: 'bg-primary text-primary-foreground hover:bg-primary/90',
   pi: 'bg-primary text-primary-foreground hover:bg-primary/90',
+  omp: 'bg-primary text-primary-foreground hover:bg-primary/90',
 };
 
 export const MCP_SUPPORTS_WORKING_DIRECTORY: Record<McpProvider, boolean> = {
@@ -67,6 +71,7 @@ export const MCP_SUPPORTS_WORKING_DIRECTORY: Record<McpProvider, boolean> = {
   kimi: false,
   qwencode: false,
   pi: false,
+  omp: false,
 };
 
 export const DEFAULT_MCP_FORM: McpFormState = {

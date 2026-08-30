@@ -103,7 +103,9 @@ export const providerToolsSettingsKey = (provider: string): string =>
           ? 'grok-tools-settings'
           : provider === 'pi'
             ? 'pi-tools-settings'
-            : 'claude-settings';
+            : provider === 'omp'
+              ? 'omp-tools-settings'
+              : 'claude-settings';
 
 export type ProviderToolsSettings = {
   allowedTools?: unknown;

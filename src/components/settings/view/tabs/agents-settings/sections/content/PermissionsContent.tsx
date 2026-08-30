@@ -1060,13 +1060,106 @@ function PiPermissions({
   );
 }
 
+type OmpPermissionsProps = {
+  agent: 'omp';
+  permissionMode: import('../../../../../types/types').OmpPermissionMode;
+  onPermissionModeChange: (value: import('../../../../../types/types').OmpPermissionMode) => void;
+};
+
+function OmpPermissions({
+  permissionMode,
+  onPermissionModeChange,
+}: Omit<OmpPermissionsProps, 'agent'>) {
+  const { t } = useTranslation('settings');
+
+  return (
+    <div className="space-y-6">
+      <div className="space-y-4">
+        <div className="flex items-center gap-3">
+          <Shield className="h-5 w-5 text-violet-500" />
+          <h3 className="text-lg font-medium text-foreground">
+            {t('permissions.omp.permissionMode', { defaultValue: 'Permission Mode' })}
+          </h3>
+        </div>
+        <p className="text-sm text-muted-foreground">
+          {t('permissions.omp.description', {
+            defaultValue:
+              'Oh My Pi has no built-in permission popups. Plan mode restricts tools to read-only; full mode enables read/write/edit/bash.',
+          })}
+        </p>
+
+        <div
+          className={`cursor-pointer rounded-lg border p-4 transition-all ${
+            permissionMode === 'plan'
+              ? 'border-violet-400 bg-violet-50 dark:border-violet-600 dark:bg-violet-900/20'
+              : 'border-border bg-card/50 active:border-border active:bg-accent/50'
+          }`}
+          onClick={() => onPermissionModeChange('plan')}
+        >
+          <label className="flex cursor-pointer items-start gap-3">
+            <input
+              type="radio"
+              name="ompPermissionMode"
+              checked={permissionMode === 'plan'}
+              onChange={() => onPermissionModeChange('plan')}
+              className="mt-1 h-4 w-4 text-violet-600"
+            />
+            <div>
+              <div className="font-medium text-violet-900 dark:text-violet-100">
+                {t('permissions.omp.modes.plan.title', { defaultValue: 'Plan (read-only)' })}
+              </div>
+              <div className="text-sm text-violet-700 dark:text-violet-300">
+                {t('permissions.omp.modes.plan.description', {
+                  defaultValue: 'Only read, grep, find, and ls tools (--tools read,grep,find,ls).',
+                })}
+              </div>
+            </div>
+          </label>
+        </div>
+
+        <div
+          className={`cursor-pointer rounded-lg border p-4 transition-all ${
+            permissionMode === 'bypassPermissions'
+              ? 'border-orange-400 bg-orange-50 dark:border-orange-600 dark:bg-orange-900/20'
+              : 'border-border bg-card/50 active:border-border active:bg-accent/50'
+          }`}
+          onClick={() => onPermissionModeChange('bypassPermissions')}
+        >
+          <label className="flex cursor-pointer items-start gap-3">
+            <input
+              type="radio"
+              name="ompPermissionMode"
+              checked={permissionMode === 'bypassPermissions'}
+              onChange={() => onPermissionModeChange('bypassPermissions')}
+              className="mt-1 h-4 w-4 text-orange-600"
+            />
+            <div>
+              <div className="flex items-center gap-2 font-medium text-orange-900 dark:text-orange-100">
+                {t('permissions.omp.modes.bypassPermissions.title', { defaultValue: 'Full tools' })}
+                <AlertTriangle className="h-4 w-4" />
+              </div>
+              <div className="text-sm text-orange-700 dark:text-orange-300">
+                {t('permissions.omp.modes.bypassPermissions.description', {
+                  defaultValue:
+                    'All built-in tools (read, write, edit, bash, …), launched with --approval-mode yolo.',
+                })}
+              </div>
+            </div>
+          </label>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 type PermissionsContentProps =
   | ClaudePermissionsProps
   | CursorPermissionsProps
   | GrokPermissionsProps
   | CodexPermissionsProps
   | KiloPermissionsProps
-  | PiPermissionsProps;
+  | PiPermissionsProps
+  | OmpPermissionsProps;
 
 export default function PermissionsContent(props: PermissionsContentProps) {
   if (props.agent === 'claude') {
@@ -1087,6 +1180,10 @@ export default function PermissionsContent(props: PermissionsContentProps) {
 
   if (props.agent === 'pi') {
     return <PiPermissions {...props} />;
+  }
+
+  if (props.agent === 'omp') {
+    return <OmpPermissions {...props} />;
   }
 
   return <CodexPermissions {...props} />;

@@ -77,6 +77,7 @@ const ALL_MCP_PROVIDERS: LLMProvider[] = [
   'kimi',
   'qwencode',
   'pi',
+  'omp',
 ];
 
 const normalizeName = (name: string): string => {

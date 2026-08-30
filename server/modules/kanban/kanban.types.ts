@@ -12,6 +12,7 @@ export const KANBAN_PROVIDERS: readonly LLMProvider[] = [
   'kimi',
   'qwencode',
   'pi',
+  'omp',
 ] as const;
 
 export function isKanbanProvider(value: unknown): value is LLMProvider {

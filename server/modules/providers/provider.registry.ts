@@ -8,6 +8,7 @@ import { GrokProvider } from '@/modules/providers/list/grok/grok.provider.js';
 import { KimiProvider } from '@/modules/providers/list/kimi/kimi.provider.js';
 import { QwenCodeProvider } from '@/modules/providers/list/qwencode/qwencode.provider.js';
 import { PiProvider } from '@/modules/providers/list/pi/pi.provider.js';
+import { OmpProvider } from '@/modules/providers/list/omp/omp.provider.js';
 import type { IProvider } from '@/shared/interfaces.js';
 import type { LLMProvider } from '@/shared/types.js';
 import { AppError } from '@/shared/utils.js';
@@ -23,6 +24,7 @@ const providers: Record<LLMProvider, IProvider> = {
   kimi: new KimiProvider(),
   qwencode: new QwenCodeProvider(),
   pi: new PiProvider(),
+  omp: new OmpProvider(),
 };
 
 /**

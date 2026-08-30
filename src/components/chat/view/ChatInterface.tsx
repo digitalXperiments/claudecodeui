@@ -120,6 +120,8 @@ function ChatInterface({
     setQwenCodeModel,
     piModel,
     setPiModel,
+    ompModel,
+    setOmpModel,
     permissionMode,
     pendingPermissionRequests,
     setPendingPermissionRequests,
@@ -759,6 +761,8 @@ function ChatInterface({
           setQwenCodeModel={setQwenCodeModel}
           piModel={piModel}
           setPiModel={setPiModel}
+          ompModel={ompModel}
+          setOmpModel={setOmpModel}
           providerModelCatalog={providerModelCatalog}
           providerModelsLoading={providerModelsLoading}
           providerModelsRefreshing={providerModelsRefreshing}
@@ -916,7 +920,9 @@ function ChatInterface({
                         ? t('messageTypes.kimi', { defaultValue: 'Kimi' })
                         : provider === 'pi'
                           ? t('messageTypes.pi', { defaultValue: 'Pi' })
-                          : t('messageTypes.claude'),
+                          : provider === 'omp'
+                            ? t('messageTypes.omp', { defaultValue: 'Oh My Pi' })
+                            : t('messageTypes.claude'),
           })}
           isTextareaExpanded={isTextareaExpanded}
           sendByCtrlEnter={sendByCtrlEnter}

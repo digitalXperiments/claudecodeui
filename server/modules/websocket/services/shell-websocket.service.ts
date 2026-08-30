@@ -515,6 +515,20 @@ export function buildShellCommand(
     return `pi${modeArgs}`;
   }
 
+  if (provider === 'omp') {
+    // Oh My Pi inherits Pi's tool allowlist for plan mode; anything else runs
+    // with the full default tool set under its yolo approval mode.
+    const modeArgs = permissionMode === 'plan'
+      ? ' --tools read,grep,find,ls'
+      : permissionMode === 'bypassPermissions'
+        ? ' --approval-mode yolo'
+        : '';
+    if (resumeSessionId) {
+      return `omp --session "${resumeSessionId}"${modeArgs}`;
+    }
+    return `omp${modeArgs}`;
+  }
+
   const modeArgs = permissionMode && permissionMode !== 'default'
     ? ` --permission-mode ${permissionMode}`
     : '';
@@ -1009,7 +1023,9 @@ export function handleShellConnection(
                       ? 'Kimi'
                       : provider === 'pi'
                         ? 'Pi'
-                        : 'Claude';
+                        : provider === 'omp'
+                          ? 'Oh My Pi'
+                          : 'Claude';
           welcomeMsg = hasSession && resumeSessionId
             ? provider === 'grok'
               ? `\x1b[36mResuming ${providerName} session ${resumeSessionId} in: ${projectPath}\x1b[0m\r\n` +

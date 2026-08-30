@@ -102,7 +102,7 @@ const toneClasses: Record<UsageTone, { bar: string; dot: string; text: string }>
 };
 
 const providerIdForLogo = (providerId: string): LLMProvider => (
-  ['claude', 'cursor', 'codex', 'opencode', 'kilo', 'cline', 'grok', 'kimi', 'pi'].includes(providerId)
+  ['claude', 'cursor', 'codex', 'opencode', 'kilo', 'cline', 'grok', 'kimi', 'pi', 'omp'].includes(providerId)
     ? providerId as LLMProvider
     : 'claude'
 );

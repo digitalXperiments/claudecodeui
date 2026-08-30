@@ -114,6 +114,7 @@ export const KANBAN_PROVIDERS: { value: LLMProvider; label: string }[] = [
   { value: 'grok', label: 'Grok' },
   { value: 'kimi', label: 'Kimi' },
   { value: 'pi', label: 'Pi' },
+  { value: 'omp', label: 'Oh My Pi' },
 ];
 
 export const KANBAN_PERMISSION_MODES: { value: string; label: string }[] = [

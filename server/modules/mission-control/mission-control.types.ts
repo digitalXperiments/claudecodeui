@@ -11,6 +11,7 @@ export const MC_PROVIDERS = [
   'kimi',
   'qwencode',
   'pi',
+  'omp',
 
 ] as const satisfies readonly LLMProvider[];
 

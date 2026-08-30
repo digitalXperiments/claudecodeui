@@ -15,7 +15,7 @@ import { sessionsService } from '@/modules/providers/index.js';
 import type { LLMProvider } from '@/shared/types.js';
 import { AppError } from '@/shared/utils.js';
 
-const WORK_PROVIDERS = ['claude', 'grok', 'codex', 'cursor', 'opencode', 'kilo', 'cline', 'kimi', 'pi'] as const;
+const WORK_PROVIDERS = ['claude', 'grok', 'codex', 'cursor', 'opencode', 'kilo', 'cline', 'kimi', 'pi', 'omp'] as const;
 
 export type WorkThisMatch = {
   projectId: string;

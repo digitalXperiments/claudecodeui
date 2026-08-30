@@ -56,6 +56,7 @@ const PROVIDER_NAMES: Record<SkillsProvider, string> = {
   kimi: 'Kimi',
   qwencode: 'Qwen Code',
   pi: 'Pi',
+  omp: 'Oh My Pi',
 };
 
 const PROVIDER_SKILL_PATHS: Record<Exclude<SkillsProvider, 'opencode'>, string> = {
@@ -68,6 +69,7 @@ const PROVIDER_SKILL_PATHS: Record<Exclude<SkillsProvider, 'opencode'>, string> 
   kimi: '~/.kimi-code/skills/<skill-name>/SKILL.md',
   qwencode: '~/.qwen/skills/<skill-name>/SKILL.md',
   pi: '~/.pi/agent/skills/<skill-name>/SKILL.md',
+  omp: '~/.omp/skills/<skill-name>/SKILL.md',
 };
 
 const SCOPE_LABELS: Record<SkillsScope, string> = {

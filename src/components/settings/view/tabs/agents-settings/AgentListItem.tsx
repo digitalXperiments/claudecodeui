@@ -25,6 +25,7 @@ const DOT_COLOR: Record<AgentProvider, string> = {
   kimi: 'bg-emerald-500',
   qwencode: 'bg-sky-500',
   pi: 'bg-violet-500',
+  omp: 'bg-fuchsia-500',
   codex: 'bg-foreground/60',
 };
 

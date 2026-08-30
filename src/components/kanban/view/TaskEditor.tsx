@@ -7,7 +7,7 @@ import type { LLMProvider } from '../../../types/app';
 import { authenticatedFetch } from '../../../utils/api';
 import ContextPackPanel from '../../context-packs/ContextPackPanel';
 import PermissionsContent from '../../settings/view/tabs/agents-settings/sections/content/PermissionsContent';
-import type { CodexPermissionMode, PiPermissionMode } from '../../settings/types/types';
+import type { CodexPermissionMode, OmpPermissionMode, PiPermissionMode } from '../../settings/types/types';
 import {
   agentProfilesApi,
   type AgentRunProfile,
@@ -101,6 +101,7 @@ const textareaClass =
 
 const CODEX_MODES: CodexPermissionMode[] = ['default', 'acceptEdits', 'bypassPermissions'];
 const PI_MODES: PiPermissionMode[] = ['plan', 'bypassPermissions'];
+const OMP_MODES: OmpPermissionMode[] = ['plan', 'bypassPermissions'];
 
 /** Providers with a dedicated allow/deny editor (share the settings UI). */
 const ALLOW_DENY_PROVIDERS: LLMProvider[] = ['claude', 'cursor', 'grok'];
@@ -111,6 +112,10 @@ function coerceCodexMode(mode: string): CodexPermissionMode {
 
 function coercePiMode(mode: string): PiPermissionMode {
   return PI_MODES.includes(mode as PiPermissionMode) ? (mode as PiPermissionMode) : 'bypassPermissions';
+}
+
+function coerceOmpMode(mode: string): OmpPermissionMode {
+  return OMP_MODES.includes(mode as OmpPermissionMode) ? (mode as OmpPermissionMode) : 'bypassPermissions';
 }
 
 export default function TaskEditor(props: TaskEditorProps) {
@@ -520,6 +525,15 @@ export default function TaskEditor(props: TaskEditorProps) {
         <PermissionsContent
           agent="pi"
           permissionMode={coercePiMode(permissionMode)}
+          onPermissionModeChange={(value) => setPermissionMode(value)}
+        />
+      );
+    }
+    if (assignee === 'omp') {
+      return (
+        <PermissionsContent
+          agent="omp"
+          permissionMode={coerceOmpMode(permissionMode)}
           onPermissionModeChange={(value) => setPermissionMode(value)}
         />
       );

@@ -142,6 +142,7 @@ const KNOWN_LLM_PROVIDERS: LLMProvider[] = [
   'kimi',
   'qwencode',
   'pi',
+  'omp',
 ];
 
 const readTestProvider = (value: unknown): LLMProvider => {

@@ -11,6 +11,7 @@ import ClineLogo from './ClineLogo';
 import GrokLogo from './GrokLogo';
 import KimiLogo from './KimiLogo';
 import PiLogo from './PiLogo';
+import OmpLogo from './OmpLogo';
 
 function QwenCodeLogo({ className }: { className?: string }) {
   return <span className={`inline-flex items-center justify-center rounded bg-sky-500 px-0.5 text-[9px] font-bold text-white ${className ?? ''}`}>Q</span>;
@@ -55,6 +56,10 @@ export default function SessionProviderLogo({
 
   if (provider === 'pi') {
     return <PiLogo className={className} />;
+  }
+
+  if (provider === 'omp') {
+    return <OmpLogo className={className} />;
   }
 
   if (provider === 'qwencode') {

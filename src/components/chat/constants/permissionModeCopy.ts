@@ -224,6 +224,18 @@ export const PERMISSION_MODE_COPY: Record<
       technical: 'pi (default tool set)',
     },
   },
+  omp: {
+    plan: {
+      label: 'Plan',
+      summary: 'Read-only tools only (read, grep, find, ls).',
+      technical: 'omp --tools read,grep,find,ls',
+    },
+    bypassPermissions: {
+      label: 'Full tools',
+      summary: 'All built-in tools (read, write, edit, bash). Oh My Pi has no permission popups.',
+      technical: 'omp --approval-mode yolo',
+    },
+  },
 };
 
 export function getPermissionModeCopy(

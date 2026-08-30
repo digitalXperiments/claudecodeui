@@ -110,6 +110,15 @@ const agentConfig: Record<AgentProvider, AgentVisualConfig> = {
     subtextClass: 'text-violet-700 dark:text-violet-300',
     buttonClass: 'bg-violet-600 hover:bg-violet-700 active:bg-violet-800',
   },
+  omp: {
+    name: 'Oh My Pi',
+    description: 'Oh My Pi terminal coding agent (omp.sh)',
+    bgClass: 'bg-fuchsia-50 dark:bg-fuchsia-900/20',
+    borderClass: 'border-fuchsia-200 dark:border-fuchsia-800',
+    textClass: 'text-fuchsia-900 dark:text-fuchsia-100',
+    subtextClass: 'text-fuchsia-700 dark:text-fuchsia-300',
+    buttonClass: 'bg-fuchsia-600 hover:bg-fuchsia-700 active:bg-fuchsia-800',
+  },
 };
 
 export default function AccountContent({ agent, authStatus, onLogin, onRefresh }: AccountContentProps) {

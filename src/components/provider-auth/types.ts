@@ -10,7 +10,7 @@ export type ProviderAuthStatus = {
 
 export type ProviderAuthStatusMap = Record<LLMProvider, ProviderAuthStatus>;
 
-export const CLI_PROVIDERS: LLMProvider[] = ['claude', 'cursor', 'codex', 'opencode', 'kilo', 'cline', 'grok', 'kimi', 'qwencode', 'pi'];
+export const CLI_PROVIDERS: LLMProvider[] = ['claude', 'cursor', 'codex', 'opencode', 'kilo', 'cline', 'grok', 'kimi', 'qwencode', 'pi', 'omp'];
 
 export const PROVIDER_AUTH_STATUS_ENDPOINTS: Record<LLMProvider, string> = {
   claude: '/api/providers/claude/auth/status',
@@ -23,6 +23,7 @@ export const PROVIDER_AUTH_STATUS_ENDPOINTS: Record<LLMProvider, string> = {
   kimi: '/api/providers/kimi/auth/status',
   qwencode: '/api/providers/qwencode/auth/status',
   pi: '/api/providers/pi/auth/status',
+  omp: '/api/providers/omp/auth/status',
 };
 
 export const createInitialProviderAuthStatusMap = (loading = true): ProviderAuthStatusMap => ({
@@ -36,4 +37,5 @@ export const createInitialProviderAuthStatusMap = (loading = true): ProviderAuth
   kimi: { authenticated: false, email: null, method: null, error: null, loading },
   qwencode: { authenticated: false, email: null, method: null, error: null, loading },
   pi: { authenticated: false, email: null, method: null, error: null, loading },
+  omp: { authenticated: false, email: null, method: null, error: null, loading },
 });

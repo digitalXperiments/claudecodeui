@@ -12,6 +12,8 @@ export type SaveStatus = 'success' | 'error' | null;
 export type CodexPermissionMode = 'default' | 'acceptEdits' | 'bypassPermissions';
 // Pi has no permission popups; plan = read-only tools, bypass = full tool set.
 export type PiPermissionMode = 'plan' | 'bypassPermissions';
+// Oh My Pi is a Pi fork and exposes the same two modes.
+export type OmpPermissionMode = 'plan' | 'bypassPermissions';
 // Mirrors the kilo entry in provider-capabilities.service.ts (KILO_PERMISSION
 // policy + ACP build/plan agent — see resolveKiloPermissionPolicy).
 export type KiloPermissionMode = 'default' | 'acceptEdits' | 'auto' | 'bypassPermissions' | 'plan';
@@ -86,6 +88,7 @@ export type SettingsStoragePayload = {
   codex: { permissionMode: CodexPermissionMode; lastUpdated: string };
   grok: GrokPermissionsState & { lastUpdated: string };
   pi: { permissionMode: PiPermissionMode; lastUpdated: string };
+  omp: { permissionMode: OmpPermissionMode; lastUpdated: string };
 };
 
 export type SettingsProps = {

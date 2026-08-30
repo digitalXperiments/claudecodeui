@@ -56,6 +56,8 @@ interface ChatMessagesPaneProps {
   setQwenCodeModel: (model: string) => void;
   piModel: string;
   setPiModel: (model: string) => void;
+  ompModel: string;
+  setOmpModel: (model: string) => void;
   providerModelCatalog: Partial<Record<LLMProvider, ProviderModelsDefinition>>;
   providerModelsLoading: boolean;
   providerModelsRefreshing?: boolean;
@@ -116,6 +118,8 @@ function ChatMessagesPane({
   setQwenCodeModel,
   piModel,
   setPiModel,
+  ompModel,
+  setOmpModel,
   providerModelCatalog,
   providerModelsLoading,
   providerModelsRefreshing,
@@ -228,6 +232,8 @@ function ChatMessagesPane({
           setQwenCodeModel={setQwenCodeModel}
           piModel={piModel}
           setPiModel={setPiModel}
+          ompModel={ompModel}
+          setOmpModel={setOmpModel}
           providerModelCatalog={providerModelCatalog}
           providerModelsLoading={providerModelsLoading}
           providerModelsRefreshing={providerModelsRefreshing}

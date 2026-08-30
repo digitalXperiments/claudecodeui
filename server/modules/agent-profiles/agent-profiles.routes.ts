@@ -26,6 +26,7 @@ const KNOWN_PROVIDERS: readonly LLMProvider[] = [
   'kimi',
   'qwencode',
   'pi',
+  'omp',
 
 ];
 

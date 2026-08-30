@@ -13,6 +13,7 @@ import type {
   AgentProvider,
   KiloPermissionMode,
   PiPermissionMode,
+  OmpPermissionMode,
   ClaudePermissionsState,
   CodeEditorSettingsState,
   CodexPermissionMode,
@@ -58,6 +59,10 @@ type CodexSettingsStorage = {
 
 type KiloSettingsStorage = {
   permissionMode?: KiloPermissionMode;
+};
+
+type OmpSettingsStorage = {
+  permissionMode?: OmpPermissionMode;
 };
 
 type PiSettingsStorage = {
@@ -142,6 +147,14 @@ const toKiloPermissionMode = (value: unknown): KiloPermissionMode => {
 };
 
 const toPiPermissionMode = (value: unknown): PiPermissionMode => {
+  if (value === 'plan') {
+    return value;
+  }
+
+  return 'bypassPermissions';
+};
+
+const toOmpPermissionMode = (value: unknown): OmpPermissionMode => {
   if (value === 'plan') {
     return value;
   }
@@ -271,6 +284,7 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
   const [codexPermissionMode, setCodexPermissionMode] = useState<CodexPermissionMode>('default');
   const [kiloPermissionMode, setKiloPermissionMode] = useState<KiloPermissionMode>('default');
   const [piPermissionMode, setPiPermissionMode] = useState<PiPermissionMode>('bypassPermissions');
+  const [ompPermissionMode, setOmpPermissionMode] = useState<OmpPermissionMode>('bypassPermissions');
 
   const [showLoginModal, setShowLoginModal] = useState(false);
   const [loginProvider, setLoginProvider] = useState<ActiveLoginProvider>('');
@@ -331,6 +345,12 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
       );
       setPiPermissionMode(toPiPermissionMode(savedPiSettings.permissionMode));
 
+      const savedOmpSettings = parseJson<OmpSettingsStorage>(
+        localStorage.getItem('omp-tools-settings'),
+        {},
+      );
+      setOmpPermissionMode(toOmpPermissionMode(savedOmpSettings.permissionMode));
+
       try {
         const notificationResponse = await authenticatedFetch('/api/settings/notification-preferences');
         if (notificationResponse.ok) {
@@ -356,6 +376,7 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
       setCodexPermissionMode('default');
       setKiloPermissionMode('default');
       setPiPermissionMode('bypassPermissions');
+      setOmpPermissionMode('bypassPermissions');
       setProjectSortOrder('name');
     }
   }, []);
@@ -433,6 +454,11 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
         lastUpdated: now,
       }));
 
+      localStorage.setItem('omp-tools-settings', JSON.stringify({
+        permissionMode: ompPermissionMode,
+        lastUpdated: now,
+      }));
+
       const notificationResponse = await authenticatedFetch('/api/settings/notification-preferences', {
         method: 'PUT',
         body: JSON.stringify(notificationPreferences),
@@ -453,6 +479,7 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
     codexPermissionMode,
     kiloPermissionMode,
     piPermissionMode,
+    ompPermissionMode,
     cursorPermissions.allowedCommands,
     cursorPermissions.disallowedCommands,
     cursorPermissions.skipPermissions,
@@ -570,6 +597,8 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
     setKiloPermissionMode,
     piPermissionMode,
     setPiPermissionMode,
+    ompPermissionMode,
+    setOmpPermissionMode,
     providerAuthStatus,
     openLoginForProvider,
     showLoginModal,

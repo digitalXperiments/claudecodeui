@@ -64,6 +64,11 @@ const getProviderCommand = ({
     return 'pi';
   }
 
+  if (provider === 'omp') {
+    // Oh My Pi authenticates via the interactive /login command inside the TUI.
+    return 'omp';
+  }
+
   return 'claude --dangerously-skip-permissions /login';
 };
 
@@ -77,6 +82,7 @@ const getProviderTitle = (provider: LLMProvider) => {
   if (provider === 'kimi') return 'Kimi CLI Login';
   if (provider === 'qwencode') return 'Qwen Code CLI Login';
   if (provider === 'pi') return 'Pi CLI Login';
+  if (provider === 'omp') return 'Oh My Pi CLI Login';
   return 'Claude CLI Login';
 };
 

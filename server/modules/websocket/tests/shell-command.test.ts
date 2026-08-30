@@ -143,6 +143,21 @@ test('pi restricts tools in plan mode only', () => {
   assert.equal(build({ provider: 'pi', permissionMode: 'bypassPermissions' }), 'pi');
 });
 
+test('omp restricts tools in plan mode and yolos on bypass', () => {
+  assert.equal(
+    build({ provider: 'omp', permissionMode: 'plan' }),
+    'omp --tools read,grep,find,ls',
+  );
+  assert.equal(
+    build({ provider: 'omp', permissionMode: 'bypassPermissions' }),
+    'omp --approval-mode yolo',
+  );
+  assert.equal(
+    build({ provider: 'omp', hasSession: true, sessionId: 'o1', permissionMode: 'bypassPermissions' }),
+    'omp --session "o1" --approval-mode yolo',
+  );
+});
+
 // Grok is intentionally not covered here: buildGrokShellCommand resolves a
 // managed GROK_HOME on disk (ensureManagedGrokHome), which is a filesystem
 // side effect outside the repo.
@@ -161,7 +176,7 @@ test('plain shells ignore the permission mode', () => {
 });
 
 test('identifies every provider-backed shell with an existing session', () => {
-  for (const provider of ['claude', 'cursor', 'codex', 'opencode', 'kilo', 'cline', 'grok', 'kimi', 'qwencode', 'pi']) {
+  for (const provider of ['claude', 'cursor', 'codex', 'opencode', 'kilo', 'cline', 'grok', 'kimi', 'qwencode', 'pi', 'omp']) {
     assert.equal(
       isAgentShellRequestWithExistingSession({
         provider,

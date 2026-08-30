@@ -53,6 +53,7 @@ export const sessionSynchronizerService = {
       kimi: 0,
       qwencode: 0,
       pi: 0,
+      omp: 0,
     };
     const failures: string[] = [];
 

@@ -300,6 +300,7 @@ const parseProvider = (value: unknown): LLMProvider => {
     || normalized === 'kimi'
     || normalized === 'qwencode'
     || normalized === 'pi'
+    || normalized === 'omp'
   ) {
     return normalized;
   }

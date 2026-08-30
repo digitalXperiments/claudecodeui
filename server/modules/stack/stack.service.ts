@@ -36,6 +36,7 @@ const PROVIDER_BINARIES: Record<string, string> = {
   kimi: 'kimi',
   qwencode: 'qwen',
   pi: 'pi',
+  omp: 'omp',
 };
 
 function projectPathForId(projectId: string): string {

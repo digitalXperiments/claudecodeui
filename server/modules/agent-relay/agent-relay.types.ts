@@ -11,6 +11,7 @@ export const AGENT_RELAY_PROVIDERS: LLMProvider[] = [
   'kimi',
   'qwencode',
   'pi',
+  'omp',
 ];
 
 export type AgentRelayMode = 'read_only' | 'isolated_write';

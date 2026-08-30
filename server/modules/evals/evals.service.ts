@@ -33,7 +33,7 @@ import {
 import type { AnyRecord, LLMProvider } from '@/shared/types.js';
 import { AppError } from '@/shared/utils.js';
 
-const KNOWN_PROVIDERS: LLMProvider[] = ['claude', 'cursor', 'codex', 'opencode', 'kilo', 'cline', 'grok', 'kimi', 'qwencode', 'pi'];
+const KNOWN_PROVIDERS: LLMProvider[] = ['claude', 'cursor', 'codex', 'opencode', 'kilo', 'cline', 'grok', 'kimi', 'qwencode', 'pi', 'omp'];
 const ACTIONS: EvalAction[] = [
   'continue',
   'retry_with_feedback',
@@ -301,7 +301,7 @@ Rules:
 function buildGenerationOptions(provider: LLMProvider, model?: string | null): AnyRecord {
   const options: AnyRecord = {
     model: model || undefined,
-    permissionMode: provider === 'claude' || provider === 'cursor' || provider === 'pi'
+    permissionMode: provider === 'claude' || provider === 'cursor' || provider === 'pi' || provider === 'omp'
       ? 'plan'
       : 'default',
     unattended: true,

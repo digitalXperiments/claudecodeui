@@ -101,7 +101,9 @@ function Settings({ isOpen, onClose, projects = [], initialTab = 'agents' }: Set
     kiloPermissionMode,
     setKiloPermissionMode,
     piPermissionMode,
+    ompPermissionMode,
     setPiPermissionMode,
+    setOmpPermissionMode,
     providerAuthStatus,
     openLoginForProvider,
     showLoginModal,
@@ -280,7 +282,9 @@ function Settings({ isOpen, onClose, projects = [], initialTab = 'agents' }: Set
                   kiloPermissionMode={kiloPermissionMode}
                   onKiloPermissionModeChange={setKiloPermissionMode}
                   piPermissionMode={piPermissionMode}
+                  ompPermissionMode={ompPermissionMode}
                   onPiPermissionModeChange={setPiPermissionMode}
+                  onOmpPermissionModeChange={setOmpPermissionMode}
                   projects={projects}
                 />
               )}

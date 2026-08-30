@@ -7,7 +7,7 @@ import type { LLMProvider, ProviderModelOption, ProviderModelsDefinition } from 
 import { FALLBACK_PROVIDER_EFFORT_VALUES } from '../../../chat/constants/providerEffort';
 import { studioApi, type StudioSeatProfile } from '../../../studio/api/studioApi';
 
-const PROVIDERS: LLMProvider[] = ['claude', 'grok', 'codex', 'cursor', 'opencode', 'kilo', 'cline', 'kimi', 'qwencode', 'pi'];
+const PROVIDERS: LLMProvider[] = ['claude', 'grok', 'codex', 'cursor', 'opencode', 'kilo', 'cline', 'kimi', 'qwencode', 'pi', 'omp'];
 const PERMISSIONS = ['bypassPermissions', 'acceptEdits', 'default'];
 
 type ProviderModelsApiResponse = {

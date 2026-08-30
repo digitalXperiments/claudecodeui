@@ -12,6 +12,7 @@ const PROVIDER_LABELS: Record<LLMProvider, string> = {
   kimi: 'Kimi',
   qwencode: 'Qwen Code',
   pi: 'Pi',
+  omp: 'Oh My Pi',
 };
 
 export const FANOUT_PROVIDERS: LLMProvider[] = [

@@ -46,6 +46,7 @@ const PROVIDER_MODEL_LABELS: Record<LLMProvider, string> = {
   kimi: 'Kimi',
   qwencode: 'Qwen Code',
   pi: 'Pi',
+  omp: 'Oh My Pi',
 };
 
 interface UseChatComposerStateArgs {
