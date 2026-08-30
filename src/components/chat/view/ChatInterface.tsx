@@ -24,6 +24,7 @@ import ChatComposer from './subcomponents/ChatComposer';
 import CommandResultModal, { type SessionSwitchRequest } from './subcomponents/CommandResultModal';
 import LiveSpendMeter from './subcomponents/LiveSpendMeter';
 import ProviderUsageLegend from './subcomponents/ProviderUsageLegend';
+import AgentRelayActivityControl from './subcomponents/AgentRelayActivityControl';
 
 /** Labels for the post-switch notice (mirrors CommandResultModal's map). */
 const SWITCH_PROVIDER_LABELS: Record<string, string> = {
@@ -780,6 +781,13 @@ function ChatInterface({
             }`}
           >
             {!studioMode ? <LiveSpendMeter sessionId={selectedSession?.id || currentSessionId || null} /> : null}
+            {!studioMode ? (
+              <AgentRelayActivityControl
+                projectId={selectedProject?.projectId ?? null}
+                sessionId={selectedSession?.id || currentSessionId || null}
+                newSessionTrigger={newSessionTrigger}
+              />
+            ) : null}
           </div>
           {isUserScrolledUp && chatMessages.length > 0 && (
             <div className="pointer-events-none absolute -top-11 left-0 right-0 z-20 flex justify-center">
