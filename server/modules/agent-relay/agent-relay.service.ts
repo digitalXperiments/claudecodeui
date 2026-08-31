@@ -176,20 +176,105 @@ export function allowedWorkerModelsFor(
   return list === undefined ? null : [...list];
 }
 
+/** Near-miss catalog ids listed back to a lead that asked for a bad model. */
+const MAX_MODEL_SUGGESTIONS = 5;
+
+function catalogModelIds(catalog: ProviderModelsDefinition | null | undefined): string[] {
+  if (!catalog || !Array.isArray(catalog.OPTIONS)) return [];
+  const ids: string[] = [];
+  for (const option of catalog.OPTIONS) {
+    const value = typeof option?.value === 'string' ? option.value.trim() : '';
+    if (value && !ids.includes(value)) ids.push(value);
+    const resolved = typeof option?.resolvedModel === 'string' ? option.resolvedModel.trim() : '';
+    if (resolved && !ids.includes(resolved)) ids.push(resolved);
+  }
+  return ids;
+}
+
+/** Trailing `count` `/`-separated segments of a catalog id, or '' if shorter. */
+function idSuffix(id: string, count: number): string {
+  const segments = id.split('/');
+  return segments.length > count ? segments.slice(-count).join('/') : '';
+}
+
+function lastSegment(id: string): string {
+  const segments = id.split('/');
+  return segments[segments.length - 1] ?? id;
+}
+
+function modelSuggestions(requested: string, candidates: string[]): string[] {
+  const tail = lastSegment(requested).toLowerCase();
+  const near = candidates.filter((candidate) => candidate.toLowerCase().includes(tail));
+  return (near.length > 0 ? near : candidates).slice(0, MAX_MODEL_SUGGESTIONS);
+}
+
+/**
+ * Map a requested model id onto the provider catalog. Leads routinely abbreviate
+ * multi-segment ids — OpenCode's NVIDIA catalog is `nvidia/<vendor>/<model>` and
+ * a lead asking for `nvidia/deepseek-v4-flash` used to be passed through
+ * unvalidated, only for ACP to reject it as "model not found". Unambiguous
+ * suffix matches are repaired to the full catalog id (the vendor namespace is
+ * never stripped); anything still unmatched fails fast with suggestions.
+ */
+export function resolveCatalogModelId(
+  provider: LLMProvider,
+  requested: string,
+  catalog: ProviderModelsDefinition | null | undefined,
+): { model: string; repaired: boolean } {
+  const candidates = catalogModelIds(catalog);
+  // Providers whose catalog is empty (offline/unlisted) keep the legacy
+  // pass-through — there is nothing to validate against.
+  if (candidates.length === 0) return { model: requested, repaired: false };
+  if (candidates.includes(requested)) return { model: requested, repaired: false };
+
+  const requestedHead = requested.split('/')[0] ?? requested;
+  const requestedTail = lastSegment(requested);
+  const tiers: Array<(candidate: string) => boolean> = [
+    // The request is the tail of a longer catalog id (`deepseek-v4-flash`,
+    // `deepseek-ai/deepseek-v4-flash` → `nvidia/deepseek-ai/…`).
+    (candidate) => requested === idSuffix(candidate, 1) || requested === idSuffix(candidate, 2),
+    // The request kept the provider namespace but dropped a middle vendor
+    // segment (`nvidia/deepseek-v4-flash` → `nvidia/deepseek-ai/…`).
+    (candidate) => requested.includes('/')
+      && candidate.split('/')[0] === requestedHead
+      && lastSegment(candidate) === requestedTail,
+  ];
+  for (const matches of tiers) {
+    const hits = candidates.filter(matches);
+    if (hits.length === 1) return { model: hits[0]!, repaired: true };
+    if (hits.length > 1) {
+      throw new AppError(
+        `Model "${requested}" is ambiguous in the ${provider} catalog. Matches: ${hits.slice(0, MAX_MODEL_SUGGESTIONS).join(', ')}. Use the full catalog id.`,
+        { code: 'RELAY_MODEL_NOT_IN_CATALOG', statusCode: 400 },
+      );
+    }
+  }
+  throw new AppError(
+    `Model "${requested}" is not in the ${provider} model catalog. Closest ids: ${modelSuggestions(requested, candidates).join(', ')}.`,
+    { code: 'RELAY_MODEL_NOT_IN_CATALOG', statusCode: 400 },
+  );
+}
+
 /**
  * Resolve the model a relay task will run. Omitted models are pinned to the
  * provider catalog's current default so the durable job never loses which
  * model "provider default" meant at dispatch time. Restricted providers use
  * the first allowlisted id only when the catalog default is not allowed.
+ * A `catalog` (when supplied) additionally validates/repairs the requested id
+ * before the allowlist check, so unrestricted providers are checked too.
  */
 export function resolveRelayWorkerModel(
   settings: Pick<AgentRelaySettings, 'allowedWorkerModels'>,
   provider: LLMProvider,
   requested: string | null | undefined,
   providerDefault?: string | null,
+  catalog?: ProviderModelsDefinition | null,
 ): string | null {
   const allowed = allowedWorkerModelsFor(settings, provider);
-  const trimmed = typeof requested === 'string' && requested.trim() ? requested.trim() : null;
+  const rawRequested = typeof requested === 'string' && requested.trim() ? requested.trim() : null;
+  const trimmed = rawRequested && catalog
+    ? resolveCatalogModelId(provider, rawRequested, catalog).model
+    : rawRequested;
   const normalizedDefault = typeof providerDefault === 'string' && providerDefault.trim()
     ? providerDefault.trim()
     : null;
@@ -224,7 +309,11 @@ export function resolveRelayModelIdentity(
   const catalogDefaultModel = typeof catalog.DEFAULT === 'string' && catalog.DEFAULT.trim()
     ? catalog.DEFAULT.trim()
     : null;
-  const model = resolveRelayWorkerModel(settings, provider, requestedModel, catalogDefaultModel);
+  // Validate/repair the requested id against the catalog first, so the
+  // allowlist (whose entries are catalog ids) is checked against the canonical
+  // form and the job persists what the runtime will actually be handed.
+  const canonical = requestedModel ? resolveCatalogModelId(provider, requestedModel, catalog) : null;
+  const model = resolveRelayWorkerModel(settings, provider, canonical?.model ?? null, catalogDefaultModel);
   if (!model) {
     throw new AppError(
       `Provider "${provider}" did not report a usable default model. Choose a model explicitly or refresh its catalog.`,
@@ -243,7 +332,9 @@ export function resolveRelayModelIdentity(
     requestedModel,
     modelLabel: option?.label?.trim() || model,
     catalogDefaultModel,
-    catalogResolvedModel: option?.resolvedModel?.trim() || null,
+    // A suffix repair is recorded here so the durable job shows the catalog id
+    // the abbreviated request was widened to.
+    catalogResolvedModel: option?.resolvedModel?.trim() || (canonical?.repaired ? model : null),
     modelSelectionSource: requestedModel
       ? 'requested' as const
       : allowed !== null && model !== catalogDefaultModel

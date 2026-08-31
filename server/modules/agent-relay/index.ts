@@ -6,6 +6,7 @@ export {
   providerHonorsRelayMcpGrants,
   providerSupportsReadOnlyRelay,
   relayPermissionMode,
+  resolveCatalogModelId,
   resolveRelayModelIdentity,
   resolveRelayWorkerModel,
   sanitizeWorkerMcpServers,

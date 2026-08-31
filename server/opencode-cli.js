@@ -538,6 +538,19 @@ function disposeKiloSessions() {
   disposeProviderSessions('kilo');
 }
 
+/**
+ * Upstream providers retire hosted models and answer with HTTP 410 / "model has
+ * reached its lifecycle end". ACP forwards that verbatim, where it reads as a
+ * generic internal error — name the retired model instead so the caller knows
+ * to pick another one. Returns null for every other failure, which must keep
+ * its original message.
+ */
+function retiredModelMessage(model, error, label = 'OpenCode') {
+  const detail = error?.message || String(error ?? '');
+  if (!/\b410\b|lifecycle end|\bGone\b/i.test(detail)) return null;
+  return `${label} model "${model}" was retired by the upstream provider (HTTP 410 — lifecycle end). Pick a current model from the catalog. Upstream detail: ${detail}`;
+}
+
 /** Apply a session config option, optionally treating rejection as fatal. */
 async function setConfigOption(handle, configId, value, { required = false } = {}) {
   try {
@@ -567,8 +580,11 @@ async function setConfigOption(handle, configId, value, { required = false } = {
     return true;
   } catch (error) {
     if (required) {
+      const retired = configId === 'model'
+        ? retiredModelMessage(value, error, handle.label || 'ACP')
+        : null;
       throw new Error(
-        `${handle.label || 'ACP'} rejected required ${configId}=${value}: ${error?.message || error}`,
+        retired ?? `${handle.label || 'ACP'} rejected required ${configId}=${value}: ${error?.message || error}`,
         { cause: error },
       );
     }
@@ -999,9 +1015,11 @@ async function spawnAcpProvider(runtime, command, options = {}, ws) {
     }
 
     const installed = await providerAuthService.isProviderInstalled(runtime.provider);
+    // A retired model can also fail mid-prompt (ACP accepts the id, the upstream
+    // call 410s), so the same rewrite applies to the turn's fatal error.
     const errorContent = !installed
       ? `${runtime.provider === 'kilo' ? 'Kilo Code' : runtime.provider === 'cline' ? 'Cline' : 'OpenCode'} CLI is not installed. Install it from ${runtime.installUrl}`
-      : error.message;
+      : (resolvedModel ? retiredModelMessage(resolvedModel, error, handle?.label || 'OpenCode') : null) ?? error.message;
 
     ws.send(createNormalizedMessage({ kind: 'error', content: errorContent, sessionId: finalSessionId, provider: runtime.provider }));
     ws.send(createCompleteMessage({ provider: runtime.provider, sessionId: finalSessionId, exitCode: 1 }));

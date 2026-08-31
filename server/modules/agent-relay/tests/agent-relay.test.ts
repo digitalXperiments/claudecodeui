@@ -4,7 +4,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { agentRelayDb } from '@/modules/agent-relay/agent-relay.repository.js';
-import { agentRelayService, allowedWorkerModelsFor, configureAgentRelayRuntimes, providerHonorsRelayMcpGrants, providerSupportsReadOnlyRelay, relayPermissionMode, resolveRelayModelIdentity, resolveRelayWorkerModel, sanitizeWorkerMcpServers } from '@/modules/agent-relay/index.js';
+import { agentRelayService, allowedWorkerModelsFor, configureAgentRelayRuntimes, providerHonorsRelayMcpGrants, providerSupportsReadOnlyRelay, relayPermissionMode, resolveCatalogModelId, resolveRelayModelIdentity, resolveRelayWorkerModel, sanitizeWorkerMcpServers } from '@/modules/agent-relay/index.js';
 import { appConfigDb, closeConnection, getConnection, initializeDatabase, projectsDb, sessionsDb } from '@/modules/database/index.js';
 import { providerModelsService, sessionsService } from '@/modules/providers/index.js';
 import { runService } from '@/modules/runs/index.js';
@@ -448,6 +448,80 @@ test('Relay model identity preserves defaults, aliases, and provider-qualified O
   assert.equal(opencode.model, openCodeId);
   assert.equal(opencode.requestedModel, openCodeId);
   assert.equal(opencode.modelLabel, 'OpenRouter · GLM 5.2');
+});
+
+const NVIDIA_CATALOG = {
+  DEFAULT: 'anthropic/claude-sonnet-4-5',
+  OPTIONS: [
+    { value: 'anthropic/claude-sonnet-4-5', label: 'Anthropic · Sonnet 4.5' },
+    { value: 'nvidia/deepseek-ai/deepseek-v4-flash', label: 'NVIDIA · DeepSeek V4 Flash' },
+    { value: 'nvidia/qwen/qwen4-coder', label: 'NVIDIA · Qwen4 Coder' },
+  ],
+};
+
+test('resolveCatalogModelId repairs abbreviated NVIDIA ids without stripping the vendor namespace', () => {
+  assert.deepEqual(
+    resolveCatalogModelId('opencode', 'nvidia/deepseek-ai/deepseek-v4-flash', NVIDIA_CATALOG),
+    { model: 'nvidia/deepseek-ai/deepseek-v4-flash', repaired: false },
+  );
+  // Dropped middle vendor segment — the reported dispatch failure.
+  assert.deepEqual(
+    resolveCatalogModelId('opencode', 'nvidia/deepseek-v4-flash', NVIDIA_CATALOG),
+    { model: 'nvidia/deepseek-ai/deepseek-v4-flash', repaired: true },
+  );
+  // Bare model name and vendor/model tail both widen to the full catalog id.
+  assert.equal(resolveCatalogModelId('opencode', 'deepseek-v4-flash', NVIDIA_CATALOG).model, 'nvidia/deepseek-ai/deepseek-v4-flash');
+  assert.equal(resolveCatalogModelId('opencode', 'deepseek-ai/deepseek-v4-flash', NVIDIA_CATALOG).model, 'nvidia/deepseek-ai/deepseek-v4-flash');
+  // Two vendors publishing the same model name must not be guessed at.
+  assert.throws(
+    () => resolveCatalogModelId('opencode', 'nvidia/deepseek-v4-flash', {
+      DEFAULT: '',
+      OPTIONS: [
+        { value: 'nvidia/deepseek-ai/deepseek-v4-flash', label: 'a' },
+        { value: 'nvidia/mirror/deepseek-v4-flash', label: 'b' },
+      ],
+    }),
+    /is ambiguous in the opencode catalog/,
+  );
+  // Providers without a usable catalog keep the legacy pass-through.
+  assert.deepEqual(
+    resolveCatalogModelId('opencode', 'nvidia/deepseek-v4-flash', { DEFAULT: '', OPTIONS: [] }),
+    { model: 'nvidia/deepseek-v4-flash', repaired: false },
+  );
+});
+
+test('Unknown relay models fail with a 400 and catalog suggestions even when unrestricted', () => {
+  assert.throws(
+    () => resolveCatalogModelId('opencode', 'nvidia/deepseek-v9-turbo', NVIDIA_CATALOG),
+    (error: unknown) => {
+      const failure = error as { code?: string; statusCode?: number; message?: string };
+      assert.equal(failure.code, 'RELAY_MODEL_NOT_IN_CATALOG');
+      assert.equal(failure.statusCode, 400);
+      assert.match(failure.message ?? '', /not in the opencode model catalog/);
+      return true;
+    },
+  );
+
+  assert.throws(
+    () => resolveRelayWorkerModel({ allowedWorkerModels: {} }, 'opencode', 'nvidia/deepseek-v9-turbo', null, NVIDIA_CATALOG),
+    /RELAY_MODEL_NOT_IN_CATALOG|not in the opencode model catalog/,
+  );
+
+  const repaired = resolveRelayModelIdentity(
+    { allowedWorkerModels: {} },
+    'opencode',
+    'nvidia/deepseek-v4-flash',
+    NVIDIA_CATALOG,
+  );
+  assert.equal(repaired.model, 'nvidia/deepseek-ai/deepseek-v4-flash');
+  assert.equal(repaired.requestedModel, 'nvidia/deepseek-v4-flash');
+  assert.equal(repaired.catalogResolvedModel, 'nvidia/deepseek-ai/deepseek-v4-flash');
+  assert.equal(repaired.modelLabel, 'NVIDIA · DeepSeek V4 Flash');
+
+  assert.throws(
+    () => resolveRelayModelIdentity({ allowedWorkerModels: {} }, 'opencode', 'made-up-model', NVIDIA_CATALOG),
+    /not in the opencode model catalog/,
+  );
 });
 
 test('Agent Relay capabilities and dispatch honor the worker model allowlist', async () => {
