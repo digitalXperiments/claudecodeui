@@ -1,0 +1,464 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>CloudCLI Lite</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; height: 100%; background: #111; color: #eee; font-family: Helvetica, Arial, sans-serif; }
+  body { display: -webkit-box; display: -webkit-flex; display: flex; -webkit-box-orient: vertical; -webkit-flex-direction: column; flex-direction: column; }
+  .screen { display: none; padding: 12px; }
+  .screen.active { display: block; }
+  h1 { font-size: 18px; margin: 0 0 12px 0; color: #fff; }
+  label { display: block; margin: 10px 0 4px 0; font-size: 14px; color: #ccc; }
+  input[type="text"], input[type="password"], select, textarea {
+    width: 100%;
+    padding: 12px;
+    font-size: 16px;
+    background: #222;
+    color: #fff;
+    border: 1px solid #444;
+    border-radius: 6px;
+  }
+  button {
+    display: block;
+    width: 100%;
+    padding: 14px;
+    font-size: 16px;
+    margin-top: 12px;
+    background: #2a6df4;
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+  }
+  button.secondary { background: #333; }
+  button.small { width: auto; display: inline-block; padding: 8px 14px; font-size: 14px; margin-top: 0; margin-right: 8px; }
+  .row { display: -webkit-box; display: -webkit-flex; display: flex; -webkit-box-pack: justify; -webkit-justify-content: space-between; justify-content: space-between; -webkit-box-align: center; -webkit-align-items: center; align-items: center; padding: 12px; border-bottom: 1px solid #333; }
+  .row .meta { font-size: 12px; color: #999; }
+  .topbar { display: -webkit-box; display: -webkit-flex; display: flex; -webkit-box-pack: justify; -webkit-justify-content: space-between; justify-content: space-between; -webkit-box-align: center; -webkit-align-items: center; align-items: center; padding: 10px 12px; background: #1a1a1a; border-bottom: 1px solid #333; }
+  .topbar .title { font-size: 16px; font-weight: bold; color: #fff; }
+  .topbar button { width: auto; padding: 8px 12px; margin-top: 0; font-size: 13px; }
+  #err { color: #ff6b6b; font-size: 13px; margin-top: 8px; min-height: 16px; }
+  #chatList { padding: 10px; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+  .msg { margin-bottom: 10px; padding: 10px; border-radius: 8px; max-width: 90%; word-wrap: break-word; }
+  .msg.user { background: #2a6df4; color: #fff; margin-left: auto; text-align: right; }
+  .msg.assistant { background: #2a2a2a; color: #eee; }
+  .msg.other { background: #222; color: #999; font-size: 12px; }
+  .chatWrap { display: -webkit-box; display: -webkit-flex; display: flex; -webkit-box-orient: vertical; -webkit-flex-direction: column; flex-direction: column; height: 100%; }
+  .chatInputBar { display: -webkit-box; display: -webkit-flex; display: flex; padding: 8px; border-top: 1px solid #333; background: #1a1a1a; }
+  .chatInputBar textarea { -webkit-box-flex: 1; -webkit-flex: 1; flex: 1; resize: none; height: 44px; }
+  .chatInputBar button { width: auto; margin-top: 0; margin-left: 8px; padding: 0 16px; }
+  .list { border-top: 1px solid #333; }
+</style>
+</head>
+<body>
+
+<div id="screenLogin" class="screen active">
+  <h1>CloudCLI Lite</h1>
+  <label>Username</label>
+  <input type="text" id="loginUser" autocapitalize="off" autocorrect="off">
+  <label>Password</label>
+  <input type="password" id="loginPass">
+  <div id="totpWrap" style="display:none;">
+    <label>TOTP Code</label>
+    <input type="text" id="loginTotp">
+  </div>
+  <button id="btnLogin">Log in</button>
+  <div id="err"></div>
+</div>
+
+<div id="screenProjects" class="screen">
+  <div class="topbar">
+    <div class="title">Projects</div>
+    <button class="secondary" id="btnLogoutProjects">Logout</button>
+  </div>
+  <div id="projectList" class="list"></div>
+</div>
+
+<div id="screenSessions" class="screen">
+  <div class="topbar">
+    <div class="title" id="sessionsTitle">Sessions</div>
+    <button class="secondary" id="btnBackToProjects">Back</button>
+  </div>
+  <div style="padding:12px;">
+    <label>Provider</label>
+    <select id="providerSelect"></select>
+    <button id="btnNewSession">New session</button>
+  </div>
+  <div id="sessionList" class="list"></div>
+</div>
+
+<div id="screenChat" class="screen">
+  <div class="chatWrap">
+    <div class="topbar">
+      <div class="title" id="chatTitle">Chat</div>
+      <button class="secondary" id="btnBackToSessions">Back</button>
+    </div>
+    <div id="chatList" style="-webkit-box-flex:1;-webkit-flex:1;flex:1;"></div>
+    <div class="chatInputBar">
+      <textarea id="chatInput" placeholder="Message"></textarea>
+      <button id="btnSend">Send</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  var TOKEN_KEY = 'cloudcli_mweb_token';
+  var state = {
+    token: null,
+    projects: [],
+    currentProjectId: null,
+    sessions: [],
+    providers: [],
+    currentSessionId: null,
+    ws: null
+  };
+
+  function $(id) { return document.getElementById(id); }
+
+  function showScreen(id) {
+    var screens = document.getElementsByClassName('screen');
+    for (var i = 0; i < screens.length; i++) {
+      screens[i].className = 'screen';
+    }
+    $(id).className = 'screen active';
+  }
+
+  function setErr(msg) {
+    $('err').innerHTML = msg || '';
+  }
+
+  function xhr(method, url, body, headers, onSuccess, onError) {
+    var req = new XMLHttpRequest();
+    req.open(method, url, true);
+    req.setRequestHeader('Content-Type', 'application/json');
+    if (headers) {
+      for (var k in headers) {
+        if (headers.hasOwnProperty(k)) {
+          req.setRequestHeader(k, headers[k]);
+        }
+      }
+    }
+    req.onreadystatechange = function () {
+      if (req.readyState === 4) {
+        var data = null;
+        try {
+          data = req.responseText ? JSON.parse(req.responseText) : null;
+        } catch (e) {
+          data = null;
+        }
+        if (req.status >= 200 && req.status < 300) {
+          if (onSuccess) { onSuccess(data); }
+        } else {
+          if (onError) { onError(data, req.status); }
+        }
+      }
+    };
+    req.send(body ? JSON.stringify(body) : null);
+  }
+
+  function authHeaders() {
+    return { 'Authorization': 'Bearer ' + state.token };
+  }
+
+  function unwrap(data) {
+    if (data && typeof data === 'object' && data.hasOwnProperty('data')) {
+      return data.data;
+    }
+    return data;
+  }
+
+  // ---- Login ----
+
+  function doLogin() {
+    setErr('');
+    var username = $('loginUser').value;
+    var password = $('loginPass').value;
+    var body = { username: username, password: password };
+    if ($('totpWrap').style.display !== 'none') {
+      body.totpCode = $('loginTotp').value;
+    }
+    xhr('POST', '/api/auth/login', body, null, function (data) {
+      if (data && data.requiresTotp) {
+        $('totpWrap').style.display = 'block';
+        setErr('Enter your TOTP code');
+        return;
+      }
+      if (data && data.success && data.token) {
+        state.token = data.token;
+        try {
+          window.localStorage.setItem(TOKEN_KEY, data.token);
+        } catch (e) {}
+        loadProjects();
+      } else {
+        setErr((data && data.error) || 'Login failed');
+      }
+    }, function (data) {
+      setErr((data && data.error) || 'Login failed');
+    });
+  }
+
+  // ---- Projects ----
+
+  function loadProjects() {
+    xhr('GET', '/api/projects', null, authHeaders(), function (data) {
+      var list = data;
+      if (!list || !list.length) { list = []; }
+      state.projects = list;
+      renderProjects();
+      showScreen('screenProjects');
+    }, function (data) {
+      setErr((data && data.error) || 'Failed to load projects');
+    });
+  }
+
+  function renderProjects() {
+    var el = $('projectList');
+    el.innerHTML = '';
+    for (var i = 0; i < state.projects.length; i++) {
+      (function (p) {
+        var row = document.createElement('div');
+        row.className = 'row';
+        var name = p.displayName || p.projectId;
+        var pathStr = p.fullPath || p.path || '';
+        row.innerHTML = '<div><div>' + escapeHtml(name) + '</div><div class="meta">' + escapeHtml(pathStr) + '</div></div>';
+        row.onclick = function () {
+          state.currentProjectId = p.projectId;
+          $('sessionsTitle').innerHTML = escapeHtml(name);
+          loadProviders();
+          loadSessions();
+        };
+        el.appendChild(row);
+      })(state.projects[i]);
+    }
+  }
+
+  function escapeHtml(s) {
+    if (!s) { return ''; }
+    s = String(s);
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  // ---- Providers ----
+
+  function loadProviders() {
+    xhr('GET', '/api/providers/capabilities', null, authHeaders(), function (data) {
+      var payload = unwrap(data);
+      var providers = (payload && payload.providers) || [];
+      state.providers = providers;
+      var sel = $('providerSelect');
+      sel.innerHTML = '';
+      for (var i = 0; i < providers.length; i++) {
+        var opt = document.createElement('option');
+        opt.value = providers[i].provider;
+        opt.innerHTML = escapeHtml(providers[i].provider);
+        sel.appendChild(opt);
+      }
+    }, function () {});
+  }
+
+  // ---- Sessions ----
+
+  function loadSessions() {
+    xhr('GET', '/api/projects/' + encodeURIComponent(state.currentProjectId) + '/sessions', null, authHeaders(), function (data) {
+      var list = data;
+      if (!list || !list.length) { list = []; }
+      state.sessions = list;
+      renderSessions();
+      showScreen('screenSessions');
+    }, function (data) {
+      setErr((data && data.error) || 'Failed to load sessions');
+    });
+  }
+
+  function renderSessions() {
+    var el = $('sessionList');
+    el.innerHTML = '';
+    for (var i = 0; i < state.sessions.length; i++) {
+      (function (s) {
+        var row = document.createElement('div');
+        row.className = 'row';
+        var sid = s.sessionId || s.id;
+        var title = s.title || s.name || sid;
+        row.innerHTML = '<div><div>' + escapeHtml(title) + '</div><div class="meta">' + escapeHtml(sid) + '</div></div>';
+        row.onclick = function () {
+          openChat(sid);
+        };
+        el.appendChild(row);
+      })(state.sessions[i]);
+    }
+  }
+
+  function newSession() {
+    var provider = $('providerSelect').value;
+    if (!provider) {
+      setErr('No provider available');
+      return;
+    }
+    xhr('POST', '/api/providers/sessions', { provider: provider, projectId: state.currentProjectId }, authHeaders(), function (data) {
+      var payload = unwrap(data);
+      var sessionId = (payload && payload.sessionId) || (data && data.sessionId);
+      if (sessionId) {
+        openChat(sessionId);
+      } else {
+        setErr('Failed to create session');
+      }
+    }, function (data) {
+      setErr((data && data.error) || 'Failed to create session');
+    });
+  }
+
+  // ---- Chat ----
+
+  function openChat(sessionId) {
+    state.currentSessionId = sessionId;
+    $('chatTitle').innerHTML = escapeHtml(sessionId);
+    $('chatList').innerHTML = '';
+    showScreen('screenChat');
+    loadMessages(sessionId);
+    connectWs();
+  }
+
+  function loadMessages(sessionId) {
+    xhr('GET', '/api/providers/sessions/' + encodeURIComponent(sessionId) + '/messages', null, authHeaders(), function (data) {
+      var payload = unwrap(data);
+      var messages = (payload && payload.messages) || [];
+      for (var i = 0; i < messages.length; i++) {
+        renderMessage(messages[i]);
+      }
+      scrollChatToBottom();
+    }, function () {});
+  }
+
+  function renderMessage(m) {
+    var text = m.displayText || m.content || '';
+    if (!text) { return; }
+    var role = m.role || 'other';
+    var div = document.createElement('div');
+    var cls = 'msg other';
+    if (role === 'user') { cls = 'msg user'; }
+    else if (role === 'assistant') { cls = 'msg assistant'; }
+    div.className = cls;
+    div.innerHTML = escapeHtml(text);
+    $('chatList').appendChild(div);
+  }
+
+  function scrollChatToBottom() {
+    var el = $('chatList');
+    el.scrollTop = el.scrollHeight;
+  }
+
+  function wsUrl() {
+    var proto = (window.location.protocol === 'https:') ? 'wss:' : 'ws:';
+    return proto + '//' + window.location.host + '/ws?token=' + encodeURIComponent(state.token);
+  }
+
+  function connectWs() {
+    if (state.ws) {
+      try { state.ws.close(); } catch (e) {}
+      state.ws = null;
+    }
+    var ws = new WebSocket(wsUrl());
+    state.ws = ws;
+    ws.onopen = function () {
+      send({ type: 'chat.subscribe', sessions: [{ sessionId: state.currentSessionId }] });
+    };
+    ws.onmessage = function (evt) {
+      var data = null;
+      try {
+        data = JSON.parse(evt.data);
+      } catch (e) {
+        return;
+      }
+      handleWsFrame(data);
+    };
+    ws.onclose = function () {};
+    ws.onerror = function () {};
+
+    function send(obj) {
+      if (ws.readyState === 1) {
+        ws.send(JSON.stringify(obj));
+      }
+    }
+    state.wsSend = send;
+  }
+
+  function handleWsFrame(data) {
+    if (!data || typeof data !== 'object') { return; }
+    var kind = data.kind || data.type;
+
+    if (kind === 'permission' || kind === 'chat.permission-request' || data.requestId) {
+      if (data.requestId) {
+        state.wsSend({ type: 'chat.permission-response', requestId: data.requestId, allow: false });
+      }
+    }
+
+    var text = data.displayText || data.content;
+    if (text) {
+      renderMessage({ role: data.role, displayText: text });
+      scrollChatToBottom();
+    }
+  }
+
+  function sendChat() {
+    var text = $('chatInput').value;
+    if (!text) { return; }
+    if (!state.wsSend) { return; }
+    state.wsSend({ type: 'chat.send', sessionId: state.currentSessionId, content: text });
+    renderMessage({ role: 'user', displayText: text });
+    scrollChatToBottom();
+    $('chatInput').value = '';
+  }
+
+  // ---- Logout ----
+
+  function logout() {
+    state.token = null;
+    state.currentProjectId = null;
+    state.currentSessionId = null;
+    if (state.ws) {
+      try { state.ws.close(); } catch (e) {}
+      state.ws = null;
+    }
+    try {
+      window.localStorage.removeItem(TOKEN_KEY);
+    } catch (e) {}
+    showScreen('screenLogin');
+  }
+
+  // ---- Wire up ----
+
+  $('btnLogin').onclick = doLogin;
+  $('btnLogoutProjects').onclick = logout;
+  $('btnBackToProjects').onclick = function () { showScreen('screenProjects'); };
+  $('btnBackToSessions').onclick = function () {
+    if (state.ws) {
+      try { state.ws.close(); } catch (e) {}
+      state.ws = null;
+    }
+    showScreen('screenSessions');
+  };
+  $('btnNewSession').onclick = newSession;
+  $('btnSend').onclick = sendChat;
+
+  // Try restoring existing token
+  (function init() {
+    var saved = null;
+    try {
+      saved = window.localStorage.getItem(TOKEN_KEY);
+    } catch (e) {}
+    if (saved) {
+      state.token = saved;
+      loadProjects();
+    }
+  })();
+
+})();
+</script>
+
+</body>
+</html>

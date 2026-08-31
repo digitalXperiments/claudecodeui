@@ -1687,6 +1687,11 @@ app.get('/api/projects/:projectId/sessions/:sessionId/token-usage', authenticate
     }
 });
 
+// Lightweight ES5 UI for old iOS Safari
+app.get(['/mweb', '/mweb/'], (req, res) => {
+    res.sendFile(path.join(APP_ROOT, 'public', 'mweb', 'index.html'));
+});
+
 // Serve React app for all other routes (excluding static files)
 app.get('*', (req, res) => {
     // Skip requests for static assets (files with extensions)
