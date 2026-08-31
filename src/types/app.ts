@@ -13,7 +13,7 @@ export type ProviderModelOption = {
   /** Published provider capacity; kept separate from the locally active runtime budget. */
   officialContextWindow?: number;
   /** Largest output the provider will generate in one response, when advertised. */
-  maxOutputTokens?: number;
+  runtimeMaxOutputTokens?: number;
   /** Whether the provider advertises Codex Fast mode for this model. */
   supportsFastMode?: boolean;
   effort?: {

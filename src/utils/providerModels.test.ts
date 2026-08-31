@@ -62,11 +62,16 @@ test('isValidModelOption rejects blank, decorative, and header rows leaked from 
   assert.equal(isValidModelOption({ value: '   ' }), false);
   assert.equal(isValidModelOption({ value: '───────────' }), false);
   assert.equal(isValidModelOption({ value: '│' }), false);
+  assert.equal(isValidModelOption({ value: '┌────────┐' }), false);
+  assert.equal(isValidModelOption({ value: '╔════════╗' }), false);
+  assert.equal(isValidModelOption({ value: '┏━━━━━━━━┓' }), false);
+  assert.equal(isValidModelOption({ value: '├──┬──┤' }), false);
   assert.equal(isValidModelOption({ value: '----' }), false);
   assert.equal(isValidModelOption({ value: 'provider' }), false);
   assert.equal(isValidModelOption({ value: 'Model' }), false);
   assert.equal(isValidModelOption(null), false);
   assert.equal(isValidModelOption(undefined), false);
+  assert.equal(isValidModelOption({ value: 'vendor/model┌preview┐' }), true);
 });
 
 test('filterValidModelOptions drops invalid rows and keeps real models (including duplicate ids across providers)', () => {
@@ -74,6 +79,7 @@ test('filterValidModelOptions drops invalid rows and keeps real models (includin
     { value: 'openai-codex/gpt-5.6-luna', label: 'GPT-5.6 Luna', description: 'openai-codex' },
     { value: '' },
     { value: '───────────' },
+    { value: '╔════════╗' },
     { value: 'provider' },
     { value: 'openrouter/gpt-5.6-luna', label: 'GPT-5.6 Luna', description: 'openrouter' },
   ];

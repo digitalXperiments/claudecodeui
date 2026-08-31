@@ -30,7 +30,7 @@ import {
   toProviderEffortOptions,
 } from '../constants/providerEffort';
 
-const FALLBACK_DEFAULT_MODEL: Record<LLMProvider, string> = {
+export const FALLBACK_DEFAULT_MODEL: Record<LLMProvider, string> = {
   claude: 'default',
   cursor: 'gpt-5.3-codex',
   codex: 'gpt-5.4',
@@ -42,9 +42,8 @@ const FALLBACK_DEFAULT_MODEL: Record<LLMProvider, string> = {
   qwencode: 'qwen3-coder-plus',
   pi: 'anthropic/claude-sonnet-4-20250514',
   // Mirrors OMP_FALLBACK_MODELS.DEFAULT in omp-models.provider.ts — Oh My Pi
-  // has never actually served an Anthropic-branded id as its default, so a
-  // stale Claude id here just renders a model the picker can't select.
-  omp: 'openai-codex/gpt-5.6-luna',
+  // must stay aligned so the initial picker state remains selectable.
+  omp: 'openai-codex/gpt-5.4',
 };
 
 const PROVIDERS: LLMProvider[] = ['claude', 'cursor', 'codex', 'opencode', 'kilo', 'cline', 'grok', 'kimi', 'qwencode', 'pi', 'omp'];

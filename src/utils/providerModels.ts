@@ -7,7 +7,7 @@ import type { ProviderModelOption, ProviderModelsDefinition } from '../types/app
  * against a stale or buggy cache even though the source parser is also
  * expected to filter these.
  */
-const DECORATIVE_VALUE_PATTERN = /^[\s\-_=─━│┃|.·•]+$/;
+const DECORATIVE_VALUE_PATTERN = /^[\s\-_=|.·•\u2500-\u257f]+$/u;
 const HEADER_WORDS = new Set(['provider', 'model', 'context', 'thinking', 'images', 'max-out']);
 
 /** Whether a catalog entry is a real, selectable model rather than a blank/header/separator row. */

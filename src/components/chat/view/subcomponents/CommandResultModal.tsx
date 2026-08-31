@@ -91,7 +91,7 @@ type ModelOption = {
   runtimeContextWindow?: number;
   runtimeMaxContextWindow?: number;
   officialContextWindow?: number;
-  maxOutputTokens?: number;
+  runtimeMaxOutputTokens?: number;
 };
 
 const PROVIDER_LABELS: Record<string, string> = {
@@ -834,8 +834,8 @@ export function ModelsContent({
                         {typeof contextWindow === 'number' && contextWindow > 0 && (
                           <span className="text-[10px] text-muted-foreground">{formatContextSize(contextWindow)} context</span>
                         )}
-                        {typeof option.maxOutputTokens === 'number' && option.maxOutputTokens > 0 && (
-                          <span className="text-[10px] text-muted-foreground">· {formatContextSize(option.maxOutputTokens)} max output</span>
+                        {typeof option.runtimeMaxOutputTokens === 'number' && option.runtimeMaxOutputTokens > 0 && (
+                          <span className="text-[10px] text-muted-foreground">· {formatContextSize(option.runtimeMaxOutputTokens)} max output</span>
                         )}
                       </span>
                       {longDescription && (

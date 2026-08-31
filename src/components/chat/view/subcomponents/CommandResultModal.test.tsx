@@ -8,6 +8,7 @@ import type { ModelCommandData } from '../../hooks/useChatComposerState';
 import type { ProviderModelsDefinition } from '../../../../types/app';
 import type { ProviderAuthStatus, ProviderAuthStatusMap } from '../../../provider-auth/types';
 
+import { FALLBACK_DEFAULT_MODEL } from '../../hooks/useChatProviderState';
 import { ModelsContent } from './CommandResultModal';
 
 const noop = () => {};
@@ -54,6 +55,9 @@ test('ModelsContent filters out decorative and header rows leaked from a malform
         OPTIONS: [
           { value: 'openai-codex/gpt-5.6-luna', label: 'GPT-5.6 Luna', description: 'openai-codex' },
           { value: '───────────', label: '───────────' },
+          { value: '┌────────┐', label: '┌────────┐' },
+          { value: '╔════════╗', label: '╔════════╗' },
+          { value: '┏━━━━━━━━┓', label: '┏━━━━━━━━┓' },
           { value: 'provider', label: 'provider' },
           { value: '', label: '' },
         ],
@@ -64,8 +68,14 @@ test('ModelsContent filters out decorative and header rows leaked from a malform
 
   assert.ok(html.includes('gpt-5.6-luna') || html.includes('openai-codex/gpt-5.6-luna'));
   assert.ok(!html.includes('───'));
+  assert.ok(!html.includes('═══'));
+  assert.ok(!html.includes('━━━'));
   // The header word alone must never render as a selectable model card.
   assert.ok(!/>provider</.test(html));
+});
+
+test('OMP frontend fallback matches the backend fallback default', () => {
+  assert.equal(FALLBACK_DEFAULT_MODEL.omp, 'openai-codex/gpt-5.4');
 });
 
 test('ModelsContent renders duplicate model ids from different sub-providers distinctly', () => {
@@ -97,7 +107,7 @@ test('ModelsContent renders context and max-output metadata when the catalog sup
             label: 'GPT-5.6 Luna',
             description: 'openai-codex',
             runtimeContextWindow: 200000,
-            maxOutputTokens: 8000,
+            runtimeMaxOutputTokens: 8000,
           },
         ],
         DEFAULT: 'openai-codex/gpt-5.6-luna',
