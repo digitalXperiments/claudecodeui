@@ -64,7 +64,10 @@ repository work, or they explicitly ordered you not to delegate this turn.
    anything risky/unknown denied. The worker reports the blocker instead of
    spending your tokens on `relay_approve`. Use `manual` only when you
    *want* to gate each isolated-worktree mutation yourself. A worker never
-   grants itself authority.
+   grants itself authority. Grok scouts must use native `read_file` / `grep`
+   (not MCP `use_tool`) for repo inspection. Relay unwraps MCP `use_tool` and
+   classifies the inner tool; `search_tool` is allowed in read-only, writes
+   and unknown inner tools are denied.
 6. **Write a brief, not a wish.** Every task needs: the scope boundary, the
    concrete paths or symbols to start from, the constraints, and the exact
    evidence you want back. Name files. Workers cannot see your context.

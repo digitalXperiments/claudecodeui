@@ -9,6 +9,7 @@ import {
   type AgentRelayScope,
   type AgentRelaySettingsPatch,
   type AgentRelayTaskInput,
+  type AgentRelayWorkerProfile,
 } from '@/modules/agent-relay/agent-relay.types.js';
 import type { LLMProvider } from '@/shared/types.js';
 import { AppError, asyncHandler, createApiSuccessResponse } from '@/shared/utils.js';
@@ -76,6 +77,39 @@ function allowedWorkerModels(value: unknown): Partial<Record<LLMProvider, string
     const parsed = provider(key);
     if (!parsed) continue;
     out[parsed] = [...new Set(stringList(models) ?? [])];
+  }
+  return out;
+}
+
+function workerProfiles(value: unknown): Partial<Record<LLMProvider, AgentRelayWorkerProfile>> | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new AppError('workerProfiles must be an object of provider to profile.', {
+      code: 'RELAY_WORKER_PROFILES_INVALID',
+      statusCode: 400,
+    });
+  }
+  const out: Partial<Record<LLMProvider, AgentRelayWorkerProfile>> = {};
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+    const parsed = provider(key);
+    if (!parsed) continue;
+    if (raw === null) continue;
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      throw new AppError(`workerProfiles.${parsed} must be an object.`, {
+        code: 'RELAY_WORKER_PROFILES_INVALID',
+        statusCode: 400,
+      });
+    }
+    const record = raw as Record<string, unknown>;
+    const profile: AgentRelayWorkerProfile = {};
+    if (record.mcpServers !== undefined) profile.mcpServers = stringList(record.mcpServers) ?? [];
+    if (record.defaultMode === null) profile.defaultMode = null;
+    else if (record.defaultMode !== undefined) profile.defaultMode = mode(record.defaultMode) ?? null;
+    if (record.defaultApprovalPolicy === null) profile.defaultApprovalPolicy = null;
+    else if (record.defaultApprovalPolicy !== undefined) {
+      profile.defaultApprovalPolicy = approvalPolicy(record.defaultApprovalPolicy) ?? null;
+    }
+    out[parsed] = profile;
   }
   return out;
 }
@@ -158,6 +192,7 @@ agentRelayRoutes.put('/settings', asyncHandler(async (req, res) => {
     leadProviders: providers(body.leadProviders),
     workerProviders: providers(body.workerProviders),
     allowedWorkerModels: allowedWorkerModels(body.allowedWorkerModels),
+    workerProfiles: workerProfiles(body.workerProfiles),
     maxConcurrency: optionalNumber(body.maxConcurrency),
     defaultTimeoutMs: optionalNumber(body.defaultTimeoutMs),
     defaultMode: mode(body.defaultMode),

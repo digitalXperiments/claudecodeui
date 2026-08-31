@@ -398,6 +398,55 @@ test('classification: real Grok explorer command shapes remain read-only', async
   }
 });
 
+test('explorer seats unwrap MCP use_tool / search_tool instead of treating the wrapper as unknown', () => {
+  const ws = '/tmp/workspace';
+  const allowGet = classifyPermissionRequest({
+    seatKind: 'explorer',
+    workspaceRoot: ws,
+    toolName: 'use_tool',
+    rawInput: { tool_name: 'obsidian_get_file' },
+  });
+  assert.equal(allowGet.tier, 'approve', allowGet.reason);
+
+  const allowSearchInner = classifyPermissionRequest({
+    seatKind: 'explorer',
+    workspaceRoot: ws,
+    toolName: 'use_tool',
+    rawInput: { arguments: { tool_name: 'obsidian_simple_search' } },
+  });
+  assert.equal(allowSearchInner.tier, 'approve', allowSearchInner.reason);
+
+  const denyPut = classifyPermissionRequest({
+    seatKind: 'explorer',
+    workspaceRoot: ws,
+    toolName: 'use_tool',
+    rawInput: { arguments: { name: 'obsidian_put_file' } },
+  });
+  assert.equal(denyPut.tier, 'deny', denyPut.reason);
+
+  const denyBare = classifyPermissionRequest({
+    seatKind: 'explorer',
+    workspaceRoot: ws,
+    toolName: 'use_tool',
+  });
+  assert.equal(denyBare.tier, 'deny', denyBare.reason);
+
+  const allowSearch = classifyPermissionRequest({
+    seatKind: 'explorer',
+    workspaceRoot: ws,
+    toolName: 'search_tool',
+  });
+  assert.equal(allowSearch.tier, 'approve', allowSearch.reason);
+
+  const writerRead = classifyPermissionRequest({
+    seatKind: 'implementer',
+    workspaceRoot: ws,
+    toolName: 'use_tool',
+    rawInput: { input: { tool_name: 'obsidian_get_file' } },
+  });
+  assert.equal(writerRead.tier, 'approve', writerRead.reason);
+});
+
 test('extractPermissionRequestDetails tolerates sparse and enriched payloads', () => {
   const sparse = extractPermissionRequestDetails({
     requestId: 'r1',

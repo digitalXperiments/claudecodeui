@@ -123,10 +123,68 @@ const READ_TOOL_KEYWORDS = ['read', 'grep', 'glob', 'search', 'list', 'ls', 'vie
 const WRITE_TOOL_KEYWORDS = ['write', 'edit', 'create', 'patch', 'replace', 'delete', 'remove', 'move', 'rename', 'mkdir', 'notebookedit'];
 const NETWORK_TOOL_KEYWORDS = ['webfetch', 'websearch', 'fetch', 'http', 'download', 'browser'];
 
+function normalizeToolKey(toolName: string | null): string {
+  return toolName?.toLowerCase().replace(/[^a-z0-9]/g, '') ?? '';
+}
+
 function toolNameLooksLike(toolName: string | null, keywords: string[]): boolean {
   if (!toolName) return false;
   const lowered = toolName.toLowerCase();
   return keywords.some((keyword) => lowered.includes(keyword));
+}
+
+function asRecord(value: unknown): AnyRecord | null {
+  return value && typeof value === 'object' && !Array.isArray(value) ? (value as AnyRecord) : null;
+}
+
+const MCP_WRAPPER_KEYS = new Set(['usetool', 'searchtool']);
+const INNER_MCP_READ_TOKENS = new Set(['get', 'query', 'find', 'info', 'stat']);
+const INNER_MCP_WRITE_TOKENS = new Set(['put', 'set', 'update', 'insert', 'upsert', 'post']);
+
+function isMcpWrapperTool(toolName: string | null): boolean {
+  return MCP_WRAPPER_KEYS.has(normalizeToolKey(toolName));
+}
+
+function pickStringField(obj: AnyRecord | null, keys: string[]): string | null {
+  if (!obj) return null;
+  for (const key of keys) {
+    const value = asString(obj[key]);
+    if (value) return value;
+  }
+  return null;
+}
+
+/**
+ * Grok MCP calls arrive as `use_tool` / `search_tool` with the catalog identity
+ * nested in arguments. Classify that inner tool, not the unclassifiable wrapper.
+ */
+function unwrapMcpInnerIdentity(rawInput: unknown): { toolName: string | null; command: string | null } {
+  const roots: AnyRecord[] = [];
+  const top = asRecord(rawInput);
+  if (top) {
+    roots.push(top);
+    for (const key of ['arguments', 'args', 'input', 'toolInput', 'params', 'parameters', 'tool_input']) {
+      const nested = asRecord(top[key]);
+      if (nested) roots.push(nested);
+    }
+  }
+  let toolName: string | null = null;
+  let command: string | null = null;
+  for (const obj of roots) {
+    if (!toolName) {
+      toolName = pickStringField(obj, ['tool_name', 'toolName', 'name', 'tool']);
+    }
+    if (!command) {
+      command = pickStringField(obj, ['command', 'cmd', 'script']);
+    }
+  }
+  return { toolName, command };
+}
+
+function innerMcpLooksLike(innerName: string, keywords: string[], extraTokens: Set<string>): boolean {
+  if (toolNameLooksLike(innerName, keywords)) return true;
+  const tokens = innerName.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  return tokens.some((token) => extraTokens.has(token) || keywords.includes(token));
 }
 
 const NAMED_PERMISSION_TOOLS = new Set([
@@ -858,12 +916,40 @@ export function classifyPermissionRequest(input: {
   const toolName = input.toolName ?? null;
   const cwd = input.cwd ?? null;
   const paths = (input.paths ?? []).filter(Boolean);
-  const normalizedToolName = toolName?.toLowerCase().replace(/[^a-z0-9]/g, '') ?? '';
+  const normalizedToolName = normalizeToolKey(toolName);
+  const mcpInner = isMcpWrapperTool(toolName) ? unwrapMcpInnerIdentity(input.rawInput) : null;
   const command = input.command
+    || mcpInner?.command
     || (toolNameLooksLikeCommandLine(toolName) ? toolName : null);
 
   let categorized: CategoryResult;
-  if (command) {
+  if (normalizedToolName === 'searchtool') {
+    categorized = { category: 'read', reason: 'MCP search_tool is discovery-only' };
+  } else if (normalizedToolName === 'usetool') {
+    const innerName = mcpInner?.toolName ?? null;
+    if (!innerName) {
+      categorized = { category: 'risky', reason: 'MCP use_tool with no inner tool identity' };
+    } else if (innerMcpLooksLike(innerName, NETWORK_TOOL_KEYWORDS, new Set())) {
+      categorized = { category: 'risky', reason: `MCP tool "${innerName}" reaches the network beyond localhost` };
+    } else if (innerMcpLooksLike(innerName, WRITE_TOOL_KEYWORDS, INNER_MCP_WRITE_TOKENS)) {
+      categorized = paths.length > 0
+        ? classifyPathSet(paths, input.workspaceRoot, cwd, `MCP tool "${innerName}"`)
+        : { category: 'risky', reason: `MCP tool "${innerName}" mutates files` };
+    } else if (innerMcpLooksLike(innerName, EXEC_TOOL_KEYWORDS, new Set())) {
+      categorized = command
+        ? classifyCommand(command, input.workspaceRoot, cwd)
+        : { category: 'risky', reason: `MCP tool "${innerName}" executes a command that could not be extracted` };
+    } else if (command) {
+      categorized = classifyCommand(command, input.workspaceRoot, cwd);
+    } else if (innerMcpLooksLike(innerName, READ_TOOL_KEYWORDS, INNER_MCP_READ_TOKENS)) {
+      const sensitive = paths.find((candidate) => isSensitivePath(candidate));
+      categorized = sensitive
+        ? { category: 'risky', reason: `MCP tool "${innerName}" reads a sensitive path: ${sensitive}` }
+        : { category: 'read', reason: `MCP tool "${innerName}" is read-only` };
+    } else {
+      categorized = { category: 'risky', reason: `unclassifiable MCP tool "${innerName}"` };
+    }
+  } else if (command) {
     categorized = classifyCommand(command, input.workspaceRoot, cwd);
   } else if (toolNameLooksLike(toolName, NETWORK_TOOL_KEYWORDS)) {
     const url = typeof input.rawInput === 'object' && input.rawInput !== null

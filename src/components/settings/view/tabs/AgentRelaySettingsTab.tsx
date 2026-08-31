@@ -13,7 +13,7 @@ import {
 } from 'lucide-react';
 
 import { agentRelayApi } from '../../../agent-relay/api/agentRelayApi';
-import type { AgentRelayRuntimeStatus, AgentRelaySettings } from '../../../agent-relay/types';
+import type { AgentRelayRuntimeStatus, AgentRelaySettings, AgentRelayWorkerProfile } from '../../../agent-relay/types';
 import type { LLMProvider } from '../../../../types/app';
 import { authenticatedFetch } from '../../../../utils/api';
 import { Button } from '../../../../shared/view/ui';
@@ -31,6 +31,7 @@ type WorkerModelCatalog = {
 const hydrateSettings = (next: AgentRelaySettings): AgentRelaySettings => ({
   ...next,
   allowedWorkerModels: next.allowedWorkerModels ?? {},
+  workerProfiles: next.workerProfiles ?? {},
 });
 
 const providerTone = (available: boolean) => available
@@ -48,6 +49,9 @@ export default function AgentRelaySettingsTab() {
   const [catalogs, setCatalogs] = useState<Partial<Record<LLMProvider, WorkerModelCatalog>>>({});
   const [catalogsLoading, setCatalogsLoading] = useState(false);
   const [modelSearch, setModelSearch] = useState<Partial<Record<LLMProvider, string>>>({});
+  const [mcpCatalogByProvider, setMcpCatalogByProvider] = useState<Partial<Record<LLMProvider, string[]>>>({});
+  const [mcpCatalogLoading, setMcpCatalogLoading] = useState(false);
+  const [honorsMcpGrants, setHonorsMcpGrants] = useState<Partial<Record<LLMProvider, boolean>>>({});
 
   const refresh = useCallback(async () => {
     const [nextSettings, nextStatus] = await Promise.all([
@@ -169,6 +173,84 @@ export default function AgentRelaySettingsTab() {
       cancelled = true;
     };
   }, [workerProviderKey]);
+
+  useEffect(() => {
+    const providers = workerProviderKey ? workerProviderKey.split(',') as LLMProvider[] : [];
+    if (providers.length === 0) {
+      setMcpCatalogByProvider({});
+      setHonorsMcpGrants({});
+      return;
+    }
+    let cancelled = false;
+    setMcpCatalogLoading(true);
+    void Promise.all([
+      authenticatedFetch('/api/agent-relay/capabilities').then(async (response) => {
+        const body = await response.json() as {
+          success?: boolean;
+          data?: { capabilities?: { catalogs?: Array<{ provider: LLMProvider; honorsMcpGrants?: boolean }> } };
+        };
+        const map: Partial<Record<LLMProvider, boolean>> = {};
+        for (const catalog of body.data?.capabilities?.catalogs ?? []) {
+          map[catalog.provider] = Boolean(catalog.honorsMcpGrants);
+        }
+        return map;
+      }).catch(() => ({}) as Partial<Record<LLMProvider, boolean>>),
+      Promise.all(providers.map(async (provider) => {
+        try {
+          const response = await authenticatedFetch(`/api/providers/${provider}/mcp/servers`);
+          const data = await response.json() as { data?: { servers?: unknown }; servers?: unknown };
+          const servers = data?.data?.servers ?? data?.servers ?? [];
+          const names = new Set<string>();
+          for (const entry of Array.isArray(servers) ? servers : []) {
+            const name = typeof entry === 'string' ? entry : (entry as { name?: unknown })?.name;
+            if (typeof name === 'string' && name.trim()) names.add(name.trim());
+          }
+          return { provider, names: [...names].sort((a, b) => a.localeCompare(b)) };
+        } catch {
+          return { provider, names: [] as string[] };
+        }
+      })),
+    ]).then(([grants, catalogs]) => {
+      if (cancelled) return;
+      setHonorsMcpGrants(grants);
+      const next: Partial<Record<LLMProvider, string[]>> = {};
+      for (const entry of catalogs) next[entry.provider] = entry.names;
+      setMcpCatalogByProvider(next);
+    }).finally(() => {
+      if (!cancelled) setMcpCatalogLoading(false);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [workerProviderKey]);
+
+  const patchWorkerProfile = (provider: LLMProvider, patch: Partial<AgentRelayWorkerProfile> | null) => {
+    setSettings((current) => {
+      if (!current) return current;
+      const nextProfiles = { ...(current.workerProfiles ?? {}) };
+      if (patch === null) {
+        delete nextProfiles[provider];
+        return { ...current, workerProfiles: nextProfiles };
+      }
+      const existing = nextProfiles[provider] ?? {};
+      const merged: AgentRelayWorkerProfile = { ...existing, ...patch };
+      nextProfiles[provider] = merged;
+      return { ...current, workerProfiles: nextProfiles };
+    });
+  };
+
+  const toggleProfileMcp = (provider: LLMProvider, name: string) => {
+    setSettings((current) => {
+      if (!current) return current;
+      const profiles = { ...(current.workerProfiles ?? {}) };
+      const existing = profiles[provider] ?? {};
+      const selected = new Set(existing.mcpServers ?? []);
+      if (selected.has(name)) selected.delete(name);
+      else selected.add(name);
+      profiles[provider] = { ...existing, mcpServers: [...selected] };
+      return { ...current, workerProfiles: profiles };
+    });
+  };
 
   const orderedSelection = (provider: LLMProvider, selected: Set<string>): string[] => {
     const catalog = catalogs[provider];
@@ -470,6 +552,106 @@ export default function AgentRelaySettingsTab() {
                       </div>
                     </div>
                   ) : null}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-border bg-card p-4">
+          <h4 className="text-sm font-semibold text-foreground">Worker profiles</h4>
+          <p className="mt-1 text-xs leading-5 text-muted-foreground">
+            Per-worker MCP grants and optional mode/approval overrides. When a task omits those fields, Relay uses the profile, then the global defaults.
+          </p>
+          <div className="mt-4 space-y-3">
+            {settings.workerProviders.length === 0 ? (
+              <p className="text-xs text-muted-foreground">Select at least one worker agent above to configure profiles.</p>
+            ) : settings.workerProviders.map((provider) => {
+              const profile = settings.workerProfiles?.[provider] ?? {};
+              const honors = honorsMcpGrants[provider] !== false;
+              const mcpNames = mcpCatalogByProvider[provider] ?? [];
+              const selectedMcp = new Set(profile.mcpServers ?? []);
+              return (
+                <div key={provider} className="rounded-lg border border-border/70 p-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <div className="text-sm font-medium text-foreground">{AGENT_NAMES[provider]}</div>
+                    {honorsMcpGrants[provider] === false ? (
+                      <span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[11px] text-amber-800 dark:text-amber-200">
+                        This CLI ignores per-task MCP grants (uses its native MCP). Profile MCP list is stored but not injected.
+                      </span>
+                    ) : null}
+                  </div>
+                  <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                    <label className="space-y-1.5 text-xs font-medium text-muted-foreground">
+                      Default mode
+                      <select
+                        value={profile.defaultMode ?? ''}
+                        onChange={(event) => {
+                          const value = event.target.value;
+                          patchWorkerProfile(provider, {
+                            defaultMode: value === 'read_only' || value === 'isolated_write' ? value : null,
+                          });
+                        }}
+                        disabled={saving || syncing}
+                        className="h-9 w-full rounded-lg border border-border bg-background px-3 text-sm text-foreground"
+                      >
+                        <option value="">Use global</option>
+                        <option value="read_only">Read only</option>
+                        <option value="isolated_write">Isolated write</option>
+                      </select>
+                    </label>
+                    <label className="space-y-1.5 text-xs font-medium text-muted-foreground">
+                      Approval policy
+                      <select
+                        value={profile.defaultApprovalPolicy ?? ''}
+                        onChange={(event) => {
+                          const value = event.target.value;
+                          patchWorkerProfile(provider, {
+                            defaultApprovalPolicy: value === 'auto' || value === 'manual' ? value : null,
+                          });
+                        }}
+                        disabled={saving || syncing}
+                        className="h-9 w-full rounded-lg border border-border bg-background px-3 text-sm text-foreground"
+                      >
+                        <option value="">Use global</option>
+                        <option value="auto">Auto</option>
+                        <option value="manual">Manual</option>
+                      </select>
+                    </label>
+                  </div>
+                  <div className="mt-3">
+                    <p className="text-xs font-medium text-foreground">MCP servers</p>
+                    {honorsMcpGrants[provider] === false ? (
+                      <p className="mt-1 text-[11px] text-muted-foreground">
+                        Disabled: this provider does not honor Relay MCP grants. You can still save a list for documentation; it is not injected at spawn.
+                      </p>
+                    ) : mcpCatalogLoading && mcpNames.length === 0 ? (
+                      <p className="mt-1 text-[11px] text-muted-foreground">Loading MCP catalog…</p>
+                    ) : mcpNames.length === 0 ? (
+                      <p className="mt-1 text-[11px] text-muted-foreground">No MCP servers found. Configure them in Settings → MCP.</p>
+                    ) : (
+                      <div className={`mt-2 flex max-h-36 flex-wrap gap-1.5 overflow-y-auto ${honors ? '' : 'pointer-events-none opacity-60'}`}>
+                        {mcpNames.map((name) => {
+                          const selected = selectedMcp.has(name);
+                          return (
+                            <button
+                              key={name}
+                              type="button"
+                              disabled={saving || syncing || !honors}
+                              onClick={() => toggleProfileMcp(provider, name)}
+                              className={`rounded-full border px-2.5 py-1 text-[11px] transition-colors ${
+                                selected
+                                  ? 'border-primary bg-primary/10 text-primary'
+                                  : 'border-border bg-background text-muted-foreground hover:border-primary/40'
+                              }`}
+                            >
+                              {name}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
                 </div>
               );
             })}
