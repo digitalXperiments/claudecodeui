@@ -135,9 +135,12 @@
   #jobsList .row .jobTop { display: -webkit-box; display: -webkit-flex; display: flex; -webkit-box-pack: justify; -webkit-justify-content: space-between; justify-content: space-between; -webkit-box-align: center; -webkit-align-items: center; align-items: center; }
   #jobsList .row .jobSummary { font-size: 12px; color: #999; margin-top: 6px; }
   #jobsList .row button.small { margin-top: 8px; }
+  #ptrBar { display: none; position: fixed; top: 0; left: 0; right: 0; z-index: 999; text-align: center; padding: 8px 0; font-size: 12px; background: #2a6df4; color: #fff; }
 </style>
 </head>
 <body>
+
+<div id="ptrBar">Refreshing&hellip;</div>
 
 <div id="screenLogin" class="screen active">
   <div class="topbar">
@@ -253,6 +256,7 @@
   var MODEL_KEY = 'cloudcli_mweb_model';
   var EFFORT_KEY = 'cloudcli_mweb_effort';
   var PERMISSION_KEY = 'cloudcli_mweb_permission_mode';
+  var NAV_KEY = 'cloudcli_mweb_nav';
   var DROP_KINDS = {
     tool_use: true,
     tool_result: true,
@@ -271,7 +275,11 @@
     categories: [],
     projects: [],
     currentCategoryId: null,
+    currentCategoryName: '',
     currentProjectId: null,
+    currentProjectName: '',
+    activeScreen: 'screenLogin',
+    suppressHashChange: false,
     sessions: [],
     providers: [],
     capabilities: {},
@@ -292,6 +300,7 @@
       screens[i].className = 'screen';
     }
     $(id).className = 'screen active';
+    state.activeScreen = id;
   }
 
   function setErr(msg) {
@@ -369,6 +378,161 @@
     return data;
   }
 
+  // ---- Hash routing ----
+
+  function saveNav(obj) {
+    setStoredItem(NAV_KEY, JSON.stringify(obj));
+  }
+
+  function getNav() {
+    var raw = getStoredItem(NAV_KEY);
+    if (!raw) { return null; }
+    try {
+      return JSON.parse(raw);
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function catToken(categoryId) {
+    return (categoryId === null || categoryId === undefined || categoryId === '') ? 'uncat' : categoryId;
+  }
+
+  function buildHash(screen, params) {
+    params = params || {};
+    if (screen === 'screenCategories') { return '#/categories'; }
+    if (screen === 'screenProjects') {
+      return '#/projects/' + encodeURIComponent(catToken(params.categoryId));
+    }
+    if (screen === 'screenSessions') {
+      return '#/sessions/' + encodeURIComponent(params.projectId || '');
+    }
+    if (screen === 'screenChat') {
+      return '#/chat/' + encodeURIComponent(params.sessionId || '') +
+        '?p=' + encodeURIComponent(params.projectId || '') +
+        '&c=' + encodeURIComponent(catToken(params.categoryId));
+    }
+    if (screen === 'screenJobs') { return '#/jobs'; }
+    return '#/categories';
+  }
+
+  function updateHashAndNav(screen, params) {
+    params = params || {};
+    var hash = buildHash(screen, params);
+    if (window.location.hash !== hash) {
+      state.suppressHashChange = true;
+      window.location.hash = hash;
+    }
+    saveNav({
+      screen: screen,
+      categoryId: (params.categoryId !== undefined) ? params.categoryId : state.currentCategoryId,
+      categoryName: (params.categoryName !== undefined) ? params.categoryName : state.currentCategoryName,
+      projectId: (params.projectId !== undefined) ? params.projectId : state.currentProjectId,
+      projectName: (params.projectName !== undefined) ? params.projectName : state.currentProjectName,
+      sessionId: (params.sessionId !== undefined) ? params.sessionId : state.currentSessionId,
+      title: params.title,
+      jobsFromScreen: (params.jobsFromScreen !== undefined) ? params.jobsFromScreen : state.jobsFromScreen
+    });
+  }
+
+  function parseHash() {
+    var h = window.location.hash || '';
+    if (h.charAt(0) === '#') { h = h.substring(1); }
+    if (h.charAt(0) === '/') { h = h.substring(1); }
+    var qIndex = h.indexOf('?');
+    var query = '';
+    if (qIndex !== -1) {
+      query = h.substring(qIndex + 1);
+      h = h.substring(0, qIndex);
+    }
+    var parts = h.split('/');
+    var route = {
+      name: parts[0] || '',
+      id: (parts[1] !== undefined && parts[1] !== '') ? decodeURIComponent(parts[1]) : null,
+      query: {}
+    };
+    if (query) {
+      var pairs = query.split('&');
+      for (var i = 0; i < pairs.length; i++) {
+        var kv = pairs[i].split('=');
+        if (kv[0]) { route.query[decodeURIComponent(kv[0])] = decodeURIComponent(kv[1] || ''); }
+      }
+    }
+    return route;
+  }
+
+  function findCategoryName(categoryId) {
+    for (var i = 0; i < state.categories.length; i++) {
+      if (state.categories[i].categoryId === categoryId) {
+        return state.categories[i].name || categoryId;
+      }
+    }
+    return categoryId || 'Category';
+  }
+
+  function findProjectName(projectId) {
+    for (var i = 0; i < state.projects.length; i++) {
+      if (state.projects[i].projectId === projectId) {
+        return state.projects[i].displayName || projectId;
+      }
+    }
+    return projectId || 'Project';
+  }
+
+  function navGoCategories() {
+    renderCategories();
+    showScreen('screenCategories');
+    updateHashAndNav('screenCategories', {});
+  }
+
+  function applyRouteFromHash() {
+    var route = parseHash();
+    if (!route.name || route.name === 'categories') {
+      navGoCategories();
+      return;
+    }
+    if (route.name === 'projects') {
+      var categoryId = (route.id === 'uncat' || route.id === null) ? null : route.id;
+      var categoryName = (categoryId === null) ? 'Uncategorized' : findCategoryName(categoryId);
+      openCategory(categoryId, categoryName);
+      return;
+    }
+    if (route.name === 'sessions') {
+      var projectId = route.id;
+      if (!projectId) { navGoCategories(); return; }
+      var nav = getNav();
+      if (nav && nav.projectId === projectId) {
+        state.currentCategoryId = (nav.categoryId === 'uncat') ? null : nav.categoryId;
+        state.currentCategoryName = nav.categoryName || state.currentCategoryName;
+      }
+      openProject(projectId, findProjectName(projectId));
+      return;
+    }
+    if (route.name === 'chat') {
+      var sessionId = route.id;
+      if (!sessionId) { navGoCategories(); return; }
+      var pid = route.query.p;
+      var cid = route.query.c;
+      if (pid) {
+        state.currentProjectId = pid;
+        state.currentProjectName = findProjectName(pid);
+      }
+      if (cid !== undefined && cid !== '') {
+        state.currentCategoryId = (cid === 'uncat') ? null : cid;
+      }
+      var navChat = getNav();
+      var title = (navChat && navChat.title) || 'Chat';
+      openChat(sessionId, title);
+      return;
+    }
+    if (route.name === 'jobs') {
+      var navJobs = getNav();
+      openJobs((navJobs && navJobs.jobsFromScreen) || 'screenCategories');
+      return;
+    }
+    navGoCategories();
+  }
+
   // ---- Login ----
 
   function doLogin() {
@@ -390,7 +554,9 @@
         try {
           window.localStorage.setItem(TOKEN_KEY, data.token);
         } catch (e) {}
-        loadCategories();
+        state.suppressHashChange = true;
+        window.location.hash = '';
+        loadCategories(false);
       } else {
         setErr((data && data.error) || 'Login failed');
       }
@@ -401,7 +567,7 @@
 
   // ---- Categories ----
 
-  function loadCategories() {
+  function loadCategories(restoreRoute, onDone) {
     xhr('GET', '/api/projects/categories', null, authHeaders(), function (data) {
       var categories = (data && data.success && data.categories) || (data && data.categories) || [];
       if (!categories.length && data) {
@@ -412,13 +578,19 @@
       xhr('GET', '/api/projects', null, authHeaders(), function (projData) {
         var projects = Array.isArray(projData) ? projData : [];
         state.projects = projects;
-        renderCategories();
-        showScreen('screenCategories');
+        if (restoreRoute) {
+          applyRouteFromHash();
+        } else {
+          navGoCategories();
+        }
+        if (onDone) { onDone(); }
       }, function (projData) {
         setErr((projData && projData.error) || 'Failed to load projects');
+        if (onDone) { onDone(); }
       });
     }, function (data) {
       setErr((data && data.error) || 'Failed to load categories');
+      if (onDone) { onDone(); }
     });
   }
 
@@ -472,9 +644,11 @@
 
   function openCategory(categoryId, name) {
     state.currentCategoryId = categoryId;
+    state.currentCategoryName = name;
     $('projectsTitle').innerHTML = escapeHtml(name);
     renderProjects();
     showScreen('screenProjects');
+    updateHashAndNav('screenProjects', { categoryId: categoryId, categoryName: name });
   }
 
   // ---- Projects ----
@@ -491,14 +665,19 @@
         var pathStr = p.fullPath || p.path || '';
         row.innerHTML = '<div><div>' + escapeHtml(name) + '</div><div class="meta">' + escapeHtml(pathStr) + '</div></div>';
         row.onclick = function () {
-          state.currentProjectId = p.projectId;
-          $('sessionsTitle').innerHTML = escapeHtml(name);
-          loadProviders();
-          loadSessions();
+          openProject(p.projectId, name);
         };
         el.appendChild(row);
       })(projects[i]);
     }
+  }
+
+  function openProject(projectId, name) {
+    state.currentProjectId = projectId;
+    state.currentProjectName = name;
+    $('sessionsTitle').innerHTML = escapeHtml(name);
+    loadProviders();
+    loadSessions();
   }
 
   function escapeHtml(s) {
@@ -826,7 +1005,7 @@
 
   // ---- Sessions ----
 
-  function loadSessions() {
+  function loadSessions(onDone) {
     xhr('GET', '/api/projects/' + encodeURIComponent(state.currentProjectId) + '/sessions', null, authHeaders(), function (data) {
       var list = [];
       if (data && Array.isArray(data.sessions)) {
@@ -837,8 +1016,27 @@
       state.sessions = list;
       renderSessions();
       showScreen('screenSessions');
+      updateHashAndNav('screenSessions', {
+        categoryId: state.currentCategoryId,
+        categoryName: state.currentCategoryName,
+        projectId: state.currentProjectId,
+        projectName: state.currentProjectName
+      });
+      if (onDone) { onDone(); }
     }, function (data) {
       setErr((data && data.error) || 'Failed to load sessions');
+      if (onDone) { onDone(); }
+    });
+  }
+
+  function reloadProjectsForRefresh(onDone) {
+    xhr('GET', '/api/projects', null, authHeaders(), function (projData) {
+      var projects = Array.isArray(projData) ? projData : [];
+      state.projects = projects;
+      renderProjects();
+      if (onDone) { onDone(); }
+    }, function () {
+      if (onDone) { onDone(); }
     });
   }
 
@@ -906,6 +1104,12 @@
     $('chatList').innerHTML = '';
     hideTyping();
     showScreen('screenChat');
+    updateHashAndNav('screenChat', {
+      sessionId: sessionId,
+      projectId: state.currentProjectId,
+      categoryId: state.currentCategoryId,
+      title: title || 'Chat'
+    });
     loadMessages(sessionId);
     connectWs();
   }
@@ -919,6 +1123,23 @@
       }
       scrollChatToBottom();
     }, function () {});
+  }
+
+  function reloadMessagesForRefresh(onDone) {
+    var sessionId = state.currentSessionId;
+    xhr('GET', '/api/providers/sessions/' + encodeURIComponent(sessionId) + '/messages', null, authHeaders(), function (data) {
+      var payload = unwrap(data);
+      var messages = (payload && payload.messages) || [];
+      $('chatList').innerHTML = '';
+      state.lastAssistantEl = null;
+      for (var i = 0; i < messages.length; i++) {
+        renderMessage(messages[i]);
+      }
+      scrollChatToBottom();
+      if (onDone) { onDone(); }
+    }, function () {
+      if (onDone) { onDone(); }
+    });
   }
 
   function isJsonDump(s) {
@@ -953,7 +1174,6 @@
     var text = messageText(m);
     if (!text) { return; }
     var role = m.role;
-    if (role === 'assistant') { hideTyping(); }
     var div = document.createElement('div');
     var cls = role === 'user' ? 'msg user' : 'msg assistant';
     div.className = cls;
@@ -964,6 +1184,7 @@
     } else {
       state.lastAssistantEl = null;
     }
+    keepTypingAtBottom();
   }
 
   function scrollChatToBottom() {
@@ -984,6 +1205,11 @@
   function hideTyping() {
     var el = $('typingIndicator');
     if (el && el.parentNode) { el.parentNode.removeChild(el); }
+  }
+
+  function keepTypingAtBottom() {
+    var el = $('typingIndicator');
+    if (el) { $('chatList').appendChild(el); }
   }
 
   function wsUrl() {
@@ -1126,9 +1352,9 @@
         }
       }
       if (!deltaText.length || isJsonDump(deltaText)) { return; }
-      hideTyping();
       if (state.lastAssistantEl) {
         state.lastAssistantEl.innerHTML = renderMarkdown(deltaText);
+        keepTypingAtBottom();
       } else {
         renderMessage({ role: 'assistant', displayText: deltaText });
       }
@@ -1170,6 +1396,7 @@
   function openJobs(fromScreen) {
     state.jobsFromScreen = fromScreen || 'screenCategories';
     showScreen('screenJobs');
+    updateHashAndNav('screenJobs', { jobsFromScreen: state.jobsFromScreen });
     loadJobs();
     if (state.jobsPollTimer) { clearInterval(state.jobsPollTimer); }
     state.jobsPollTimer = setInterval(loadJobs, 5000);
@@ -1180,14 +1407,28 @@
       clearInterval(state.jobsPollTimer);
       state.jobsPollTimer = null;
     }
-    showScreen(state.jobsFromScreen || 'screenCategories');
+    var target = state.jobsFromScreen || 'screenCategories';
+    showScreen(target);
+    if (target === 'screenProjects') {
+      updateHashAndNav('screenProjects', { categoryId: state.currentCategoryId, categoryName: state.currentCategoryName });
+    } else if (target === 'screenSessions') {
+      updateHashAndNav('screenSessions', {
+        categoryId: state.currentCategoryId,
+        categoryName: state.currentCategoryName,
+        projectId: state.currentProjectId,
+        projectName: state.currentProjectName
+      });
+    } else {
+      updateHashAndNav('screenCategories', {});
+    }
   }
 
-  function loadJobs() {
+  function loadJobs(onDone) {
     xhr('GET', '/api/agent-relay/jobs?active=true', null, authHeaders(), function (data) {
       var payload = unwrap(data);
       var jobs = (payload && payload.jobs) || [];
       renderJobs(jobs);
+      if (onDone) { onDone(); }
     }, function (data) {
       var el = $('jobsList');
       el.innerHTML = '';
@@ -1196,6 +1437,7 @@
       errDiv.style.color = '#ff6b6b';
       errDiv.appendChild(document.createTextNode((data && data.error) || 'Failed to load jobs'));
       el.appendChild(errDiv);
+      if (onDone) { onDone(); }
     });
   }
 
@@ -1288,8 +1530,10 @@
   $('providerSelect').onchange = onProviderChange;
   $('modelSelect').onchange = function () { renderEffortOptions(); };
   $('btnLogoutCategories').onclick = logout;
-  $('btnBackToCategories').onclick = function () { showScreen('screenCategories'); };
-  $('btnBackToProjects').onclick = function () { showScreen('screenProjects'); };
+  $('btnBackToCategories').onclick = function () { navGoCategories(); };
+  $('btnBackToProjects').onclick = function () {
+    openCategory(state.currentCategoryId, state.currentCategoryName || 'Projects');
+  };
   $('btnBackToSessions').onclick = function () {
     if (state.ws) {
       try { state.ws.close(); } catch (e) {}
@@ -1297,21 +1541,103 @@
     }
     hideTyping();
     showScreen('screenSessions');
+    updateHashAndNav('screenSessions', {
+      categoryId: state.currentCategoryId,
+      categoryName: state.currentCategoryName,
+      projectId: state.currentProjectId,
+      projectName: state.currentProjectName
+    });
   };
   $('btnNewSession').onclick = newSession;
   $('btnSend').onclick = sendChat;
   $('btnStopChat').onclick = stopChat;
   $('btnJobsFromChat').onclick = function () { openJobs('screenSessions'); };
-  $('tabChatFromCategories').onclick = function () { showScreen('screenCategories'); };
+  $('tabChatFromCategories').onclick = function () { navGoCategories(); };
   $('tabJobsFromCategories').onclick = function () { openJobs('screenCategories'); };
-  $('tabChatFromProjects').onclick = function () { showScreen('screenCategories'); };
+  $('tabChatFromProjects').onclick = function () { navGoCategories(); };
   $('tabJobsFromProjects').onclick = function () { openJobs('screenProjects'); };
-  $('tabChatFromSessions').onclick = function () { showScreen('screenCategories'); };
+  $('tabChatFromSessions').onclick = function () { navGoCategories(); };
   $('tabJobsFromSessions').onclick = function () { openJobs('screenSessions'); };
-  $('btnRefreshJobs').onclick = loadJobs;
+  $('btnRefreshJobs').onclick = function () { loadJobs(); };
   $('btnBackFromJobs').onclick = leaveJobs;
 
   applyTheme(getStoredItem(THEME_KEY) || 'dark');
+
+  window.addEventListener('hashchange', function () {
+    if (state.suppressHashChange) {
+      state.suppressHashChange = false;
+      return;
+    }
+    if (!state.token) { return; }
+    applyRouteFromHash();
+  }, false);
+
+  // ---- Pull to refresh ----
+
+  var ptr = { active: false, startY: 0, dy: 0 };
+
+  function isAtTop() {
+    if (state.activeScreen === 'screenChat') {
+      var cl = $('chatList');
+      return cl.scrollTop === 0;
+    }
+    var doc = document.documentElement;
+    var body = document.body;
+    return (window.pageYOffset || 0) === 0 && (doc.scrollTop || 0) === 0 && (body.scrollTop || 0) === 0;
+  }
+
+  function showPtrBar() { $('ptrBar').style.display = 'block'; }
+  function hidePtrBar() { $('ptrBar').style.display = 'none'; }
+
+  function ptrRefreshCurrent() {
+    var screen = state.activeScreen;
+    var done = function () { hidePtrBar(); };
+    if (screen === 'screenCategories') {
+      loadCategories(false, done);
+    } else if (screen === 'screenProjects') {
+      reloadProjectsForRefresh(done);
+    } else if (screen === 'screenSessions') {
+      loadSessions(done);
+    } else if (screen === 'screenJobs') {
+      loadJobs(done);
+    } else if (screen === 'screenChat') {
+      reloadMessagesForRefresh(done);
+    } else {
+      hidePtrBar();
+    }
+  }
+
+  document.addEventListener('touchstart', function (e) {
+    if (state.activeScreen === 'screenLogin') { ptr.active = false; return; }
+    if (!e.touches || e.touches.length !== 1) { ptr.active = false; return; }
+    if (!isAtTop()) { ptr.active = false; return; }
+    ptr.active = true;
+    ptr.startY = e.touches[0].clientY;
+    ptr.dy = 0;
+  }, false);
+
+  document.addEventListener('touchmove', function (e) {
+    if (!ptr.active) { return; }
+    if (!e.touches || e.touches.length !== 1) { return; }
+    ptr.dy = e.touches[0].clientY - ptr.startY;
+    if (ptr.dy > 0 && isAtTop()) {
+      if (ptr.dy > 20) { showPtrBar(); }
+    } else {
+      ptr.active = false;
+      hidePtrBar();
+    }
+  }, false);
+
+  document.addEventListener('touchend', function () {
+    if (!ptr.active) { return; }
+    ptr.active = false;
+    if (ptr.dy > 70) {
+      ptrRefreshCurrent();
+    } else {
+      hidePtrBar();
+    }
+    ptr.dy = 0;
+  }, false);
 
   // Try restoring existing token
   (function init() {
@@ -1321,7 +1647,7 @@
     } catch (e) {}
     if (saved) {
       state.token = saved;
-      loadCategories();
+      loadCategories(true);
     }
   })();
 
