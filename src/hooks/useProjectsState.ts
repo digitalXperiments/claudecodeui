@@ -674,12 +674,60 @@ export function useProjectsState({
         && event.kind !== 'chat_subscribed'
         && event.kind !== 'loading_progress'
         && event.kind !== 'session_upserted'
+        && event.kind !== 'session_removed'
         && event.kind !== 'status'
         && event.kind !== 'stream_end'
         && event.kind !== 'permission_cancelled'
         && event.kind !== 'websocket_reconnected'
       ) {
         markSessionAttention(eventSessionId);
+      }
+
+      if (event.kind === 'session_removed') {
+        const removedId = eventSessionId;
+        if (!removedId) {
+          return;
+        }
+
+        const dropFromProject = (project: Project): Project => {
+          const sessions = project.sessions ?? [];
+          const nextSessions = sessions.filter((session) => session.id !== removedId);
+          if (nextSessions.length === sessions.length) {
+            return project;
+          }
+
+          const total = Math.max(0, Number(project.sessionMeta?.total ?? sessions.length) - 1);
+          return {
+            ...project,
+            sessions: nextSessions,
+            sessionMeta: {
+              ...project.sessionMeta,
+              total,
+              hasMore: countLoadedProjectSessions({ ...project, sessions: nextSessions }) < total,
+            },
+          };
+        };
+
+        setProjects((previousProjects) => {
+          let changed = false;
+          const next = previousProjects.map((project) => {
+            const updated = dropFromProject(project);
+            if (updated !== project) {
+              changed = true;
+            }
+            return updated;
+          });
+          return changed ? next : previousProjects;
+        });
+
+        setSelectedProject((previousProject) => (
+          previousProject ? dropFromProject(previousProject) : previousProject
+        ));
+
+        setSelectedSession((previousSession) => (
+          previousSession?.id === removedId ? null : previousSession
+        ));
+        return;
       }
 
       if (event.kind !== 'session_upserted') {

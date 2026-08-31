@@ -102,13 +102,32 @@ export const createSessionViewModel = (
   };
 };
 
+const UNTITLED_GROK_SESSION = 'Untitled Grok Session';
+
+/**
+ * Watcher-indexed Grok worker shadows use this fallback title and have no
+ * user turns. User-created empty drafts keep a null/empty summary (i18n
+ * "New session") and must stay visible.
+ */
+const isUntitledGrokWatcherShadow = (session: ProjectSession): boolean => {
+  const provider = getSessionProvider(session);
+  if (provider !== 'grok') {
+    return false;
+  }
+
+  const title = String(session.summary || session.name || '').trim();
+  return title === UNTITLED_GROK_SESSION && Number(session.messageCount || 0) === 0;
+};
+
 export const getAllSessions = (project: Project): SessionWithProvider[] => {
-  return (project.sessions || []).map((session) => ({
-    ...session,
-    __provider: getSessionProvider(session),
-  })).sort(
-    (a, b) => getSessionDate(b).getTime() - getSessionDate(a).getTime(),
-  );
+  return (project.sessions || [])
+    .filter((session) => !session.isInternal && !isUntitledGrokWatcherShadow(session))
+    .map((session) => ({
+      ...session,
+      __provider: getSessionProvider(session),
+    })).sort(
+      (a, b) => getSessionDate(b).getTime() - getSessionDate(a).getTime(),
+    );
 };
 
 const asProvider = (value: string | null | undefined): LLMProvider => {

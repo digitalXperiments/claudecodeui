@@ -115,6 +115,24 @@ function emitRunCompletion(run: ChatRun, message: NormalizedMessage): void {
   }
 }
 
+export function broadcastSessionRemoved(sessionId: string): void {
+  if (!sessionId) {
+    return;
+  }
+
+  const payload = JSON.stringify({
+    kind: 'session_removed',
+    sessionId,
+    timestamp: new Date().toISOString(),
+  });
+
+  connectedClients.forEach((client) => {
+    if (client.readyState === WS_OPEN_STATE) {
+      client.send(payload);
+    }
+  });
+}
+
 export async function broadcastCanonicalSessionUpsert(appSessionId: string): Promise<void> {
   const row = sessionsDb.getSessionById(appSessionId);
   if (!row || row.isArchived || row.is_internal) {
@@ -242,7 +260,10 @@ function recordProviderSessionId(run: ChatRun, providerSessionId: string): void 
   run.providerSessionId = providerSessionId;
 
   try {
-    sessionsDb.assignProviderSessionId(run.appSessionId, providerSessionId);
+    const mapping = sessionsDb.assignProviderSessionId(run.appSessionId, providerSessionId);
+    if (mapping.deletedSessionId && mapping.deletedSessionId !== run.appSessionId) {
+      broadcastSessionRemoved(mapping.deletedSessionId);
+    }
     void broadcastCanonicalSessionUpsert(run.appSessionId).catch((error) => {
       const message = error instanceof Error ? error.message : String(error);
       console.error('[ChatRunRegistry] Failed to broadcast canonical session mapping', {

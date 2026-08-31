@@ -44,15 +44,7 @@ export class GrokSessionSynchronizer implements IProviderSessionSynchronizer {
       }
 
       const timestamps = await readFileTimestamps(filePath);
-      sessionsDb.createSession(
-        parsed.sessionId,
-        this.provider,
-        parsed.projectPath,
-        parsed.sessionName,
-        timestamps.createdAt,
-        timestamps.updatedAt,
-        filePath
-      );
+      this.indexParsedSession(parsed, timestamps, filePath);
       processed += 1;
     }
 
@@ -77,6 +69,31 @@ export class GrokSessionSynchronizer implements IProviderSessionSynchronizer {
     // History changes are the live activity signal; summary.json is only the
     // stable indexing anchor and may not be rewritten for every turn.
     const timestamps = await readFileTimestamps(summaryPath === filePath ? summaryPath : filePath);
+    return this.indexParsedSession(parsed, timestamps, summaryPath);
+  }
+
+  /**
+   * Binds a disk-discovered Grok UUID onto an unmapped internal app row when
+   * one exists for the same project, then upserts. Prevents a public
+   * "Untitled Grok Session" shadow of an Agent Relay worker.
+   */
+  private indexParsedSession(
+    parsed: ParsedSession,
+    timestamps: { createdAt?: string; updatedAt?: string },
+    jsonlPath: string,
+  ): string {
+    const mapped = sessionsDb.getSessionByProviderSessionId(parsed.sessionId, this.provider)
+      ?? sessionsDb.getSessionById(parsed.sessionId);
+    if (!mapped) {
+      const pendingInternal = sessionsDb.findLatestPendingInternalAppSession(
+        this.provider,
+        parsed.projectPath,
+      );
+      if (pendingInternal) {
+        sessionsDb.assignProviderSessionId(pendingInternal.session_id, parsed.sessionId);
+      }
+    }
+
     return sessionsDb.createSession(
       parsed.sessionId,
       this.provider,
@@ -84,7 +101,7 @@ export class GrokSessionSynchronizer implements IProviderSessionSynchronizer {
       parsed.sessionName,
       timestamps.createdAt,
       timestamps.updatedAt,
-      summaryPath
+      jsonlPath,
     );
   }
 

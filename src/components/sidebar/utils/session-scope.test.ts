@@ -53,6 +53,34 @@ test('does not pin internal relay or swarm workers into the picker', () => {
   assert.deepEqual(withInternal.map((session) => session.id), ['old-session']);
 });
 
+test('hides untitled grok watcher shadows but keeps empty user drafts', () => {
+  const mixed: Project = {
+    ...project,
+    sessions: [
+      { id: 'user-draft', summary: '', messageCount: 0, __provider: 'grok' },
+      {
+        id: 'watcher-shadow',
+        summary: 'Untitled Grok Session',
+        messageCount: 0,
+        __provider: 'grok',
+      },
+      {
+        id: 'real-grok',
+        summary: 'Untitled Grok Session',
+        messageCount: 3,
+        __provider: 'grok',
+      },
+      { id: 'internal-row', summary: 'Relay worker', isInternal: true, __provider: 'grok' },
+    ],
+  };
+
+  const sessions = getProjectSessionsWithActivity(mixed, new Map());
+  assert.deepEqual(
+    sessions.map((session) => session.id),
+    ['user-draft', 'real-grok'],
+  );
+});
+
 test('pins a live session from the selected project even when it is not loaded', () => {
   const sessions = getProjectSessionsWithActivity(
     project,

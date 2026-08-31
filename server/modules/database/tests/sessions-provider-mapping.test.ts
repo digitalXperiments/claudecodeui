@@ -191,3 +191,67 @@ test('internal sessions are excluded from interactive session lists', async () =
     );
   });
 });
+
+test('createSession binds a disk-discovered grok uuid onto a pending internal app row', async () => {
+  await withIsolatedDatabase(() => {
+    sessionsDb.createAppSession('relay-worker', 'grok', '/workspace/demo', { internal: true });
+    sessionsDb.createAppSession('user-draft', 'grok', '/workspace/demo');
+
+    const returnedId = sessionsDb.createSession(
+      'grok-provider-uuid',
+      'grok',
+      '/workspace/demo',
+      'Untitled Grok Session',
+      undefined,
+      undefined,
+      '/fake/grok/summary.json',
+    );
+
+    assert.equal(returnedId, 'relay-worker');
+    const worker = sessionsDb.getSessionById('relay-worker');
+    assert.equal(worker?.is_internal, 1);
+    assert.equal(worker?.provider_session_id, 'grok-provider-uuid');
+    assert.equal(sessionsDb.getSessionById('grok-provider-uuid'), null);
+
+    // Public lists still hide the worker. The user's empty draft stays listed.
+    assert.deepEqual(
+      sessionsDb.getSessionsByProjectPathPage('/workspace/demo', 20, 0).map((row) => row.session_id),
+      ['user-draft'],
+    );
+  });
+});
+
+test('createSession does not reset is_internal when updating a mapped internal row', async () => {
+  await withIsolatedDatabase(() => {
+    sessionsDb.createAppSession('relay-worker', 'grok', '/workspace/demo', { internal: true });
+    sessionsDb.assignProviderSessionId('relay-worker', 'grok-mapped');
+
+    sessionsDb.createSession(
+      'grok-mapped',
+      'grok',
+      '/workspace/demo',
+      'Untitled Grok Session',
+    );
+
+    assert.equal(sessionsDb.getSessionById('relay-worker')?.is_internal, 1);
+    assert.equal(sessionsDb.getAllSessions().length, 0);
+  });
+});
+
+test('assignProviderSessionId reports the deleted watcher duplicate id', async () => {
+  await withIsolatedDatabase(() => {
+    // Watcher indexed the transcript before the internal app row existed.
+    sessionsDb.createSession(
+      'provider-race',
+      'grok',
+      '/workspace/demo',
+      'Untitled Grok Session',
+    );
+    sessionsDb.createAppSession('app-id-2', 'grok', '/workspace/demo', { internal: true });
+
+    const result = sessionsDb.assignProviderSessionId('app-id-2', 'provider-race');
+    assert.equal(result.deletedSessionId, 'provider-race');
+    assert.equal(sessionsDb.getSessionById('provider-race'), null);
+    assert.equal(sessionsDb.getSessionById('app-id-2')?.is_internal, 1);
+  });
+});

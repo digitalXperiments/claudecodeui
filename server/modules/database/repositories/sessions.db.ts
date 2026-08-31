@@ -97,11 +97,11 @@ export const sessionsDb = {
 
     const existing = db
       .prepare(
-        `SELECT session_id FROM sessions
+        `SELECT session_id, is_internal FROM sessions
          WHERE provider_session_id = ? AND provider = ?
          LIMIT 1`
       )
-      .get(providerSessionId, provider) as { session_id: string } | undefined;
+      .get(providerSessionId, provider) as { session_id: string; is_internal: number } | undefined;
 
     if (existing) {
       db.prepare(
@@ -127,9 +127,40 @@ export const sessionsDb = {
       return existing.session_id;
     }
 
+    // Watcher-indexed provider transcripts for Agent Relay / swarm workers
+    // must bind to the existing internal app row instead of inserting a
+    // public shadow keyed by the provider UUID (those leaked into the
+    // session picker as "Untitled Grok Session").
+    const pendingInternal = this.findLatestPendingInternalAppSession(provider, projectPath);
+    if (pendingInternal) {
+      this.assignProviderSessionId(pendingInternal.session_id, providerSessionId);
+      db.prepare(
+        `UPDATE sessions SET
+           provider = ?,
+           updated_at = COALESCE(?, CURRENT_TIMESTAMP),
+           project_path = ?,
+           runtime_project_path = ?,
+           jsonl_path = ?,
+           isArchived = 0,
+           custom_name = COALESCE(?, custom_name)
+         WHERE session_id = ?`
+      ).run(
+        provider,
+        updatedAtValue,
+        logicalProjectPath,
+        runtimeProjectPath,
+        jsonlPath ?? null,
+        customName ?? null,
+        pendingInternal.session_id
+      );
+      return pendingInternal.session_id;
+    }
+
     // Sessions created outside the app (directly via the provider CLI) are
     // keyed by the provider-native id for both columns. The ON CONFLICT path
     // covers legacy rows that predate the provider_session_id mapping.
+    // Never overwrite is_internal: an existing app row with this session_id
+    // may be an internal worker whose id happens to match the provider id.
     db.prepare(
       `INSERT INTO sessions (session_id, provider, provider_session_id, custom_name, project_path, runtime_project_path, jsonl_path, is_internal, isArchived, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, COALESCE(?, CURRENT_TIMESTAMP), COALESCE(?, CURRENT_TIMESTAMP))
@@ -272,10 +303,10 @@ export const sessionsDb = {
    * ids are only unique within one provider, so rows belonging to other
    * providers must never be merged or deleted here.
    */
-  assignProviderSessionId(sessionId: string, providerSessionId: string): void {
+  assignProviderSessionId(sessionId: string, providerSessionId: string): { deletedSessionId: string | null } {
     const db = getConnection();
 
-    const merge = db.transaction(() => {
+    const merge = db.transaction((): { deletedSessionId: string | null } => {
       // The duplicate lookup must stay provider-scoped: provider-native ids
       // are only unique within one provider, so an id from this runtime may
       // collide with another provider's row id (or its provider_session_id).
@@ -317,7 +348,7 @@ export const sessionsDb = {
           duplicate.custom_name,
           sessionId,
         );
-        return;
+        return { deletedSessionId: duplicate.session_id };
       }
 
       db.prepare(
@@ -326,9 +357,10 @@ export const sessionsDb = {
            updated_at = CURRENT_TIMESTAMP
          WHERE session_id = ?`
       ).run(providerSessionId, sessionId);
+      return { deletedSessionId: null };
     });
 
-    merge();
+    return merge();
   },
 
   updateSessionCustomName(sessionId: string, customName: string): void {
@@ -433,6 +465,34 @@ export const sessionsDb = {
            AND project_path = ?
            AND provider_session_id IS NULL
            AND isArchived = 0
+         ORDER BY
+           CASE WHEN runtime_project_path = ? THEN 0 ELSE 1 END,
+           datetime(COALESCE(updated_at, created_at)) DESC,
+           session_id DESC
+         LIMIT 1`
+      )
+      .get(provider, logicalProjectPath, runtimeProjectPath) as SessionRow | undefined;
+
+    return normalizeSessionRow(row) ?? null;
+  },
+
+  /**
+   * Like `findLatestPendingAppSession`, but only internal worker rows
+   * (Agent Relay / swarm). Disk indexers use this to bind a provider UUID
+   * onto the hidden app session instead of inserting a public picker row.
+   */
+  findLatestPendingInternalAppSession(provider: string, projectPath: string): SessionRow | null {
+    const db = getConnection();
+    const { logicalProjectPath, runtimeProjectPath } = resolveSessionPaths(provider, projectPath);
+    const row = db
+      .prepare(
+        `SELECT ${SESSION_ROW_COLUMNS}
+         FROM sessions
+           WHERE provider = ?
+           AND project_path = ?
+           AND provider_session_id IS NULL
+           AND isArchived = 0
+           AND is_internal = 1
          ORDER BY
            CASE WHEN runtime_project_path = ? THEN 0 ELSE 1 END,
            datetime(COALESCE(updated_at, created_at)) DESC,

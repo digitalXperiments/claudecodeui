@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { sessionsDb } from '@/modules/database/index.js';
+import { broadcastSessionRemoved } from '@/modules/websocket/index.js';
 
 import { GrokSessionSynchronizer } from './grok-session-synchronizer.provider.js';
 
@@ -120,7 +121,10 @@ export async function syncGrokShellSession(info: {
       return null;
     }
     const candidate = candidates[0]!;
-    sessionsDb.assignProviderSessionId(appRow.session_id, candidate.id);
+    const mapping = sessionsDb.assignProviderSessionId(appRow.session_id, candidate.id);
+    if (mapping.deletedSessionId && mapping.deletedSessionId !== appRow.session_id) {
+      broadcastSessionRemoved(mapping.deletedSessionId);
+    }
     console.info(
       `[grok-shell-sync] Adopted shell-created Grok session ${candidate.id} ` +
       `onto app session ${appRow.session_id}`,
