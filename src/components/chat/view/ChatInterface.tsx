@@ -13,6 +13,7 @@ import { useChatRealtimeHandlers } from '../hooks/useChatRealtimeHandlers';
 import { useChatComposerState } from '../hooks/useChatComposerState';
 import { useWorkerSessionReadOnly } from '../hooks/useWorkerSessionReadOnly';
 import { useSessionStore } from '../../../stores/useSessionStore';
+import { useProviderAuthStatus } from '../../provider-auth/hooks/useProviderAuthStatus';
 import { authenticatedFetch, createSessionHandoff } from '../../../utils/api';
 import { resolveProviderModelLabel } from '../../../utils/providerModels';
 import { readProviderToolsSettings, writeQueuedMessage } from '../utils/chatStorage';
@@ -130,6 +131,7 @@ function ChatInterface({
     providerModelCacheCatalog,
     providerModelsLoading,
     providerModelsRefreshing,
+    providerModelErrors,
     hardRefreshProviderModels,
     currentProviderModel,
     selectProviderModel,
@@ -142,6 +144,14 @@ function ChatInterface({
     selectedSession,
     selectedProject,
   });
+
+  // Drives the model picker's per-provider auth/install gating (e.g. OMP
+  // serves an unusable fallback catalog when not authenticated — the picker
+  // needs to know that to keep the user from picking one of those entries).
+  const { providerAuthStatus, refreshProviderAuthStatuses } = useProviderAuthStatus();
+  useEffect(() => {
+    void refreshProviderAuthStatuses();
+  }, [refreshProviderAuthStatuses]);
 
   // Studio iterations are trusted, focused edits to the prototype checkout.
   // Keep the normal chat's permission preference untouched everywhere else.
@@ -941,6 +951,8 @@ function ChatInterface({
         providerModelCatalog={providerModelCatalog}
         providerModelCacheCatalog={providerModelCacheCatalog}
         providerModelsRefreshing={providerModelsRefreshing}
+        providerModelErrors={providerModelErrors}
+        providerAuthStatus={providerAuthStatus}
         onHardRefreshProviderModels={hardRefreshProviderModels}
         currentSessionId={currentSessionId || selectedSession?.id || null}
         onSelectProviderModel={selectProviderModel}

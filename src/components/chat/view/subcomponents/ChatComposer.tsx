@@ -318,6 +318,9 @@ export default function ChatComposer({
     [availableEffortOptions],
   );
   const selectedEffortLabel = effort === 'default' ? 'Default' : effort;
+  // Oh My Pi calls this control "Thinking" (its `--thinking` flag), not
+  // "Effort" — matching the provider's own terminology here.
+  const effortControlLabel = provider === 'omp' ? 'Thinking' : 'Effort';
   const updateEffortDropdownPosition = useCallback(() => {
     const rect = effortDropdownButtonRef.current?.getBoundingClientRect();
     if (!rect) {
@@ -699,11 +702,11 @@ export default function ChatComposer({
                   className="flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-border/60 bg-muted/40 px-2 text-xs font-medium text-foreground transition-all duration-200 hover:bg-muted"
                   aria-haspopup="menu"
                   aria-expanded={isEffortDropdownOpen}
-                  aria-label="Select reasoning effort"
-                  title="Select reasoning effort"
+                  aria-label={`Select ${effortControlLabel.toLowerCase()}`}
+                  title={`Select ${effortControlLabel.toLowerCase()}`}
                 >
                   <Gauge className="h-3.5 w-3.5 shrink-0 text-muted-foreground sm:hidden" />
-                  <span className="hidden text-[11px] text-muted-foreground sm:inline">Effort</span>
+                  <span className="hidden text-[11px] text-muted-foreground sm:inline">{effortControlLabel}</span>
                   <span className="max-w-12 truncate capitalize sm:max-w-20">{selectedEffortLabel}</span>
                   <ChevronDown className={`h-3 w-3 shrink-0 text-muted-foreground transition-transform ${isEffortDropdownOpen ? 'rotate-180' : ''}`} />
                 </button>

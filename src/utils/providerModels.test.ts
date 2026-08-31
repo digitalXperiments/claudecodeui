@@ -4,8 +4,10 @@ import test from 'node:test';
 import type { ProviderModelsDefinition } from '../types/app';
 
 import {
+  filterValidModelOptions,
   findProviderModelOption,
   isProviderModelMatch,
+  isValidModelOption,
   resolveProviderModelLabel,
 } from './providerModels';
 
@@ -52,4 +54,35 @@ test('resolveProviderModelLabel returns the canonical provider-qualified label',
 test('resolveProviderModelLabel falls back to the raw model id when the catalog has no match', () => {
   assert.equal(resolveProviderModelLabel(catalog, 'brand-new/unreleased-model'), 'brand-new/unreleased-model');
   assert.equal(resolveProviderModelLabel(catalog, null), null);
+});
+
+test('isValidModelOption rejects blank, decorative, and header rows leaked from a malformed table dump', () => {
+  assert.equal(isValidModelOption({ value: 'openai-codex/gpt-5.6-luna' }), true);
+  assert.equal(isValidModelOption({ value: '' }), false);
+  assert.equal(isValidModelOption({ value: '   ' }), false);
+  assert.equal(isValidModelOption({ value: '───────────' }), false);
+  assert.equal(isValidModelOption({ value: '│' }), false);
+  assert.equal(isValidModelOption({ value: '----' }), false);
+  assert.equal(isValidModelOption({ value: 'provider' }), false);
+  assert.equal(isValidModelOption({ value: 'Model' }), false);
+  assert.equal(isValidModelOption(null), false);
+  assert.equal(isValidModelOption(undefined), false);
+});
+
+test('filterValidModelOptions drops invalid rows and keeps real models (including duplicate ids across providers)', () => {
+  const options = [
+    { value: 'openai-codex/gpt-5.6-luna', label: 'GPT-5.6 Luna', description: 'openai-codex' },
+    { value: '' },
+    { value: '───────────' },
+    { value: 'provider' },
+    { value: 'openrouter/gpt-5.6-luna', label: 'GPT-5.6 Luna', description: 'openrouter' },
+  ];
+
+  const filtered = filterValidModelOptions(options);
+  assert.deepEqual(
+    filtered.map((option) => option.value),
+    ['openai-codex/gpt-5.6-luna', 'openrouter/gpt-5.6-luna'],
+  );
+  // Same label, different sub-provider — both must survive distinctly (the id disambiguates them).
+  assert.equal(new Set(filtered.map((option) => option.value)).size, 2);
 });

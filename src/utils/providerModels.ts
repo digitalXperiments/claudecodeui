@@ -1,6 +1,38 @@
 import type { ProviderModelOption, ProviderModelsDefinition } from '../types/app';
 
 /**
+ * A bare run of separator/whitespace characters, or a column-header word —
+ * the shape a malformed CLI table row (`omp models` output parsed without
+ * stripping headers/dividers) leaks into the catalog as. Defends the picker
+ * against a stale or buggy cache even though the source parser is also
+ * expected to filter these.
+ */
+const DECORATIVE_VALUE_PATTERN = /^[\s\-_=─━│┃|.·•]+$/;
+const HEADER_WORDS = new Set(['provider', 'model', 'context', 'thinking', 'images', 'max-out']);
+
+/** Whether a catalog entry is a real, selectable model rather than a blank/header/separator row. */
+export const isValidModelOption = (
+  option: Pick<ProviderModelOption, 'value'> | { value: string } | null | undefined,
+): boolean => {
+  const value = typeof option?.value === 'string' ? option.value.trim() : '';
+  if (!value) {
+    return false;
+  }
+  if (DECORATIVE_VALUE_PATTERN.test(value)) {
+    return false;
+  }
+  if (HEADER_WORDS.has(value.toLowerCase())) {
+    return false;
+  }
+  return true;
+};
+
+/** Filters a raw options list down to entries {@link isValidModelOption} accepts. */
+export const filterValidModelOptions = <T extends { value: string }>(
+  options: readonly T[] | undefined | null,
+): T[] => (options ?? []).filter((option) => isValidModelOption(option));
+
+/**
  * Finds the catalog entry for one model identifier.
  *
  * A model can reach the UI either as the provider alias the user picked
@@ -18,8 +50,9 @@ export const findProviderModelOption = (
     return null;
   }
 
-  return definition.OPTIONS.find((option) => option.value === normalizedModel)
-    ?? definition.OPTIONS.find((option) => option.resolvedModel === normalizedModel)
+  const validOptions = filterValidModelOptions(definition.OPTIONS);
+  return validOptions.find((option) => option.value === normalizedModel)
+    ?? validOptions.find((option) => option.resolvedModel === normalizedModel)
     ?? null;
 };
 

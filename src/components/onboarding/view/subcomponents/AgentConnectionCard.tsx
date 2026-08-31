@@ -23,12 +23,15 @@ export default function AgentConnectionCard({
   onLogin,
 }: AgentConnectionCardProps) {
   const containerClassName = status.authenticated ? connectedClassName : 'border-border bg-card';
+  const isUninstalled = status.installed === false;
 
   const statusText = status.loading
     ? 'Checking...'
     : status.authenticated
       ? status.email || 'Connected'
-      : status.error || 'Not connected';
+      : isUninstalled
+        ? status.error || 'Not installed'
+        : status.error || 'Not connected';
 
   return (
     <div className={`rounded-xl border px-3 py-2.5 transition-colors ${containerClassName}`}>
@@ -47,7 +50,7 @@ export default function AgentConnectionCard({
           </div>
         </div>
 
-        {!status.authenticated && !status.loading && (
+        {!status.authenticated && !status.loading && !isUninstalled && (
           <button
             onClick={onLogin}
             className={`${loginButtonClassName} flex-shrink-0 rounded-lg px-4 py-1.5 text-sm font-medium text-white transition-colors`}

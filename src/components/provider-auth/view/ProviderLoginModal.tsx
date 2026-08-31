@@ -1,9 +1,8 @@
-import { X } from 'lucide-react';
+import { Info, X } from 'lucide-react';
 
 import StandaloneShell from '../../standalone-shell/view/StandaloneShell';
 import { DEFAULT_PROJECT_FOR_EMPTY_SHELL, IS_PLATFORM } from '../../../constants/config';
 import type { LLMProvider } from '../../../types/app';
-import { PROVIDER_USAGE_AUTH_CHANGED_EVENT } from '../../../utils/providerUsagePreferences';
 type ProviderLoginModalProps = {
   isOpen: boolean;
   onClose: () => void;
@@ -72,6 +71,17 @@ const getProviderCommand = ({
   return 'claude --dangerously-skip-permissions /login';
 };
 
+/**
+ * Providers with no dedicated login subcommand: the CLI opens straight into
+ * its interactive TUI, so the user has to know to type `/login` themselves.
+ */
+const getProviderLoginGuidance = (provider: LLMProvider): string | null => {
+  if (provider === 'omp') {
+    return 'Oh My Pi has no dedicated login command — once the terminal below is ready, type /login and follow the prompts to connect a provider.';
+  }
+  return null;
+};
+
 const getProviderTitle = (provider: LLMProvider) => {
   if (provider === 'claude') return 'Claude CLI Login';
   if (provider === 'cursor') return 'Cursor CLI Login';
@@ -100,12 +110,16 @@ export default function ProviderLoginModal({
 
   const command = getProviderCommand({ provider, customCommand, isAuthenticated });
   const title = getProviderTitle(provider);
+  const guidance = getProviderLoginGuidance(provider);
 
+  // Whether the login actually succeeded can't be inferred from the shell's
+  // exit code alone: an interactive TUI can exit 0 on `/login` cancel, or
+  // non-zero on a clean Ctrl+C after a successful login. The caller is
+  // responsible for re-probing the provider's authoritative auth status
+  // (e.g. via `checkProviderAuthStatus`) once this fires — this component
+  // never guesses `authenticated` from the exit code itself.
   const handleComplete = (exitCode: number) => {
     onComplete?.(exitCode);
-    window.dispatchEvent(new CustomEvent(PROVIDER_USAGE_AUTH_CHANGED_EVENT, {
-      detail: { provider, authenticated: exitCode === 0 },
-    }));
     // Keep the modal open so users can read terminal output before closing.
   };
 
@@ -122,6 +136,13 @@ export default function ProviderLoginModal({
             <X className="h-6 w-6" />
           </button>
         </div>
+
+        {guidance && (
+          <div className="flex items-start gap-2 border-b border-gray-200 bg-blue-50 px-4 py-2.5 text-sm text-blue-800 dark:border-gray-700 dark:bg-blue-900/20 dark:text-blue-200">
+            <Info className="mt-0.5 h-4 w-4 shrink-0" />
+            <p>{guidance}</p>
+          </div>
+        )}
 
         <div className="flex-1 overflow-hidden">
             <StandaloneShell project={DEFAULT_PROJECT_FOR_EMPTY_SHELL} command={command} onComplete={handleComplete} minimal={true} />

@@ -8,6 +8,10 @@ export const FALLBACK_PROVIDER_EFFORT_VALUES: Partial<Record<LLMProvider, readon
   opencode: ['none', 'low', 'medium', 'high', 'xhigh', 'max'],
   kilo: ['low', 'medium', 'high'],
   pi: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
+  // Mirrors THINKING_LEVEL_OPTIONS in omp-models.provider.ts (Oh My Pi's
+  // `--thinking` scale). Without this the picker doesn't know OMP supports a
+  // thinking control until the capability matrix loads from the backend.
+  omp: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
 };
 
 export const toProviderEffortOptions = (

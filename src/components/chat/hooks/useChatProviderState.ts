@@ -12,6 +12,10 @@ import {
   PROVIDER_DEFAULT_EFFORT_CHANGED_EVENT,
   type ProviderDefaultEffortChangedDetail,
 } from '../../../constants/providerEffortEvents';
+import {
+  PROVIDER_PERMISSION_PREFERENCE_CHANGED_EVENT,
+  type ProviderPermissionPreferenceChangedDetail,
+} from '../../../utils/providerPermissionPreference';
 import type {
   ProjectSession,
   LLMProvider,
@@ -37,7 +41,10 @@ const FALLBACK_DEFAULT_MODEL: Record<LLMProvider, string> = {
   kimi: 'kimi-code/kimi-for-coding',
   qwencode: 'qwen3-coder-plus',
   pi: 'anthropic/claude-sonnet-4-20250514',
-  omp: 'anthropic/claude-sonnet-4-20250514',
+  // Mirrors OMP_FALLBACK_MODELS.DEFAULT in omp-models.provider.ts — Oh My Pi
+  // has never actually served an Anthropic-branded id as its default, so a
+  // stale Claude id here just renders a model the picker can't select.
+  omp: 'openai-codex/gpt-5.6-luna',
 };
 
 const PROVIDERS: LLMProvider[] = ['claude', 'cursor', 'codex', 'opencode', 'kilo', 'cline', 'grok', 'kimi', 'qwencode', 'pi', 'omp'];
@@ -238,6 +245,16 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
   >({});
   const [providerModelsLoading, setProviderModelsLoading] = useState(true);
   const [providerModelsRefreshing, setProviderModelsRefreshing] = useState(false);
+  /**
+   * Per-provider load error, so one provider's outage (e.g. `omp` timing out
+   * while `omp models` runs) surfaces its own message instead of a single
+   * catalog-wide flag masking which provider actually failed. A failed
+   * refresh never clears a provider's existing catalog entry — the last
+   * known-good model list stays selectable while the error is shown.
+   */
+  const [providerModelErrors, setProviderModelErrors] = useState<
+    Partial<Record<LLMProvider, string | null>>
+  >({});
 
   const providerModelsRequestIdRef = useRef(0);
 
@@ -339,16 +356,14 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
             const response = await authenticatedFetch(`/api/providers/${p}/models${queryString ? `?${queryString}` : ''}`);
             const body = (await response.json()) as ProviderModelsApiResponse;
             if (!body.success || !body.data?.models || !body.data?.cache) {
-              return null;
+              return { provider: p, data: null, error: 'Unable to load models for this agent.' };
             }
 
-            return {
-              provider: p,
-              data: body.data,
-            };
+            return { provider: p, data: body.data, error: null };
           } catch (error) {
             console.warn(`Unable to load ${p} models:`, error);
-            return null;
+            const message = error instanceof Error ? error.message : 'Unable to load models for this agent.';
+            return { provider: p, data: null, error: message };
           }
         }),
       );
@@ -359,9 +374,13 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
 
       const nextCatalog: Partial<Record<LLMProvider, ProviderModelsDefinition>> = {};
       const nextCacheCatalog: Partial<Record<LLMProvider, ProviderModelsCacheInfo>> = {};
+      const nextErrors: Partial<Record<LLMProvider, string | null>> = {};
 
       results.forEach((entry) => {
-        if (!entry) {
+        nextErrors[entry.provider] = entry.error;
+        if (!entry.data) {
+          // Keep whatever catalog entry this provider already had (stale
+          // data is still usable) — only the error state changes.
           return;
         }
 
@@ -371,6 +390,7 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
 
       setProviderModelCatalog((previous) => ({ ...previous, ...nextCatalog }));
       setProviderModelCacheCatalog((previous) => ({ ...previous, ...nextCacheCatalog }));
+      setProviderModelErrors((previous) => ({ ...previous, ...nextErrors }));
     } catch (error) {
       console.error('Error loading provider models:', error);
     } finally {
@@ -756,6 +776,38 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     setPermissionMode(savedMode ?? getDefaultPermissionModeForProvider(provider));
   }, [selectedSession?.id, provider, getDefaultPermissionModeForProvider, getPermissionModesForProvider]);
 
+  // Same-window sync: Settings writes its permission-mode preference through
+  // `writeProviderPermissionModePreference`, which both persists the
+  // canonical `permissionMode-last-<provider>` key and fires this event. A
+  // session that already has its own override (the in-chat toggle was used)
+  // keeps it — a global preference change should only affect chats still on
+  // the provider default.
+  useEffect(() => {
+    const handlePreferenceChanged = (event: Event) => {
+      const detail = (event as CustomEvent<ProviderPermissionPreferenceChangedDetail>).detail;
+      if (!detail || detail.provider !== provider) {
+        return;
+      }
+
+      const validModes = getPermissionModesForProvider(provider);
+      if (!validModes.includes(detail.mode as PermissionMode)) {
+        return;
+      }
+
+      const hasSessionOverride = Boolean(
+        selectedSession?.id && localStorage.getItem(`permissionMode-${selectedSession.id}`),
+      );
+      if (hasSessionOverride) {
+        return;
+      }
+
+      setPermissionMode(detail.mode as PermissionMode);
+    };
+
+    window.addEventListener(PROVIDER_PERMISSION_PREFERENCE_CHANGED_EVENT, handlePreferenceChanged);
+    return () => window.removeEventListener(PROVIDER_PERMISSION_PREFERENCE_CHANGED_EVENT, handlePreferenceChanged);
+  }, [provider, selectedSession?.id, getPermissionModesForProvider]);
+
   useEffect(() => {
     if (!selectedSession?.__provider || selectedSession.__provider === provider) {
       return;
@@ -982,6 +1034,7 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     providerModelCacheCatalog,
     providerModelsLoading,
     providerModelsRefreshing,
+    providerModelErrors,
     hardRefreshProviderModels: () => loadProviderModels({ bypassCache: true }),
     currentProviderModel,
     selectProviderModel,

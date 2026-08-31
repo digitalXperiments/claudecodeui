@@ -1,6 +1,13 @@
 import type { LLMProvider } from '../../types/app';
 
 export type ProviderAuthStatus = {
+  /**
+   * Whether the provider's CLI/runtime is installed. `null` means the backend
+   * didn't report installation state for this provider (older providers don't
+   * distinguish "not installed" from "not authenticated") — callers should
+   * treat `null` as "unknown / assume installed" rather than as a hard no.
+   */
+  installed: boolean | null;
   authenticated: boolean;
   email: string | null;
   method: string | null;
@@ -27,15 +34,15 @@ export const PROVIDER_AUTH_STATUS_ENDPOINTS: Record<LLMProvider, string> = {
 };
 
 export const createInitialProviderAuthStatusMap = (loading = true): ProviderAuthStatusMap => ({
-  claude: { authenticated: false, email: null, method: null, error: null, loading },
-  cursor: { authenticated: false, email: null, method: null, error: null, loading },
-  codex: { authenticated: false, email: null, method: null, error: null, loading },
-  opencode: { authenticated: false, email: null, method: null, error: null, loading },
-  kilo: { authenticated: false, email: null, method: null, error: null, loading },
-  cline: { authenticated: false, email: null, method: null, error: null, loading },
-  grok: { authenticated: false, email: null, method: null, error: null, loading },
-  kimi: { authenticated: false, email: null, method: null, error: null, loading },
-  qwencode: { authenticated: false, email: null, method: null, error: null, loading },
-  pi: { authenticated: false, email: null, method: null, error: null, loading },
-  omp: { authenticated: false, email: null, method: null, error: null, loading },
+  claude: { installed: null, authenticated: false, email: null, method: null, error: null, loading },
+  cursor: { installed: null, authenticated: false, email: null, method: null, error: null, loading },
+  codex: { installed: null, authenticated: false, email: null, method: null, error: null, loading },
+  opencode: { installed: null, authenticated: false, email: null, method: null, error: null, loading },
+  kilo: { installed: null, authenticated: false, email: null, method: null, error: null, loading },
+  cline: { installed: null, authenticated: false, email: null, method: null, error: null, loading },
+  grok: { installed: null, authenticated: false, email: null, method: null, error: null, loading },
+  kimi: { installed: null, authenticated: false, email: null, method: null, error: null, loading },
+  qwencode: { installed: null, authenticated: false, email: null, method: null, error: null, loading },
+  pi: { installed: null, authenticated: false, email: null, method: null, error: null, loading },
+  omp: { installed: null, authenticated: false, email: null, method: null, error: null, loading },
 });

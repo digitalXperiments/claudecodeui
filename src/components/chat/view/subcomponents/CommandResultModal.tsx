@@ -19,8 +19,13 @@ import {
 
 import { Badge, Button, Dialog, DialogContent, DialogTitle, Input } from '../../../../shared/view/ui';
 import SessionProviderLogo from '../../../llm-logo-provider/SessionProviderLogo';
+import type { ProviderAuthStatusMap } from '../../../provider-auth/types';
 import type { LLMProvider, ProviderModelsCacheInfo, ProviderModelsDefinition } from '../../../../types/app';
-import { isProviderModelMatch, resolveProviderModelLabel } from '../../../../utils/providerModels';
+import {
+  filterValidModelOptions,
+  isProviderModelMatch,
+  resolveProviderModelLabel,
+} from '../../../../utils/providerModels';
 import type {
   CommandModalPayload,
   CostCommandData,
@@ -48,6 +53,10 @@ type CommandResultModalProps = {
   providerModelCatalog: Partial<Record<LLMProvider, ProviderModelsDefinition>>;
   providerModelCacheCatalog: Partial<Record<LLMProvider, ProviderModelsCacheInfo>>;
   providerModelsRefreshing: boolean;
+  /** Per-provider model-catalog load error; a failed refresh keeps showing stale data alongside this. */
+  providerModelErrors?: Partial<Record<LLMProvider, string | null>>;
+  /** Per-provider install/auth state, used to keep an unusable fallback catalog (e.g. OMP signed out) from being selectable. */
+  providerAuthStatus?: Partial<ProviderAuthStatusMap>;
   onHardRefreshProviderModels: () => void;
   currentSessionId: string | null;
   onSelectProviderModel: (
@@ -78,6 +87,11 @@ type ModelOption = {
   value: string;
   label?: string;
   description?: string;
+  resolvedModel?: string;
+  runtimeContextWindow?: number;
+  runtimeMaxContextWindow?: number;
+  officialContextWindow?: number;
+  maxOutputTokens?: number;
 };
 
 const PROVIDER_LABELS: Record<string, string> = {
@@ -89,8 +103,39 @@ const PROVIDER_LABELS: Record<string, string> = {
   cline: 'Cline',
   grok: 'Grok',
   kimi: 'Kimi',
+  qwencode: 'Qwen Code',
   pi: 'Pi',
+  omp: 'Oh My Pi',
 };
+
+/**
+ * OMP catalog entries key on `<sub-provider>/<model-id>` (e.g.
+ * `openai-codex/gpt-5.6-luna`) and put the sub-provider slug in `description`
+ * rather than a real description. A qualified label surfaces that
+ * relationship as a small provider tag instead of rendering it as prose, and
+ * disambiguates same-named models from different sub-providers. Other
+ * providers' `description` is real descriptive text — that keeps rendering as
+ * a full line, unchanged.
+ */
+const getQualifiedModelLabel = (
+  option: ModelOption,
+): { primary: string; providerTag: string | null; longDescription: string | null } => {
+  const primary = option.label && option.label !== option.value ? option.label : option.value;
+  const description = option.description?.trim();
+  const looksLikeProviderSlug = Boolean(description) && description!.length <= 24 && !description!.includes(' ');
+
+  if (looksLikeProviderSlug) {
+    return { primary, providerTag: description!, longDescription: null };
+  }
+
+  const slashIndex = option.value.indexOf('/');
+  const providerTag = slashIndex > 0 ? option.value.slice(0, slashIndex) : null;
+  return { primary, providerTag, longDescription: description || null };
+};
+
+const formatContextSize = (value: number): string => (
+  value >= 1000 ? `${Math.round(value / 1000)}k` : String(value)
+);
 
 const FALLBACK_COMMANDS: CommandEntry[] = [
   { name: '/models', description: 'Browse available models for the active provider.' },
@@ -255,10 +300,12 @@ function HelpContent({ data }: { data: HelpCommandData }) {
   );
 }
 
-function ModelsContent({
+export function ModelsContent({
   data,
   providerModelCatalog,
   providerModelsRefreshing,
+  providerModelErrors,
+  providerAuthStatus,
   onHardRefreshProviderModels,
   currentSessionId,
   onSelectProviderModel,
@@ -268,6 +315,8 @@ function ModelsContent({
   data: ModelCommandData;
   providerModelCatalog: Partial<Record<LLMProvider, ProviderModelsDefinition>>;
   providerModelsRefreshing: boolean;
+  providerModelErrors?: CommandResultModalProps['providerModelErrors'];
+  providerAuthStatus?: CommandResultModalProps['providerAuthStatus'];
   onHardRefreshProviderModels: () => void;
   currentSessionId: string | null;
   onSelectProviderModel: CommandResultModalProps['onSelectProviderModel'];
@@ -299,6 +348,19 @@ function ModelsContent({
   const browsingCurrentProvider = browseProvider === currentProvider;
   const liveDefinition = providerModelCatalog[currentProvider];
   const scopeDefinition = providerModelCatalog[browseProvider];
+  const browseProviderModelError = providerModelErrors?.[browseProvider] ?? null;
+  const browseProviderAuth = providerAuthStatus?.[browseProvider];
+  // OMP serves a hardcoded, non-functional fallback catalog whenever it isn't
+  // authenticated (see OMP_FALLBACK_MODELS in omp-models.provider.ts) — those
+  // entries look identical to real models but can't actually start a session.
+  // Other providers don't have this failure mode today, so the gate stays
+  // OMP-specific rather than blocking selection for every provider whenever
+  // auth status is momentarily unknown.
+  const isOmpUnavailable = browseProvider === 'omp'
+    && Boolean(browseProviderAuth)
+    && !browseProviderAuth?.loading
+    && (browseProviderAuth?.installed === false || !browseProviderAuth?.authenticated);
+  const isOmpAuthLoading = browseProvider === 'omp' && Boolean(browseProviderAuth?.loading);
   // The session reports the concrete model id; show the catalog label so the
   // generation the user actually gets is spelled out. `activeModel` reflects a
   // just-applied default-scope change that `data.current` (a snapshot taken
@@ -307,16 +369,16 @@ function ModelsContent({
   const activeModelLabel = resolveProviderModelLabel(liveDefinition, activeModel) || activeModel;
   const availableOptions = useMemo<ModelOption[]>(() => {
     if (scopeDefinition?.OPTIONS && scopeDefinition.OPTIONS.length > 0) {
-      return scopeDefinition.OPTIONS;
+      return filterValidModelOptions(scopeDefinition.OPTIONS);
     }
 
     if (browsingCurrentProvider) {
       if (Array.isArray(data?.availableOptions) && data.availableOptions.length > 0) {
-        return data.availableOptions;
+        return filterValidModelOptions(data.availableOptions);
       }
 
       const availableModels = Array.isArray(data?.availableModels) ? data.availableModels : [];
-      return availableModels.map((model) => ({ value: model, label: model }));
+      return filterValidModelOptions(availableModels.map((model) => ({ value: model, label: model })));
     }
 
     return [];
@@ -371,6 +433,10 @@ function ModelsContent({
   };
 
   const handleSelectModel = (model: string) => {
+    if (isOmpUnavailable) {
+      return;
+    }
+
     // New chats and re-picking the current model apply straight away. Any
     // other pick mid-session routes through the switch-options step: it either
     // re-reads the transcript in this session (same provider) or continues in
@@ -667,6 +733,33 @@ function ModelsContent({
             </div>
           )}
 
+          {isOmpAuthLoading && (
+            <div className="flex items-center gap-2 rounded-xl border border-border/60 bg-muted/20 px-3 py-2.5 text-muted-foreground">
+              <RefreshCw className="h-3.5 w-3.5 shrink-0 animate-spin" />
+              <p className="text-xs leading-5">Checking Oh My Pi connection…</p>
+            </div>
+          )}
+
+          {isOmpUnavailable && (
+            <div className="flex items-start gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2.5 text-amber-700 dark:text-amber-300">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+              <p className="text-xs leading-5">
+                {browseProviderAuth?.installed === false
+                  ? (browseProviderAuth?.error || 'Oh My Pi is not installed — connect it in Settings before picking a model.')
+                  : (browseProviderAuth?.error || 'Oh My Pi is not connected — the models below are placeholders and can’t be selected until you sign in from Settings.')}
+              </p>
+            </div>
+          )}
+
+          {!isOmpUnavailable && browseProviderModelError && availableOptions.length > 0 && (
+            <div className="flex items-start gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2.5 text-amber-700 dark:text-amber-300">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+              <p className="text-xs leading-5">
+                Couldn&apos;t refresh {getProviderLabel(browseProvider)} models ({browseProviderModelError}) — showing the last known list.
+              </p>
+            </div>
+          )}
+
           {showSearch && !scopeCatalogMissing && (
             <SearchField
               value={query}
@@ -678,7 +771,9 @@ function ModelsContent({
           {scopeCatalogMissing ? (
             <div className="flex flex-col items-center gap-3 rounded-2xl border border-dashed border-border bg-background/60 px-4 py-10 text-center">
               <p className="text-sm text-muted-foreground">
-                Models for {getProviderLabel(browseProvider)} are not loaded yet.
+                {browseProviderModelError
+                  ? `Couldn't load models for ${getProviderLabel(browseProvider)} (${browseProviderModelError}).`
+                  : `Models for ${getProviderLabel(browseProvider)} are not loaded yet.`}
               </p>
               <Button
                 type="button"
@@ -689,7 +784,7 @@ function ModelsContent({
                 className="rounded-xl"
               >
                 <RefreshCw className={`h-3.5 w-3.5 ${providerModelsRefreshing ? 'animate-spin' : ''}`} />
-                {providerModelsRefreshing ? 'Loading...' : 'Load models'}
+                {providerModelsRefreshing ? 'Loading...' : 'Retry'}
               </Button>
             </div>
           ) : filteredOptions.length > 0 ? (
@@ -699,14 +794,18 @@ function ModelsContent({
                   const isCurrent = browsingCurrentProvider && isProviderModelMatch(option, activeModel);
                   const isPendingSelection = browsingCurrentProvider && option.value === pendingSessionModel;
                   const isChanging = option.value === changingModel;
+                  const isDisabled = Boolean(changingModel) || isOmpUnavailable;
+                  const { primary: qualifiedLabel, providerTag, longDescription } = getQualifiedModelLabel(option);
+                  const contextWindow = option.runtimeContextWindow ?? option.officialContextWindow;
                   return (
                     <button
                       key={option.value}
                       type="button"
                       onClick={() => handleSelectModel(option.value)}
-                      disabled={Boolean(changingModel)}
+                      disabled={isDisabled}
+                      aria-disabled={isDisabled}
                       aria-label={`Select model ${option.value}`}
-                      className={`settings-content-enter group flex min-h-[4rem] flex-col rounded-2xl border p-3 text-left shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default disabled:opacity-60 ${
+                      className={`settings-content-enter group flex min-h-[4rem] flex-col rounded-2xl border p-3 text-left shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0 disabled:hover:shadow-sm ${
                         isCurrent
                           ? 'border-primary/45 bg-primary/10'
                           : isPendingSelection
@@ -716,18 +815,31 @@ function ModelsContent({
                       style={{ animationDelay: `${Math.min(index * 14, 180)}ms` }}
                     >
                       <span className="flex items-center justify-between gap-2">
-                        <span className="break-all font-mono text-sm font-semibold text-foreground">{option.value}</span>
+                        <span className="break-all font-mono text-sm font-semibold text-foreground">{qualifiedLabel}</span>
                         {isCurrent ? (
                           <BadgeCheck className="h-4 w-4 shrink-0 text-primary" />
                         ) : isChanging ? (
                           <RefreshCw className="h-4 w-4 shrink-0 animate-spin text-primary" />
                         ) : null}
                       </span>
-                      {option.label && option.label !== option.value && (
-                        <span className="mt-1 text-xs font-medium text-foreground/85">{option.label}</span>
+                      {qualifiedLabel !== option.value && (
+                        <span className="mt-1 break-all text-xs text-muted-foreground/80">{option.value}</span>
                       )}
-                      {option.description && (
-                        <span className="mt-1 text-xs leading-5 text-muted-foreground">{option.description}</span>
+                      <span className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
+                        {providerTag && (
+                          <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                            {providerTag}
+                          </span>
+                        )}
+                        {typeof contextWindow === 'number' && contextWindow > 0 && (
+                          <span className="text-[10px] text-muted-foreground">{formatContextSize(contextWindow)} context</span>
+                        )}
+                        {typeof option.maxOutputTokens === 'number' && option.maxOutputTokens > 0 && (
+                          <span className="text-[10px] text-muted-foreground">· {formatContextSize(option.maxOutputTokens)} max output</span>
+                        )}
+                      </span>
+                      {longDescription && (
+                        <span className="mt-1 text-xs leading-5 text-muted-foreground">{longDescription}</span>
                       )}
                       {isCurrent && (
                         <span className="mt-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-primary">Current selection</span>
@@ -744,7 +856,9 @@ function ModelsContent({
             </div>
           ) : (
             <div className="rounded-2xl border border-dashed border-border bg-background/60 px-4 py-10 text-center text-sm text-muted-foreground">
-              No models match that search.
+              {availableOptions.length === 0
+                ? `No models available for ${getProviderLabel(browseProvider)}.`
+                : 'No models match that search.'}
             </div>
           )}
         </>
@@ -983,6 +1097,8 @@ export default function CommandResultModal({
   onClose,
   providerModelCatalog,
   providerModelsRefreshing,
+  providerModelErrors,
+  providerAuthStatus,
   onHardRefreshProviderModels,
   currentSessionId,
   onSelectProviderModel,
@@ -1072,6 +1188,8 @@ export default function CommandResultModal({
               data={payload.data as ModelCommandData}
               providerModelCatalog={providerModelCatalog}
               providerModelsRefreshing={providerModelsRefreshing}
+              providerModelErrors={providerModelErrors}
+              providerAuthStatus={providerAuthStatus}
               onHardRefreshProviderModels={onHardRefreshProviderModels}
               currentSessionId={currentSessionId}
               onSelectProviderModel={onSelectProviderModel}

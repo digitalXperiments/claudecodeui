@@ -124,6 +124,11 @@ const agentConfig: Record<AgentProvider, AgentVisualConfig> = {
 export default function AccountContent({ agent, authStatus, onLogin, onRefresh }: AccountContentProps) {
   const { t } = useTranslation('settings');
   const config = agentConfig[agent];
+  // `installed === false` is an authoritative "the CLI isn't on PATH" signal from
+  // the backend. `null` means the provider doesn't report installation state
+  // (older providers) — treat that as "unknown", not as a hard block.
+  const isUninstalled = authStatus.installed === false;
+  const canAttemptLogin = !isUninstalled;
 
   return (
     <div className="space-y-6">
@@ -149,6 +154,8 @@ export default function AccountContent({ agent, authStatus, onLogin, onRefresh }
               <div className={`text-sm ${config.subtextClass}`}>
                 {authStatus.loading ? (
                   t('agents.authStatus.checkingAuth')
+                ) : isUninstalled ? (
+                  t('agents.authStatus.notInstalled', { defaultValue: 'Not installed' })
                 ) : authStatus.authenticated ? (
                   t('agents.authStatus.loggedInAs', {
                     email: authStatus.email || t('agents.authStatus.authenticatedUser'),
@@ -177,6 +184,10 @@ export default function AccountContent({ agent, authStatus, onLogin, onRefresh }
                 <Badge variant="secondary" className="bg-muted">
                   {t('agents.authStatus.checking')}
                 </Badge>
+              ) : isUninstalled ? (
+                <Badge variant="secondary" className="bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300">
+                  {t('agents.authStatus.notInstalled', { defaultValue: 'Not installed' })}
+                </Badge>
               ) : authStatus.authenticated ? (
                 <Badge variant="secondary" className="bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300">
                   {t('agents.authStatus.connected')}
@@ -189,7 +200,19 @@ export default function AccountContent({ agent, authStatus, onLogin, onRefresh }
             </div>
           </div>
 
-          {authStatus.method !== 'api_key' && (
+          {isUninstalled ? (
+            <div className="border-t border-border/50 pt-4">
+              <div className={`font-medium ${config.textClass}`}>
+                {t('agents.install.title', { defaultValue: `Install ${config.name}`, agent: config.name })}
+              </div>
+              <div className={`mt-1 text-sm ${config.subtextClass}`}>
+                {authStatus.error || t('agents.install.description', {
+                  defaultValue: `${config.name} isn't installed on this machine yet.`,
+                  agent: config.name,
+                })}
+              </div>
+            </div>
+          ) : authStatus.method !== 'api_key' && (
             <div className="border-t border-border/50 pt-4">
               <div className="flex items-center justify-between">
                 <div>
@@ -206,6 +229,7 @@ export default function AccountContent({ agent, authStatus, onLogin, onRefresh }
                   onClick={onLogin}
                   className={`${config.buttonClass} text-white`}
                   size="sm"
+                  disabled={!canAttemptLogin}
                 >
                   <LogIn className="mr-2 h-4 w-4" />
                   {authStatus.authenticated ? t('agents.login.reLoginButton') : t('agents.login.button')}
@@ -214,7 +238,7 @@ export default function AccountContent({ agent, authStatus, onLogin, onRefresh }
             </div>
           )}
 
-          {authStatus.error && (
+          {!isUninstalled && authStatus.error && (
             <div className="border-t border-border/50 pt-4">
               <div className="text-sm text-red-600 dark:text-red-400">
                 {t('agents.error', { error: authStatus.error })}

@@ -3,6 +3,10 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTheme } from '../../../contexts/ThemeContext';
 import { authenticatedFetch } from '../../../utils/api';
 import { setNotificationSoundEnabled } from '../../../utils/notificationSound';
+import {
+  readProviderPermissionModePreference,
+  writeProviderPermissionModePreference,
+} from '../../../utils/providerPermissionPreference';
 import { useProviderAuthStatus } from '../../provider-auth/hooks/useProviderAuthStatus';
 import {
   DEFAULT_CODE_EDITOR_SETTINGS,
@@ -59,10 +63,6 @@ type CodexSettingsStorage = {
 
 type KiloSettingsStorage = {
   permissionMode?: KiloPermissionMode;
-};
-
-type OmpSettingsStorage = {
-  permissionMode?: OmpPermissionMode;
 };
 
 type PiSettingsStorage = {
@@ -345,11 +345,9 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
       );
       setPiPermissionMode(toPiPermissionMode(savedPiSettings.permissionMode));
 
-      const savedOmpSettings = parseJson<OmpSettingsStorage>(
-        localStorage.getItem('omp-tools-settings'),
-        {},
+      setOmpPermissionMode(
+        toOmpPermissionMode(readProviderPermissionModePreference('omp', 'bypassPermissions')),
       );
-      setOmpPermissionMode(toOmpPermissionMode(savedOmpSettings.permissionMode));
 
       try {
         const notificationResponse = await authenticatedFetch('/api/settings/notification-preferences');
@@ -454,10 +452,14 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
         lastUpdated: now,
       }));
 
+      // Legacy blob — kept in sync for anything else that might still read it,
+      // but `writeProviderPermissionModePreference` below is the field that
+      // actually reaches the composer/session runtime.
       localStorage.setItem('omp-tools-settings', JSON.stringify({
         permissionMode: ompPermissionMode,
         lastUpdated: now,
       }));
+      writeProviderPermissionModePreference('omp', ompPermissionMode);
 
       const notificationResponse = await authenticatedFetch('/api/settings/notification-preferences', {
         method: 'PUT',

@@ -73,8 +73,12 @@ export default function Onboarding({ onComplete }: OnboardingProps) {
     setActiveLoginProvider(provider);
   };
 
-  const handleLoginComplete = (exitCode: number) => {
-    if (exitCode === 0 && activeLoginProvider) {
+  const handleLoginComplete = () => {
+    // Always re-probe regardless of exit code: interactive TUI logins (Pi,
+    // Oh My Pi, browser OAuth) can exit non-zero after a successful login
+    // (e.g. Ctrl+C to close) or exit 0 after the user backed out without
+    // logging in — the exit code alone never tells us which happened.
+    if (activeLoginProvider) {
       void checkProviderAuthStatus(activeLoginProvider);
     }
   };

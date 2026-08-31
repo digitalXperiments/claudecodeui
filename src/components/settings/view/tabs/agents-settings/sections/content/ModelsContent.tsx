@@ -4,6 +4,7 @@ import { RefreshCw } from 'lucide-react';
 
 import { authenticatedFetch } from '../../../../../../../utils/api';
 import { readHiddenModels, writeHiddenModels } from '../../../../../../../utils/modelVisibility';
+import { filterValidModelOptions } from '../../../../../../../utils/providerModels';
 import { DEFAULT_EFFORT_VALUE } from '../../../../../../chat/constants/providerEffort';
 import { AGENT_NAMES } from '../../../../../constants/constants';
 import {
@@ -81,7 +82,7 @@ export default function ModelsContent({ agent }: ModelsContentProps) {
   const applyModels = useCallback((nextModels: ProviderModelsDefinition) => {
     setModels(nextModels);
     setDefaultModel((current) => {
-      const options = nextModels.OPTIONS ?? [];
+      const options = filterValidModelOptions(nextModels.OPTIONS);
       if (options.some((option) => option.value === current)) return current;
       const stored = localStorage.getItem(storageKey(agent));
       if (options.some((option) => option.value === stored)) return stored as string;
@@ -174,7 +175,7 @@ export default function ModelsContent({ agent }: ModelsContentProps) {
     writeDefaultEffort(agent, value);
   };
 
-  const options = useMemo(() => models?.OPTIONS ?? [], [models]);
+  const options = useMemo(() => filterValidModelOptions(models?.OPTIONS), [models]);
 
   const filteredOptions = useMemo(() => {
     const normalized = searchQuery.trim().toLowerCase();
@@ -240,7 +241,7 @@ export default function ModelsContent({ agent }: ModelsContentProps) {
               onChange={handleModelChange}
               className="w-56 rounded-lg border border-input bg-card p-2 text-sm text-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
             >
-              {(models?.OPTIONS ?? []).map((option) => (
+              {options.map((option) => (
                 <option key={option.value} value={option.value}>
                   {option.label}
                 </option>
@@ -249,9 +250,9 @@ export default function ModelsContent({ agent }: ModelsContentProps) {
           )}
         </div>
 
-        {!loading && !error && models?.OPTIONS.find((option) => option.value === defaultModel)?.description && (
+        {!loading && !error && options.find((option) => option.value === defaultModel)?.description && (
           <p className="mt-3 border-t border-border/50 pt-3 text-xs text-muted-foreground">
-            {models.OPTIONS.find((option) => option.value === defaultModel)?.description}
+            {options.find((option) => option.value === defaultModel)?.description}
           </p>
         )}
 
