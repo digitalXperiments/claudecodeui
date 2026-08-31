@@ -490,6 +490,33 @@ test('resolveCatalogModelId repairs abbreviated NVIDIA ids without stripping the
   );
 });
 
+test('resolveCatalogModelId redirects the retired NVIDIA deepseek-v4-flash id to opencode-go when it is live', () => {
+  const CATALOG_WITH_OPENCODE_GO = {
+    DEFAULT: 'anthropic/claude-sonnet-4-5',
+    OPTIONS: [
+      { value: 'anthropic/claude-sonnet-4-5', label: 'Anthropic · Sonnet 4.5' },
+      { value: 'opencode-go/deepseek-v4-flash', label: 'OpenCode Go · DeepSeek V4 Flash' },
+      { value: 'opencode-go/nemotron-free', label: 'OpenCode Go · Nemotron Free' },
+    ],
+  };
+
+  assert.deepEqual(
+    resolveCatalogModelId('opencode', 'nvidia/deepseek-v4-flash', CATALOG_WITH_OPENCODE_GO),
+    { model: 'opencode-go/deepseek-v4-flash', repaired: true },
+  );
+  assert.deepEqual(
+    resolveCatalogModelId('opencode', 'nvidia/deepseek-ai/deepseek-v4-flash', CATALOG_WITH_OPENCODE_GO),
+    { model: 'opencode-go/deepseek-v4-flash', repaired: true },
+  );
+
+  // The NVIDIA catalog entry is still live (opencode-go is absent) — keep the
+  // legacy vendor-namespace remap instead of guessing at a redirect.
+  assert.deepEqual(
+    resolveCatalogModelId('opencode', 'nvidia/deepseek-v4-flash', NVIDIA_CATALOG),
+    { model: 'nvidia/deepseek-ai/deepseek-v4-flash', repaired: true },
+  );
+});
+
 test('Unknown relay models fail with a 400 and catalog suggestions even when unrestricted', () => {
   assert.throws(
     () => resolveCatalogModelId('opencode', 'nvidia/deepseek-v9-turbo', NVIDIA_CATALOG),

@@ -82,18 +82,12 @@ test('OpenCode models provider formats frontend labels from provider-prefixed id
 
 test('OpenCode model labels distinguish same-named models by provider without changing values', () => {
   const definition = buildOpenCodeDefinitionFromIds([
-    'nvidia/llama-3.3-70b',
     'openrouter/llama-3.3-70b',
     'xai/llama-3.3-70b',
     'opencode-go/llama-3.3-70b',
   ]);
 
   assert.deepEqual(definition.OPTIONS, [
-    {
-      value: 'nvidia/llama-3.3-70b',
-      label: 'NVIDIA · Llama 3.3 70b',
-      description: 'nvidia - nvidia/llama-3.3-70b',
-    },
     {
       value: 'openrouter/llama-3.3-70b',
       label: 'OpenRouter · Llama 3.3 70b',
@@ -109,6 +103,42 @@ test('OpenCode model labels distinguish same-named models by provider without ch
       label: 'OpenCode Go · Llama 3.3 70b',
       description: 'opencode-go - opencode-go/llama-3.3-70b',
     },
+  ]);
+});
+
+test('OpenCode catalog omits NVIDIA ids (retired hosted deepseek-v4-flash etc.) but keeps opencode-go ids', () => {
+  const definition = buildOpenCodeDefinitionFromIds([
+    'nvidia/deepseek-ai/deepseek-v4-flash',
+    'nvidia/llama-3.3-70b',
+    'opencode-go/deepseek-v4-flash',
+    'opencode-go/nemotron-free',
+    'opencode/nemotron-free',
+  ]);
+
+  assert.deepEqual(definition.OPTIONS.map((option) => option.value), [
+    'opencode-go/deepseek-v4-flash',
+    'opencode-go/nemotron-free',
+    'opencode/nemotron-free',
+  ]);
+
+  const verboseModels = parseOpenCodeVerboseModelsStdout(`
+nvidia/deepseek-ai/deepseek-v4-flash
+{
+  "id": "deepseek-ai/deepseek-v4-flash",
+  "providerID": "nvidia",
+  "name": "DeepSeek V4 Flash"
+}
+opencode-go/deepseek-v4-flash
+{
+  "id": "deepseek-v4-flash",
+  "providerID": "opencode-go",
+  "name": "DeepSeek V4 Flash"
+}
+`);
+
+  const verboseDefinition = buildOpenCodeDefinitionFromVerboseModels(verboseModels);
+  assert.deepEqual(verboseDefinition.OPTIONS.map((option) => option.value), [
+    'opencode-go/deepseek-v4-flash',
   ]);
 });
 

@@ -279,8 +279,10 @@ const formatOpenCodeModelLabel = (id: string, modelLabel: string): string => {
   return modelLabel.startsWith(prefix) ? modelLabel : `${prefix}${modelLabel}`;
 };
 
+const UNSUPPORTED_OPEN_CODE_UPSTREAM_PROVIDERS = new Set(['google', 'nvidia']);
+
 const isSupportedOpenCodeModelId = (id: string): boolean => (
-  readOpenCodeModelParts(id).upstreamProvider.toLowerCase() !== 'google'
+  !UNSUPPORTED_OPEN_CODE_UPSTREAM_PROVIDERS.has(readOpenCodeModelParts(id).upstreamProvider.toLowerCase())
 );
 
 /** Models shown as coding agents must be able to take text, return text, and use tools. */

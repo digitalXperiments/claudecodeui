@@ -208,6 +208,16 @@ function modelSuggestions(requested: string, candidates: string[]): string[] {
   return (near.length > 0 ? near : candidates).slice(0, MAX_MODEL_SUGGESTIONS);
 }
 
+// NVIDIA retired its hosted `deepseek-v4-flash` catalog entry (HTTP 410 as of
+// 2026-08-07). OpenCode now serves the same weights through its own
+// `opencode-go` provider, so requests for the dead NVIDIA id are redirected
+// there when it is live in the catalog, ahead of the legacy NVIDIA remap.
+const RETIRED_NVIDIA_DEEPSEEK_V4_FLASH_IDS = new Set([
+  'nvidia/deepseek-v4-flash',
+  'nvidia/deepseek-ai/deepseek-v4-flash',
+]);
+const OPENCODE_GO_DEEPSEEK_V4_FLASH_ID = 'opencode-go/deepseek-v4-flash';
+
 /**
  * Map a requested model id onto the provider catalog. Leads routinely abbreviate
  * multi-segment ids — OpenCode's NVIDIA catalog is `nvidia/<vendor>/<model>` and
@@ -226,6 +236,13 @@ export function resolveCatalogModelId(
   // pass-through — there is nothing to validate against.
   if (candidates.length === 0) return { model: requested, repaired: false };
   if (candidates.includes(requested)) return { model: requested, repaired: false };
+
+  if (
+    RETIRED_NVIDIA_DEEPSEEK_V4_FLASH_IDS.has(requested)
+    && candidates.includes(OPENCODE_GO_DEEPSEEK_V4_FLASH_ID)
+  ) {
+    return { model: OPENCODE_GO_DEEPSEEK_V4_FLASH_ID, repaired: true };
+  }
 
   const requestedHead = requested.split('/')[0] ?? requested;
   const requestedTail = lastSegment(requested);
