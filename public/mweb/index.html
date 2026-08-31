@@ -7,6 +7,22 @@
 <style>
   * { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; height: 100%; background: #111; color: #eee; font-family: Helvetica, Arial, sans-serif; }
+  body.theme-light, body.theme-light html { background: #f4f4f4; color: #1a1a1a; }
+  body.theme-light .screen { background: #f4f4f4; }
+  body.theme-light h1 { color: #111; }
+  body.theme-light label { color: #444; }
+  body.theme-light input[type="text"], body.theme-light input[type="password"], body.theme-light select, body.theme-light textarea {
+    background: #fff; color: #111; border: 1px solid #ccc;
+  }
+  body.theme-light button.secondary { background: #ddd; color: #111; }
+  body.theme-light .row { border-bottom: 1px solid #ddd; }
+  body.theme-light .row .meta { color: #666; }
+  body.theme-light .topbar { background: #e8e8e8; border-bottom: 1px solid #ccc; }
+  body.theme-light .topbar .title { color: #111; }
+  body.theme-light #chatList { background: #f4f4f4; }
+  body.theme-light .msg.assistant { background: #e2e2e2; color: #111; }
+  body.theme-light .chatInputBar { background: #e8e8e8; border-top: 1px solid #ccc; }
+  body.theme-light .list { border-top: 1px solid #ddd; }
   body { display: -webkit-box; display: -webkit-flex; display: flex; -webkit-box-orient: vertical; -webkit-flex-direction: column; flex-direction: column; height: 100%; }
   .screen { display: none; padding: 12px; }
   .screen.active { display: block; }
@@ -63,7 +79,11 @@
 <body>
 
 <div id="screenLogin" class="screen active">
-  <h1>CloudCLI Lite</h1>
+  <div class="topbar">
+    <div class="title">CloudCLI Lite</div>
+    <button class="secondary small" id="btnThemeLogin">Theme</button>
+  </div>
+  <div style="padding:12px;">
   <label>Username</label>
   <input type="text" id="loginUser" autocapitalize="off" autocorrect="off">
   <label>Password</label>
@@ -74,12 +94,16 @@
   </div>
   <button id="btnLogin">Log in</button>
   <div id="err"></div>
+  </div>
 </div>
 
 <div id="screenCategories" class="screen">
   <div class="topbar">
     <div class="title">Projects</div>
-    <button class="secondary" id="btnLogoutCategories">Logout</button>
+    <div>
+      <button class="secondary small" id="btnThemeCategories">Theme</button>
+      <button class="secondary small" id="btnLogoutCategories">Logout</button>
+    </div>
   </div>
   <div id="categoryList" class="list"></div>
 </div>
@@ -87,7 +111,10 @@
 <div id="screenProjects" class="screen">
   <div class="topbar">
     <div class="title" id="projectsTitle">Projects</div>
-    <button class="secondary" id="btnBackToCategories">Back</button>
+    <div>
+      <button class="secondary small" id="btnThemeProjects">Theme</button>
+      <button class="secondary small" id="btnBackToCategories">Back</button>
+    </div>
   </div>
   <div id="projectList" class="list"></div>
 </div>
@@ -95,11 +122,20 @@
 <div id="screenSessions" class="screen">
   <div class="topbar">
     <div class="title" id="sessionsTitle">Sessions</div>
-    <button class="secondary" id="btnBackToProjects">Back</button>
+    <div>
+      <button class="secondary small" id="btnThemeSessions">Theme</button>
+      <button class="secondary small" id="btnBackToProjects">Back</button>
+    </div>
   </div>
   <div style="padding:12px;">
     <label>Provider</label>
     <select id="providerSelect"></select>
+    <label>Model</label>
+    <select id="modelSelect"></select>
+    <label>Effort</label>
+    <select id="effortSelect"></select>
+    <label>Permissions mode</label>
+    <select id="permissionModeSelect"></select>
     <button id="btnNewSession">New session</button>
   </div>
   <div id="sessionList" class="list"></div>
@@ -108,7 +144,10 @@
 <div id="screenChat" class="screen">
   <div class="topbar">
     <div class="title" id="chatTitle">Chat</div>
-    <button class="secondary" id="btnBackToSessions">Back</button>
+    <div>
+      <button class="secondary small" id="btnThemeChat">Theme</button>
+      <button class="secondary small" id="btnBackToSessions">Back</button>
+    </div>
   </div>
   <div id="chatList"></div>
   <div class="chatInputBar">
@@ -122,6 +161,11 @@
   'use strict';
 
   var TOKEN_KEY = 'cloudcli_mweb_token';
+  var THEME_KEY = 'cloudcli_mweb_theme';
+  var PROVIDER_KEY = 'cloudcli_mweb_provider';
+  var MODEL_KEY = 'cloudcli_mweb_model';
+  var EFFORT_KEY = 'cloudcli_mweb_effort';
+  var PERMISSION_KEY = 'cloudcli_mweb_permission_mode';
   var DROP_KINDS = {
     tool_use: true,
     tool_result: true,
@@ -144,7 +188,10 @@
     currentProjectId: null,
     sessions: [],
     providers: [],
+    capabilities: {},
+    modelsByProvider: {},
     currentSessionId: null,
+    sessionOptions: {},
     ws: null,
     lastAssistantEl: null
   };
@@ -161,6 +208,37 @@
 
   function setErr(msg) {
     $('err').innerHTML = msg || '';
+  }
+
+  // ---- Theme ----
+
+  function getStoredItem(key) {
+    try {
+      return window.localStorage.getItem(key);
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function setStoredItem(key, value) {
+    try {
+      window.localStorage.setItem(key, value);
+    } catch (e) {}
+  }
+
+  function applyTheme(theme) {
+    if (theme === 'light') {
+      document.body.className = 'theme-light';
+    } else {
+      document.body.className = '';
+    }
+  }
+
+  function toggleTheme() {
+    var current = getStoredItem(THEME_KEY) || 'dark';
+    var next = current === 'light' ? 'dark' : 'light';
+    setStoredItem(THEME_KEY, next);
+    applyTheme(next);
   }
 
   function xhr(method, url, body, headers, onSuccess, onError) {
@@ -369,15 +447,139 @@
       var payload = unwrap(data);
       var providers = (payload && payload.providers) || [];
       state.providers = providers;
+      state.capabilities = {};
+      for (var i = 0; i < providers.length; i++) {
+        state.capabilities[providers[i].provider] = providers[i];
+      }
       var sel = $('providerSelect');
       sel.innerHTML = '';
-      for (var i = 0; i < providers.length; i++) {
+      var savedProvider = getStoredItem(PROVIDER_KEY);
+      var haveSaved = false;
+      for (var j = 0; j < providers.length; j++) {
         var opt = document.createElement('option');
-        opt.value = providers[i].provider;
-        opt.innerHTML = escapeHtml(providers[i].provider);
+        opt.value = providers[j].provider;
+        opt.innerHTML = escapeHtml(providers[j].provider);
         sel.appendChild(opt);
+        if (providers[j].provider === savedProvider) { haveSaved = true; }
+      }
+      if (haveSaved) { sel.value = savedProvider; }
+      onProviderChange();
+    }, function () {});
+  }
+
+  function currentCapabilities() {
+    var provider = $('providerSelect').value;
+    return state.capabilities[provider] || null;
+  }
+
+  function onProviderChange() {
+    var provider = $('providerSelect').value;
+    setStoredItem(PROVIDER_KEY, provider);
+    loadModelsForProvider(provider);
+    renderPermissionModeOptions();
+  }
+
+  function loadModelsForProvider(provider) {
+    var modelSel = $('modelSelect');
+    modelSel.innerHTML = '';
+    if (!provider) { return; }
+    if (state.modelsByProvider[provider]) {
+      renderModelOptions(state.modelsByProvider[provider]);
+      return;
+    }
+    xhr('GET', '/api/providers/' + encodeURIComponent(provider) + '/models', null, authHeaders(), function (data) {
+      var payload = unwrap(data);
+      var models = (payload && payload.models) || null;
+      state.modelsByProvider[provider] = models;
+      if (provider === $('providerSelect').value) {
+        renderModelOptions(models);
       }
     }, function () {});
+  }
+
+  function renderModelOptions(models) {
+    var modelSel = $('modelSelect');
+    modelSel.innerHTML = '';
+    var options = (models && models.OPTIONS) || [];
+    var savedModel = getStoredItem(MODEL_KEY);
+    var haveSaved = false;
+    for (var i = 0; i < options.length; i++) {
+      var opt = document.createElement('option');
+      opt.value = options[i].value;
+      opt.innerHTML = escapeHtml(options[i].label || options[i].value);
+      modelSel.appendChild(opt);
+      if (options[i].value === savedModel) { haveSaved = true; }
+    }
+    if (haveSaved) {
+      modelSel.value = savedModel;
+    } else if (models && models.DEFAULT) {
+      modelSel.value = models.DEFAULT;
+    }
+    renderEffortOptions(options);
+  }
+
+  function currentModelOption(options) {
+    var modelSel = $('modelSelect');
+    for (var i = 0; i < options.length; i++) {
+      if (options[i].value === modelSel.value) { return options[i]; }
+    }
+    return null;
+  }
+
+  function renderEffortOptions(options) {
+    var effortSel = $('effortSelect');
+    effortSel.innerHTML = '';
+    var caps = currentCapabilities();
+    if (!caps || !caps.supportsEffort) {
+      effortSel.style.display = 'none';
+      effortSel.previousElementSibling.style.display = 'none';
+      return;
+    }
+    var modelOpt = currentModelOption(options || (state.modelsByProvider[$('providerSelect').value] || {}).OPTIONS || []);
+    var values = (modelOpt && modelOpt.effort && modelOpt.effort.values) || [];
+    if (!values.length) {
+      effortSel.style.display = 'none';
+      effortSel.previousElementSibling.style.display = 'none';
+      return;
+    }
+    effortSel.style.display = '';
+    effortSel.previousElementSibling.style.display = '';
+    var savedEffort = getStoredItem(EFFORT_KEY);
+    var haveSaved = false;
+    for (var i = 0; i < values.length; i++) {
+      var opt = document.createElement('option');
+      opt.value = values[i].value;
+      opt.innerHTML = escapeHtml(values[i].value);
+      effortSel.appendChild(opt);
+      if (values[i].value === savedEffort) { haveSaved = true; }
+    }
+    var def = (modelOpt && modelOpt.effort && modelOpt.effort.default) || '';
+    if (haveSaved) {
+      effortSel.value = savedEffort;
+    } else if (def) {
+      effortSel.value = def;
+    }
+  }
+
+  function renderPermissionModeOptions() {
+    var permSel = $('permissionModeSelect');
+    permSel.innerHTML = '';
+    var caps = currentCapabilities();
+    var modes = (caps && caps.permissionModes) || [];
+    var savedMode = getStoredItem(PERMISSION_KEY);
+    var haveSaved = false;
+    for (var i = 0; i < modes.length; i++) {
+      var opt = document.createElement('option');
+      opt.value = modes[i];
+      opt.innerHTML = escapeHtml(modes[i]);
+      permSel.appendChild(opt);
+      if (modes[i] === savedMode) { haveSaved = true; }
+    }
+    if (haveSaved) {
+      permSel.value = savedMode;
+    } else if (caps && caps.defaultPermissionMode) {
+      permSel.value = caps.defaultPermissionMode;
+    }
   }
 
   // ---- Sessions ----
@@ -426,10 +628,24 @@
       setErr('No provider available');
       return;
     }
+    var model = $('modelSelect').value || '';
+    var effort = ($('effortSelect').style.display !== 'none') ? ($('effortSelect').value || '') : '';
+    var permissionMode = $('permissionModeSelect').value || '';
+
+    setStoredItem(PROVIDER_KEY, provider);
+    if (model) { setStoredItem(MODEL_KEY, model); }
+    if (effort) { setStoredItem(EFFORT_KEY, effort); }
+    if (permissionMode) { setStoredItem(PERMISSION_KEY, permissionMode); }
+
     xhr('POST', '/api/providers/sessions', { provider: provider, projectId: state.currentProjectId }, authHeaders(), function (data) {
       var payload = unwrap(data);
       var sessionId = (payload && payload.sessionId) || (data && data.sessionId);
       if (sessionId) {
+        var options = {};
+        if (model) { options.model = model; }
+        if (effort) { options.effort = effort; }
+        if (permissionMode) { options.permissionMode = permissionMode; }
+        state.sessionOptions[sessionId] = options;
         openChat(sessionId, 'Chat');
       } else {
         setErr('Failed to create session');
@@ -588,7 +804,12 @@
     var text = $('chatInput').value;
     if (!text) { return; }
     if (!state.wsSend) { return; }
-    state.wsSend({ type: 'chat.send', sessionId: state.currentSessionId, content: text });
+    var frame = { type: 'chat.send', sessionId: state.currentSessionId, content: text };
+    var options = state.sessionOptions[state.currentSessionId];
+    if (options) {
+      frame.options = options;
+    }
+    state.wsSend(frame);
     renderMessage({ role: 'user', kind: 'text', displayText: text });
     scrollChatToBottom();
     $('chatInput').value = '';
@@ -614,6 +835,13 @@
   // ---- Wire up ----
 
   $('btnLogin').onclick = doLogin;
+  $('btnThemeLogin').onclick = toggleTheme;
+  $('btnThemeCategories').onclick = toggleTheme;
+  $('btnThemeProjects').onclick = toggleTheme;
+  $('btnThemeSessions').onclick = toggleTheme;
+  $('btnThemeChat').onclick = toggleTheme;
+  $('providerSelect').onchange = onProviderChange;
+  $('modelSelect').onchange = function () { renderEffortOptions(); };
   $('btnLogoutCategories').onclick = logout;
   $('btnBackToCategories').onclick = function () { showScreen('screenCategories'); };
   $('btnBackToProjects').onclick = function () { showScreen('screenProjects'); };
@@ -626,6 +854,8 @@
   };
   $('btnNewSession').onclick = newSession;
   $('btnSend').onclick = sendChat;
+
+  applyTheme(getStoredItem(THEME_KEY) || 'dark');
 
   // Try restoring existing token
   (function init() {
