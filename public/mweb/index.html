@@ -7,7 +7,7 @@
 <style>
   * { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; height: 100%; background: #111; color: #eee; font-family: Helvetica, Arial, sans-serif; }
-  body { display: -webkit-box; display: -webkit-flex; display: flex; -webkit-box-orient: vertical; -webkit-flex-direction: column; flex-direction: column; }
+  body { display: -webkit-box; display: -webkit-flex; display: flex; -webkit-box-orient: vertical; -webkit-flex-direction: column; flex-direction: column; height: 100%; }
   .screen { display: none; padding: 12px; }
   .screen.active { display: block; }
   h1 { font-size: 18px; margin: 0 0 12px 0; color: #fff; }
@@ -34,19 +34,27 @@
   }
   button.secondary { background: #333; }
   button.small { width: auto; display: inline-block; padding: 8px 14px; font-size: 14px; margin-top: 0; margin-right: 8px; }
-  .row { display: -webkit-box; display: -webkit-flex; display: flex; -webkit-box-pack: justify; -webkit-justify-content: space-between; justify-content: space-between; -webkit-box-align: center; -webkit-align-items: center; align-items: center; padding: 12px; border-bottom: 1px solid #333; }
+  .row { display: -webkit-box; display: -webkit-flex; display: flex; -webkit-box-pack: justify; -webkit-justify-content: space-between; justify-content: space-between; -webkit-box-align: center; -webkit-align-items: center; align-items: center; padding: 14px 12px; border-bottom: 1px solid #333; }
   .row .meta { font-size: 12px; color: #999; }
-  .topbar { display: -webkit-box; display: -webkit-flex; display: flex; -webkit-box-pack: justify; -webkit-justify-content: space-between; justify-content: space-between; -webkit-box-align: center; -webkit-align-items: center; align-items: center; padding: 10px 12px; background: #1a1a1a; border-bottom: 1px solid #333; }
-  .topbar .title { font-size: 16px; font-weight: bold; color: #fff; }
+  .row .swatch { width: 12px; height: 12px; border-radius: 50%; margin-right: 10px; display: inline-block; -webkit-flex-shrink: 0; flex-shrink: 0; }
+  .row .rowMain { display: -webkit-box; display: -webkit-flex; display: flex; -webkit-box-align: center; -webkit-align-items: center; align-items: center; }
+  .topbar { display: -webkit-box; display: -webkit-flex; display: flex; -webkit-box-pack: justify; -webkit-justify-content: space-between; justify-content: space-between; -webkit-box-align: center; -webkit-align-items: center; align-items: center; padding: 10px 12px; background: #1a1a1a; border-bottom: 1px solid #333; -webkit-flex-shrink: 0; flex-shrink: 0; }
+  .topbar .title { font-size: 16px; font-weight: bold; color: #fff; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .topbar button { width: auto; padding: 8px 12px; margin-top: 0; font-size: 13px; }
   #err { color: #ff6b6b; font-size: 13px; margin-top: 8px; min-height: 16px; }
-  #chatList { padding: 10px; overflow-y: auto; -webkit-overflow-scrolling: touch; }
-  .msg { margin-bottom: 10px; padding: 10px; border-radius: 8px; max-width: 90%; word-wrap: break-word; }
-  .msg.user { background: #2a6df4; color: #fff; margin-left: auto; text-align: right; }
-  .msg.assistant { background: #2a2a2a; color: #eee; }
-  .msg.other { background: #222; color: #999; font-size: 12px; }
-  .chatWrap { display: -webkit-box; display: -webkit-flex; display: flex; -webkit-box-orient: vertical; -webkit-flex-direction: column; flex-direction: column; height: 100%; }
-  .chatInputBar { display: -webkit-box; display: -webkit-flex; display: flex; padding: 8px; border-top: 1px solid #333; background: #1a1a1a; }
+  #chatList { padding: 10px; overflow-y: auto; -webkit-overflow-scrolling: touch; -webkit-box-flex: 1; -webkit-flex: 1 1 auto; flex: 1 1 auto; min-height: 0; }
+  .msg { margin-bottom: 10px; padding: 10px 12px; border-radius: 14px; max-width: 85%; word-wrap: break-word; white-space: pre-wrap; }
+  .msg.user { background: #2a6df4; color: #fff; margin-left: auto; text-align: left; border-bottom-right-radius: 4px; }
+  .msg.assistant { background: #2a2a2a; color: #eee; margin-right: auto; border-bottom-left-radius: 4px; }
+  #screenChat.screen.active {
+    display: -webkit-box; display: -webkit-flex; display: flex;
+    -webkit-box-orient: vertical; -webkit-flex-direction: column; flex-direction: column;
+    -webkit-box-flex: 1; -webkit-flex: 1 1 auto; flex: 1 1 auto;
+    min-height: 0;
+    height: 100%;
+    padding: 0;
+  }
+  .chatInputBar { display: -webkit-box; display: -webkit-flex; display: flex; padding: 8px; border-top: 1px solid #333; background: #1a1a1a; -webkit-flex-shrink: 0; flex-shrink: 0; }
   .chatInputBar textarea { -webkit-box-flex: 1; -webkit-flex: 1; flex: 1; resize: none; height: 44px; }
   .chatInputBar button { width: auto; margin-top: 0; margin-left: 8px; padding: 0 16px; }
   .list { border-top: 1px solid #333; }
@@ -68,10 +76,18 @@
   <div id="err"></div>
 </div>
 
-<div id="screenProjects" class="screen">
+<div id="screenCategories" class="screen">
   <div class="topbar">
     <div class="title">Projects</div>
-    <button class="secondary" id="btnLogoutProjects">Logout</button>
+    <button class="secondary" id="btnLogoutCategories">Logout</button>
+  </div>
+  <div id="categoryList" class="list"></div>
+</div>
+
+<div id="screenProjects" class="screen">
+  <div class="topbar">
+    <div class="title" id="projectsTitle">Projects</div>
+    <button class="secondary" id="btnBackToCategories">Back</button>
   </div>
   <div id="projectList" class="list"></div>
 </div>
@@ -90,16 +106,14 @@
 </div>
 
 <div id="screenChat" class="screen">
-  <div class="chatWrap">
-    <div class="topbar">
-      <div class="title" id="chatTitle">Chat</div>
-      <button class="secondary" id="btnBackToSessions">Back</button>
-    </div>
-    <div id="chatList" style="-webkit-box-flex:1;-webkit-flex:1;flex:1;"></div>
-    <div class="chatInputBar">
-      <textarea id="chatInput" placeholder="Message"></textarea>
-      <button id="btnSend">Send</button>
-    </div>
+  <div class="topbar">
+    <div class="title" id="chatTitle">Chat</div>
+    <button class="secondary" id="btnBackToSessions">Back</button>
+  </div>
+  <div id="chatList"></div>
+  <div class="chatInputBar">
+    <textarea id="chatInput" placeholder="Message"></textarea>
+    <button id="btnSend">Send</button>
   </div>
 </div>
 
@@ -108,14 +122,31 @@
   'use strict';
 
   var TOKEN_KEY = 'cloudcli_mweb_token';
+  var DROP_KINDS = {
+    tool_use: true,
+    tool_result: true,
+    thinking: true,
+    permission_request: true,
+    permission_cancelled: true,
+    session_created: true,
+    interactive_prompt: true,
+    task_notification: true,
+    protocol_error: true,
+    chat_subscribed: true,
+    pong: true
+  };
+
   var state = {
     token: null,
+    categories: [],
     projects: [],
+    currentCategoryId: null,
     currentProjectId: null,
     sessions: [],
     providers: [],
     currentSessionId: null,
-    ws: null
+    ws: null,
+    lastAssistantEl: null
   };
 
   function $(id) { return document.getElementById(id); }
@@ -193,7 +224,7 @@
         try {
           window.localStorage.setItem(TOKEN_KEY, data.token);
         } catch (e) {}
-        loadProjects();
+        loadCategories();
       } else {
         setErr((data && data.error) || 'Login failed');
       }
@@ -202,24 +233,87 @@
     });
   }
 
-  // ---- Projects ----
+  // ---- Categories ----
 
-  function loadProjects() {
-    xhr('GET', '/api/projects', null, authHeaders(), function (data) {
-      var list = data;
-      if (!list || !list.length) { list = []; }
-      state.projects = list;
-      renderProjects();
-      showScreen('screenProjects');
+  function loadCategories() {
+    xhr('GET', '/api/categories', null, authHeaders(), function (data) {
+      var categories = (data && data.success && data.categories) || [];
+      state.categories = categories;
+      xhr('GET', '/api/projects', null, authHeaders(), function (projData) {
+        var projects = Array.isArray(projData) ? projData : [];
+        state.projects = projects;
+        renderCategories();
+        showScreen('screenCategories');
+      }, function (projData) {
+        setErr((projData && projData.error) || 'Failed to load projects');
+      });
     }, function (data) {
-      setErr((data && data.error) || 'Failed to load projects');
+      setErr((data && data.error) || 'Failed to load categories');
     });
   }
+
+  function projectsForCategory(categoryId) {
+    var out = [];
+    for (var i = 0; i < state.projects.length; i++) {
+      var p = state.projects[i];
+      var pcid = p.categoryId || null;
+      if (categoryId === null) {
+        if (!pcid) { out.push(p); }
+      } else if (pcid === categoryId) {
+        out.push(p);
+      }
+    }
+    return out;
+  }
+
+  function renderCategories() {
+    var el = $('categoryList');
+    el.innerHTML = '';
+    var cats = state.categories.slice();
+    cats.sort(function (a, b) {
+      var sa = (typeof a.sortOrder === 'number') ? a.sortOrder : 0;
+      var sb = (typeof b.sortOrder === 'number') ? b.sortOrder : 0;
+      return sa - sb;
+    });
+    for (var i = 0; i < cats.length; i++) {
+      (function (c) {
+        var count = projectsForCategory(c.categoryId).length;
+        var row = document.createElement('div');
+        row.className = 'row';
+        var swatch = '<span class="swatch" style="background:' + escapeHtml(c.color || '#666') + ';"></span>';
+        row.innerHTML = '<div class="rowMain">' + swatch + '<div>' + escapeHtml(c.name || c.categoryId) + '</div></div><div class="meta">' + count + '</div>';
+        row.onclick = function () {
+          openCategory(c.categoryId, c.name || c.categoryId);
+        };
+        el.appendChild(row);
+      })(cats[i]);
+    }
+    var uncategorized = projectsForCategory(null);
+    if (uncategorized.length) {
+      var urow = document.createElement('div');
+      urow.className = 'row';
+      urow.innerHTML = '<div class="rowMain"><span class="swatch" style="background:#555;"></span><div>Uncategorized</div></div><div class="meta">' + uncategorized.length + '</div>';
+      urow.onclick = function () {
+        openCategory(null, 'Uncategorized');
+      };
+      el.appendChild(urow);
+    }
+  }
+
+  function openCategory(categoryId, name) {
+    state.currentCategoryId = categoryId;
+    $('projectsTitle').innerHTML = escapeHtml(name);
+    renderProjects();
+    showScreen('screenProjects');
+  }
+
+  // ---- Projects ----
 
   function renderProjects() {
     var el = $('projectList');
     el.innerHTML = '';
-    for (var i = 0; i < state.projects.length; i++) {
+    var projects = projectsForCategory(state.currentCategoryId);
+    for (var i = 0; i < projects.length; i++) {
       (function (p) {
         var row = document.createElement('div');
         row.className = 'row';
@@ -233,7 +327,7 @@
           loadSessions();
         };
         el.appendChild(row);
-      })(state.projects[i]);
+      })(projects[i]);
     }
   }
 
@@ -241,6 +335,31 @@
     if (!s) { return ''; }
     s = String(s);
     return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  function pad2(n) {
+    return (n < 10 ? '0' : '') + n;
+  }
+
+  function formatLastActivity(value) {
+    if (!value) { return ''; }
+    var d = new Date(value);
+    if (isNaN(d.getTime())) { return String(value); }
+    return (d.getMonth() + 1) + '/' + d.getDate() + '/' + d.getFullYear() + ' ' + pad2(d.getHours()) + ':' + pad2(d.getMinutes());
+  }
+
+  function sessionTitle(s) {
+    if (s.summary && String(s.summary).length) {
+      return s.summary;
+    }
+    if (s.name && String(s.name).length) {
+      return s.name;
+    }
+    if (s.title && String(s.title).length) {
+      return s.title;
+    }
+    var when = formatLastActivity(s.lastActivity);
+    return when ? ('Chat ' + when) : 'Chat';
   }
 
   // ---- Providers ----
@@ -291,10 +410,10 @@
         var row = document.createElement('div');
         row.className = 'row';
         var sid = s.sessionId || s.id;
-        var title = s.title || s.name || sid;
+        var title = sessionTitle(s);
         row.innerHTML = '<div><div>' + escapeHtml(title) + '</div><div class="meta">' + escapeHtml(sid) + '</div></div>';
         row.onclick = function () {
-          openChat(sid);
+          openChat(sid, title);
         };
         el.appendChild(row);
       })(sessions[i]);
@@ -311,7 +430,7 @@
       var payload = unwrap(data);
       var sessionId = (payload && payload.sessionId) || (data && data.sessionId);
       if (sessionId) {
-        openChat(sessionId);
+        openChat(sessionId, 'Chat');
       } else {
         setErr('Failed to create session');
       }
@@ -322,9 +441,10 @@
 
   // ---- Chat ----
 
-  function openChat(sessionId) {
+  function openChat(sessionId, title) {
     state.currentSessionId = sessionId;
-    $('chatTitle').innerHTML = escapeHtml(sessionId);
+    state.lastAssistantEl = null;
+    $('chatTitle').innerHTML = escapeHtml(title || 'Chat');
     $('chatList').innerHTML = '';
     showScreen('screenChat');
     loadMessages(sessionId);
@@ -342,17 +462,48 @@
     }, function () {});
   }
 
+  function isJsonDump(s) {
+    if (typeof s !== 'string') { return true; }
+    var trimmed = s.replace(/^\s+/, '');
+    return trimmed.charAt(0) === '{';
+  }
+
+  function shouldRenderMessage(m) {
+    if (!m) { return false; }
+    if (m.kind === 'text') { return true; }
+    var role = m.role;
+    if (role !== 'user' && role !== 'assistant') { return false; }
+    if (m.kind && DROP_KINDS.hasOwnProperty(m.kind)) { return false; }
+    var text = m.displayText;
+    if (typeof text !== 'string' && typeof m.content === 'string') {
+      text = m.content;
+    }
+    if (typeof text !== 'string' || !text.length) { return false; }
+    if (isJsonDump(text)) { return false; }
+    return true;
+  }
+
+  function messageText(m) {
+    if (typeof m.displayText === 'string') { return m.displayText; }
+    if (typeof m.content === 'string') { return m.content; }
+    return '';
+  }
+
   function renderMessage(m) {
-    var text = m.displayText || m.content || '';
+    if (!shouldRenderMessage(m)) { return; }
+    var text = messageText(m);
     if (!text) { return; }
-    var role = m.role || 'other';
+    var role = m.role;
     var div = document.createElement('div');
-    var cls = 'msg other';
-    if (role === 'user') { cls = 'msg user'; }
-    else if (role === 'assistant') { cls = 'msg assistant'; }
+    var cls = role === 'user' ? 'msg user' : 'msg assistant';
     div.className = cls;
     div.innerHTML = escapeHtml(text);
     $('chatList').appendChild(div);
+    if (role === 'assistant') {
+      state.lastAssistantEl = div;
+    } else {
+      state.lastAssistantEl = null;
+    }
   }
 
   function scrollChatToBottom() {
@@ -403,13 +554,34 @@
       if (data.requestId) {
         state.wsSend({ type: 'chat.permission-response', requestId: data.requestId, allow: false });
       }
+      return;
     }
 
-    var text = data.displayText || data.content;
-    if (text) {
-      renderMessage({ role: data.role, displayText: text });
+    if (kind && DROP_KINDS.hasOwnProperty(kind)) { return; }
+
+    if (kind === 'stream_delta') {
+      var deltaText = data.displayText;
+      if (typeof deltaText !== 'string') {
+        if (typeof data.content === 'string') {
+          deltaText = data.content;
+        } else {
+          return;
+        }
+      }
+      if (!deltaText.length || isJsonDump(deltaText)) { return; }
+      if (state.lastAssistantEl) {
+        state.lastAssistantEl.innerHTML = escapeHtml(deltaText);
+      } else {
+        renderMessage({ role: 'assistant', displayText: deltaText });
+      }
       scrollChatToBottom();
+      return;
     }
+
+    var role = data.role;
+    if (role !== 'user' && role !== 'assistant') { return; }
+    renderMessage(data);
+    scrollChatToBottom();
   }
 
   function sendChat() {
@@ -417,7 +589,7 @@
     if (!text) { return; }
     if (!state.wsSend) { return; }
     state.wsSend({ type: 'chat.send', sessionId: state.currentSessionId, content: text });
-    renderMessage({ role: 'user', displayText: text });
+    renderMessage({ role: 'user', kind: 'text', displayText: text });
     scrollChatToBottom();
     $('chatInput').value = '';
   }
@@ -426,6 +598,7 @@
 
   function logout() {
     state.token = null;
+    state.currentCategoryId = null;
     state.currentProjectId = null;
     state.currentSessionId = null;
     if (state.ws) {
@@ -441,7 +614,8 @@
   // ---- Wire up ----
 
   $('btnLogin').onclick = doLogin;
-  $('btnLogoutProjects').onclick = logout;
+  $('btnLogoutCategories').onclick = logout;
+  $('btnBackToCategories').onclick = function () { showScreen('screenCategories'); };
   $('btnBackToProjects').onclick = function () { showScreen('screenProjects'); };
   $('btnBackToSessions').onclick = function () {
     if (state.ws) {
@@ -461,7 +635,7 @@
     } catch (e) {}
     if (saved) {
       state.token = saved;
-      loadProjects();
+      loadCategories();
     }
   })();
 
