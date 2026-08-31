@@ -314,8 +314,12 @@
   // ---- Categories ----
 
   function loadCategories() {
-    xhr('GET', '/api/categories', null, authHeaders(), function (data) {
-      var categories = (data && data.success && data.categories) || [];
+    xhr('GET', '/api/projects/categories', null, authHeaders(), function (data) {
+      var categories = (data && data.success && data.categories) || (data && data.categories) || [];
+      if (!categories.length && data) {
+        var unwrapped = unwrap(data);
+        categories = (unwrapped && unwrapped.categories) || [];
+      }
       state.categories = categories;
       xhr('GET', '/api/projects', null, authHeaders(), function (projData) {
         var projects = Array.isArray(projData) ? projData : [];
