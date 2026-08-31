@@ -8,6 +8,7 @@ import {
   findProviderModelOption,
   isProviderModelMatch,
   isValidModelOption,
+  OMP_FALLBACK_DEFAULT_MODEL,
   resolveProviderModelLabel,
 } from './providerModels';
 
@@ -20,6 +21,10 @@ const catalog: ProviderModelsDefinition = {
   ],
   DEFAULT: 'opus',
 };
+
+test('OMP fallback default is available from the runtime-independent model utility', () => {
+  assert.equal(OMP_FALLBACK_DEFAULT_MODEL, 'openai-codex/gpt-5.4');
+});
 
 test('findProviderModelOption matches a Claude alias by its picker value', () => {
   const option = findProviderModelOption(catalog, 'opus');

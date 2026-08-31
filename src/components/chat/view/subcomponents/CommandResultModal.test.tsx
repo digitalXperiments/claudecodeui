@@ -8,7 +8,7 @@ import type { ModelCommandData } from '../../hooks/useChatComposerState';
 import type { ProviderModelsDefinition } from '../../../../types/app';
 import type { ProviderAuthStatus, ProviderAuthStatusMap } from '../../../provider-auth/types';
 
-import { FALLBACK_DEFAULT_MODEL } from '../../hooks/useChatProviderState';
+import { OMP_FALLBACK_DEFAULT_MODEL } from '../../../../utils/providerModels';
 import { ModelsContent } from './CommandResultModal';
 
 const noop = () => {};
@@ -75,7 +75,7 @@ test('ModelsContent filters out decorative and header rows leaked from a malform
 });
 
 test('OMP frontend fallback matches the backend fallback default', () => {
-  assert.equal(FALLBACK_DEFAULT_MODEL.omp, 'openai-codex/gpt-5.4');
+  assert.equal(OMP_FALLBACK_DEFAULT_MODEL, 'openai-codex/gpt-5.4');
 });
 
 test('ModelsContent renders duplicate model ids from different sub-providers distinctly', () => {

@@ -1,6 +1,13 @@
 import type { ProviderModelOption, ProviderModelsDefinition } from '../types/app';
 
 /**
+ * Default OMP model used before the provider catalog is available. This lives
+ * in a runtime-independent module so non-app consumers can verify the shared
+ * fallback without loading the client API configuration.
+ */
+export const OMP_FALLBACK_DEFAULT_MODEL = 'openai-codex/gpt-5.4';
+
+/**
  * A bare run of separator/whitespace characters, or a column-header word —
  * the shape a malformed CLI table row (`omp models` output parsed without
  * stripping headers/dividers) leaks into the catalog as. Defends the picker

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { authenticatedFetch } from '../../../utils/api';
-import { findProviderModelOption } from '../../../utils/providerModels';
+import { findProviderModelOption, OMP_FALLBACK_DEFAULT_MODEL } from '../../../utils/providerModels';
 import { useAgentVisibility } from '../../../hooks/useAgentVisibility';
 import type { PendingPermissionRequest, PermissionMode } from '../types/types';
 import {
@@ -43,7 +43,7 @@ export const FALLBACK_DEFAULT_MODEL: Record<LLMProvider, string> = {
   pi: 'anthropic/claude-sonnet-4-20250514',
   // Mirrors OMP_FALLBACK_MODELS.DEFAULT in omp-models.provider.ts — Oh My Pi
   // must stay aligned so the initial picker state remains selectable.
-  omp: 'openai-codex/gpt-5.4',
+  omp: OMP_FALLBACK_DEFAULT_MODEL,
 };
 
 const PROVIDERS: LLMProvider[] = ['claude', 'cursor', 'codex', 'opencode', 'kilo', 'cline', 'grok', 'kimi', 'qwencode', 'pi', 'omp'];
