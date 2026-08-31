@@ -83,6 +83,11 @@
   body.theme-light .msg blockquote { border-left-color: #999; }
   body.theme-light .msg a { color: #1a53d6; }
   body.theme-light .msg.user a { color: #fff; }
+  .msg .md-table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 0 0 8px 0; }
+  .msg table.md-table { white-space: normal; border-collapse: collapse; width: 100%; font-size: 13px; }
+  .msg table.md-table th, .msg table.md-table td { padding: 6px 8px; border: 1px solid #555; text-align: left; }
+  .msg table.md-table th { font-weight: bold; }
+  body.theme-light .msg table.md-table th, body.theme-light .msg table.md-table td { border-color: #ccc; }
   .msg.typing { display: -webkit-box; display: -webkit-flex; display: flex; -webkit-box-align: center; -webkit-align-items: center; align-items: center; color: #999; font-size: 13px; }
   .msg.typing .typingDots { display: inline-block; margin-right: 8px; }
   .msg.typing .typingDots span { display: inline-block; width: 6px; height: 6px; margin-right: 3px; border-radius: 50%; background: #999; -webkit-animation: pulse 1.2s infinite ease-in-out; animation: pulse 1.2s infinite ease-in-out; }
@@ -529,6 +534,38 @@
           i++;
         }
         out.push('<blockquote><p>' + qlines.join('<br>') + '</p></blockquote>');
+        continue;
+      }
+
+      var sepRe = /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/;
+      if (line.indexOf('|') !== -1 && i + 1 < lines.length && sepRe.test(lines[i + 1])) {
+        var splitRow = function (rowLine) {
+          var cells = rowLine.replace(/^\s+|\s+$/g, '').replace(/^\|/, '').replace(/\|$/, '').split('|');
+          var out2 = [];
+          for (var ci = 0; ci < cells.length; ci++) {
+            out2.push(boldItalic(cells[ci].replace(/^\s+|\s+$/g, '')));
+          }
+          return out2;
+        };
+        var headCells = splitRow(line);
+        var theadHtml = '<tr>';
+        for (var hc = 0; hc < headCells.length; hc++) {
+          theadHtml += '<th>' + headCells[hc] + '</th>';
+        }
+        theadHtml += '</tr>';
+        i += 2;
+        var bodyRows = [];
+        while (i < lines.length && lines[i].indexOf('|') !== -1 && lines[i].replace(/^\s+|\s+$/g, '') !== '') {
+          var rowCells = splitRow(lines[i]);
+          var rowHtml = '<tr>';
+          for (var rc = 0; rc < rowCells.length; rc++) {
+            rowHtml += '<td>' + rowCells[rc] + '</td>';
+          }
+          rowHtml += '</tr>';
+          bodyRows.push(rowHtml);
+          i++;
+        }
+        out.push('<div class="md-table-wrap"><table class="md-table"><thead>' + theadHtml + '</thead><tbody>' + bodyRows.join('') + '</tbody></table></div>');
         continue;
       }
 
