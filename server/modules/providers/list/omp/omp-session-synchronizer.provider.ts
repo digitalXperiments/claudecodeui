@@ -52,7 +52,7 @@ function extractUserTitle(record: Record<string, unknown>): string | undefined {
 /**
  * Session indexer for Oh My Pi coding-agent JSONL transcripts.
  *
- * Layout: `~/.omp/agent/sessions/--cwd-encoded--/<timestamp>_<uuid>.jsonl`
+ * Layout: `<OMP profile>/sessions/--cwd-encoded--/<timestamp>_<uuid>.jsonl`
  * The session id is the UUID portion of the filename (after the last `_`
  * before `.jsonl`). Project path is recovered from the parent directory
  * encoding and/or the session header line inside the file.

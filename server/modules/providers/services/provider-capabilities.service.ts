@@ -225,7 +225,7 @@ const PROVIDER_CAPABILITIES: Record<LLMProvider, ProviderCapabilities> = {
     provider: 'omp',
     // Oh My Pi is a Pi fork and inherits the same permission story: no built-in
     // popups, "plan" maps to a read-only tool allowlist (`--tools read,grep,
-    // find,ls`), everything else runs with the full default tool set.
+    // glob`), everything else runs with the full default tool set.
     permissionModes: ['plan', 'bypassPermissions'],
     defaultPermissionMode: 'bypassPermissions',
     // Images accepted as base64 in RPC prompt payloads; path refs also work

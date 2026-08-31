@@ -82,6 +82,8 @@ export type ProviderModelOption = {
   resolvedModel?: string;
   /** Context budget currently advertised by the installed provider runtime. */
   runtimeContextWindow?: number;
+  /** Maximum output tokens advertised by the installed provider runtime. */
+  runtimeMaxOutputTokens?: number;
   /** Largest runtime context mode advertised locally, when distinct from the active budget. */
   runtimeMaxContextWindow?: number;
   /** Published provider capacity; kept separate from the locally active runtime budget. */

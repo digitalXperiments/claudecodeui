@@ -8,7 +8,7 @@ import type { ProviderSkillSource } from '@/shared/types.js';
 /**
  * Oh My Pi skill discovery roots (Pi's layout, retargeted to OMP's own home so
  * we never read or write Pi's `~/.pi`):
- * - `~/.omp/skills/` (or `~/.omp/agent/skills/`), `~/.agents/skills/`
+ * - `<OMP profile>/skills/`, `~/.agents/skills/`
  * - `.omp/skills/`, `.agents/skills/` (cwd and parents)
  * Skills are invoked as `/skill:name`.
  */

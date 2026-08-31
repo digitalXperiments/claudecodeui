@@ -146,7 +146,7 @@ test('pi restricts tools in plan mode only', () => {
 test('omp restricts tools in plan mode and yolos on bypass', () => {
   assert.equal(
     build({ provider: 'omp', permissionMode: 'plan' }),
-    'omp --tools read,grep,find,ls',
+    'omp --tools read,grep,glob',
   );
   assert.equal(
     build({ provider: 'omp', permissionMode: 'bypassPermissions' }),
@@ -154,7 +154,7 @@ test('omp restricts tools in plan mode and yolos on bypass', () => {
   );
   assert.equal(
     build({ provider: 'omp', hasSession: true, sessionId: 'o1', permissionMode: 'bypassPermissions' }),
-    'omp --session "o1" --approval-mode yolo',
+    'omp --resume "o1" --approval-mode yolo',
   );
 });
 

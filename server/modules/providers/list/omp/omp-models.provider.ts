@@ -13,13 +13,7 @@ import {
   writeProviderSessionActiveModelChange,
 } from '@/shared/utils.js';
 
-// Oh My Pi's global `--thinking <level>` / RPC `set_thinking_level` scale (see
-// docs/rpc.md in @oh-my-pi/pi-coding-agent). Not every "thinking: yes"
-// model supports the full range (xhigh/max are gated per-model), but Oh My Pi
-// itself is the one that validates that at request time — CloudCLI has no
-// cheaper way to know the exact ceiling per model without an extra RPC round
-// trip per catalog entry.
-const THINKING_LEVEL_OPTIONS: NonNullable<ProviderModelOption['effort']>['values'] = [
+const LEGACY_THINKING_LEVELS: NonNullable<ProviderModelOption['effort']>['values'] = [
   { value: 'off' },
   { value: 'minimal' },
   { value: 'low' },
@@ -29,178 +23,257 @@ const THINKING_LEVEL_OPTIONS: NonNullable<ProviderModelOption['effort']>['values
   { value: 'max' },
 ];
 
-// Sensible catalog when `omp models` is empty (no auth yet) or the CLI
-// is unavailable. Values use Oh My Pi's `provider/id` form so they round-trip to
-// `--model` / RPC `set_model`. Kept intentionally current with what Oh My Pi
-// actually serves through the `openai-codex` provider group today — this is
-// a last-resort fallback, not a claim about the live catalog (see
-// `runOmpListModels`, which is the real source of truth).
+/** Conservative offline fallback; live `omp models --json` is authoritative. */
 export const OMP_FALLBACK_MODELS: ProviderModelsDefinition = {
   OPTIONS: [
     {
-      value: 'openai-codex/gpt-5.6-luna',
-      label: 'GPT-5.6 Luna',
-      effort: { values: THINKING_LEVEL_OPTIONS },
-    },
-    {
-      value: 'openai-codex/gpt-5.6-sol',
-      label: 'GPT-5.6 Sol',
-      effort: { values: THINKING_LEVEL_OPTIONS },
-    },
-    {
-      value: 'openai-codex/gpt-5.6-terra',
-      label: 'GPT-5.6 Terra',
-      effort: { values: THINKING_LEVEL_OPTIONS },
-    },
-    {
-      value: 'openai-codex/gpt-5.5',
-      label: 'GPT-5.5',
-      effort: { values: THINKING_LEVEL_OPTIONS },
-    },
-    {
       value: 'openai-codex/gpt-5.4',
-      label: 'GPT-5.4',
-      effort: { values: THINKING_LEVEL_OPTIONS },
+      label: 'GPT-5.4 (openai-codex)',
+      description: 'openai-codex',
     },
   ],
-  DEFAULT: 'openai-codex/gpt-5.6-luna',
+  DEFAULT: 'openai-codex/gpt-5.4',
 };
 
-const OMP_MODELS_CACHE_TTL_MS = 60 * 60 * 1000;
 const OMP_MODELS_TIMEOUT_MS = 20 * 1000;
 
-let cachedModels: ProviderModelsDefinition | null = null;
-let cachedAtMs = 0;
-let refreshInFlight: Promise<ProviderModelsDefinition | null> | null = null;
+type SpawnFunction = typeof crossSpawn;
+type RunCommand = (argv: string[]) => Promise<string | null>;
 
-/**
- * Parse `omp models` output: a padded text table with columns
- * `provider  model  context  max-out  thinking  images` (see
- * `dist/cli/list-models.js` in @oh-my-pi/pi-coding-agent — columns are
- * joined with a 2-space separator and no field itself contains whitespace,
- * so splitting each line on runs of 2+ spaces is safe).
- */
-function parseListModelsOutput(stdout: string): ProviderModelOption[] {
+type OmpJsonModel = {
+  provider: string;
+  id: string;
+  selector: string;
+  name: string;
+  contextWindow: number;
+  maxTokens: number;
+  reasoning: boolean;
+  thinking: string[];
+};
+
+const isNonEmptyString = (value: unknown): value is string => (
+  typeof value === 'string' && value.trim().length > 0
+);
+
+const isPositiveInteger = (value: unknown): value is number => (
+  Number.isInteger(value) && Number(value) > 0
+);
+
+const parseJsonModel = (value: unknown): OmpJsonModel | null => {
+  if (!value || typeof value !== 'object') return null;
+  const model = value as Record<string, unknown>;
+  if (
+    !isNonEmptyString(model.provider)
+    || !isNonEmptyString(model.id)
+    || !isNonEmptyString(model.selector)
+    || !isNonEmptyString(model.name)
+    || !isPositiveInteger(model.contextWindow)
+    || !isPositiveInteger(model.maxTokens)
+    || typeof model.reasoning !== 'boolean'
+    || !Array.isArray(model.thinking)
+    || !model.thinking.every(isNonEmptyString)
+  ) {
+    return null;
+  }
+
+  return {
+    provider: model.provider.trim(),
+    id: model.id.trim(),
+    selector: model.selector.trim(),
+    name: model.name.trim(),
+    contextWindow: model.contextWindow,
+    maxTokens: model.maxTokens,
+    reasoning: model.reasoning,
+    thinking: model.thinking.map((level) => level.trim()),
+  };
+};
+
+/** Parse and strictly validate the v18 `omp models --json` contract. */
+export function parseOmpModelsJson(stdout: string): ProviderModelsDefinition | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch {
+    return null;
+  }
+
+  if (!parsed || typeof parsed !== 'object' || !Array.isArray((parsed as { models?: unknown }).models)) {
+    return null;
+  }
+
+  const rawModels = (parsed as { models: unknown[] }).models;
+  if (rawModels.length === 0) return null;
+  const models = rawModels.map(parseJsonModel);
+  if (models.some((model) => model === null)) return null;
+
+  const options: ProviderModelOption[] = [];
+  const seen = new Set<string>();
+  for (const model of models as OmpJsonModel[]) {
+    if (seen.has(model.selector)) continue;
+    seen.add(model.selector);
+    const thinking = [...new Set(model.thinking)];
+    options.push({
+      value: model.selector,
+      label: `${model.name} (${model.provider})`,
+      description: model.provider,
+      resolvedModel: model.id,
+      runtimeContextWindow: model.contextWindow,
+      runtimeMaxOutputTokens: model.maxTokens,
+      effort: model.reasoning && thinking.length > 0
+        ? { values: thinking.map((level) => ({ value: level })) }
+        : undefined,
+    });
+  }
+
+  if (options.length === 0) return null;
+  const preferredDefault = OMP_FALLBACK_MODELS.DEFAULT;
+  return {
+    OPTIONS: options,
+    DEFAULT: options.some((option) => option.value === preferredDefault)
+      ? preferredDefault
+      : options[0].value,
+  };
+}
+
+const parseCount = (value: string | undefined): number | undefined => {
+  if (!value) return undefined;
+  const normalized = value.trim().replace(/,/g, '');
+  const match = /^(\d+(?:\.\d+)?)\s*([km])?$/i.exec(normalized);
+  if (!match) return undefined;
+  const multiplier = match[2]?.toLowerCase() === 'm'
+    ? 1_000_000
+    : match[2]?.toLowerCase() === 'k'
+      ? 1_000
+      : 1;
+  const count = Number(match[1]) * multiplier;
+  return Number.isInteger(count) && count > 0 ? count : undefined;
+};
+
+const splitLegacyRow = (line: string): string[] => {
+  if (/[│┃║]/.test(line)) {
+    return line.split(/[│┃║]/).map((column) => column.trim()).filter(Boolean);
+  }
+  return line.trim().split(/\s{2,}/).map((column) => column.trim()).filter(Boolean);
+};
+
+/** Robust compatibility parser for pre-JSON OMP box/plain model tables. */
+export function parseOmpLegacyModelsTable(stdout: string): ProviderModelsDefinition | null {
   const options: ProviderModelOption[] = [];
   const seen = new Set<string>();
 
   for (const rawLine of stdout.split(/\r?\n/)) {
     const line = rawLine.trim();
-    if (!line || line.startsWith('No models') || line.startsWith('Use /login') || line.startsWith('Warning:')) {
+    if (
+      !line
+      || /^(no models|use \/login|warning:)/i.test(line)
+      || /^[┌┬┐├┼┤└┴┘─═╭╮╰╯━┃┏┓┗┛┣┫┳┻╋+|\-\s]+$/.test(line)
+    ) {
       continue;
     }
 
-    const columns = line.split(/\s{2,}/);
-    const [provider, modelId, , , thinking] = columns;
-    if (!provider || !modelId || provider === 'provider') {
-      // Header row or malformed line.
+    const columns = splitLegacyRow(line);
+    if (columns.length < 2) continue;
+    const [provider, modelId, context, maxOutput, thinking] = columns;
+    if (
+      !provider
+      || !modelId
+      || /^(provider|model)$/i.test(provider)
+      || /^(provider|model)$/i.test(modelId)
+      || /\s/.test(provider)
+      || /[┌┬┐├┼┤└┴┘─═│┃║]/.test(`${provider}${modelId}`)
+    ) {
       continue;
     }
 
     const value = `${provider}/${modelId}`;
-    if (seen.has(value)) {
-      continue;
-    }
+    if (seen.has(value)) continue;
     seen.add(value);
-
     options.push({
       value,
-      label: modelId,
+      label: `${modelId} (${provider})`,
       description: provider,
-      effort: thinking === 'yes' ? { values: THINKING_LEVEL_OPTIONS } : undefined,
+      runtimeContextWindow: parseCount(context),
+      runtimeMaxOutputTokens: parseCount(maxOutput),
+      effort: /^(yes|true)$/i.test(thinking || '')
+        ? { values: LEGACY_THINKING_LEVELS }
+        : undefined,
     });
   }
 
-  return options;
+  if (options.length === 0) return null;
+  const preferredDefault = OMP_FALLBACK_MODELS.DEFAULT;
+  return {
+    OPTIONS: options,
+    DEFAULT: options.some((option) => option.value === preferredDefault)
+      ? preferredDefault
+      : options[0].value,
+  };
 }
 
-// Oh My Pi's own catalog command is `omp models`; the inherited Pi flag form is
-// kept as a fallback so older builds still populate the picker.
-const LIST_MODELS_ARGV: string[][] = [
-  ['models'],
-  ['--list-models', '--offline'],
-];
+/** Execute one catalog command with bounded output and explicit exit handling. */
+export const runOmpModelCommand = (
+  argv: string[],
+  dependencies: { spawn?: SpawnFunction; timeoutMs?: number } = {},
+): Promise<string | null> => new Promise((resolve) => {
+  const spawn = dependencies.spawn ?? crossSpawn;
+  let child: ReturnType<SpawnFunction>;
+  try {
+    child = spawn('omp', argv, {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env },
+    });
+  } catch {
+    resolve(null);
+    return;
+  }
 
-const runOmpListModels = (argv: string[]): Promise<ProviderModelsDefinition | null> =>
-  new Promise((resolve) => {
-    let child: ReturnType<typeof crossSpawn>;
+  let stdout = '';
+  let settled = false;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const finish = (value: string | null) => {
+    if (settled) return;
+    settled = true;
+    if (timer) clearTimeout(timer);
+    resolve(value);
+  };
+  timer = setTimeout(() => {
     try {
-      child = crossSpawn('omp', argv, {
-        stdio: ['ignore', 'pipe', 'pipe'],
-        env: { ...process.env },
-      });
+      child.kill('SIGTERM');
     } catch {
-      resolve(null);
-      return;
+      // Already gone.
     }
+    finish(null);
+  }, dependencies.timeoutMs ?? OMP_MODELS_TIMEOUT_MS);
 
-    let stdout = '';
-    const timer = setTimeout(() => {
-      try {
-        child.kill('SIGTERM');
-      } catch {
-        // Already gone.
-      }
-      resolve(null);
-    }, OMP_MODELS_TIMEOUT_MS);
-
-    child.stdout?.on('data', (data) => {
-      stdout += data.toString();
-    });
-
-    child.on('error', () => {
-      clearTimeout(timer);
-      resolve(null);
-    });
-
-    child.on('close', () => {
-      clearTimeout(timer);
-      const options = parseListModelsOutput(stdout);
-      if (options.length === 0) {
-        resolve(null);
-        return;
-      }
-
-      const preferredDefault = OMP_FALLBACK_MODELS.DEFAULT;
-      resolve({
-        OPTIONS: options,
-        DEFAULT: options.some((option) => option.value === preferredDefault)
-          ? preferredDefault
-          : options[0].value,
-      });
-    });
+  child.stdout?.on('data', (data) => {
+    stdout += data.toString();
   });
-
-const getModels = async (): Promise<ProviderModelsDefinition> => {
-  if (cachedModels && Date.now() - cachedAtMs < OMP_MODELS_CACHE_TTL_MS) {
-    return cachedModels;
-  }
-
-  if (!refreshInFlight) {
-    refreshInFlight = (async () => {
-      for (const argv of LIST_MODELS_ARGV) {
-        const parsed = await runOmpListModels(argv);
-        if (parsed) return parsed;
-      }
-      return null;
-    })().finally(() => {
-      refreshInFlight = null;
-    });
-  }
-
-  const fetched = await refreshInFlight;
-  if (fetched) {
-    cachedModels = fetched;
-    cachedAtMs = Date.now();
-    return fetched;
-  }
-
-  return cachedModels ?? OMP_FALLBACK_MODELS;
-};
+  child.on('error', () => finish(null));
+  child.on('close', (code) => finish(code === 0 ? stdout : null));
+});
 
 export class OmpProviderModels implements IProviderModels {
-  async getSupportedModels(): Promise<ProviderModelsDefinition> {
-    return getModels();
+  private readonly runCommand: RunCommand;
+
+  constructor(dependencies: { runCommand?: RunCommand } = {}) {
+    this.runCommand = dependencies.runCommand ?? ((argv) => runOmpModelCommand(argv));
+  }
+
+  async getSupportedModels(_options?: { bypassCache?: boolean }): Promise<ProviderModelsDefinition> {
+    const jsonOutput = await this.runCommand(['models', '--json']);
+    if (jsonOutput !== null) {
+      const jsonModels = parseOmpModelsJson(jsonOutput);
+      if (jsonModels) return jsonModels;
+    }
+
+    // Compatibility only for OMP releases predating the JSON catalog contract.
+    const legacyOutput = await this.runCommand(['models']);
+    if (legacyOutput !== null) {
+      const legacyModels = parseOmpLegacyModelsTable(legacyOutput);
+      if (legacyModels) return legacyModels;
+    }
+
+    return OMP_FALLBACK_MODELS;
   }
 
   async getCurrentActiveModel(sessionId?: string): Promise<ProviderCurrentActiveModel> {

@@ -9,6 +9,7 @@ import {
   PROVIDER_MODELS_CACHE_TTL_MS,
   PROVIDER_MODELS_CACHE_VERSION,
 } from '@/modules/providers/services/provider-models.service.js';
+import { OmpProviderModels } from '@/modules/providers/list/omp/omp-models.provider.js';
 import { makeScratchDir } from '@/shared/scratch.js';
 import type {
   ProviderChangeActiveModelInput,
@@ -65,6 +66,45 @@ test('provider models service delegates to the resolved provider model adapter',
   assert.deepEqual(calls, ['codex']);
   assert.equal(models.models.DEFAULT, 'codex-models');
   assert.equal(models.cache.source, 'fresh');
+});
+
+test('OMP shared bypassCache performs a fresh provider discovery', async () => {
+  const tempRoot = await makeScratchDir('omp-provider-model-bypass-');
+  let discoveryCount = 0;
+  const models = new OmpProviderModels({
+    runCommand: async (argv) => {
+      assert.deepEqual(argv, ['models', '--json']);
+      discoveryCount += 1;
+      return JSON.stringify({
+        models: [{
+          provider: 'test-provider',
+          id: `model-${discoveryCount}`,
+          selector: `test-provider/model-${discoveryCount}`,
+          name: `Model ${discoveryCount}`,
+          contextWindow: 10_000,
+          maxTokens: 1_000,
+          reasoning: false,
+          thinking: [],
+        }],
+      });
+    },
+  });
+  try {
+    const service = createProviderModelsService({
+      cachePath: path.join(tempRoot, 'models-cache.json'),
+      resolveProvider: () => ({ models }),
+    });
+    const first = await service.getProviderModels('omp');
+    const cached = await service.getProviderModels('omp');
+    const refreshed = await service.getProviderModels('omp', { bypassCache: true });
+
+    assert.equal(first.models.DEFAULT, 'test-provider/model-1');
+    assert.equal(cached.models.DEFAULT, 'test-provider/model-1');
+    assert.equal(refreshed.models.DEFAULT, 'test-provider/model-2');
+    assert.equal(discoveryCount, 2);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
 });
 
 test('provider models service returns each provider adapter result without rewriting it', async () => {
@@ -251,6 +291,48 @@ test('a disk cache entry written under an older cache version is discarded and r
     assert.equal(loadCount, 1);
     assert.equal(models.models.DEFAULT, 'fresh-label');
     assert.equal(models.cache.source, 'fresh');
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('a malformed current-version model cache cannot restore garbage or an invalid default', async () => {
+  const tempRoot = await makeScratchDir('provider-model-cache-malformed-');
+  const cachePath = path.join(tempRoot, 'models-cache.json');
+  try {
+    await writeFile(cachePath, JSON.stringify({
+      version: PROVIDER_MODELS_CACHE_VERSION,
+      entries: {
+        omp: {
+          updatedAt: 1,
+          expiresAt: Date.now() + PROVIDER_MODELS_CACHE_TTL_MS,
+          models: {
+            OPTIONS: [{ value: 'provider/real-model', label: 'Real model' }],
+            DEFAULT: 'provider/decorative-header',
+          },
+        },
+      },
+    }), 'utf8');
+
+    let loadCount = 0;
+    const service = createProviderModelsService({
+      cachePath,
+      resolveProvider: () => ({
+        models: {
+          getSupportedModels: async () => {
+            loadCount += 1;
+            return createModels('provider/fresh-model');
+          },
+          getCurrentActiveModel: async () => createCurrentActiveModel('provider/fresh-model'),
+          changeActiveModel: async (input) => createSessionActiveModelChange('omp', input),
+        },
+      }),
+    });
+
+    const result = await service.getProviderModels('omp');
+    assert.equal(loadCount, 1);
+    assert.equal(result.models.DEFAULT, 'provider/fresh-model');
+    assert.equal(result.cache.source, 'fresh');
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }

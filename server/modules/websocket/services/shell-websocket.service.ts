@@ -519,12 +519,12 @@ export function buildShellCommand(
     // Oh My Pi inherits Pi's tool allowlist for plan mode; anything else runs
     // with the full default tool set under its yolo approval mode.
     const modeArgs = permissionMode === 'plan'
-      ? ' --tools read,grep,find,ls'
+      ? ' --tools read,grep,glob'
       : permissionMode === 'bypassPermissions'
         ? ' --approval-mode yolo'
         : '';
     if (resumeSessionId) {
-      return `omp --session "${resumeSessionId}"${modeArgs}`;
+      return `omp --resume "${resumeSessionId}"${modeArgs}`;
     }
     return `omp${modeArgs}`;
   }

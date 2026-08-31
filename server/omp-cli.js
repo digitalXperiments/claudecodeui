@@ -23,7 +23,7 @@ const spawnFunction = crossSpawn;
 //   - Framing: split on `\n` only — Node `readline` is NOT protocol-safe.
 //
 // One persistent `omp --mode rpc` child per cloudcli session, reused across
-// messages. Session id comes from get_state after spawn (or --session resume).
+// messages. Session id comes from get_state after spawn (or --resume).
 
 const rpcSessions = new Map();
 const IDLE_TIMEOUT_MS = 30 * 60 * 1000;
@@ -32,11 +32,11 @@ const IDLE_TIMEOUT_MS = 30 * 60 * 1000;
  * Plan mode maps to Oh My Pi's read-only tool allowlist. Everything else explicitly
  * enables every built-in coding tool (Oh My Pi has no built-in permission popups).
  */
-function buildOmpSpawnArgs({ model, permissionMode, resumeSessionId, thinkingLevel }) {
+export function buildOmpSpawnArgs({ model, permissionMode, resumeSessionId, thinkingLevel }) {
   const args = ['--mode', 'rpc'];
 
   if (resumeSessionId) {
-    args.push('--session', resumeSessionId);
+    args.push('--resume', resumeSessionId);
   }
 
   if (model) {
@@ -51,8 +51,8 @@ function buildOmpSpawnArgs({ model, permissionMode, resumeSessionId, thinkingLev
   args.push(
     '--tools',
     permissionMode === 'plan'
-      ? 'read,grep,find,ls'
-      : 'read,bash,edit,write,grep,find,ls',
+      ? 'read,grep,glob'
+      : 'read,bash,edit,write,grep,glob',
   );
 
   // Headless / non-interactive: don't block on project-trust or tool prompts.

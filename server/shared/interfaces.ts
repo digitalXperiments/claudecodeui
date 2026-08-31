@@ -50,7 +50,7 @@ export interface IProviderModels {
   /**
    * Returns the provider's currently supported model catalog.
    */
-  getSupportedModels(): Promise<ProviderModelsDefinition>;
+  getSupportedModels(options?: { bypassCache?: boolean }): Promise<ProviderModelsDefinition>;
 
   /**
    * Returns the currently active model for one session or provider runtime.

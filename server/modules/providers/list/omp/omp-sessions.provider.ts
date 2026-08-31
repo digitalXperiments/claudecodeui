@@ -57,7 +57,7 @@ function extractNativeImageAttachments(content: unknown): Array<{ data: string }
 
 /**
  * Locate an Oh My Pi session JSONL file by session UUID (or partial id).
- * Layout: `~/.omp/agent/sessions/--cwd-encoded--/<timestamp>_<uuid>.jsonl`
+ * Layout: `<OMP profile>/sessions/--cwd-encoded--/<timestamp>_<uuid>.jsonl`
  */
 export function findOmpSessionFile(sessionId: string, sessionsRoot = ompSessionsRoot()): string | null {
   if (!sessionId) {

@@ -27,7 +27,7 @@ export const PROVIDER_MODELS_CACHE_TTL_MS = 3 * 24 * 60 * 60 * 1000;
  * next read, instead of surviving until their TTL (up to
  * `PROVIDER_MODELS_CACHE_TTL_MS`) expires. See `readProviderModelsCacheFile`.
  */
-export const PROVIDER_MODELS_CACHE_VERSION = 3;
+export const PROVIDER_MODELS_CACHE_VERSION = 4;
 const UNCACHED_PROVIDERS = new Set<LLMProvider>(['claude', 'codex']);
 
 type ProviderModelsServiceDependencies = {
@@ -74,20 +74,42 @@ const isProviderModelOption = (
   Boolean(value)
   && typeof value === 'object'
   && typeof (value as ProviderModelsDefinition['OPTIONS'][number]).value === 'string'
+  && (value as ProviderModelsDefinition['OPTIONS'][number]).value.trim().length > 0
   && typeof (value as ProviderModelsDefinition['OPTIONS'][number]).label === 'string'
+  && (value as ProviderModelsDefinition['OPTIONS'][number]).label.trim().length > 0
   && (
     typeof (value as ProviderModelsDefinition['OPTIONS'][number]).description === 'undefined'
     || typeof (value as ProviderModelsDefinition['OPTIONS'][number]).description === 'string'
   )
+  && (
+    typeof (value as ProviderModelsDefinition['OPTIONS'][number]).runtimeContextWindow === 'undefined'
+    || (Number.isInteger((value as ProviderModelsDefinition['OPTIONS'][number]).runtimeContextWindow)
+      && (value as ProviderModelsDefinition['OPTIONS'][number]).runtimeContextWindow! > 0)
+  )
+  && (
+    typeof (value as ProviderModelsDefinition['OPTIONS'][number]).runtimeMaxOutputTokens === 'undefined'
+    || (Number.isInteger((value as ProviderModelsDefinition['OPTIONS'][number]).runtimeMaxOutputTokens)
+      && (value as ProviderModelsDefinition['OPTIONS'][number]).runtimeMaxOutputTokens! > 0)
+  )
 );
 
-const isProviderModelsDefinition = (value: unknown): value is ProviderModelsDefinition => (
-  Boolean(value)
-  && typeof value === 'object'
-  && Array.isArray((value as ProviderModelsDefinition).OPTIONS)
-  && (value as ProviderModelsDefinition).OPTIONS.every(isProviderModelOption)
-  && typeof (value as ProviderModelsDefinition).DEFAULT === 'string'
-);
+const isProviderModelsDefinition = (value: unknown): value is ProviderModelsDefinition => {
+  if (
+    !value
+    || typeof value !== 'object'
+    || !Array.isArray((value as ProviderModelsDefinition).OPTIONS)
+    || (value as ProviderModelsDefinition).OPTIONS.length === 0
+    || !(value as ProviderModelsDefinition).OPTIONS.every(isProviderModelOption)
+    || typeof (value as ProviderModelsDefinition).DEFAULT !== 'string'
+  ) {
+    return false;
+  }
+
+  const definition = value as ProviderModelsDefinition;
+  const optionValues = definition.OPTIONS.map((option) => option.value);
+  return new Set(optionValues).size === optionValues.length
+    && optionValues.includes(definition.DEFAULT);
+};
 
 const isProviderModelsCacheEntry = (value: unknown): value is ProviderModelsCacheEntry => (
   Boolean(value)
@@ -249,7 +271,7 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
   const loadAndCacheModels = (
     provider: LLMProvider,
   ): Promise<ProviderModelsResult> => {
-    const request = resolveProvider(provider).models.getSupportedModels()
+    const request = resolveProvider(provider).models.getSupportedModels({ bypassCache: true })
       .then(async (models) => {
         const entry = await setCacheEntry(provider, models);
         return {
@@ -268,7 +290,7 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
   const loadDirectModels = (
     provider: LLMProvider,
   ): Promise<ProviderModelsResult> => {
-    const request = resolveProvider(provider).models.getSupportedModels()
+    const request = resolveProvider(provider).models.getSupportedModels({ bypassCache: true })
       .then((models) => {
         const currentTime = now();
         return {

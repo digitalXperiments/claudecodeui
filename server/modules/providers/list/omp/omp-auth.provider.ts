@@ -1,8 +1,9 @@
 import { readFile } from 'node:fs/promises';
 
+import Database from 'better-sqlite3';
 import spawn from 'cross-spawn';
 
-import { ompAuthPath } from '@/modules/providers/list/omp/omp-paths.js';
+import { ompAuthPath, ompCredentialDbPath } from '@/modules/providers/list/omp/omp-paths.js';
 import type { IProviderAuth } from '@/shared/interfaces.js';
 import type { ProviderAuthStatus } from '@/shared/types.js';
 import { readObjectRecord } from '@/shared/utils.js';
@@ -32,7 +33,17 @@ const OMP_API_KEY_ENVS = [
 ];
 
 export class OmpProviderAuth implements IProviderAuth {
+  constructor(private readonly dependencies: {
+    checkInstalled?: () => boolean;
+    env?: NodeJS.ProcessEnv;
+    authPath?: string;
+    credentialDbPath?: string;
+  } = {}) {}
+
   private checkInstalled(): boolean {
+    if (this.dependencies.checkInstalled) {
+      return this.dependencies.checkInstalled();
+    }
     try {
       const result = spawn.sync('omp', ['--version'], { stdio: 'ignore', timeout: 5000 });
       // ENOENT (not on PATH) surfaces as result.error; any other status means
@@ -68,8 +79,8 @@ export class OmpProviderAuth implements IProviderAuth {
   }
 
   /**
-   * Oh My Pi stores OAuth tokens and API keys in `~/.omp/agent/auth.json` (keyed by
-   * provider name). Environment variables are an equally valid auth path.
+   * Oh My Pi v18 stores credentials in the active profile's `agent.db`.
+   * Environment variables and the legacy `auth.json` remain compatible paths.
    */
   private async checkCredentials(): Promise<{
     authenticated: boolean;
@@ -77,8 +88,9 @@ export class OmpProviderAuth implements IProviderAuth {
     method: string | null;
     error?: string;
   }> {
+    const env = this.dependencies.env ?? process.env;
     const envProvider = OMP_API_KEY_ENVS.find((key) => {
-      const value = process.env[key];
+      const value = env[key];
       return typeof value === 'string' && value.trim().length > 0;
     });
     if (envProvider) {
@@ -89,8 +101,19 @@ export class OmpProviderAuth implements IProviderAuth {
       };
     }
 
+    const databaseProbe = probeOmpCredentialDatabase(
+      this.dependencies.credentialDbPath ?? ompCredentialDbPath(),
+    );
+    if (databaseProbe === 'active') {
+      return {
+        authenticated: true,
+        email: null,
+        method: 'credential_store',
+      };
+    }
+
     try {
-      const content = await readFile(ompAuthPath(), 'utf8');
+      const content = await readFile(this.dependencies.authPath ?? ompAuthPath(), 'utf8');
       const parsed = readObjectRecord(JSON.parse(content)) ?? {};
       const keys = Object.keys(parsed).filter((key) => {
         const entry = parsed[key];
@@ -111,19 +134,76 @@ export class OmpProviderAuth implements IProviderAuth {
 
       return {
         authenticated: true,
-        email: keys.join(', '),
+        email: null,
         method: 'auth_file',
       };
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
+      if (code !== 'ENOENT') {
+        return {
+          authenticated: false,
+          email: null,
+          method: null,
+          error: error instanceof SyntaxError
+            ? 'Legacy Oh My Pi auth file is malformed'
+            : 'Unable to read legacy Oh My Pi auth file',
+        };
+      }
+
+      const databaseError = databaseProbe === 'locked'
+        ? 'Oh My Pi credential store is locked'
+        : databaseProbe === 'malformed'
+          ? 'Oh My Pi credential store is malformed'
+          : databaseProbe === 'disabled'
+            ? 'Oh My Pi has credentials, but all are disabled'
+            : undefined;
       return {
         authenticated: false,
         email: null,
         method: null,
-        error: code === 'ENOENT'
-          ? 'Not logged in — run `omp` and use /login, or set an API key env var'
-          : error instanceof Error ? error.message : 'Failed to read Oh My Pi auth',
+        error: databaseError || 'Not logged in — run `omp` and use /login, or set an API key env var',
       };
     }
+  }
+}
+
+export type OmpCredentialProbe = 'active' | 'disabled' | 'absent' | 'locked' | 'malformed';
+
+/**
+ * Read only two boolean markers from OMP's SQLite store. Neither query selects
+ * provider ids, credential blobs, tokens, or any other credential data.
+ */
+export function probeOmpCredentialDatabase(databasePath: string): OmpCredentialProbe {
+  let database: Database.Database | null = null;
+  try {
+    database = new Database(databasePath, {
+      readonly: true,
+      fileMustExist: true,
+      timeout: 25,
+    });
+    const active = database.prepare(`
+      SELECT 1 AS marker
+      FROM auth_credentials
+      WHERE disabled_cause IS NULL OR TRIM(disabled_cause) = ''
+      LIMIT 1
+    `).get();
+    if (active) {
+      return 'active';
+    }
+
+    const any = database.prepare('SELECT 1 AS marker FROM auth_credentials LIMIT 1').get();
+    return any ? 'disabled' : 'absent';
+  } catch (error) {
+    const code = (error as { code?: string }).code || '';
+    const message = error instanceof Error ? error.message.toLowerCase() : '';
+    if (code === 'SQLITE_CANTOPEN' || message.includes('does not exist')) {
+      return 'absent';
+    }
+    if (code === 'SQLITE_BUSY' || code === 'SQLITE_LOCKED' || message.includes('locked')) {
+      return 'locked';
+    }
+    return 'malformed';
+  } finally {
+    database?.close();
   }
 }
