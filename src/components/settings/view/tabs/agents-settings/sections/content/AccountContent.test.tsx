@@ -1,14 +1,57 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { createInstance } from 'i18next';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { I18nextProvider, initReactI18next } from 'react-i18next';
 
 import type { AuthStatus } from '../../../../../types/types';
 
 import AccountContent from './AccountContent';
 
 const noop = () => {};
+
+// Keep this SSR test independent from the browser-configured application i18n
+// singleton while rendering the same translations users see in Settings.
+const i18n = createInstance();
+void i18n.use(initReactI18next).init({
+  lng: 'en',
+  fallbackLng: 'en',
+  initImmediate: false,
+  resources: {
+    en: {
+      settings: {
+        agents: {
+          connectionStatus: 'Connection status',
+          authStatus: {
+            checkingAuth: 'Checking authentication',
+            checking: 'Checking',
+            notInstalled: 'Not installed',
+            loggedInAs: 'Logged in as {{email}}',
+            authenticatedUser: 'Authenticated user',
+            notConnected: 'Not connected',
+            connected: 'Connected',
+            disconnected: 'Disconnected',
+          },
+          login: {
+            title: 'Log in',
+            description: 'Connect {{agent}}',
+            reAuthenticate: 'Reconnect',
+            reAuthDescription: 'Reconnect {{agent}}',
+            button: 'Log in',
+            reLoginButton: 'Reconnect',
+          },
+          install: {
+            title: 'Install {{agent}}',
+            description: '{{agent}} isn\'t installed on this machine yet.',
+          },
+          error: '{{error}}',
+        },
+      },
+    },
+  },
+});
 
 const status = (overrides: Partial<AuthStatus> = {}): AuthStatus => ({
   installed: null,
@@ -21,7 +64,9 @@ const status = (overrides: Partial<AuthStatus> = {}): AuthStatus => ({
 });
 
 const render = (authStatus: AuthStatus) => renderToStaticMarkup(
-  <AccountContent agent="omp" authStatus={authStatus} onLogin={noop} onRefresh={noop} />,
+  <I18nextProvider i18n={i18n}>
+    <AccountContent agent="omp" authStatus={authStatus} onLogin={noop} onRefresh={noop} />
+  </I18nextProvider>,
 );
 
 test('AccountContent shows a checking state while loading', () => {
