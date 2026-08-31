@@ -83,6 +83,21 @@
   body.theme-light .msg blockquote { border-left-color: #999; }
   body.theme-light .msg a { color: #1a53d6; }
   body.theme-light .msg.user a { color: #fff; }
+  .msg.typing { display: -webkit-box; display: -webkit-flex; display: flex; -webkit-box-align: center; -webkit-align-items: center; align-items: center; color: #999; font-size: 13px; }
+  .msg.typing .typingDots { display: inline-block; margin-right: 8px; }
+  .msg.typing .typingDots span { display: inline-block; width: 6px; height: 6px; margin-right: 3px; border-radius: 50%; background: #999; -webkit-animation: pulse 1.2s infinite ease-in-out; animation: pulse 1.2s infinite ease-in-out; }
+  .msg.typing .typingDots span:nth-child(2) { -webkit-animation-delay: 0.2s; animation-delay: 0.2s; }
+  .msg.typing .typingDots span:nth-child(3) { -webkit-animation-delay: 0.4s; animation-delay: 0.4s; }
+  body.theme-light .msg.typing { color: #777; }
+  body.theme-light .msg.typing .typingDots span { background: #777; }
+  @-webkit-keyframes pulse {
+    0%, 80%, 100% { opacity: 0.3; }
+    40% { opacity: 1; }
+  }
+  @keyframes pulse {
+    0%, 80%, 100% { opacity: 0.3; }
+    40% { opacity: 1; }
+  }
   #screenChat.screen.active {
     display: -webkit-box; display: -webkit-flex; display: flex;
     -webkit-box-orient: vertical; -webkit-flex-direction: column; flex-direction: column;
@@ -805,6 +820,7 @@
     state.lastAssistantEl = null;
     $('chatTitle').innerHTML = escapeHtml(title || 'Chat');
     $('chatList').innerHTML = '';
+    hideTyping();
     showScreen('screenChat');
     loadMessages(sessionId);
     connectWs();
@@ -853,6 +869,7 @@
     var text = messageText(m);
     if (!text) { return; }
     var role = m.role;
+    if (role === 'assistant') { hideTyping(); }
     var div = document.createElement('div');
     var cls = role === 'user' ? 'msg user' : 'msg assistant';
     div.className = cls;
@@ -868,6 +885,21 @@
   function scrollChatToBottom() {
     var el = $('chatList');
     el.scrollTop = el.scrollHeight;
+  }
+
+  function showTyping() {
+    if ($('typingIndicator')) { return; }
+    var div = document.createElement('div');
+    div.id = 'typingIndicator';
+    div.className = 'msg assistant typing';
+    div.innerHTML = '<span class="typingDots"><span></span><span></span><span></span></span>Thinking';
+    $('chatList').appendChild(div);
+    scrollChatToBottom();
+  }
+
+  function hideTyping() {
+    var el = $('typingIndicator');
+    if (el && el.parentNode) { el.parentNode.removeChild(el); }
   }
 
   function wsUrl() {
@@ -916,6 +948,10 @@
       return;
     }
 
+    if (kind === 'complete' || kind === 'error' || kind === 'stream_end') {
+      hideTyping();
+    }
+
     if (kind && DROP_KINDS.hasOwnProperty(kind)) { return; }
 
     if (kind === 'stream_delta') {
@@ -928,6 +964,7 @@
         }
       }
       if (!deltaText.length || isJsonDump(deltaText)) { return; }
+      hideTyping();
       if (state.lastAssistantEl) {
         state.lastAssistantEl.innerHTML = renderMarkdown(deltaText);
       } else {
@@ -953,7 +990,9 @@
       frame.options = options;
     }
     state.wsSend(frame);
+    hideTyping();
     renderMessage({ role: 'user', kind: 'text', displayText: text });
+    showTyping();
     scrollChatToBottom();
     $('chatInput').value = '';
   }
@@ -993,6 +1032,7 @@
       try { state.ws.close(); } catch (e) {}
       state.ws = null;
     }
+    hideTyping();
     showScreen('screenSessions');
   };
   $('btnNewSession').onclick = newSession;
