@@ -265,8 +265,12 @@
 
   function loadSessions() {
     xhr('GET', '/api/projects/' + encodeURIComponent(state.currentProjectId) + '/sessions', null, authHeaders(), function (data) {
-      var list = data;
-      if (!list || !list.length) { list = []; }
+      var list = [];
+      if (data && Array.isArray(data.sessions)) {
+        list = data.sessions;
+      } else if (Array.isArray(data)) {
+        list = data;
+      }
       state.sessions = list;
       renderSessions();
       showScreen('screenSessions');
@@ -278,7 +282,11 @@
   function renderSessions() {
     var el = $('sessionList');
     el.innerHTML = '';
-    for (var i = 0; i < state.sessions.length; i++) {
+    var sessions = state.sessions;
+    if (!sessions || !Array.isArray(sessions)) {
+      sessions = [];
+    }
+    for (var i = 0; i < sessions.length; i++) {
       (function (s) {
         var row = document.createElement('div');
         row.className = 'row';
@@ -289,7 +297,7 @@
           openChat(sid);
         };
         el.appendChild(row);
-      })(state.sessions[i]);
+      })(sessions[i]);
     }
   }
 
