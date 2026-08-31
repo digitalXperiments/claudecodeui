@@ -115,10 +115,6 @@
   .chatInputBar textarea { -webkit-box-flex: 1; -webkit-flex: 1; flex: 1; resize: none; height: 44px; }
   .chatInputBar button { width: auto; margin-top: 0; margin-left: 8px; padding: 0 16px; }
   .list { border-top: 1px solid #333; }
-  .tabbar { display: -webkit-box; display: -webkit-flex; display: flex; border-top: 1px solid #333; background: #1a1a1a; -webkit-flex-shrink: 0; flex-shrink: 0; }
-  .tabbar .tabBtn { -webkit-box-flex: 1; -webkit-flex: 1; flex: 1; text-align: center; padding: 12px 0; font-size: 14px; color: #999; background: none; border: none; }
-  .tabbar .tabBtn.active { color: #2a6df4; font-weight: bold; }
-  body.theme-light .tabbar { background: #e8e8e8; border-top: 1px solid #ccc; }
   .permCard { margin-bottom: 10px; padding: 10px 12px; border-radius: 10px; background: #2a2a2a; border: 1px solid #444; max-width: 92%; }
   body.theme-light .permCard { background: #e2e2e2; border-color: #ccc; }
   .permCard .permTitle { font-weight: bold; margin-bottom: 6px; }
@@ -130,11 +126,14 @@
   .permCard .permBtn.allow { background: #2a6df4; }
   .permCard .permBtn.deny { background: #a33; }
   .permCard .permStatus { font-size: 13px; color: #999; text-align: center; }
-  .jobRow .jobStatus { font-size: 12px; }
-  #jobsList .row { -webkit-box-orient: vertical; -webkit-flex-direction: column; flex-direction: column; -webkit-box-align: stretch; -webkit-align-items: stretch; align-items: stretch; }
-  #jobsList .row .jobTop { display: -webkit-box; display: -webkit-flex; display: flex; -webkit-box-pack: justify; -webkit-justify-content: space-between; justify-content: space-between; -webkit-box-align: center; -webkit-align-items: center; align-items: center; }
-  #jobsList .row .jobSummary { font-size: 12px; color: #999; margin-top: 6px; }
-  #jobsList .row button.small { margin-top: 8px; }
+  .reviewCard { margin-bottom: 10px; padding: 12px; border-radius: 10px; background: #2a2a2a; border: 1px solid #444; }
+  body.theme-light .reviewCard { background: #e2e2e2; border-color: #ccc; }
+  .reviewCard .reviewTitle { font-weight: bold; margin-bottom: 6px; }
+  .reviewCard .reviewSummary { font-size: 13px; color: #999; margin-bottom: 8px; }
+  .reviewCard .reviewStatus { font-size: 12px; color: #999; margin-bottom: 8px; }
+  .reviewCard .reviewBtns { display: -webkit-box; display: -webkit-flex; display: flex; -webkit-flex-wrap: wrap; flex-wrap: wrap; }
+  .reviewCard .reviewBtns button { -webkit-box-flex: 1; -webkit-flex: 1; flex: 1; margin-top: 0; margin-right: 8px; min-width: 80px; }
+  .reviewCard .reviewBtns button:last-child { margin-right: 0; }
   #ptrBar { display: none; position: fixed; top: 0; left: 0; right: 0; z-index: 999; text-align: center; padding: 8px 0; font-size: 12px; background: #2a6df4; color: #fff; }
 </style>
 </head>
@@ -166,14 +165,11 @@
     <div class="title">Projects</div>
     <div>
       <button class="secondary small" id="btnThemeCategories">Theme</button>
+      <button class="secondary small" id="btnReviewFromCategories">Review</button>
       <button class="secondary small" id="btnLogoutCategories">Logout</button>
     </div>
   </div>
   <div id="categoryList" class="list"></div>
-  <div class="tabbar">
-    <button class="tabBtn active" id="tabChatFromCategories">Chat</button>
-    <button class="tabBtn" id="tabJobsFromCategories">Jobs</button>
-  </div>
 </div>
 
 <div id="screenProjects" class="screen">
@@ -185,10 +181,6 @@
     </div>
   </div>
   <div id="projectList" class="list"></div>
-  <div class="tabbar">
-    <button class="tabBtn active" id="tabChatFromProjects">Chat</button>
-    <button class="tabBtn" id="tabJobsFromProjects">Jobs</button>
-  </div>
 </div>
 
 <div id="screenSessions" class="screen">
@@ -211,10 +203,6 @@
     <button id="btnNewSession">New session</button>
   </div>
   <div id="sessionList" class="list"></div>
-  <div class="tabbar">
-    <button class="tabBtn active" id="tabChatFromSessions">Chat</button>
-    <button class="tabBtn" id="tabJobsFromSessions">Jobs</button>
-  </div>
 </div>
 
 <div id="screenChat" class="screen">
@@ -223,7 +211,6 @@
     <div>
       <button class="secondary small" id="btnThemeChat">Theme</button>
       <button class="secondary small" id="btnStopChat">Stop</button>
-      <button class="secondary small" id="btnJobsFromChat">Jobs</button>
       <button class="secondary small" id="btnBackToSessions">Back</button>
     </div>
   </div>
@@ -234,16 +221,16 @@
   </div>
 </div>
 
-<div id="screenJobs" class="screen">
+<div id="screenReview" class="screen">
   <div class="topbar">
-    <div class="title">Jobs</div>
+    <div class="title">Review</div>
     <div>
-      <button class="secondary small" id="btnThemeJobs">Theme</button>
-      <button class="secondary small" id="btnRefreshJobs">Refresh</button>
-      <button class="secondary small" id="btnBackFromJobs">Back</button>
+      <button class="secondary small" id="btnThemeReview">Theme</button>
+      <button class="secondary small" id="btnRefreshReview">Refresh</button>
+      <button class="secondary small" id="btnBackFromReview">Back</button>
     </div>
   </div>
-  <div id="jobsList" class="list"></div>
+  <div id="reviewList" class="list"></div>
 </div>
 
 <script>
@@ -288,8 +275,7 @@
     sessionOptions: {},
     ws: null,
     lastAssistantEl: null,
-    jobsPollTimer: null,
-    jobsFromScreen: 'screenCategories'
+    reviewPollTimer: null
   };
 
   function $(id) { return document.getElementById(id); }
@@ -412,7 +398,7 @@
         '?p=' + encodeURIComponent(params.projectId || '') +
         '&c=' + encodeURIComponent(catToken(params.categoryId));
     }
-    if (screen === 'screenJobs') { return '#/jobs'; }
+    if (screen === 'screenReview') { return '#/review'; }
     return '#/categories';
   }
 
@@ -430,8 +416,7 @@
       projectId: (params.projectId !== undefined) ? params.projectId : state.currentProjectId,
       projectName: (params.projectName !== undefined) ? params.projectName : state.currentProjectName,
       sessionId: (params.sessionId !== undefined) ? params.sessionId : state.currentSessionId,
-      title: params.title,
-      jobsFromScreen: (params.jobsFromScreen !== undefined) ? params.jobsFromScreen : state.jobsFromScreen
+      title: params.title
     });
   }
 
@@ -525,9 +510,8 @@
       openChat(sessionId, title);
       return;
     }
-    if (route.name === 'jobs') {
-      var navJobs = getNav();
-      openJobs((navJobs && navJobs.jobsFromScreen) || 'screenCategories');
+    if (route.name === 'review') {
+      openReview();
       return;
     }
     navGoCategories();
@@ -1391,109 +1375,107 @@
     hideTyping();
   }
 
-  // ---- Jobs ----
+  // ---- Mission Control Review ----
 
-  function openJobs(fromScreen) {
-    state.jobsFromScreen = fromScreen || 'screenCategories';
-    showScreen('screenJobs');
-    updateHashAndNav('screenJobs', { jobsFromScreen: state.jobsFromScreen });
-    loadJobs();
-    if (state.jobsPollTimer) { clearInterval(state.jobsPollTimer); }
-    state.jobsPollTimer = setInterval(loadJobs, 5000);
+  function openReview() {
+    showScreen('screenReview');
+    updateHashAndNav('screenReview', {});
+    loadReviewItems();
+    if (state.reviewPollTimer) { clearInterval(state.reviewPollTimer); }
+    state.reviewPollTimer = setInterval(loadReviewItems, 8000);
   }
 
-  function leaveJobs() {
-    if (state.jobsPollTimer) {
-      clearInterval(state.jobsPollTimer);
-      state.jobsPollTimer = null;
+  function leaveReview() {
+    if (state.reviewPollTimer) {
+      clearInterval(state.reviewPollTimer);
+      state.reviewPollTimer = null;
     }
-    var target = state.jobsFromScreen || 'screenCategories';
-    showScreen(target);
-    if (target === 'screenProjects') {
-      updateHashAndNav('screenProjects', { categoryId: state.currentCategoryId, categoryName: state.currentCategoryName });
-    } else if (target === 'screenSessions') {
-      updateHashAndNav('screenSessions', {
-        categoryId: state.currentCategoryId,
-        categoryName: state.currentCategoryName,
-        projectId: state.currentProjectId,
-        projectName: state.currentProjectName
-      });
-    } else {
-      updateHashAndNav('screenCategories', {});
-    }
+    navGoCategories();
   }
 
-  function loadJobs(onDone) {
-    xhr('GET', '/api/agent-relay/jobs?active=true', null, authHeaders(), function (data) {
+  function loadReviewItems(onDone) {
+    xhr('GET', '/api/mission-control/items?status=pending,failed', null, authHeaders(), function (data) {
       var payload = unwrap(data);
-      var jobs = (payload && payload.jobs) || [];
-      renderJobs(jobs);
+      var items = (payload && payload.items) || [];
+      renderReviewItems(items);
       if (onDone) { onDone(); }
     }, function (data) {
-      var el = $('jobsList');
+      var el = $('reviewList');
       el.innerHTML = '';
       var errDiv = document.createElement('div');
       errDiv.style.padding = '12px';
       errDiv.style.color = '#ff6b6b';
-      errDiv.appendChild(document.createTextNode((data && data.error) || 'Failed to load jobs'));
+      errDiv.appendChild(document.createTextNode((data && data.error) || 'Failed to load review items'));
       el.appendChild(errDiv);
       if (onDone) { onDone(); }
     });
   }
 
-  function renderJobs(jobs) {
-    var el = $('jobsList');
+  function performReviewAction(itemId, actionId, btn) {
+    if (btn) { btn.disabled = true; }
+    xhr('POST', '/api/mission-control/items/' + encodeURIComponent(itemId) + '/actions', { actionId: actionId }, authHeaders(), function () {
+      loadReviewItems();
+    }, function () {
+      if (btn) { btn.disabled = false; }
+    });
+  }
+
+  function renderReviewItems(items) {
+    var el = $('reviewList');
     el.innerHTML = '';
-    if (!jobs || !jobs.length) {
+    if (!items || !items.length) {
       var empty = document.createElement('div');
       empty.style.padding = '12px';
       empty.style.color = '#999';
-      empty.appendChild(document.createTextNode('No running jobs'));
+      empty.appendChild(document.createTextNode('No pending reviews'));
       el.appendChild(empty);
       return;
     }
-    for (var i = 0; i < jobs.length; i++) {
-      (function (job) {
-        var row = document.createElement('div');
-        row.className = 'row jobRow';
+    for (var i = 0; i < items.length; i++) {
+      (function (item) {
+        var card = document.createElement('div');
+        card.className = 'reviewCard';
 
-        var top = document.createElement('div');
-        top.className = 'jobTop';
+        var title = document.createElement('div');
+        title.className = 'reviewTitle';
+        title.appendChild(document.createTextNode(item.title || item.item_id || ''));
+        card.appendChild(title);
 
-        var labelDiv = document.createElement('div');
-        labelDiv.appendChild(document.createTextNode(job.label || job.relay_id || ''));
-
-        var statusDiv = document.createElement('div');
-        statusDiv.className = 'meta jobStatus';
-        statusDiv.appendChild(document.createTextNode(job.status || ''));
-
-        top.appendChild(labelDiv);
-        top.appendChild(statusDiv);
-        row.appendChild(top);
-
-        var summary = (job.result && job.result.summary) || job.task || '';
-        if (summary) {
+        if (item.summary) {
           var summaryDiv = document.createElement('div');
-          summaryDiv.className = 'jobSummary';
-          summaryDiv.appendChild(document.createTextNode(String(summary)));
-          row.appendChild(summaryDiv);
+          summaryDiv.className = 'reviewSummary';
+          summaryDiv.appendChild(document.createTextNode(String(item.summary)));
+          card.appendChild(summaryDiv);
         }
 
-        var cancelBtn = document.createElement('button');
-        cancelBtn.className = 'secondary small';
-        cancelBtn.appendChild(document.createTextNode('Cancel'));
-        cancelBtn.onclick = function () {
-          cancelBtn.disabled = true;
-          xhr('POST', '/api/agent-relay/jobs/' + encodeURIComponent(job.relay_id) + '/cancel', {}, authHeaders(), function () {
-            loadJobs();
-          }, function () {
-            cancelBtn.disabled = false;
-          });
-        };
-        row.appendChild(cancelBtn);
+        if (item.status) {
+          var statusDiv = document.createElement('div');
+          statusDiv.className = 'reviewStatus';
+          statusDiv.appendChild(document.createTextNode(String(item.status)));
+          card.appendChild(statusDiv);
+        }
 
-        el.appendChild(row);
-      })(jobs[i]);
+        var actions = item.actions || [];
+        if (actions.length) {
+          var btnRow = document.createElement('div');
+          btnRow.className = 'reviewBtns';
+          for (var j = 0; j < actions.length; j++) {
+            (function (action) {
+              var btn = document.createElement('button');
+              btn.className = 'secondary small';
+              if (action.style === 'primary') { btn.className = 'small'; }
+              btn.appendChild(document.createTextNode(action.label || action.id || ''));
+              btn.onclick = function () {
+                performReviewAction(item.item_id, action.id, btn);
+              };
+              btnRow.appendChild(btn);
+            })(actions[j]);
+          }
+          card.appendChild(btnRow);
+        }
+
+        el.appendChild(card);
+      })(items[i]);
     }
   }
 
@@ -1508,9 +1490,9 @@
       try { state.ws.close(); } catch (e) {}
       state.ws = null;
     }
-    if (state.jobsPollTimer) {
-      clearInterval(state.jobsPollTimer);
-      state.jobsPollTimer = null;
+    if (state.reviewPollTimer) {
+      clearInterval(state.reviewPollTimer);
+      state.reviewPollTimer = null;
     }
     try {
       window.localStorage.removeItem(TOKEN_KEY);
@@ -1526,7 +1508,7 @@
   $('btnThemeProjects').onclick = toggleTheme;
   $('btnThemeSessions').onclick = toggleTheme;
   $('btnThemeChat').onclick = toggleTheme;
-  $('btnThemeJobs').onclick = toggleTheme;
+  $('btnThemeReview').onclick = toggleTheme;
   $('providerSelect').onchange = onProviderChange;
   $('modelSelect').onchange = function () { renderEffortOptions(); };
   $('btnLogoutCategories').onclick = logout;
@@ -1551,15 +1533,9 @@
   $('btnNewSession').onclick = newSession;
   $('btnSend').onclick = sendChat;
   $('btnStopChat').onclick = stopChat;
-  $('btnJobsFromChat').onclick = function () { openJobs('screenSessions'); };
-  $('tabChatFromCategories').onclick = function () { navGoCategories(); };
-  $('tabJobsFromCategories').onclick = function () { openJobs('screenCategories'); };
-  $('tabChatFromProjects').onclick = function () { navGoCategories(); };
-  $('tabJobsFromProjects').onclick = function () { openJobs('screenProjects'); };
-  $('tabChatFromSessions').onclick = function () { navGoCategories(); };
-  $('tabJobsFromSessions').onclick = function () { openJobs('screenSessions'); };
-  $('btnRefreshJobs').onclick = function () { loadJobs(); };
-  $('btnBackFromJobs').onclick = leaveJobs;
+  $('btnReviewFromCategories').onclick = function () { openReview(); };
+  $('btnRefreshReview').onclick = function () { loadReviewItems(); };
+  $('btnBackFromReview').onclick = leaveReview;
 
   applyTheme(getStoredItem(THEME_KEY) || 'dark');
 
@@ -1598,8 +1574,8 @@
       reloadProjectsForRefresh(done);
     } else if (screen === 'screenSessions') {
       loadSessions(done);
-    } else if (screen === 'screenJobs') {
-      loadJobs(done);
+    } else if (screen === 'screenReview') {
+      loadReviewItems(done);
     } else if (screen === 'screenChat') {
       reloadMessagesForRefresh(done);
     } else {
