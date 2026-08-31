@@ -38,6 +38,60 @@ test('relay envelope approves safe reads, denies read-only mutation, auto-denies
     'approve',
   );
 
+  assert.equal(
+    classifyRelayPermissionRequest({
+      mode: 'read_only',
+      envelopeRoot: WORKTREE,
+      toolName: 'use_tool',
+      rawInput: { tool_name: 'obsidian_get_file' },
+    }).tier,
+    'approve',
+  );
+  assert.equal(
+    classifyRelayPermissionRequest({
+      mode: 'read_only',
+      envelopeRoot: WORKTREE,
+      toolName: 'use_tool',
+      rawInput: { arguments: { tool_name: 'obsidian_simple_search' } },
+    }).tier,
+    'approve',
+  );
+  assert.equal(
+    classifyRelayPermissionRequest({
+      mode: 'read_only',
+      envelopeRoot: WORKTREE,
+      toolName: 'use_tool',
+      rawInput: { arguments: { name: 'obsidian_put_file' } },
+    }).tier,
+    'deny',
+  );
+  assert.equal(
+    classifyRelayPermissionRequest({
+      mode: 'read_only',
+      envelopeRoot: WORKTREE,
+      toolName: 'use_tool',
+    }).tier,
+    'deny',
+  );
+  assert.equal(
+    classifyRelayPermissionRequest({
+      mode: 'read_only',
+      envelopeRoot: WORKTREE,
+      toolName: 'search_tool',
+    }).tier,
+    'approve',
+  );
+  assert.equal(
+    classifyRelayPermissionRequest({
+      mode: 'isolated_write',
+      approvalPolicy: 'auto',
+      envelopeRoot: WORKTREE,
+      toolName: 'use_tool',
+      rawInput: { tool_name: 'obsidian_get_file' },
+    }).tier,
+    'approve',
+  );
+
   // A read-only assignment never writes, even inside the declared root.
   assert.equal(
     classifyRelayPermissionRequest({

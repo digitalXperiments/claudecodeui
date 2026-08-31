@@ -238,6 +238,14 @@ export type AgentRelayJobSummary = {
   } | null;
 };
 
+export type AgentRelayWorkerProfile = {
+  /** Catalog names this provider may receive as worker MCP grants. */
+  mcpServers?: string[];
+  /** null/omit = use global defaultMode. */
+  defaultMode?: AgentRelayMode | null;
+  defaultApprovalPolicy?: AgentRelayApprovalPolicy | null;
+};
+
 export type AgentRelaySettings = {
   enabled: boolean;
   leadProviders: LLMProvider[];
@@ -248,6 +256,11 @@ export type AgentRelaySettings = {
    * only those models may be used as Relay workers.
    */
   allowedWorkerModels: Partial<Record<LLMProvider, string[]>>;
+  /**
+   * Per-provider worker defaults: MCP grant allowlists and optional mode /
+   * approval overrides used when a task omits those fields.
+   */
+  workerProfiles: Partial<Record<LLMProvider, AgentRelayWorkerProfile>>;
   maxConcurrency: number;
   defaultTimeoutMs: number;
   defaultMode: AgentRelayMode;

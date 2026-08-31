@@ -726,3 +726,89 @@ test('existing Agent Relay settings gain OpenCode as a lead once', async () => {
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test('workerProfiles persist, sanitize junk, fill and intersect MCP grants', async () => {
+  const previousDatabasePath = process.env.DATABASE_PATH;
+  const root = await makeScratchDir('agent-relay-profiles-');
+  const projectPath = path.join(root, 'project');
+  closeConnection();
+  process.env.DATABASE_PATH = path.join(root, 'auth.db');
+  await initializeDatabase();
+  await mkdir(projectPath, { recursive: true });
+  const originalGetProviderModels = providerModelsService.getProviderModels;
+  providerModelsService.getProviderModels = async (provider) => ({
+    models: {
+      DEFAULT: `${provider}-default`,
+      OPTIONS: [{ value: `${provider}-default`, label: 'Default' }],
+    },
+    cache: { updatedAt: new Date().toISOString(), expiresAt: new Date().toISOString(), source: 'fresh' },
+  });
+  configureAgentRelayRuntimes({
+    claude: async (_command, _options, writer) => {
+      const relayWriter = writer as { setSessionId: (sessionId: string) => void; send: (message: unknown) => void };
+      relayWriter.setSessionId('relay-native-claude');
+      relayWriter.send({ kind: 'complete', provider: 'claude', exitCode: 0, success: true });
+    },
+    grok: async (_command, _options, writer) => {
+      const relayWriter = writer as { setSessionId: (sessionId: string) => void; send: (message: unknown) => void };
+      relayWriter.setSessionId('relay-native-grok');
+      relayWriter.send({ kind: 'complete', provider: 'grok', exitCode: 0, success: true });
+    },
+    codex: async (_command, _options, writer) => {
+      const relayWriter = writer as { setSessionId: (sessionId: string) => void; send: (message: unknown) => void };
+      relayWriter.setSessionId('relay-native-codex');
+      relayWriter.send({ kind: 'complete', provider: 'codex', exitCode: 0, success: true });
+    },
+  }, {});
+  try {
+    const persisted = await agentRelayService.updateSettings({
+      enabled: true,
+      leadProviders: ['claude'],
+      workerProviders: ['claude', 'grok', 'codex'],
+      workerProfiles: {
+        claude: { mcpServers: ['obsidian', 'obsidian', ' cloudcli-agent-relay ', 'browser'] },
+        grok: { mcpServers: ['obsidian', 'notes'], defaultMode: 'isolated_write', defaultApprovalPolicy: 'manual' },
+        codex: { mcpServers: ['obsidian'] },
+        // @ts-expect-error junk provider must be dropped
+        notAProvider: { mcpServers: ['obsidian'] },
+      },
+    });
+    assert.deepEqual(persisted.workerProfiles.claude?.mcpServers, ['obsidian', 'browser']);
+    assert.deepEqual(persisted.workerProfiles.grok?.mcpServers, ['obsidian', 'notes']);
+    assert.equal(persisted.workerProfiles.notAProvider, undefined);
+
+    const filledClaude = await agentRelayService.submitBatch({
+      projectPath,
+      tasks: [{ task: 'Fill MCP from profile.', provider: 'claude' }],
+    });
+    assert.deepEqual(filledClaude.jobs[0]?.mcp_servers, ['obsidian', 'browser']);
+
+    const filledGrok = await agentRelayService.submitBatch({
+      projectPath,
+      tasks: [{ task: 'Fill MCP from grok profile.', provider: 'grok' }],
+    });
+    assert.deepEqual(filledGrok.jobs[0]?.mcp_servers, ['obsidian', 'notes']);
+    assert.equal(filledGrok.jobs[0]?.mode, 'isolated_write');
+    assert.equal(filledGrok.jobs[0]?.approval_policy, 'manual');
+
+    const intersected = await agentRelayService.submitBatch({
+      projectPath,
+      tasks: [{ task: 'Intersect MCP lists.', provider: 'claude', mcpServers: ['obsidian', 'slack'] }],
+    });
+    assert.deepEqual(intersected.jobs[0]?.mcp_servers, ['obsidian']);
+
+    const ignoredCodex = await agentRelayService.submitBatch({
+      projectPath,
+      tasks: [{ task: 'Codex ignores profile MCP.', provider: 'codex' }],
+    });
+    assert.deepEqual(ignoredCodex.jobs[0]?.mcp_servers, []);
+  } finally {
+    providerModelsService.getProviderModels = originalGetProviderModels;
+    configureAgentRelayRuntimes({}, {});
+    chatRunRegistry.clearAll();
+    closeConnection();
+    if (previousDatabasePath === undefined) delete process.env.DATABASE_PATH;
+    else process.env.DATABASE_PATH = previousDatabasePath;
+    await rm(root, { recursive: true, force: true });
+  }
+});

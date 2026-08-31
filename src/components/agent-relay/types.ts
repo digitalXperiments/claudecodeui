@@ -31,6 +31,12 @@ export type AgentRelayApproval = {
   decided_at: string | null;
 };
 
+export type AgentRelayWorkerProfile = {
+  mcpServers?: string[];
+  defaultMode?: AgentRelayMode | null;
+  defaultApprovalPolicy?: AgentRelayApprovalPolicy | null;
+};
+
 export type AgentRelaySettings = {
   enabled: boolean;
   leadProviders: LLMProvider[];
@@ -41,6 +47,7 @@ export type AgentRelaySettings = {
    * may be used as Relay workers.
    */
   allowedWorkerModels: Partial<Record<LLMProvider, string[]>>;
+  workerProfiles?: Partial<Record<LLMProvider, AgentRelayWorkerProfile>>;
   maxConcurrency: number;
   defaultTimeoutMs: number;
   defaultMode: AgentRelayMode;

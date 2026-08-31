@@ -21,6 +21,7 @@ import {
   type AgentRelayScope,
   type AgentRelaySettings,
   type AgentRelaySettingsPatch,
+  type AgentRelayWorkerProfile,
   type AgentRelayStructuredResult,
 } from '@/modules/agent-relay/agent-relay.types.js';
 import { normalizeDeclaredSchema, validateJsonSchema } from '@/shared/json-schema-lite.js';
@@ -77,6 +78,7 @@ const DEFAULT_SETTINGS: AgentRelaySettings = {
   leadProviders: ['claude', 'codex', 'opencode'],
   workerProviders: [...AGENT_RELAY_PROVIDERS],
   allowedWorkerModels: {},
+  workerProfiles: {},
   maxConcurrency: 4,
   defaultTimeoutMs: DEFAULT_TIMEOUT_MS,
   defaultMode: 'read_only',
@@ -401,6 +403,62 @@ function uniqueAllowedWorkerModels(value: unknown): Partial<Record<LLMProvider, 
   return out;
 }
 
+function uniqueWorkerProfiles(value: unknown): Partial<Record<LLMProvider, AgentRelayWorkerProfile>> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  const out: Partial<Record<LLMProvider, AgentRelayWorkerProfile>> = {};
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+    if (!AGENT_RELAY_PROVIDERS.includes(key as LLMProvider)) continue;
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
+    const record = raw as Record<string, unknown>;
+    const profile: AgentRelayWorkerProfile = {};
+    if (record.mcpServers !== undefined) {
+      profile.mcpServers = uniqueModelIds(record.mcpServers).filter(
+        (name) => name !== MCP_SERVER_NAME && name !== 'cloudcli-agent-relay',
+      );
+    }
+    if (record.defaultMode === null) profile.defaultMode = null;
+    else if (record.defaultMode === 'read_only' || record.defaultMode === 'isolated_write') {
+      profile.defaultMode = record.defaultMode;
+    }
+    if (record.defaultApprovalPolicy === null) profile.defaultApprovalPolicy = null;
+    else if (record.defaultApprovalPolicy === 'auto' || record.defaultApprovalPolicy === 'manual') {
+      profile.defaultApprovalPolicy = record.defaultApprovalPolicy;
+    }
+    const hasMcp = (profile.mcpServers?.length ?? 0) > 0;
+    const hasMode = profile.defaultMode === 'read_only' || profile.defaultMode === 'isolated_write';
+    const hasApproval = profile.defaultApprovalPolicy === 'auto' || profile.defaultApprovalPolicy === 'manual';
+    if (!hasMcp && !hasMode && !hasApproval) continue;
+    if (!hasMcp) delete profile.mcpServers;
+    out[key as LLMProvider] = profile;
+  }
+  return out;
+}
+
+function resolveWorkerMcpServers(input: {
+  provider: LLMProvider;
+  taskMcpServers: unknown;
+  profile: AgentRelayWorkerProfile | undefined;
+}): string[] {
+  const taskSpecified = Array.isArray(input.taskMcpServers);
+  const taskServers = sanitizeWorkerMcpServers(
+    taskSpecified
+      ? input.taskMcpServers.filter((entry): entry is string => typeof entry === 'string' && Boolean(entry.trim())).map((entry) => entry.trim())
+      : [],
+  );
+  const profileServers = sanitizeWorkerMcpServers(input.profile?.mcpServers ?? []);
+  if (!providerHonorsRelayMcpGrants(input.provider)) {
+    return taskServers.slice(0, 30);
+  }
+  if (!taskSpecified || taskServers.length === 0) {
+    return (profileServers.length > 0 ? profileServers : []).slice(0, 30);
+  }
+  if (profileServers.length > 0) {
+    const allow = new Set(profileServers);
+    return taskServers.filter((name) => allow.has(name)).slice(0, 30);
+  }
+  return taskServers.slice(0, 30);
+}
+
 function sameProviders(left: LLMProvider[], right: LLMProvider[]): boolean {
   return left.length === right.length && left.every((provider) => right.includes(provider));
 }
@@ -435,6 +493,7 @@ function readSettings(): AgentRelaySettings {
       leadProviders: uniqueProviders(parsed.leadProviders, DEFAULT_SETTINGS.leadProviders),
       workerProviders: uniqueProviders(parsed.workerProviders, DEFAULT_SETTINGS.workerProviders),
       allowedWorkerModels: uniqueAllowedWorkerModels(parsed.allowedWorkerModels),
+      workerProfiles: uniqueWorkerProfiles(parsed.workerProfiles),
       maxConcurrency: clampInteger(parsed.maxConcurrency, DEFAULT_SETTINGS.maxConcurrency, 1, MAX_CONCURRENCY),
       defaultTimeoutMs: clampInteger(parsed.defaultTimeoutMs, DEFAULT_SETTINGS.defaultTimeoutMs, MIN_TIMEOUT_MS, MAX_TIMEOUT_MS),
       defaultMode: parsed.defaultMode === 'isolated_write' ? 'isolated_write' : 'read_only',
@@ -1414,6 +1473,9 @@ export const agentRelayService = {
       allowedWorkerModels: patch.allowedWorkerModels === undefined
         ? current.allowedWorkerModels
         : uniqueAllowedWorkerModels(patch.allowedWorkerModels),
+      workerProfiles: patch.workerProfiles === undefined
+        ? (current.workerProfiles ?? {})
+        : uniqueWorkerProfiles(patch.workerProfiles),
       maxConcurrency: clampInteger(patch.maxConcurrency, current.maxConcurrency, 1, MAX_CONCURRENCY),
       defaultTimeoutMs: clampInteger(patch.defaultTimeoutMs, current.defaultTimeoutMs, MIN_TIMEOUT_MS, MAX_TIMEOUT_MS),
       defaultMode: normalizeMode(patch.defaultMode, current.defaultMode),
@@ -1555,8 +1617,11 @@ export const agentRelayService = {
           { code: 'RELAY_WORKER_MODEL_REQUIRED', statusCode: 400 },
         );
       }
-      const mode = normalizeMode(task.mode, settings.defaultMode);
-      const approvalPolicy = normalizeApprovalPolicy(task.approvalPolicy, settings.defaultApprovalPolicy);
+      const profile = settings.workerProfiles?.[provider];
+      const modeFallback = profile?.defaultMode ?? settings.defaultMode;
+      const approvalFallback = profile?.defaultApprovalPolicy ?? settings.defaultApprovalPolicy;
+      const mode = normalizeMode(task.mode, modeFallback);
+      const approvalPolicy = normalizeApprovalPolicy(task.approvalPolicy, approvalFallback);
       if (mode === 'read_only' && !providerSupportsReadOnlyRelay(provider)) {
         throw new AppError(
           `Provider "${provider}" does not expose a host-enforceable read-only relay mode. Choose another worker or use isolated_write.`,
@@ -1602,11 +1667,11 @@ export const agentRelayService = {
           );
         }
       }
-      const mcpServers = sanitizeWorkerMcpServers(
-        Array.isArray(task.mcpServers)
-          ? task.mcpServers.filter((entry): entry is string => typeof entry === 'string' && Boolean(entry.trim())).map((entry) => entry.trim())
-          : [],
-      ).slice(0, 30);
+      const mcpServers = resolveWorkerMcpServers({
+        provider,
+        taskMcpServers: task.mcpServers,
+        profile,
+      });
       if (mcpServers.length > 0 && !providerHonorsRelayMcpGrants(provider)) {
         throw new AppError(
           `Provider "${provider}" cannot receive explicit Agent Relay MCP grants. Choose a provider that honors task MCP grants.`,
