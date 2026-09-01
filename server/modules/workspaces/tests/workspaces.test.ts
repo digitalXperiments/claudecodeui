@@ -74,6 +74,10 @@ test('creates concurrent isolated worktrees without changing the primary checkou
     const projectPath = path.join(taskRoot, 'project');
     await mkdir(projectPath, { recursive: true });
     await initGitRepo(projectPath);
+    await writeFile(path.join(projectPath, 'README.md'), 'dirty primary source\n');
+    await writeFile(path.join(projectPath, '.gitignore'), 'node_modules/\ntmp/\nignored.secret\n');
+    await writeFile(path.join(projectPath, 'untracked.ts'), 'export const dirty = true;\n');
+    await writeFile(path.join(projectPath, 'ignored.secret'), 'do not overlay\n');
     const projectId = projectsDb.createProjectPath(projectPath).project!.project_id;
     const service = createWorkspaceService({ tmpRoot: path.join(taskRoot, 'fallback') });
 
@@ -86,6 +90,16 @@ test('creates concurrent isolated worktrees without changing the primary checkou
     assert.equal(runGit(projectPath, ['branch', '--show-current']).stdout, 'main');
     assert.equal(runGit(first.root_path, ['branch', '--show-current']).stdout, 'feat/task-a');
     assert.equal(runGit(second.root_path, ['branch', '--show-current']).stdout, 'feat/task-b');
+    assert.equal(
+      await readFile(path.join(first.root_path, 'README.md'), 'utf8'),
+      'dirty primary source\n',
+    );
+    assert.equal(
+      await readFile(path.join(first.root_path, 'untracked.ts'), 'utf8'),
+      'export const dirty = true;\n',
+    );
+    assert.equal(await pathExists(path.join(first.root_path, 'ignored.secret')), false);
+    assert.equal(await readFile(path.join(projectPath, 'README.md'), 'utf8'), 'dirty primary source\n');
 
     await writeFile(path.join(first.root_path, 'agent-a.txt'), 'A\n');
     assert.equal(await pathExists(path.join(second.root_path, 'agent-a.txt')), false);

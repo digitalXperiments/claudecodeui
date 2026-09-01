@@ -267,6 +267,9 @@ test('classification: shell wrappers are classified by their payload, not the sh
     // codex/grok wrap every Bash call as `/bin/zsh -lc "<real command>"`.
     const cases: Array<{ seat: string; command: string; tier: string }> = [
       { seat: 'reviewer', command: `/bin/zsh -lc 'pnpm -F @app/web exec tsc --noEmit'`, tier: 'approve' },
+      { seat: 'reviewer', command: 'tsc --noEmit', tier: 'approve' },
+      { seat: 'reviewer', command: 'npx tsc -p server/tsconfig.json --noEmit', tier: 'approve' },
+      { seat: 'reviewer', command: 'npx -p typescript tsc --noEmit', tier: 'deny' },
       { seat: 'reviewer', command: `/bin/zsh -lc 'pnpm -F @app/web lint'`, tier: 'deny' },
       { seat: 'reviewer', command: `/bin/zsh -lc "npm run build"`, tier: 'deny' },
       { seat: 'explorer', command: `/bin/zsh -lc "find src -maxdepth 4 -type f | sort && rg -n 'todo' src"`, tier: 'approve' },

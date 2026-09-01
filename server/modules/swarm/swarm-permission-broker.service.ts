@@ -332,6 +332,20 @@ const ALWAYS_RISKY_COMMANDS = new Set([
   'eval', 'source', 'sh', 'bash', 'zsh', 'dash', 'ksh', 'fish', 'env', 'printenv', 'export',
 ]);
 
+function isLocalTscCommand(tokens: string[]): boolean {
+  if (tokens[0] !== 'tsc' || !tokens.slice(1).includes('--noEmit')) return false;
+  return true;
+}
+
+function isLocalNpxTscCommand(tokens: string[]): boolean {
+  if (tokens[0] !== 'npx') return false;
+  let index = 1;
+  // Only npx's non-installing flag is accepted here. In particular, `-p`
+  // means an npm package for npx and must remain risky.
+  if (tokens[index] === '--no-install') index += 1;
+  return tokens[index] === 'tsc' && isLocalTscCommand(tokens.slice(index));
+}
+
 /**
  * Shells that show up as command *wrappers*. Several provider CLIs (codex and
  * grok most notably) never emit a bare command — every Bash tool call arrives
@@ -723,6 +737,10 @@ function classifyCommandSegment(
     // The body/condition is classified as its own segment. These tokens only
     // describe shell control flow and do not mutate state by themselves.
     result = { category: 'read', reason: `shell control-flow keyword "${head}"` };
+  } else if (isLocalNpxTscCommand(tokens)) {
+    result = cwd && isInsideWorkspace('.', workspaceRoot, cwd)
+      ? { category: 'read', reason: 'npx tsc --noEmit uses the local project typechecker' }
+      : { category: 'risky', reason: 'npx tsc must run inside the worker workspace' };
   } else if (ALWAYS_RISKY_COMMANDS.has(head)) {
     result = { category: 'risky', reason: `"${head}" requires privilege, spawns arbitrary code, or exposes the environment` };
   } else if (head === 'cd') {
@@ -846,8 +864,12 @@ function classifyCommandSegment(
       result = { category: 'workspace-write', reason: 'prettier --write mutates project files' };
     } else if (head === 'eslint' && tokens.slice(1).includes('--fix')) {
       result = { category: 'workspace-write', reason: 'eslint --fix mutates project files' };
-    } else if (head === 'tsc' && !tokens.slice(1).includes('--noEmit')) {
-      result = { category: 'workspace-write', reason: 'tsc emits project files' };
+    } else if (head === 'tsc') {
+      result = !tokens.slice(1).includes('--noEmit')
+        ? { category: 'workspace-write', reason: 'tsc emits project files' }
+        : cwd && isInsideWorkspace('.', workspaceRoot, cwd)
+          ? { category: 'read', reason: 'tsc --noEmit is a local read-only typecheck' }
+          : { category: 'risky', reason: 'tsc --noEmit must run inside the worker workspace' };
     } else {
       result = { category: 'read', reason: `"${head}" is a read-only local check` };
     }

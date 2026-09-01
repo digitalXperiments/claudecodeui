@@ -28,6 +28,44 @@ test('relay envelope approves safe reads, denies read-only mutation, auto-denies
     }).tier,
     'approve',
   );
+
+  for (const command of [
+    'tsc --noEmit',
+    'npx tsc --noEmit',
+    'npx --no-install tsc -p server/tsconfig.json --noEmit',
+  ]) {
+    assert.equal(
+      classifyRelayPermissionRequest({
+        mode: 'isolated_write',
+        envelopeRoot: WORKTREE,
+        toolName: 'Bash',
+        command,
+        cwd: WORKTREE,
+      }).tier,
+      'approve',
+      command,
+    );
+  }
+  assert.equal(
+    classifyRelayPermissionRequest({
+      mode: 'isolated_write',
+      envelopeRoot: WORKTREE,
+      toolName: 'Bash',
+      command: 'npx tsc --noEmit',
+      cwd: '/primary/checkout',
+    }).tier,
+    'deny',
+  );
+  assert.equal(
+    classifyRelayPermissionRequest({
+      mode: 'isolated_write',
+      envelopeRoot: WORKTREE,
+      toolName: 'Bash',
+      command: 'npx -p typescript tsc --noEmit',
+      cwd: WORKTREE,
+    }).tier,
+    'escalate',
+  );
   assert.equal(
     classifyRelayPermissionRequest({
       mode: 'read_only',

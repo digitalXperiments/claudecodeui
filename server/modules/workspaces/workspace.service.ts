@@ -641,6 +641,46 @@ export function createWorkspaceService(options: WorkspaceServiceOptions = {}): W
     }
   };
 
+  /** Overlay the primary checkout's non-ignored dirty files onto a new worktree. */
+  const overlayDirtyFiles = async (projectPath: string, rootPath: string): Promise<void> => {
+    const status = await git.runGit(projectPath, ['status', '--porcelain=v1', '-z', '--untracked-files=all']);
+    if (status.code !== 0) throw new Error(`could not inspect primary checkout: ${status.stderr.trim()}`);
+
+    const records = status.stdout.split('\0');
+    for (let index = 0; index < records.length; index += 1) {
+      const record = records[index];
+      if (!record || record.length < 4) continue;
+      const xy = record.slice(0, 2);
+      // For renames/copies, porcelain -z reports the destination first and
+      // the source as a second NUL-delimited path. The destination is what we
+      // need to overlay; deleted paths have no source to copy.
+      const relative = record.slice(3);
+      if (xy[0] === 'R' || xy[0] === 'C' || xy[1] === 'R' || xy[1] === 'C') index += 1;
+      if (xy.includes('D') || !relative) continue;
+      const source = path.join(projectPath, relative);
+      const destination = path.join(rootPath, relative);
+      try {
+        const info = await lstat(source);
+        if (info.isFile()) {
+          await mkdir(path.dirname(destination), { recursive: true });
+          await copyFile(source, destination);
+        } else if (info.isDirectory()) {
+          await mkdir(destination, { recursive: true });
+        } else if (info.isSymbolicLink()) {
+          const target = await readlink(source);
+          const resolvedTarget = path.resolve(path.dirname(source), target);
+          if (resolvedTarget === projectPath || resolvedTarget.startsWith(`${projectPath}${path.sep}`)) {
+            await rm(destination, { recursive: true, force: true });
+            await mkdir(path.dirname(destination), { recursive: true });
+            await symlink(target, destination);
+          }
+        }
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      }
+    }
+  };
+
   /** Remove the worktree + dir; tolerates an already-missing directory. */
   const destroyWorktree = async (
     projectPath: string,
@@ -763,6 +803,7 @@ export function createWorkspaceService(options: WorkspaceServiceOptions = {}): W
         if (add.code !== 0) {
           throw new Error(`git worktree add failed: ${add.stderr.trim().slice(0, 500)}`);
         }
+        await overlayDirtyFiles(projectPath, rootPath);
         await prepareWorkspaceScratch(projectPath, rootPath);
         workspaceDb.setHeadSha(workspaceId, await git.revParse(rootPath, 'HEAD'));
         workspaceDb.setStatus(workspaceId, 'active');
