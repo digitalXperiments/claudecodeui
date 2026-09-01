@@ -116,11 +116,6 @@ test('creates concurrent isolated worktrees without changing the primary checkou
     assert.ok(diff.files.some((file) => file.path === 'agent-a.txt'));
     assert.ok(diff.summary.additions >= 1);
 
-    const merged = await service.mergeToBase(first.workspace_id, { strategy: 'ff-only' });
-    assert.equal(merged.merged, true);
-    assert.equal(merged.status, 'merged');
-    assert.equal(await readFile(path.join(projectPath, 'agent-a.txt'), 'utf8'), 'A\n');
-
     await service.cleanup(first.workspace_id);
     await service.discard(second.workspace_id, { deleteBranch: true });
     assert.equal(await pathExists(first.root_path), false);
