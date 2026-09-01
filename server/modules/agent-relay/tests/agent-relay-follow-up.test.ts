@@ -165,8 +165,30 @@ test('relay_follow_up queues for the next turn when the provider has no live inj
 
 test('relay_follow_up on a queued job merges directly into its first attempt prompt', async () => {
   await withRelayDb(async (projectPath) => {
-    // Disabled so submitted jobs stay queued instead of dispatching.
-    relaySettings({ enabled: false });
+    // Relay is enabled, but the single worker slot is held by a blocker job
+    // so the job under test stays queued instead of dispatching.
+    relaySettings({ maxConcurrency: 1 });
+
+    const blocker: { run: (() => void) | null } = { run: null };
+    configureAgentRelayRuntimes({
+      claude: async (_command, _options, writer) => {
+        const relayWriter = writer as RelayWriter;
+        relayWriter.setSessionId('relay-blocker');
+        await new Promise<void>((resolve) => { blocker.run = resolve; });
+        relayWriter.send({
+          kind: 'text',
+          provider: 'claude',
+          content: '<agent_relay_result>{"status":"completed","summary":"Blocker done","evidence":[],"filesTouched":[],"testsRun":[],"openQuestions":[]}</agent_relay_result>',
+        });
+        relayWriter.send({ kind: 'complete', provider: 'claude', exitCode: 0, success: true });
+      },
+    }, {});
+
+    const blockerSubmitted = await agentRelayService.submitBatch({
+      projectPath,
+      tasks: [{ task: 'Occupy the only worker slot.', provider: 'claude' }],
+    });
+    await waitForStatus(blockerSubmitted.jobs[0]!.relay_id, 'running');
 
     const submitted = await agentRelayService.submitBatch({
       projectPath,
@@ -179,6 +201,9 @@ test('relay_follow_up on a queued job merges directly into its first attempt pro
     assert.equal(followed.status, 'queued');
     assert.equal(followed.pending_follow_up, null);
     assert.match(followed.last_prompt, /Focus on the retry path first\./);
+
+    blocker.run?.();
+    await agentRelayService.wait([blockerSubmitted.jobs[0]!.relay_id], { returnWhen: 'all', timeoutMs: 5_000 });
   });
 });
 

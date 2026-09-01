@@ -56,6 +56,7 @@ import type {
   WorkspaceService,
   WorkspaceServiceOptions,
   WorkspaceStatus,
+  WorkspaceDirtyFile,
 } from '@/modules/workspaces/workspace.types.js';
 
 /**
@@ -681,6 +682,51 @@ export function createWorkspaceService(options: WorkspaceServiceOptions = {}): W
     }
   };
 
+  /**
+   * Dirty files that `overlayDirtyFiles` copied in from the primary checkout
+   * and the worker never touched are not the worker's uncommitted work — they
+   * are the primary's own uncommitted state, byte-for-byte. Merging past them
+   * is safe: the primary already holds that exact content on disk. Only
+   * dirt that differs from (or has no counterpart in) the primary checkout
+   * represents an actual worker change that must be committed or discarded
+   * before merging.
+   */
+  const filterOverlayOnlyDirt = async (
+    projectPath: string,
+    rootPath: string,
+    dirtyFiles: WorkspaceDirtyFile[],
+  ): Promise<WorkspaceDirtyFile[]> => {
+    const blocking: WorkspaceDirtyFile[] = [];
+    for (const file of dirtyFiles) {
+      if (file.status.includes('U') || file.status === 'AA' || file.status === 'DD') {
+        blocking.push(file);
+        continue;
+      }
+      try {
+        const [worktreeInfo, primaryInfo] = await Promise.all([
+          lstat(path.join(rootPath, file.path)),
+          lstat(path.join(projectPath, file.path)),
+        ]);
+        if (!worktreeInfo.isFile() || !primaryInfo.isFile()) {
+          blocking.push(file);
+          continue;
+        }
+        const [worktreeContent, primaryContent] = await Promise.all([
+          readFile(path.join(rootPath, file.path)),
+          readFile(path.join(projectPath, file.path)),
+        ]);
+        if (!worktreeContent.equals(primaryContent)) {
+          blocking.push(file);
+        }
+      } catch {
+        // Missing on either side (e.g. a deletion) is not provably identical
+        // overlay dirt; keep it as blocking.
+        blocking.push(file);
+      }
+    }
+    return blocking;
+  };
+
   /** Remove the worktree + dir; tolerates an already-missing directory. */
   const destroyWorktree = async (
     projectPath: string,
@@ -922,10 +968,11 @@ export function createWorkspaceService(options: WorkspaceServiceOptions = {}): W
       workspace.project_id,
       async () => {
       const dirty = await git.statusPorcelain(workspace.root_path);
-      if (dirty.dirtyFiles.length > 0) {
+      const blockingDirty = await filterOverlayOnlyDirt(projectPath, workspace.root_path, dirty.dirtyFiles);
+      if (blockingDirty.length > 0) {
         throw new CloudError(
           'WORKSPACE_DIRTY_CONFLICT',
-          `Workspace ${workspaceId} has ${dirty.dirtyFiles.length} uncommitted change(s); commit or discard before merging`,
+          `Workspace ${workspaceId} has ${blockingDirty.length} uncommitted change(s); commit or discard before merging`,
         );
       }
       // The primary checkout must sit on the base branch — we merge in place

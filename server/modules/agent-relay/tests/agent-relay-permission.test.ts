@@ -57,6 +57,8 @@ test('relay envelope approves safe reads, denies read-only mutation, auto-denies
     'deny',
   );
   assert.equal(
+    // Install-flavored npx (`-p`/`--package`) stays risky; under the default
+    // `auto` approval policy that is auto-denied, not parked for the lead.
     classifyRelayPermissionRequest({
       mode: 'isolated_write',
       envelopeRoot: WORKTREE,
@@ -64,7 +66,7 @@ test('relay envelope approves safe reads, denies read-only mutation, auto-denies
       command: 'npx -p typescript tsc --noEmit',
       cwd: WORKTREE,
     }).tier,
-    'escalate',
+    'deny',
   );
   assert.equal(
     classifyRelayPermissionRequest({
