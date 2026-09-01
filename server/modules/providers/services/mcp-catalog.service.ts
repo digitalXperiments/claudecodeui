@@ -624,6 +624,16 @@ export const mcpCatalogService = {
   },
 
   /**
+   * Raw catalog definition for one server, ignoring provider bindings.
+   * Used by callers (e.g. the MCP tools probe) that need the connection
+   * details regardless of which providers currently have it enabled.
+   */
+  async getRaw(name: string): Promise<McpCatalogDefinition | null> {
+    const catalog = await readCatalog();
+    return catalog.servers[name] ?? null;
+  },
+
+  /**
    * Resolve a set of catalog server names into connection definitions ready
    * to hand a provider's own runtime (e.g. an ACP `session/new` `mcpServers`
    * array) — as opposed to the tool-name-string allow-lists produced by

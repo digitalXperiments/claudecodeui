@@ -159,6 +159,7 @@ export default tseslint.config(
           type: "backend-shared-utils", // shared backend runtime helpers that modules may import directly
           pattern: [
             "server/shared/utils.{js,ts}",
+            "server/shared/agent-relay-mcp-tools.ts",
             "server/shared/frontmatter.ts",
             "server/shared/claude-cli-path.ts",
             "server/shared/acp-cli-path.ts",

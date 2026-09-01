@@ -5,6 +5,7 @@ import { providerAuthService } from '@/modules/providers/services/provider-auth.
 import { providerCapabilitiesService } from '@/modules/providers/services/provider-capabilities.service.js';
 import { providerMcpService } from '@/modules/providers/services/mcp.service.js';
 import { mcpCatalogService } from '@/modules/providers/services/mcp-catalog.service.js';
+import { mcpToolsProbeService } from '@/modules/providers/services/mcp-tools-probe.service.js';
 import { providerModelsService } from '@/modules/providers/services/provider-models.service.js';
 import { providerSkillsService } from '@/modules/providers/services/skills.service.js';
 import { sessionConversationsSearchService } from '@/modules/providers/services/session-conversations-search.service.js';
@@ -482,6 +483,15 @@ router.get(
   asyncHandler(async (_req: Request, res: Response) => {
     const servers = await mcpCatalogService.listCatalog();
     res.json(createApiSuccessResponse({ servers }));
+  }),
+);
+
+router.get(
+  '/mcp/catalog/:name/tools',
+  asyncHandler(async (req: Request, res: Response) => {
+    const name = readPathParam(req.params.name, 'name');
+    const result = await mcpToolsProbeService.listTools(name);
+    res.json(createApiSuccessResponse(result));
   }),
 );
 

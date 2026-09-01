@@ -100,6 +100,7 @@ export type McpCatalogEntry = {
   source: 'cloudcli';
   updatedAt?: string;
   syncResults?: McpCatalogSyncResult[];
+  kind?: 'memory' | 'agent-relay';
 };
 
 export type McpInventorySource = 'cloudcli' | 'provider_cloud' | 'provider_native' | 'managed';

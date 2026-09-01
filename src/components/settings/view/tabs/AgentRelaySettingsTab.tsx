@@ -8,11 +8,13 @@ import {
   Loader2,
   RefreshCw,
   Save,
+  Server,
   Sparkles,
   Waypoints,
 } from 'lucide-react';
 
 import { agentRelayApi } from '../../../agent-relay/api/agentRelayApi';
+import AgentRelayMcpToolsPanel from '../../../agent-relay/view/AgentRelayMcpToolsPanel';
 import type { AgentRelayRuntimeStatus, AgentRelaySettings, AgentRelayWorkerProfile } from '../../../agent-relay/types';
 import type { LLMProvider } from '../../../../types/app';
 import { authenticatedFetch } from '../../../../utils/api';
@@ -38,7 +40,10 @@ const providerTone = (available: boolean) => available
   ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
   : 'border-border bg-muted/40 text-muted-foreground';
 
+type AgentRelaySubTab = 'settings' | 'mcp';
+
 export default function AgentRelaySettingsTab() {
+  const [subTab, setSubTab] = useState<AgentRelaySubTab>('settings');
   const [settings, setSettings] = useState<AgentRelaySettings | null>(null);
   const [savedSettings, setSavedSettings] = useState<AgentRelaySettings | null>(null);
   const [status, setStatus] = useState<AgentRelayRuntimeStatus | null>(null);
@@ -345,6 +350,29 @@ export default function AgentRelaySettingsTab() {
         title="Agent Relay"
         description="Let a normal Claude, Codex, OpenCode, or other lead chat fan work out to fresh provider agents through a lightweight MCP broker."
       >
+        <div className="inline-flex items-center gap-1 rounded-lg border border-border bg-muted/20 p-1">
+          <button
+            type="button"
+            onClick={() => setSubTab('settings')}
+            className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${subTab === 'settings' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
+          >
+            <Waypoints className="h-3.5 w-3.5" />
+            Settings
+          </button>
+          <button
+            type="button"
+            onClick={() => setSubTab('mcp')}
+            className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${subTab === 'mcp' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
+          >
+            <Server className="h-3.5 w-3.5" />
+            MCP
+          </button>
+        </div>
+
+        {subTab === 'mcp' ? (
+          <AgentRelayMcpToolsPanel />
+        ) : (
+          <>
         <div className="overflow-hidden rounded-2xl border border-border bg-card/50">
           <div className="border-b border-border bg-gradient-to-br from-primary/[0.12] via-transparent to-transparent p-5 sm:p-6">
             <div className="flex flex-col gap-5 sm:flex-row sm:items-start sm:justify-between">
@@ -764,6 +792,8 @@ export default function AgentRelaySettingsTab() {
             </Button>
           </div>
         </div>
+          </>
+        )}
       </SettingsSection>
     </div>
   );
