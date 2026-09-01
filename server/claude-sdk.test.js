@@ -5,6 +5,7 @@ import {
   createRequestId,
   extractPermissionPaths,
   extractTokenBudget,
+  mapCliOptionsToSDK,
   resolveApprovalTimeoutMs,
   resolveToolApproval,
   waitForToolApproval,
@@ -109,4 +110,21 @@ test('bounded waitForToolApproval still accepts a broker decision in time', asyn
   resolveToolApproval(requestId, { allow: true, updatedInput: { ok: true } });
   const decision = await pending;
   assert.deepEqual(decision, { allow: true, updatedInput: { ok: true } });
+});
+
+test('mapCliOptionsToSDK keeps the requested model for relay workers and drops settingSources', () => {
+  // A relay worker asking for haiku must not have its explicit model
+  // rewritten by the operator's own project/user/local Claude settings
+  // (which is exactly what loading those settingSources allows).
+  const sdkOptions = mapCliOptionsToSDK({
+    model: 'claude-haiku-4-5-20251001',
+    relayWorker: true,
+  });
+  assert.equal(sdkOptions.model, 'claude-haiku-4-5-20251001');
+  assert.deepEqual(sdkOptions.settingSources, []);
+});
+
+test('mapCliOptionsToSDK still loads project/user/local settings for interactive (non-relay) sessions', () => {
+  const sdkOptions = mapCliOptionsToSDK({ model: 'claude-sonnet-5' });
+  assert.deepEqual(sdkOptions.settingSources, ['project', 'user', 'local']);
 });

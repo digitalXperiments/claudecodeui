@@ -953,7 +953,13 @@ function buildRuntimeOptions(job: AgentRelayJob, cwd: string): AnyRecord {
     images: [],
     relayWorker: true,
   };
-  if (job.model) options.model = job.model;
+  // catalog_resolved_model is the concrete pinned id behind an alias (e.g.
+  // 'haiku' -> 'claude-haiku-4-5-20251001'). Passing the alias to the CLI lets
+  // it re-resolve against the operator's own project/user default model,
+  // silently overriding what the lead actually requested. The runtime must
+  // receive the id that cannot be reinterpreted.
+  const runtimeModel = job.catalog_resolved_model || job.model;
+  if (runtimeModel) options.model = runtimeModel;
   if (job.effort) options.effort = job.effort;
   // An explicit empty list is security-significant. Providers must not fall
   // back to their user/project MCP config for a relay worker that received no

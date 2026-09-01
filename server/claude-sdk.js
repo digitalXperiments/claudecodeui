@@ -240,7 +240,7 @@ function matchesToolPermission(entry, toolName, input) {
 }
 
 function mapCliOptionsToSDK(options = {}) {
-  const { sessionId, cwd, toolsSettings, permissionMode, effort, appSessionId, projectPath } = options;
+  const { sessionId, cwd, toolsSettings, permissionMode, effort, appSessionId, projectPath, relayWorker } = options;
 
   const sdkOptions = {};
 
@@ -329,7 +329,11 @@ function mapCliOptionsToSDK(options = {}) {
     // Ignore memory preamble failures.
   }
 
-  sdkOptions.settingSources = ['project', 'user', 'local'];
+  // Relay workers must run the model the lead requested. Loading the
+  // operator's project/user/local Claude settings here lets their pinned
+  // default model (and other machine-local overrides) silently win over an
+  // explicit relay job model, so relay workers get none of those sources.
+  sdkOptions.settingSources = relayWorker ? [] : ['project', 'user', 'local'];
 
   if (sessionId) {
     sdkOptions.resume = sessionId;
@@ -1465,5 +1469,6 @@ export {
   resolveApprovalTimeoutMs,
   extractPermissionPaths,
   extractTokenBudget,
-  createRequestId
+  createRequestId,
+  mapCliOptionsToSDK
 };
