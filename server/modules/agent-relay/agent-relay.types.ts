@@ -128,6 +128,12 @@ export type AgentRelayJob = {
   label: string | null;
   task: string;
   last_prompt: string;
+  /**
+   * A lead follow-up sent while this job was non-terminal (running, queued, or
+   * parked on an approval) that could not be injected into a live provider
+   * turn. Delivered as the prompt for the job's next attempt, then cleared.
+   */
+  pending_follow_up: string | null;
   mcp_servers: string[];
   /** JSON Schema the worker's structured output must satisfy, when declared. */
   output_schema: Record<string, unknown> | null;

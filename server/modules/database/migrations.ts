@@ -780,6 +780,10 @@ const ensureAgentRelaySchema = (db: Database): void => {
   addColumnToTableIfNotExists(db, 'agent_relay_jobs', columnNames, 'retry_count', 'INTEGER NOT NULL DEFAULT 0');
   addColumnToTableIfNotExists(db, 'agent_relay_jobs', columnNames, 'schema_retry_count', 'INTEGER NOT NULL DEFAULT 0');
 
+  // A lead follow-up sent while the job was non-terminal that could not be
+  // injected into a live provider turn; delivered on the job's next attempt.
+  addColumnToTableIfNotExists(db, 'agent_relay_jobs', columnNames, 'pending_follow_up', 'TEXT');
+
   // Relays are scoped to the lead session that dispatched them, so the panel
   // and the MCP surface can stop showing every session's workers everywhere.
   db.exec(

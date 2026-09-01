@@ -95,7 +95,7 @@ const tools: ToolDefinition[] = [
   },
   {
     name: 'relay_follow_up',
-    description: 'Resume a finished delegate session with one focused clarification or remediation request. The worker keeps its context; the declared outputSchema still applies.',
+    description: 'Send the delegate additional instructions — works both mid-session (running, queued, or parked on an approval; delivered into its live turn or, failing that, as the prompt for its very next turn, without waiting for it to finish) and after it has finished (resumes the session for another attempt). The worker keeps its context; the declared outputSchema still applies.',
     inputSchema: {
       type: 'object',
       properties: { relayId: { type: 'string' }, prompt: { type: 'string' }, timeoutMs: { type: 'number' } },

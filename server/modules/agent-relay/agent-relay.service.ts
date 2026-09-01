@@ -89,6 +89,13 @@ const DEFAULT_SETTINGS: AgentRelaySettings = {
 
 let runtimeSpawnFns: Partial<Record<LLMProvider, ProviderSpawnFn>> = {};
 let runtimeAbortFns: Partial<Record<LLMProvider, (providerSessionId: string) => boolean | Promise<boolean>>> = {};
+/**
+ * Mid-run injection hooks (e.g. Claude's open stdin), keyed by provider. Only
+ * providers that expose one can receive a lead follow-up while their worker
+ * is still live; every other provider falls back to a queued next-turn
+ * prompt (see `injectMidSessionFollowUp`).
+ */
+let runtimeInjectFns: Partial<Record<LLMProvider, (command: string, options: AnyRecord) => Promise<boolean>>> = {};
 const activeJobs = new Set<string>();
 let draining = false;
 let drainAgain = false;
@@ -372,9 +379,11 @@ export function mcpTokensEqual(left: string, right: string): boolean {
 export function configureAgentRelayRuntimes(
   spawnFns: Partial<Record<LLMProvider, ProviderSpawnFn>>,
   abortFns: Partial<Record<LLMProvider, (providerSessionId: string) => boolean | Promise<boolean>>>,
+  injectFns: Partial<Record<LLMProvider, (command: string, options: AnyRecord) => Promise<boolean>>> = {},
 ): void {
   runtimeSpawnFns = spawnFns;
   runtimeAbortFns = abortFns;
+  runtimeInjectFns = injectFns;
 }
 
 function uniqueProviders(value: unknown, fallback: LLMProvider[]): LLMProvider[] {
@@ -746,33 +755,125 @@ function stringArray(value: unknown): string[] {
     : [];
 }
 
-type ParsedWorkerResult = {
+export type ParsedWorkerResult = {
   result: AgentRelayStructuredResult;
   /** Whether the tagged JSON contract was honored. `malformed` = tag present but unparseable. */
   contract: 'valid' | 'malformed' | 'missing';
 };
 
-function parseStructuredResult(output: string, failed: boolean): ParsedWorkerResult {
+/**
+ * Strips a single leading/trailing ```json (or bare ```) fence some workers
+ * wrap their tagged JSON in despite the contract asking for the tag alone.
+ */
+function stripJsonFences(raw: string): string {
+  const trimmed = raw.trim();
+  const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  return fenced ? fenced[1].trim() : trimmed;
+}
+
+/**
+ * Returns every top-level `{...}` substring of `text`, respecting string
+ * literals (so a brace inside a quoted value never throws off the depth
+ * count). Used to recover a result object when the `<agent_relay_result>` tag
+ * itself is missing but the worker still ended with JSON.
+ */
+function extractBalancedJsonObjects(text: string): string[] {
+  const results: string[] = [];
+  let depth = 0;
+  let start = -1;
+  let inString = false;
+  let stringChar = '';
+  let escape = false;
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (inString) {
+      if (escape) escape = false;
+      else if (ch === '\\') escape = true;
+      else if (ch === stringChar) inString = false;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      inString = true;
+      stringChar = ch;
+      continue;
+    }
+    if (ch === '{') {
+      if (depth === 0) start = i;
+      depth += 1;
+    } else if (ch === '}') {
+      depth = Math.max(0, depth - 1);
+      if (depth === 0 && start >= 0) {
+        results.push(text.slice(start, i + 1));
+        start = -1;
+      }
+    }
+  }
+  return results;
+}
+
+/**
+ * Last-resort recovery for a worker that skipped the `<agent_relay_result>`
+ * tag entirely but still ended its output with a plausible result object
+ * (status + summary present). Scans every top-level JSON object, latest
+ * first, so a stray unrelated object earlier in the transcript never wins
+ * over the worker's actual final answer.
+ */
+function recoverJsonResultFromOutput(output: string): Record<string, unknown> | null {
+  const candidates = extractBalancedJsonObjects(output);
+  for (let i = candidates.length - 1; i >= 0; i -= 1) {
+    try {
+      const parsed = JSON.parse(candidates[i]);
+      if (
+        parsed && typeof parsed === 'object' && !Array.isArray(parsed) &&
+        typeof (parsed as AnyRecord).summary === 'string' &&
+        typeof (parsed as AnyRecord).status === 'string'
+      ) {
+        return parsed as Record<string, unknown>;
+      }
+    } catch {
+      // Not valid JSON on its own; try the previous (earlier) candidate.
+    }
+  }
+  return null;
+}
+
+function structuredResultFromParsedJson(parsed: Record<string, unknown>, output: string): AgentRelayStructuredResult {
+  const status = parsed.status === 'failed' || parsed.status === 'blocked' ? parsed.status : 'completed';
+  return {
+    status,
+    summary: typeof parsed.summary === 'string' ? parsed.summary.trim().slice(0, 20_000) : output.slice(0, 20_000),
+    evidence: stringArray(parsed.evidence),
+    filesTouched: stringArray(parsed.filesTouched),
+    testsRun: stringArray(parsed.testsRun),
+    openQuestions: stringArray(parsed.openQuestions),
+    ...(parsed.data !== undefined ? { structuredOutput: parsed.data } : {}),
+  };
+}
+
+/**
+ * Tolerant reader for the worker result contract. Prefers the last
+ * well-formed `<agent_relay_result>` tag, stripping a markdown code fence a
+ * worker may have wrapped the JSON in. When the tag is missing outright, it
+ * falls back to recovering a trailing JSON object that looks like a result
+ * (has `status` + `summary`) before giving up and treating the whole output
+ * as prose. A tag that is present but unparseable is still reported
+ * `malformed` (not silently recovered) so the existing one-shot schema
+ * repair turn still fires — the worker contract itself is unchanged.
+ */
+export function parseStructuredResult(output: string, failed: boolean): ParsedWorkerResult {
   const matches = [...output.matchAll(/<agent_relay_result>\s*([\s\S]*?)\s*<\/agent_relay_result>/gi)];
   const raw = matches.at(-1)?.[1];
   if (raw) {
     try {
-      const parsed = JSON.parse(raw) as Record<string, unknown>;
-      const status = parsed.status === 'failed' || parsed.status === 'blocked' ? parsed.status : 'completed';
-      return {
-        contract: 'valid',
-        result: {
-          status,
-          summary: typeof parsed.summary === 'string' ? parsed.summary.trim().slice(0, 20_000) : output.slice(0, 20_000),
-          evidence: stringArray(parsed.evidence),
-          filesTouched: stringArray(parsed.filesTouched),
-          testsRun: stringArray(parsed.testsRun),
-          openQuestions: stringArray(parsed.openQuestions),
-          ...(parsed.data !== undefined ? { structuredOutput: parsed.data } : {}),
-        },
-      };
+      const parsed = JSON.parse(stripJsonFences(raw)) as Record<string, unknown>;
+      return { contract: 'valid', result: structuredResultFromParsedJson(parsed, output) };
     } catch {
       // Fall through to a useful unstructured result.
+    }
+  } else {
+    const recovered = recoverJsonResultFromOutput(output);
+    if (recovered) {
+      return { contract: 'valid', result: structuredResultFromParsedJson(recovered, output) };
     }
   }
   const cleaned = output.replace(/<agent_relay_result>[\s\S]*?<\/agent_relay_result>/gi, '').trim();
@@ -943,6 +1044,43 @@ async function abortLiveJob(job: AgentRelayJob): Promise<void> {
     await Promise.resolve(abortFn(providerSessionId)).catch(() => false);
   }
   chatRunRegistry.completeRun(job.app_session_id, { exitCode: 1, aborted: true });
+}
+
+/**
+ * Attempts to deliver a lead follow-up straight into a worker's live turn
+ * instead of waiting for it to finish. Only works for a provider with a
+ * mid-run injection hook (see `configureAgentRelayRuntimes`) and only while
+ * the worker's run is still registered as active — `startProviderRun`
+ * resolves that by returning `injected: true` rather than starting a second
+ * run. Any other outcome (no hook, injection rejected, no session yet) means
+ * the caller must fall back to queuing the prompt for the next attempt.
+ */
+async function injectMidSessionFollowUp(job: AgentRelayJob, prompt: string): Promise<boolean> {
+  if (!job.app_session_id) return false;
+  const spawnFn = runtimeSpawnFns[job.provider];
+  const injectFn = runtimeInjectFns[job.provider];
+  if (!spawnFn || !injectFn) return false;
+  const providerSessionId = chatRunRegistry.getRun(job.app_session_id)?.providerSessionId
+    ?? sessionsDb.getSessionById(job.app_session_id)?.provider_session_id
+    ?? null;
+  const cwd = job.workspace_id ? workspaceService.resolveCwd(job.workspace_id) : job.project_path;
+  try {
+    const result = await startProviderRun({
+      appSessionId: job.app_session_id,
+      provider: job.provider,
+      providerSessionId,
+      projectPath: cwd,
+      spawnFn,
+      injectFn,
+      content: prompt,
+      options: {},
+      connection: DETACHED_CONNECTION,
+      userId: null,
+    });
+    return result.ok === true && result.injected === true;
+  } catch {
+    return false;
+  }
 }
 
 async function collectWorkspaceResult(job: AgentRelayJob): Promise<AgentRelayResult['workspace'] | undefined> {
@@ -1211,6 +1349,23 @@ async function executeJob(relayId: string): Promise<void> {
         closeCanonicalRun(canonicalRun.run_id, 'succeeded', null);
         publish(repair);
         return;
+      }
+    }
+
+    // A lead follow-up arrived mid-session but could not be injected into the
+    // live turn (no provider hook, or the injection attempt failed). Rather
+    // than report this turn's result as final and wait for the lead to notice
+    // and resume, dispatch it as the very next attempt right away.
+    if (!providerFailed) {
+      const pendingFollowUp = agentRelayDb.takePendingFollowUp(job.relay_id);
+      if (pendingFollowUp) {
+        const requeued = agentRelayDb.requeueWithFollowUp(job.relay_id, buildFollowUpPrompt(job, pendingFollowUp));
+        if (requeued) {
+          closeCanonicalRun(canonicalRun.run_id, 'succeeded', null);
+          publish(requeued);
+          void drainQueue();
+          return;
+        }
       }
     }
 
@@ -2012,15 +2167,47 @@ export const agentRelayService = {
     }
   },
 
+  /**
+   * Sends the lead's additional instructions to a delegate. A finished job is
+   * resumed for another attempt exactly as before. A job that is still
+   * running, queued, or parked on an approval receives it immediately: a live
+   * worker gets it injected into its current turn when the provider supports
+   * that, and everything else (no injection hook, injection failed, or the
+   * worker has not started yet) queues it as `pending_follow_up`, delivered
+   * as the prompt for the very next attempt instead of making the lead wait
+   * for the job to finish first.
+   */
   async followUp(relayId: string, prompt: string, requestedTimeoutMs?: number, scope: AgentRelayScope = { allowUnscoped: true }): Promise<AgentRelayJob> {
     const normalized = prompt.trim();
     if (!normalized || normalized.length > MAX_TASK_CHARS) throw new AppError('Follow-up prompt is required and must stay bounded.', { code: 'RELAY_FOLLOW_UP_INVALID', statusCode: 400 });
     const existing = requireOwnedJob(relayId, scope);
-    const queued = agentRelayDb.queueFollowUp(relayId, normalized, requestedTimeoutMs ? timeoutMs(requestedTimeoutMs, existing.timeout_ms) : undefined);
-    if (!queued) throw new AppError('Only a finished relay job can receive a follow-up.', { code: 'RELAY_NOT_FINISHED', statusCode: 409 });
-    publish(queued);
-    void drainQueue();
-    return queued;
+
+    if (AGENT_RELAY_TERMINAL_STATUSES.has(existing.status)) {
+      const queued = agentRelayDb.queueFollowUp(relayId, normalized, requestedTimeoutMs ? timeoutMs(requestedTimeoutMs, existing.timeout_ms) : undefined);
+      if (!queued) throw new AppError('Only a finished relay job can receive a follow-up.', { code: 'RELAY_NOT_FINISHED', statusCode: 409 });
+      publish(queued);
+      void drainQueue();
+      return queued;
+    }
+
+    if (existing.status === 'running' || existing.status === 'waiting_approval') {
+      if (await injectMidSessionFollowUp(existing, normalized)) {
+        appendLiveOutput(relayId, `\n[Lead follow-up]\n${normalized}\n`);
+        const current = agentRelayDb.get(relayId) ?? existing;
+        publish(current);
+        return current;
+      }
+    }
+
+    // Not yet started, or live injection was not possible: hold it for the
+    // job's very next attempt rather than dropping it.
+    const updated = existing.status === 'queued'
+      ? agentRelayDb.appendToLastPrompt(relayId, normalized)
+      : agentRelayDb.appendPendingFollowUp(relayId, normalized);
+    if (!updated) throw new AppError('This relay job could not accept a follow-up right now.', { code: 'RELAY_FOLLOW_UP_FAILED', statusCode: 409 });
+    if (existing.status !== 'queued') appendLiveOutput(relayId, `\n[Lead follow-up queued for the worker's next turn]\n${normalized}\n`);
+    publish(updated);
+    return updated;
   },
 
   async cancel(relayId: string, scope: AgentRelayScope = { allowUnscoped: true }): Promise<AgentRelayJob> {

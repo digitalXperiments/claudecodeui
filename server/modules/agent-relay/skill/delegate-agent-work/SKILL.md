@@ -177,7 +177,10 @@ and do not spend a turn approving routine work.
   evidence contract.
 - Conflicting reports from two providers: dispatch a judge, or follow up —
   do not average them and do not go look yourself.
-- `relay_follow_up` for one focused clarification on the same session.
+- `relay_follow_up` for one focused clarification on the same session. Works
+  mid-session too — call it while a worker is still running, queued, or
+  parked on an approval, and it is delivered right away instead of waiting
+  for the worker to finish.
 - `relay_diff` before integrating any isolated write. Relay never rebases or
   merges; dispatch an integration worker or tell the user how to take the
   worktree through Workspaces/Git. Do not apply the patch in the lead.

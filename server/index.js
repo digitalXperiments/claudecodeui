@@ -256,7 +256,10 @@ const providerAbortFns = {
     omp: abortOmpSession,
 };
 
-configureAgentRelayRuntimes(providerSpawnFns, providerAbortFns);
+// Mid-run inject for Claude follow-ups only (queryClaudeSDK uses open stdin
+// when appSessionId is present); every other provider queues the follow-up
+// for the worker's next attempt instead.
+configureAgentRelayRuntimes(providerSpawnFns, providerAbortFns, { claude: injectClaudeMessage });
 
 // Kanban runner reuses the same runtimes; automation reconciles task/run status
 // from run completions, the queue caps concurrent automated runs, and the

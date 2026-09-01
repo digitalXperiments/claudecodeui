@@ -3,6 +3,7 @@ export {
   allowedWorkerModelsFor,
   configureAgentRelayRuntimes,
   mcpTokensEqual,
+  parseStructuredResult,
   providerHonorsRelayMcpGrants,
   providerSupportsReadOnlyRelay,
   relayPermissionMode,
@@ -10,6 +11,7 @@ export {
   resolveRelayModelIdentity,
   resolveRelayWorkerModel,
   sanitizeWorkerMcpServers,
+  type ParsedWorkerResult,
 } from '@/modules/agent-relay/agent-relay.service.js';
 export { agentRelayRoutes, agentRelayMcpRoutes } from '@/modules/agent-relay/agent-relay.routes.js';
 export {

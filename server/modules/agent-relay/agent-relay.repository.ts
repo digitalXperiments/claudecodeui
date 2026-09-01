@@ -279,6 +279,66 @@ export const agentRelayDb = {
   },
 
   /**
+   * Merges a lead follow-up directly into `last_prompt` for a job that has
+   * not started executing yet, so the attempt about to be dispatched already
+   * includes it. Scoped to `queued` only.
+   */
+  appendToLastPrompt(relayId: string, prompt: string): AgentRelayJob | null {
+    const changes = getConnection().prepare(`
+      UPDATE agent_relay_jobs
+      SET last_prompt = last_prompt || char(10) || char(10) || 'Additional instructions from the lead:' || char(10) || ?,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE relay_id = ? AND status = 'queued'
+    `).run(prompt, relayId).changes;
+    return changes > 0 ? this.get(relayId) : null;
+  },
+
+  /**
+   * Records a lead follow-up that could not be delivered into a live provider
+   * turn (no mid-run injection support, or the attempt failed). Held for
+   * delivery on the job's next attempt. Scoped to non-terminal statuses.
+   */
+  appendPendingFollowUp(relayId: string, prompt: string): AgentRelayJob | null {
+    const changes = getConnection().prepare(`
+      UPDATE agent_relay_jobs
+      SET pending_follow_up = CASE
+            WHEN pending_follow_up IS NULL OR pending_follow_up = '' THEN ?
+            ELSE pending_follow_up || char(10) || char(10) || ?
+          END,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE relay_id = ? AND status IN ('queued', 'running', 'waiting_approval')
+    `).run(prompt, prompt, relayId).changes;
+    return changes > 0 ? this.get(relayId) : null;
+  },
+
+  /** Reads and clears a job's queued mid-session follow-up, if any. */
+  takePendingFollowUp(relayId: string): string | null {
+    const job = this.get(relayId);
+    if (!job || !job.pending_follow_up) return null;
+    getConnection().prepare(`
+      UPDATE agent_relay_jobs SET pending_follow_up = NULL, updated_at = CURRENT_TIMESTAMP WHERE relay_id = ?
+    `).run(relayId);
+    return job.pending_follow_up;
+  },
+
+  /**
+   * Sends a still-running job back to the queue for another attempt carrying
+   * a mid-session follow-up that could not be injected live. Used at the end
+   * of a run instead of finishing it, so the worker's next turn sees it
+   * immediately rather than waiting for the lead to notice completion.
+   */
+  requeueWithFollowUp(relayId: string, prompt: string): AgentRelayJob | null {
+    const changes = getConnection().prepare(`
+      UPDATE agent_relay_jobs
+      SET status = 'queued', last_prompt = ?, pending_follow_up = NULL, result_json = NULL,
+          error = NULL, run_id = NULL, finished_at = NULL, schema_retry_count = 0,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE relay_id = ? AND status = 'running'
+    `).run(prompt, relayId).changes;
+    return changes > 0 ? this.get(relayId) : null;
+  },
+
+  /**
    * Parks a live job while the lead decides on an out-of-envelope request.
    * Scoped to `running` so a cancel that already landed always wins.
    */
