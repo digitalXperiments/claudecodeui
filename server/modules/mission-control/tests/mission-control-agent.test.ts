@@ -6,10 +6,13 @@ import test from 'node:test';
 
 import { closeConnection, initializeDatabase, sessionsDb } from '@/modules/database/index.js';
 import {
+  configureMissionControlRuntimes,
   extractRunOutcome,
   parseJsonFromAgentText,
+  runMissionControlAgent,
 } from '@/modules/mission-control/mission-control-agent.service.js';
 import { chatRunRegistry } from '@/modules/websocket/index.js';
+import type { McSection } from '@/modules/mission-control/mission-control.types.js';
 
 const DETACHED_CONNECTION = { readyState: -1, send: () => undefined };
 
@@ -25,6 +28,7 @@ async function withIsolatedDatabase(runTest: () => void | Promise<void>): Promis
   try {
     await runTest();
   } finally {
+    configureMissionControlRuntimes({});
     chatRunRegistry.clearAll();
     closeConnection();
     if (previousDatabasePath === undefined) {
@@ -35,6 +39,64 @@ async function withIsolatedDatabase(runTest: () => void | Promise<void>): Promis
     await rm(tempDirectory, { recursive: true, force: true });
   }
 }
+
+test('headless Mission Control runs use an internal app session', async () => {
+  await withIsolatedDatabase(async () => {
+    let runtimeAppSessionId: string | undefined;
+    configureMissionControlRuntimes({
+      claude: async (_prompt, options, writer) => {
+        runtimeAppSessionId = String((options as { appSessionId?: string }).appSessionId);
+        const runtimeWriter = writer as {
+          send: (message: unknown) => void;
+          sendComplete: (options: { exitCode: number }) => void;
+        };
+        runtimeWriter.send({ kind: 'text', provider: 'claude', content: '[]' });
+        runtimeWriter.sendComplete({ exitCode: 0 });
+      },
+    });
+
+    const section: McSection = {
+      section_id: 'mc-internal-test',
+      title: 'Internal test run',
+      icon: 'bot',
+      sort_order: 0,
+      enabled: true,
+      scope: 'global',
+      project_id: null,
+      mode: 'fire_and_forget',
+      schedule_cron: null,
+      provider: 'claude',
+      model: null,
+      permission_mode: 'bypassPermissions',
+      dry_run: false,
+      auto_approve: false,
+      produce_prompt: '',
+      produce_tools: [],
+      resolve_prompt: '',
+      resolve_tools: [],
+      actions: [],
+      create_kanban_task: false,
+      create_swarm_on_approve: false,
+      kanban_assignee_provider: null,
+      kanban_review_provider: null,
+      kanban_mcp_tools: [],
+      last_run_at: null,
+      last_run_error: null,
+      created_at: '2026-09-02T00:00:00.000Z',
+      updated_at: '2026-09-02T00:00:00.000Z',
+    };
+
+    const result = await runMissionControlAgent({
+      section,
+      prompt: 'Return an empty result.',
+      tools: [],
+    });
+
+    assert.equal(result.success, true);
+    assert.ok(runtimeAppSessionId);
+    assert.equal(sessionsDb.getSessionById(runtimeAppSessionId)?.is_internal, 1);
+  });
+});
 
 function startRun(appSessionId: string) {
   sessionsDb.createAppSession(appSessionId, 'claude', '/workspace/demo');

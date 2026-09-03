@@ -30,6 +30,111 @@ function isWorkspaceTrustPrompt(text = '') {
   return WORKSPACE_TRUST_PATTERNS.some((pattern) => pattern.test(text));
 }
 
+function normalizeToolNameList(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return [...new Set(value
+    .filter((entry) => typeof entry === 'string')
+    .map((entry) => entry.trim())
+    .filter(Boolean))];
+}
+
+/**
+ * cursor-agent (headless `-p`) has no `--disallowedTools` / `--allowedTools`
+ * flags. Permissions live in `~/.cursor/cli-config.json` (`permissions.deny`)
+ * and are not overridable per spawn. We therefore:
+ *   - never drop `toolsSettings` silently
+ *   - pass lists via CLOUDCLI_* env
+ *   - append an advisory suffix on the `-p` prompt
+ *
+ * MCP: there is also no `--no-mcp` / empty-config flag. `cursor-agent` always
+ * loads `~/.cursor/mcp.json` and `<cwd>/.cursor/mcp.json`. `--approve-mcps`
+ * only auto-approves those servers; it cannot disable inherit. Relay workers
+ * get a warning log so the grant boundary is visible.
+ */
+function buildCursorCliInvocation({
+  command,
+  sessionId,
+  images,
+  resolvedModel,
+  permissionMode = 'default',
+  skipPermissions,
+  toolsSettings,
+  relayWorker = false,
+  mcpServers,
+} = {}) {
+  const settings = toolsSettings || {
+    allowedShellCommands: [],
+    skipPermissions: false,
+  };
+  const hasDisallowedTools = Array.isArray(settings.disallowedTools);
+  const hasAllowedTools = Array.isArray(settings.allowedTools);
+  const disallowedTools = normalizeToolNameList(settings.disallowedTools);
+  const allowedTools = normalizeToolNameList(settings.allowedTools);
+
+  const extraEnv = {};
+  if (hasDisallowedTools) {
+    extraEnv.CLOUDCLI_DISALLOWED_TOOLS = disallowedTools.join(',');
+  }
+  if (hasAllowedTools) {
+    extraEnv.CLOUDCLI_ALLOWED_TOOLS = allowedTools.join(',');
+  }
+  if (relayWorker) {
+    extraEnv.CLOUDCLI_RELAY_WORKER = '1';
+    extraEnv.CLOUDCLI_MCP_SERVERS = Array.isArray(mcpServers)
+      ? mcpServers.filter((name) => typeof name === 'string' && name.trim()).map((name) => name.trim()).join(',')
+      : '';
+  }
+
+  const advisoryLines = [];
+  if (disallowedTools.length > 0) {
+    advisoryLines.push(
+      `CloudCLI toolsSettings.disallowedTools (advisory only; cursor-agent has no deny-tool CLI flag): ${disallowedTools.join(', ')}. Do not invoke these tools.`,
+    );
+  }
+  if (allowedTools.length > 0) {
+    advisoryLines.push(
+      `CloudCLI toolsSettings.allowedTools (advisory only): ${allowedTools.join(', ')}. Prefer only these tools.`,
+    );
+  }
+
+  const baseArgs = [];
+  if (sessionId) {
+    baseArgs.push('--resume=' + sessionId);
+  }
+
+  let promptText = command && command.trim() ? appendImagesInputTag(command, images) : '';
+  if (advisoryLines.length > 0) {
+    promptText = promptText
+      ? `${promptText}\n\n${advisoryLines.join('\n')}`
+      : advisoryLines.join('\n');
+  }
+
+  if (promptText) {
+    baseArgs.push('-p', flattenPromptForWindowsShell(promptText));
+    if (resolvedModel) {
+      baseArgs.push('--model', resolvedModel);
+    }
+    baseArgs.push('--output-format', 'stream-json');
+  }
+
+  const forceApprove = permissionMode === 'bypassPermissions'
+    || Boolean(skipPermissions)
+    || Boolean(settings.skipPermissions);
+  if (forceApprove) {
+    baseArgs.push('-f');
+  }
+
+  return {
+    args: baseArgs,
+    extraEnv,
+    disallowedTools,
+    allowedTools,
+    relayWorker: Boolean(relayWorker),
+  };
+}
+
 async function spawnCursor(command, options = {}, ws) {
   return new Promise(async (resolve, reject) => {
     const {
@@ -43,6 +148,8 @@ async function spawnCursor(command, options = {}, ws) {
       sessionSummary,
       images,
       appSessionId,
+      relayWorker = false,
+      mcpServers,
     } = options;
     const resolvedModel = await providerModelsService.resolveResumeModel('cursor', sessionId, model);
     let capturedSessionId = sessionId; // Track session ID throughout the process
@@ -54,48 +161,28 @@ async function spawnCursor(command, options = {}, ws) {
     // the process close), so the first emission wins.
     let completeSent = false;
 
-    // Use tools settings passed from frontend, or defaults
-    const settings = toolsSettings || {
-      allowedShellCommands: [],
-      skipPermissions: false
-    };
-
-    // Build Cursor CLI command
-    const baseArgs = [];
-
-    // Build flags allowing both resume and prompt together (reply in existing session)
-    // Treat presence of sessionId as intention to resume, regardless of resume flag
-    if (sessionId) {
-      baseArgs.push('--resume=' + sessionId);
-    }
-
-    if (command && command.trim()) {
-      // Provide a prompt (works for both new and resumed sessions). Image
-      // attachments ride along as an <images_input> path list appended to the
-      // prompt; the session history reader strips the tag back out for display.
-      // cursor-agent is a .cmd shim on Windows, so the whole argument must be
-      // newline-free or cmd.exe silently truncates it at the first newline.
-      baseArgs.push('-p', flattenPromptForWindowsShell(appendImagesInputTag(command, images)));
-
-      // Model overrides are applied to both new and resumed sessions so a
-      // session-scoped change request can take effect on the next turn.
-      if (resolvedModel) {
-        baseArgs.push('--model', resolvedModel);
-      }
-
-      // Request streaming JSON when we are providing a prompt
-      baseArgs.push('--output-format', 'stream-json');
-    }
-
     // cursor-agent only exposes force-approve as `-f` on this path. Map the
     // chatbar permission mode + legacy skipPermissions settings onto it.
     // acceptEdits/plan are not real cursor-agent flags here (capabilities only
-    // advertise default | bypassPermissions).
-    const forceApprove = permissionMode === 'bypassPermissions'
-      || Boolean(skipPermissions)
-      || Boolean(settings.skipPermissions);
-    if (forceApprove) {
-      baseArgs.push('-f');
+    // advertise default | bypassPermissions). Tool deny lists have no CLI
+    // flag — see buildCursorCliInvocation.
+    const { args: baseArgs, extraEnv } = buildCursorCliInvocation({
+      command,
+      sessionId,
+      images,
+      resolvedModel,
+      permissionMode,
+      skipPermissions,
+      toolsSettings,
+      relayWorker,
+      mcpServers,
+    });
+
+    if (relayWorker) {
+      console.warn(
+        '[cursor-cli] relayWorker=true but cursor-agent has no flag to disable MCP inherit; it still loads ~/.cursor/mcp.json and <cwd>/.cursor/mcp.json. Granted servers (advisory):',
+        Array.isArray(mcpServers) ? mcpServers.join(',') : '(none)',
+      );
     }
 
     // Use cwd (actual project directory) instead of projectPath
@@ -163,7 +250,7 @@ async function spawnCursor(command, options = {}, ws) {
       const cursorProcess = spawnFunction('cursor-agent', args, {
         cwd: workingDir,
         stdio: ['pipe', 'pipe', 'pipe'],
-        env: { ...process.env, ...identityEnv, ...leadSessionEnv(options.appSessionId) }
+        env: { ...process.env, ...identityEnv, ...leadSessionEnv(options.appSessionId), ...extraEnv }
       });
 
       activeCursorProcesses.set(processKey, cursorProcess);
@@ -380,5 +467,6 @@ export {
   spawnCursor,
   abortCursorSession,
   isCursorSessionActive,
-  getActiveCursorSessions
+  getActiveCursorSessions,
+  buildCursorCliInvocation,
 };

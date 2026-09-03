@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { ClaudeProviderAuth } from '../list/claude/claude-auth.provider.js';
+import {
+  ClaudeProviderAuth,
+  setClaudeAuthIoForTests,
+} from '../list/claude/claude-auth.provider.js';
 
 /**
  * Smoke + cache tests for Claude auth status.
@@ -56,5 +59,96 @@ test('ClaudeProviderAuth reports installed=false for a missing CLI path', async 
       process.env.CLAUDE_CLI_PATH = previous;
     }
     ClaudeProviderAuth.invalidateStatusCache();
+  }
+});
+
+type CredentialDetection = {
+  kind: 'authenticated' | 'unauthenticated' | 'inconclusive';
+  status?: { authenticated: boolean; email: string | null; method: string | null };
+  error?: string;
+};
+
+const checkCredentials = (auth: ClaudeProviderAuth): Promise<CredentialDetection> =>
+  (auth as unknown as { checkCredentials: () => Promise<CredentialDetection> }).checkCredentials();
+
+test('checkCredentials: CLAUDE_CODE_OAUTH_TOKEN authenticates even with a stale credentials file', async () => {
+  const files = new Map<string, string>([
+    ['/tmp-home/.claude/.credentials.json', JSON.stringify({
+      claudeAiOauth: { accessToken: 'stale-token', expiresAt: 1_000_000_000_000 },
+    })],
+  ]);
+  setClaudeAuthIoForTests({
+    homedir: () => '/tmp-home',
+    platform: () => 'linux',
+    env: () => ({ CLAUDE_CODE_OAUTH_TOKEN: 'test-oauth-token' }) as NodeJS.ProcessEnv,
+    readFile: async (filePath) => {
+      const content = files.get(filePath);
+      if (content === undefined) {
+        const error = new Error('ENOENT') as NodeJS.ErrnoException;
+        error.code = 'ENOENT';
+        throw error;
+      }
+      return content;
+    },
+  });
+  try {
+    const result = await checkCredentials(new ClaudeProviderAuth());
+    assert.equal(result.kind, 'authenticated');
+    assert.equal(result.status?.method, 'environment');
+  } finally {
+    setClaudeAuthIoForTests(null);
+  }
+});
+
+test('checkCredentials: CLAUDE_CODE_OAUTH_TOKEN in settings.json env is authenticated', async () => {
+  const files = new Map<string, string>([
+    ['/tmp-home/.claude/settings.json', JSON.stringify({ env: { CLAUDE_CODE_OAUTH_TOKEN: 'from-settings' } })],
+    ['/tmp-home/.claude/.credentials.json', JSON.stringify({
+      claudeAiOauth: { accessToken: 'stale-token', expiresAt: 1_000_000_000_000 },
+    })],
+  ]);
+  setClaudeAuthIoForTests({
+    homedir: () => '/tmp-home',
+    platform: () => 'linux',
+    env: () => ({}) as NodeJS.ProcessEnv,
+    readFile: async (filePath) => {
+      const content = files.get(filePath);
+      if (content === undefined) {
+        const error = new Error('ENOENT') as NodeJS.ErrnoException;
+        error.code = 'ENOENT';
+        throw error;
+      }
+      return content;
+    },
+  });
+  try {
+    const result = await checkCredentials(new ClaudeProviderAuth());
+    assert.equal(result.kind, 'authenticated');
+    assert.equal(result.status?.method, 'environment');
+  } finally {
+    setClaudeAuthIoForTests(null);
+  }
+});
+
+test('checkCredentials: ANTHROPIC_API_KEY takes precedence over CLAUDE_CODE_OAUTH_TOKEN', async () => {
+  setClaudeAuthIoForTests({
+    homedir: () => '/tmp-home',
+    platform: () => 'linux',
+    env: () => ({
+      ANTHROPIC_API_KEY: 'api-key',
+      CLAUDE_CODE_OAUTH_TOKEN: 'oauth',
+    }) as NodeJS.ProcessEnv,
+    readFile: async () => {
+      const error = new Error('ENOENT') as NodeJS.ErrnoException;
+      error.code = 'ENOENT';
+      throw error;
+    },
+  });
+  try {
+    const result = await checkCredentials(new ClaudeProviderAuth());
+    assert.equal(result.kind, 'authenticated');
+    assert.equal(result.status?.method, 'api_key');
+  } finally {
+    setClaudeAuthIoForTests(null);
   }
 });

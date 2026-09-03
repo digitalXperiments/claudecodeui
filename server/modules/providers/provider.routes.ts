@@ -312,6 +312,19 @@ const parseProvider = (value: unknown): LLMProvider => {
   });
 };
 
+const parsePermissionMode = (provider: LLMProvider, value: unknown): string | undefined => {
+  if (value === undefined || value === null || value === '') return undefined;
+  const mode = typeof value === 'string' ? value.trim() : '';
+  const capabilities = providerCapabilitiesService.getProviderCapabilities(provider);
+  if (!mode || !capabilities.permissionModes.includes(mode)) {
+    throw new AppError(`Unsupported permission mode "${mode}" for ${provider}.`, {
+      code: 'INVALID_PERMISSION_MODE',
+      statusCode: 400,
+    });
+  }
+  return mode;
+};
+
 const parseSessionRenameSummary = (payload: unknown): string => {
   if (!payload || typeof payload !== 'object') {
     throw new AppError('Request body must be an object.', {
@@ -694,7 +707,8 @@ router.post(
       });
     }
     const projectPath = resolvedProjectPath || '';
-    const result = sessionsService.createAppSession(provider, projectPath);
+    const permissionMode = parsePermissionMode(provider, body.permissionMode ?? body.permission_mode);
+    const result = sessionsService.createAppSession(provider, projectPath, { permissionMode });
     res.status(201).json(createApiSuccessResponse(result));
   }),
 );
@@ -733,8 +747,20 @@ router.get(
         isInternal: Boolean(row.is_internal),
         projectPath: row.project_path,
         name: row.custom_name || '',
+        permissionMode: row.permission_mode,
       },
     }));
+  }),
+);
+
+// Must stay registered after the static `/sessions/running` and
+// `/sessions/archived` routes so those literals never match `:sessionId`.
+router.get(
+  '/sessions/:sessionId',
+  asyncHandler(async (req: Request, res: Response) => {
+    const sessionId = parseSessionId(req.params.sessionId);
+    const result = sessionsService.getSessionDetailsById(sessionId);
+    res.json(createApiSuccessResponse(result));
   }),
 );
 
@@ -762,6 +788,36 @@ router.post(
 );
 
 router.put(
+  '/sessions/:sessionId/runtime-preferences',
+  asyncHandler(async (req: Request, res: Response) => {
+    const sessionId = parseSessionId(req.params.sessionId);
+    const row = sessionsDb.getSessionById(sessionId);
+    if (!row || row.is_internal) {
+      throw new AppError(`Session "${sessionId}" is not an interactive chat session.`, {
+        code: 'SESSION_NOT_INTERACTIVE',
+        statusCode: 404,
+      });
+    }
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const permissionMode = parsePermissionMode(row.provider as LLMProvider, body.permissionMode ?? body.permission_mode);
+    if (!permissionMode) {
+      throw new AppError('permissionMode is required.', {
+        code: 'INVALID_PERMISSION_MODE',
+        statusCode: 400,
+      });
+    }
+    const updated = sessionsDb.updateSessionRuntimePreferences(sessionId, { permissionMode });
+    res.json(createApiSuccessResponse({
+      session: {
+        id: updated?.session_id,
+        provider: updated?.provider,
+        permissionMode: updated?.permission_mode,
+      },
+    }));
+  }),
+);
+
+router.put(
   '/sessions/:sessionId',
   asyncHandler(async (req: Request, res: Response) => {
     const sessionId = parseSessionId(req.params.sessionId);
@@ -776,6 +832,7 @@ const HANDOFF_MODES = new Set<SessionHandoffMode>(['summary', 'full', 'fresh']);
 type HandoffPayload = {
   targetProvider: LLMProvider;
   targetModel?: string;
+  permissionMode?: string;
   mode: SessionHandoffMode;
   saveToFile: boolean;
   saveToMemory: boolean;
@@ -825,6 +882,7 @@ const parseHandoffPayload = async (payload: unknown): Promise<HandoffPayload> =>
   return {
     targetProvider,
     targetModel: readOptionalQueryString(body.targetModel),
+    permissionMode: parsePermissionMode(targetProvider, body.permissionMode ?? body.permission_mode),
     mode: rawMode as SessionHandoffMode,
     saveToFile: body.saveToFile === true,
     saveToMemory: body.saveToMemory === true,
@@ -867,6 +925,7 @@ router.post(
       sourceSessionId: sessionId,
       targetProvider: payload.targetProvider,
       targetModel: payload.targetModel,
+      permissionMode: payload.permissionMode,
     });
     res.status(201).json(createApiSuccessResponse(result));
   }),
@@ -934,6 +993,9 @@ router.post(
       sessionIds,
       targetProvider,
       targetModel: readOptionalQueryString(body.targetModel),
+      permissionMode: targetProvider
+        ? parsePermissionMode(targetProvider, body.permissionMode ?? body.permission_mode)
+        : undefined,
       mode: rawMode as SessionHandoffMode,
       saveToFile: body.saveToFile === true,
       saveToMemory: body.saveToMemory === true,

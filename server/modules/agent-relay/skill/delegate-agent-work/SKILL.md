@@ -20,10 +20,9 @@ a purely conversational question, dispatch a worker instead.
 Never in this lead session:
 
 - search, grep, read, or explore the repo to "get oriented"
-- edit, patch, format, or generate files
-- run tests, linters, builds, docker, or git mutations
-- apply a worker's diff yourself
-- "just quickly" do a small task because briefing would take longer
+- edit, patch, format, or generate files (except landing isolated writes — see below)
+- run tests, linters, builds, docker, or git mutations (except landing isolated writes)
+- "just quickly" implement a feature because briefing would take longer
 
 Always:
 
@@ -31,7 +30,7 @@ Always:
 2. `relay_wait` / `relay_peek` / `relay_status`
 3. `relay_approve` / `relay_deny` **only** if you dispatched with `approvalPolicy: "manual"` and a worker is parked — auto jobs never ask you
 4. `relay_result` (and `relay_diff` for isolated writes)
-5. Re-delegate verification, follow-ups, and integration
+5. Re-delegate verification and follow-ups. **You** land isolated writes onto the primary checkout (see Land isolated writes)
 6. Answer the user in your own voice from worker evidence
 
 If you cannot yet name files or a scope, dispatch a **scout** (`read_only`)
@@ -42,7 +41,8 @@ If two write scopes would overlap, sequence them with `dependsOn` or wait —
 do not take the write yourself.
 
 The only times you skip Relay: the user asked a question that needs no
-repository work, or they explicitly ordered you not to delegate this turn.
+repository work, they explicitly ordered you not to delegate this turn, or
+you are landing an already-finished isolated write onto the primary checkout.
 
 ## Dispatch
 
@@ -57,7 +57,8 @@ repository work, or they explicitly ordered you not to delegate this turn.
    tell twelve workers apart. `review:auth`, `verify:finding-3`, `impl:api`.
 4. **Pick `mode` honestly.** `read_only` for inspection, review, and diagnosis.
    `isolated_write` only for a disjoint implementation scope; it gets its own
-   worktree and feature branch.
+   worktree and feature branch. When that job completes, the lead must land
+   it (see Land isolated writes).
 5. **Use `approvalPolicy: "auto"` (the default) almost always.** Auto never
    parks you: scouts (`read_only`) get every proven-safe read approved and
    every mutation denied; writers get in-worktree edits approved and
@@ -79,8 +80,13 @@ repository work, or they explicitly ordered you not to delegate this turn.
 8. **Route by strength.** Give the wide mechanical sweep to a fast cheap model
    and the judgement call to a strong one. Use a *different* provider when you
    want an independent opinion rather than an echo. Check `honorsMcpGrants`
-   before giving a task `mcpServers` — providers without it run on their native
-   MCP config.
+   before giving a task `mcpServers`. Codex workers get empty `mcp_servers`
+   (no native inherit, no grants). Cursor does not honor grants or tool-deny
+   flags. Grok workers strip local MCP from the managed home; granted servers
+   attach on ACP. Residual: Grok CLI may still attach a grok.com catalog later.
+   Cursor has no `readOnlyPlanSeat` — never pick it for `read_only`; auto-pick
+   already skips it. Explicit `isolated_write` on Cursor is allowed. Cursor
+   emits no permission events CloudCLI can broker.
 9. **Grant `retries: 1` to long or infra-flaky tasks.** A retry re-dispatches a
    fresh worker only after a run that failed with no output; it never re-runs a
    worker that answered.
@@ -181,12 +187,29 @@ and do not spend a turn approving routine work.
   mid-session too — call it while a worker is still running, queued, or
   parked on an approval, and it is delivered right away instead of waiting
   for the worker to finish.
-- `relay_diff` before integrating any isolated write. Relay never rebases or
-  merges; dispatch an integration worker or tell the user how to take the
-  worktree through Workspaces/Git. Do not apply the patch in the lead.
+- `relay_diff` before landing any isolated write. Then land it yourself
+  (see Land isolated writes).
 - A `timed_out` job may still carry partial findings. Read them, then
   re-delegate remaining work.
 - `relay_cancel` anything redundant or stalled.
+
+## Land isolated writes
+
+`isolated_write` workers can only mutate **their own** worktree and feature
+branch. The host denies commands that target the user's primary checkout
+(including `cd` into it). Relay never rebases or auto-merges.
+
+After `relay_diff` on a finished writer, **the lead must land the change**:
+
+1. On the **primary checkout**, merge or cherry-pick the unique commits (or use
+   Workspaces `applyToPrimary` if that API is available).
+2. Resolve conflicts there. Keep the worker's product intent.
+3. Remove the extra worktree (`git worktree remove`) and delete the merged
+   `relay/*` branch so leftovers do not pile up.
+
+**Do not** dispatch another `isolated_write` "integrator". It cannot touch
+the primary tree and only creates another worktree. Do not re-implement the
+feature on main instead of landing the worker's commits.
 
 ## Report
 
@@ -197,7 +220,9 @@ answer. Never claim you verified a finding by reading the repo yourself.
 ## Boundaries
 
 - Delegation belongs to the lead chat only. A delegated worker must never call
-  `relay_*` tools or create a second layer of delegates.
+  `relay_*` tools or create a second layer of delegates. Claude workers
+  host-disallow `Task` / `Agent` (plan mode does not re-inject `Task` for
+  Relay). Cursor cannot host-deny those tools.
 - Do not assign overlapping write scopes.
 - Do not put secrets, credentials, hidden reasoning, or irrelevant transcript
   history in a brief.

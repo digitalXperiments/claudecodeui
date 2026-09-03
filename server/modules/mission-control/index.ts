@@ -56,8 +56,11 @@ export type { EnsureWorkspaceResult } from '@/modules/mission-control/article-st
 export {
   ensureArticleStudioSections,
   ensureMissionControlSeedSections,
+  ensurePersonalGmailSection,
+  ensureSlackSection,
   ensureSwipeDigestSection,
   ensureTrelloTasksSection,
+  ensureWorkGmailSection,
   ensureXArticlesSection,
   suppressSeedByTitle,
   clearSeedSuppressionByTitle,
@@ -74,4 +77,13 @@ export type {
   McSeedKey,
 } from '@/modules/mission-control/mission-control-seed.service.js';
 export type { TrelloSeedBoardConfig } from '@/modules/mission-control/mission-control-seed.config.js';
+export {
+  ACTION_CENTRE_SCHEDULE_CRON,
+  buildPersonalGmailSectionInput,
+  buildSlackSectionInput,
+  buildWorkGmailSectionInput,
+  PERSONAL_GMAIL_SECTION_TITLE,
+  SLACK_SECTION_TITLE,
+  WORK_GMAIL_SECTION_TITLE,
+} from '@/modules/mission-control/action-centre-seed.js';
 export * from '@/modules/mission-control/mission-control.types.js';

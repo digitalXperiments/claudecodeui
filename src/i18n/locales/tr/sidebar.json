@@ -66,6 +66,7 @@
   "actions": {
     "refresh": "Yenile",
     "settings": "Ayarlar",
+    "missionControl": "Eylem Merkezi",
     "collapseAll": "Tümünü Daralt",
     "expandAll": "Tümünü Genişlet",
     "cancel": "İptal",

@@ -13,8 +13,7 @@ import {
   Quote as QuoteIcon,
   RefreshCw,
 } from 'lucide-react';
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { oneDark, oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import { SyntaxHighlighter, oneDark, oneLight } from '../../../../shared/syntaxHighlighter';
 
 import { authenticatedFetch } from '../../../../utils/api';
 import { copyTextToClipboard } from '../../../../utils/clipboard';
@@ -39,7 +38,7 @@ type ArticleDraftCardProps = {
 };
 
 /**
- * Article-shaped renderer for Mission Control items whose body is an
+ * Article-shaped renderer for Action Centre items whose body is an
  * `x_article`. The generic JSON view is useless for prose — this one shows the
  * draft the way it will read, and hands over exactly what x.com will accept:
  * rich text on the clipboard, images as files to drag in.
@@ -165,7 +164,7 @@ export function ArticleDraftCard({ article, itemId, onGenerateAssets }: ArticleD
         </p>
       </div>
 
-      <div className="flex gap-0.5 border-b border-border px-2 pt-1.5">
+      <div className="scrollbar-hide flex max-w-full gap-0.5 overflow-x-auto border-b border-border px-2 pt-1.5" role="tablist" aria-label="Article draft views">
         {(
           [
             ['preview', 'Preview'],
@@ -182,7 +181,9 @@ export function ArticleDraftCard({ article, itemId, onGenerateAssets }: ArticleD
             key={id}
             type="button"
             onClick={() => setTab(id)}
-            className={`rounded-t-md px-2.5 py-1.5 text-[11px] font-medium transition-colors ${
+            role="tab"
+            aria-selected={tab === id}
+            className={`mc-tap-target min-h-11 shrink-0 touch-manipulation rounded-t-md px-3 py-2 text-[11px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring ${
               tab === id
                 ? 'bg-background text-foreground shadow-[inset_0_-2px_0_0_hsl(var(--primary))]'
                 : 'text-muted-foreground hover:text-foreground'
@@ -228,7 +229,7 @@ function ToolbarButton({
     <button
       type="button"
       onClick={() => void onClick()}
-      className={`inline-flex min-h-8 touch-manipulation items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[11px] font-medium transition-colors ${
+      className={`mc-tap-target inline-flex min-h-11 touch-manipulation items-center gap-1.5 rounded-lg px-3 py-2 text-[11px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
         active
           ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
           : primary
@@ -495,12 +496,12 @@ function ImageTrayRow({
             {image.status}: {image.statusMessage}
           </p>
         ) : null}
-        <div className="mt-1 flex gap-2">
+        <div className="mt-1 flex flex-wrap gap-2">
           <button
             type="button"
             disabled={!src}
             onClick={download}
-            className="inline-flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground disabled:opacity-40"
+            className="mc-tap-target inline-flex min-h-11 touch-manipulation items-center gap-1 rounded-lg px-2 text-[10px] text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-40"
           >
             <Download className="h-3 w-3" /> Download
           </button>
@@ -511,7 +512,7 @@ function ImageTrayRow({
               setCopied(true);
               window.setTimeout(() => setCopied(false), 1500);
             }}
-            className="inline-flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground"
+            className="mc-tap-target inline-flex min-h-11 touch-manipulation items-center gap-1 rounded-lg px-2 text-[10px] text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />} Copy alt
           </button>
@@ -559,7 +560,7 @@ function TitleOptions({ article }: { article: XArticleBody }) {
                 setCopied(title);
                 window.setTimeout(() => setCopied(null), 1500);
               }}
-              className="shrink-0 text-muted-foreground hover:text-foreground"
+              className="mc-tap-target min-h-11 min-w-11 shrink-0 touch-manipulation rounded-lg text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               aria-label="Copy title"
             >
               {copied === title ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}

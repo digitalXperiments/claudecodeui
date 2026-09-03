@@ -8205,63 +8205,25 @@ function reconcileTerminalMembers(
   }
 }
 
-/** Resume durable in-flight swarms after a server restart. Approval-paused rows stay paused. */
+/**
+ * Agent Swarm is retired. In-flight rows are aborted instead of resumed so a
+ * restart cannot relaunch the old control plane.
+ */
 export async function recoverActiveSwarms(): Promise<void> {
   const recoverable = swarmDb
     .listAll(500, { includeArchived: false })
-    .filter((swarm) => ['queued', 'planning', 'running', 'handing_off'].includes(swarm.status));
-  // Bounded parallel admission (PRD swarm-studio-v2 G5): a small worker pool
-  // avoids a restart stampede while no longer serializing unrelated swarms.
-  // Each pipeline may fan out internally according to its own safe concurrency
-  // limit; leases prevent duplicate execution across owners.
-  const resumeSwarm = async (swarm: (typeof recoverable)[number]): Promise<void> => {
-    if (swarm.cancel_requested_at) {
+    .filter((swarm) =>
+      ['queued', 'planning', 'running', 'handing_off', 'awaiting_approval'].includes(swarm.status),
+    );
+  for (const swarm of recoverable) {
+    try {
       await swarmService.abort(swarm.swarm_id);
-      return;
+    } catch (error) {
+      console.error('[Swarm] retired abort failed', swarm.swarm_id, error);
+      persistRecoveryFailure(
+        swarm.swarm_id,
+        error instanceof Error ? error : new Error('Agent Swarm is retired.'),
+      );
     }
-    const leaseExpiry = swarm.lease_expires_at ? new Date(swarm.lease_expires_at).getTime() : 0;
-    if (swarm.lease_owner && swarm.lease_owner !== PIPELINE_OWNER && leaseExpiry > Date.now()) {
-      const retryDelay = Math.min(PIPELINE_LEASE_TTL_MS + 250, Math.max(50, leaseExpiry - Date.now() + 50));
-      const timer = setTimeout(() => {
-        void swarmService.executePipeline(swarm.swarm_id, {
-          requireApproval: swarm.config?.requireApproval,
-          requirePlanApproval: swarm.config?.requirePlanApproval,
-          stepTimeoutMs: swarm.config?.stepTimeoutMs,
-          maxConcurrency: swarm.config?.maxConcurrency,
-          defaultProvider: swarm.config?.orchestrator.provider,
-          defaultModel: swarm.config?.orchestrator.model,
-        }).catch((error) => {
-          console.error('[Swarm] deferred recovery failed', swarm.swarm_id, error);
-          persistRecoveryFailure(swarm.swarm_id, error);
-        });
-      }, retryDelay);
-      timer.unref?.();
-      return;
-    }
-    await swarmService.executePipeline(swarm.swarm_id, {
-      requireApproval: swarm.config?.requireApproval,
-      requirePlanApproval: swarm.config?.requirePlanApproval,
-      stepTimeoutMs: swarm.config?.stepTimeoutMs,
-      maxConcurrency: swarm.config?.maxConcurrency,
-      defaultProvider: swarm.config?.orchestrator.provider,
-      defaultModel: swarm.config?.orchestrator.model,
-    });
-  };
-  let cursor = 0;
-  const workers = Array.from(
-    { length: Math.min(RECOVERY_CONCURRENCY, Math.max(recoverable.length, 1)) },
-    async () => {
-      while (cursor < recoverable.length) {
-        const swarm = recoverable[cursor];
-        cursor += 1;
-        try {
-          await resumeSwarm(swarm);
-        } catch (error) {
-          console.error('[Swarm] recovery failed', swarm.swarm_id, error);
-          persistRecoveryFailure(swarm.swarm_id, error);
-        }
-      }
-    },
-  );
-  await Promise.all(workers);
+  }
 }

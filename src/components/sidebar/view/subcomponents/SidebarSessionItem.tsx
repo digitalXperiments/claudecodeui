@@ -1,9 +1,10 @@
-import { memo, useEffect, useRef } from 'react';
-import { Check, Edit2, Loader2, Trash2, X } from 'lucide-react';
+import { memo, useEffect, useId, useRef, useState } from 'react';
+import { Check, Copy, Edit2, Loader2, MoreHorizontal, Trash2, X } from 'lucide-react';
 import type { TFunction } from 'i18next';
 
 import { Badge, Tooltip, buttonVariants } from '../../../../shared/view/ui';
 import { cn } from '../../../../lib/utils';
+import { copyTextToClipboard } from '../../../../utils/clipboard';
 import type { Project, ProjectSession, LLMProvider } from '../../../../types/app';
 import type { SessionWithProvider } from '../../types/types';
 import { createSessionViewModel } from '../../utils/utils';
@@ -32,6 +33,137 @@ type SidebarSessionItemProps = {
   ) => void;
   t: TFunction;
 };
+
+type SessionIdKind = 'session' | 'provider';
+
+type SessionIdOverflowMenuProps = {
+  session: SessionWithProvider;
+  t: TFunction;
+};
+
+const getProviderSessionId = (session: SessionWithProvider): string | null => {
+  const providerSessionId = session.provider_session_id ?? session.providerSessionId;
+  return typeof providerSessionId === 'string' && providerSessionId.trim()
+    ? providerSessionId
+    : null;
+};
+
+function SessionIdOverflowMenu({ session, t }: SessionIdOverflowMenuProps) {
+  const [open, setOpen] = useState(false);
+  const [copiedId, setCopiedId] = useState<SessionIdKind | null>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const menuId = useId();
+  const providerSessionId = getProviderSessionId(session);
+
+  useEffect(() => {
+    if (!open) {
+      return undefined;
+    }
+
+    const onPointerDown = (event: MouseEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) {
+        setOpen(false);
+        setCopiedId(null);
+      }
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setOpen(false);
+        setCopiedId(null);
+      }
+    };
+
+    document.addEventListener('mousedown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [open]);
+
+  const copyId = async (kind: SessionIdKind, value: string) => {
+    const copied = await copyTextToClipboard(value);
+    if (copied) {
+      setCopiedId(kind);
+      window.setTimeout(() => setCopiedId(null), 1500);
+    }
+  };
+
+  const sessionIdLabel = copiedId === 'session'
+    ? t('sessions.menuCopied', { defaultValue: 'Copied' })
+    : t('sessions.menuCopyId', { defaultValue: 'Copy CloudCLI session ID' });
+  const providerSessionIdLabel = copiedId === 'provider'
+    ? t('sessions.menuCopied', { defaultValue: 'Copied' })
+    : t('sessions.menuCopyProviderId', { defaultValue: 'Copy provider session ID' });
+
+  return (
+    <div ref={rootRef} className="relative flex-shrink-0">
+      <button
+        type="button"
+        className={cn(
+          'flex h-6 w-6 items-center justify-center rounded bg-gray-50 text-muted-foreground hover:bg-gray-100 dark:bg-gray-900/20 dark:hover:bg-gray-900/40',
+          open && 'bg-accent text-foreground',
+        )}
+        aria-label={t('tooltips.sessionActions', { defaultValue: 'Session actions' })}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-controls={open ? menuId : undefined}
+        onClick={(event) => {
+          event.stopPropagation();
+          setOpen((value) => !value);
+          setCopiedId(null);
+        }}
+      >
+        <MoreHorizontal className="h-3 w-3" />
+      </button>
+
+      {open ? (
+        <div
+          id={menuId}
+          role="menu"
+          className="absolute right-0 top-[calc(100%+4px)] z-50 min-w-52 max-w-[min(18rem,calc(100vw-2rem))] rounded-lg border border-border bg-popover p-0.5 text-popover-foreground shadow-lg"
+          onClick={(event) => event.stopPropagation()}
+        >
+          <button
+            type="button"
+            role="menuitem"
+            className="flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left text-[13px] leading-none text-foreground transition-colors hover:bg-accent"
+            onClick={() => void copyId('session', session.id)}
+          >
+            {copiedId === 'session' ? <Check className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" /> : <Copy className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" />}
+            <span className="min-w-0 flex-1">
+              <span className="block font-medium tracking-tight">{sessionIdLabel}</span>
+              <span className="mt-1 block break-all font-mono text-[10px] leading-snug text-muted-foreground">{session.id}</span>
+            </span>
+          </button>
+
+          <button
+            type="button"
+            role="menuitem"
+            disabled={!providerSessionId}
+            className={cn(
+              'flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left text-[13px] leading-none transition-colors',
+              providerSessionId ? 'text-foreground hover:bg-accent' : 'cursor-not-allowed text-muted-foreground opacity-60',
+            )}
+            onClick={() => {
+              if (providerSessionId) {
+                void copyId('provider', providerSessionId);
+              }
+            }}
+          >
+            {copiedId === 'provider' ? <Check className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" /> : <Copy className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" />}
+            <span className="min-w-0 flex-1">
+              <span className="block font-medium tracking-tight">{providerSessionIdLabel}</span>
+              <span className="mt-1 block break-all font-mono text-[10px] leading-snug text-muted-foreground">
+                {providerSessionId || t('sessions.menuProviderIdUnavailable', { defaultValue: 'Not available yet' })}
+              </span>
+            </span>
+          </button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 /**
  * Compact relative time for sidebar rows:
@@ -203,6 +335,7 @@ function SidebarSessionItem({
                 <Trash2 className="h-2.5 w-2.5 text-red-600 dark:text-red-400" />
               </button>
             )}
+            <SessionIdOverflowMenu session={session} t={t} />
           </div>
         </div>
       </div>
@@ -341,6 +474,7 @@ function SidebarSessionItem({
                     <Trash2 className="h-3 w-3 text-red-600 dark:text-red-400" />
                   </button>
                 )}
+                <SessionIdOverflowMenu session={session} t={t} />
               </>
             )}
           </div>

@@ -61,6 +61,7 @@ export function useGitPanelController({
   const [isPushing, setIsPushing] = useState(false);
   const [isPublishing, setIsPublishing] = useState(false);
   const [isCreatingInitialCommit, setIsCreatingInitialCommit] = useState(false);
+  const [isInitializingGit, setIsInitializingGit] = useState(false);
   const [operationError, setOperationError] = useState<string | null>(null);
 
   const clearOperationError = useCallback(() => setOperationError(null), []);
@@ -701,6 +702,41 @@ export function useGitPanelController({
     }
   }, [fetchGitStatus, fetchRemoteStatus, selectedProject]);
 
+  const initializeGitRepository = useCallback(async () => {
+    if (!selectedProject) {
+      return false;
+    }
+
+    setIsInitializingGit(true);
+    setOperationError(null);
+    try {
+      const response = await fetchWithAuth('/api/git/init', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          project: selectedProject.projectId,
+        }),
+      });
+
+      const data = await readJson<GitOperationResponse>(response);
+      if (!response.ok || !data.success) {
+        throw new Error(data.error || 'Failed to initialize Git repository');
+      }
+
+      await fetchGitStatus();
+      await fetchBranches();
+      await fetchRemoteStatus();
+      return true;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to initialize Git repository';
+      console.error('Error initializing Git repository:', error);
+      setOperationError(message);
+      return false;
+    } finally {
+      setIsInitializingGit(false);
+    }
+  }, [fetchBranches, fetchGitStatus, fetchRemoteStatus, selectedProject]);
+
   const openFile = useCallback(
     async (filePath: string) => {
       if (!onFileOpen) {
@@ -797,6 +833,7 @@ export function useGitPanelController({
     isPushing,
     isPublishing,
     isCreatingInitialCommit,
+    isInitializingGit,
     operationError,
     clearOperationError,
     refreshAll,
@@ -815,6 +852,7 @@ export function useGitPanelController({
     generateCommitMessage,
     commitChanges,
     createInitialCommit,
+    initializeGitRepository,
     openFile,
   };
 }

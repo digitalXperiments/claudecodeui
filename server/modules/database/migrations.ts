@@ -441,6 +441,41 @@ const addContinuedFromSessionId = (db: Database): void => {
   addColumnToTableIfNotExists(db, 'sessions', columnNames, 'continued_from_session_id', 'TEXT');
 };
 
+/** Adds durable per-chat runtime preferences without changing legacy defaults. */
+const addSessionRuntimePreferences = (db: Database): void => {
+  const columnNames = getTableInfo(db, 'sessions').map((column) => column.name);
+  addColumnToTableIfNotExists(db, 'sessions', columnNames, 'permission_mode', 'TEXT');
+};
+
+/**
+ * Preserve the last explicit policy for upgraded sessions. Runs after the run
+ * spine exists; imported CLI sessions with no CloudCLI run intentionally stay
+ * NULL and resolve to their provider default.
+ */
+const backfillSessionRuntimePreferences = (db: Database): void => {
+  if (!tableExists(db, 'sessions') || !tableExists(db, 'agent_runs')) return;
+  db.exec(`
+    UPDATE sessions
+    SET permission_mode = (
+      SELECT runs.permission_mode
+      FROM agent_runs AS runs
+      WHERE runs.app_session_id = sessions.session_id
+        AND runs.permission_mode IS NOT NULL
+        AND trim(runs.permission_mode) <> ''
+      ORDER BY datetime(runs.created_at) DESC, runs.rowid DESC
+      LIMIT 1
+    )
+    WHERE permission_mode IS NULL
+      AND EXISTS (
+        SELECT 1
+        FROM agent_runs AS runs
+        WHERE runs.app_session_id = sessions.session_id
+          AND runs.permission_mode IS NOT NULL
+          AND trim(runs.permission_mode) <> ''
+      )
+  `);
+};
+
 /**
  * Separates internal automation transcripts from user-facing chat sessions.
  * Legacy sessions are interactive by default; headless callers opt in when
@@ -858,6 +893,7 @@ export const runMigrations = (db: Database) => {
     ensureSessionsRuntimeProjectPath(db);
     addProviderSessionIdMapping(db);
     addContinuedFromSessionId(db);
+    addSessionRuntimePreferences(db);
     addInternalSessionVisibility(db);
     ensureProjectsForSessionPaths(db);
 
@@ -908,6 +944,7 @@ export const runMigrations = (db: Database) => {
 
     // Run spine: agent_workspaces, agent_runs, agent_run_events, secrets (P0–P4).
     db.exec(RUN_SPINE_SCHEMA_SQL);
+    backfillSessionRuntimePreferences(db);
     ensureAgentRelaySchema(db);
     db.exec(CONTEXT_PACKS_TABLE_SCHEMA_SQL);
     db.exec(AUTOMATION_TABLE_SCHEMA_SQL);

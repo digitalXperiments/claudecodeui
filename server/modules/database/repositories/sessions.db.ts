@@ -7,6 +7,7 @@ type SessionRow = {
   provider: string;
   provider_session_id: string | null;
   continued_from_session_id: string | null;
+  permission_mode: string | null;
   project_path: string | null;
   runtime_project_path: string | null;
   jsonl_path: string | null;
@@ -18,7 +19,7 @@ type SessionRow = {
 };
 
 const SESSION_ROW_COLUMNS =
-  'session_id, provider, provider_session_id, continued_from_session_id, project_path, runtime_project_path, jsonl_path, is_internal, custom_name, isArchived, created_at, updated_at';
+  'session_id, provider, provider_session_id, continued_from_session_id, permission_mode, project_path, runtime_project_path, jsonl_path, is_internal, custom_name, isArchived, created_at, updated_at';
 
 const SQLITE_UTC_TIMESTAMP_REGEX = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
 
@@ -200,7 +201,7 @@ export const sessionsDb = {
     sessionId: string,
     provider: string,
     projectPath: string,
-    options: { internal?: boolean } = {},
+    options: { internal?: boolean; permissionMode?: string | null } = {},
   ): string {
     const db = getConnection();
     const { logicalProjectPath, runtimeProjectPath } = resolveSessionPaths(provider, projectPath);
@@ -208,9 +209,16 @@ export const sessionsDb = {
     projectsDb.createProjectPath(logicalProjectPath);
 
     db.prepare(
-      `INSERT INTO sessions (session_id, provider, provider_session_id, custom_name, project_path, runtime_project_path, jsonl_path, is_internal, isArchived, created_at, updated_at)
-       VALUES (?, ?, NULL, NULL, ?, ?, NULL, ?, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`
-    ).run(sessionId, provider, logicalProjectPath, runtimeProjectPath, options.internal ? 1 : 0);
+      `INSERT INTO sessions (session_id, provider, provider_session_id, permission_mode, custom_name, project_path, runtime_project_path, jsonl_path, is_internal, isArchived, created_at, updated_at)
+       VALUES (?, ?, NULL, ?, NULL, ?, ?, NULL, ?, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`
+    ).run(
+      sessionId,
+      provider,
+      options.permissionMode ?? null,
+      logicalProjectPath,
+      runtimeProjectPath,
+      options.internal ? 1 : 0,
+    );
 
     return sessionId;
   },
@@ -372,6 +380,22 @@ export const sessionsDb = {
     ).run(customName, sessionId);
   },
 
+  /** Persists settings that should be inherited by future turns in this chat. */
+  updateSessionRuntimePreferences(
+    sessionId: string,
+    preferences: { permissionMode?: string | null },
+  ): SessionRow | null {
+    const db = getConnection();
+    if (preferences.permissionMode !== undefined) {
+      db.prepare(
+        `UPDATE sessions
+         SET permission_mode = ?
+         WHERE session_id = ?`,
+      ).run(preferences.permissionMode, sessionId);
+    }
+    return this.getSessionById(sessionId);
+  },
+
   /** Updates the provider cwd when an existing chat is assigned an isolated worktree. */
   updateSessionRuntimeProjectPath(sessionId: string, runtimeProjectPath: string | null): void {
     const db = getConnection();
@@ -421,17 +445,19 @@ export const sessionsDb = {
    * file names), so it uses this lookup to translate disk artifacts back to
    * the app-facing session row before broadcasting sidebar updates.
    */
-  getSessionByProviderSessionId(providerSessionId: string, provider: string): SessionRow | null {
+  getSessionByProviderSessionId(providerSessionId: string, provider?: string): SessionRow | null {
     const db = getConnection();
+    const providerClause = provider === undefined ? '' : ' AND provider = ?';
+    const params = provider === undefined ? [providerSessionId] : [providerSessionId, provider];
     const row = db
       .prepare(
         `SELECT ${SESSION_ROW_COLUMNS}
          FROM sessions
-         WHERE provider_session_id = ? AND provider = ?
+         WHERE provider_session_id = ?${providerClause}
          ORDER BY updated_at DESC
          LIMIT 1`
       )
-      .get(providerSessionId, provider) as SessionRow | undefined;
+      .get(...params) as SessionRow | undefined;
 
     return normalizeSessionRow(row) ?? null;
   },

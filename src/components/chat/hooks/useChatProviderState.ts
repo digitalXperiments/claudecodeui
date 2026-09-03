@@ -170,6 +170,7 @@ type ChangeActiveModelApiResponse = {
 export function useChatProviderState({ selectedSession, selectedProject: _selectedProject }: UseChatProviderStateArgs) {
   const { enabledProviders, isAgentEnabled } = useAgentVisibility();
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('default');
+  const permissionModeChangeVersionRef = useRef(0);
   const [pendingPermissionRequests, setPendingPermissionRequests] = useState<PendingPermissionRequest[]>([]);
   const [provider, setProvider] = useState<LLMProvider>(() => {
     const storedProvider = readStoredProvider();
@@ -761,7 +762,8 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
 
   useEffect(() => {
     const validModes = getPermissionModesForProvider(provider);
-    const sessionSavedMode = selectedSession?.id
+    const sessionId = selectedSession?.id;
+    const sessionSavedMode = sessionId
       ? (localStorage.getItem(`permissionMode-${selectedSession.id}`) as PermissionMode | null)
       : null;
     // Fall back to the last mode picked for this provider: a brand-new chat
@@ -773,6 +775,25 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
       (mode): mode is PermissionMode => Boolean(mode && validModes.includes(mode)),
     );
     setPermissionMode(savedMode ?? getDefaultPermissionModeForProvider(provider));
+    if (!sessionId) return;
+
+    let cancelled = false;
+    const changeVersion = permissionModeChangeVersionRef.current;
+    void authenticatedFetch(`/api/providers/sessions/${encodeURIComponent(sessionId)}/meta`)
+      .then(async (response) => (response.ok ? response.json() : null))
+      .then((payload) => {
+        if (cancelled || changeVersion !== permissionModeChangeVersionRef.current) return;
+        const serverMode = payload?.data?.session?.permissionMode;
+        const resolvedMode = typeof serverMode === 'string' && validModes.includes(serverMode as PermissionMode)
+          ? serverMode as PermissionMode
+          : getDefaultPermissionModeForProvider(provider);
+        setPermissionMode(resolvedMode);
+        localStorage.setItem(`permissionMode-${sessionId}`, resolvedMode);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
   }, [selectedSession?.id, provider, getDefaultPermissionModeForProvider, getPermissionModesForProvider]);
 
   // Same-window sync: Settings writes its permission-mode preference through
@@ -801,6 +822,7 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
       }
 
       setPermissionMode(detail.mode as PermissionMode);
+      permissionModeChangeVersionRef.current += 1;
     };
 
     window.addEventListener(PROVIDER_PERMISSION_PREFERENCE_CHANGED_EVENT, handlePreferenceChanged);
@@ -870,6 +892,7 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     const currentIndex = modes.indexOf(permissionMode);
     const nextIndex = (currentIndex + 1) % modes.length;
     const nextMode = modes[nextIndex];
+    permissionModeChangeVersionRef.current += 1;
     setPermissionMode(nextMode);
 
     // Persist per provider as well as per session: a brand-new chat has no
@@ -887,6 +910,7 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
         detail: { provider, mode: nextMode, sessionId: selectedSession?.id ?? null },
       }),
     );
+    return nextMode;
   }, [permissionMode, provider, selectedSession?.id, getPermissionModesForProvider]);
 
   const resolvePermissionModeForProvider = useCallback((

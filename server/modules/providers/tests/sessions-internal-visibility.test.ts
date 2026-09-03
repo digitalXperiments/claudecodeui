@@ -4,8 +4,10 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { closeConnection, initializeDatabase, sessionsDb } from '@/modules/database/index.js';
+import { agentRelayDb, agentRelayService } from '@/modules/agent-relay/index.js';
+import { closeConnection, initializeDatabase, projectsDb, sessionsDb } from '@/modules/database/index.js';
 import { sessionsService } from '@/modules/providers/index.js';
+import { newRelayBatchId, newRelayJobId } from '@/shared/ids.js';
 import { chatRunRegistry, shellSessionRegistry } from '@/modules/websocket/index.js';
 
 class FakeConnection {
@@ -139,5 +141,33 @@ test('listRunningSessions keeps a live shell session even before the DB row exis
     assert.equal(running[0]?.sessionId, 'not-yet-persisted');
     assert.equal(running[0]?.title, 'not-yet-persisted');
     assert.equal(running[0]?.projectId, null);
+  });
+});
+
+test('soft-archive cancels in-flight Agent Relay jobs for the session', async () => {
+  await withIsolatedDatabase(async () => {
+    const project = projectsDb.createProjectPath('/workspace/archive-relay').project!;
+    const lead = sessionsService.createAppSession('claude', project.project_path).sessionId;
+    const relayId = newRelayJobId();
+    agentRelayDb.create({
+      relayId,
+      batchId: newRelayBatchId(),
+      projectId: project.project_id,
+      projectPath: project.project_path,
+      sourceSessionId: lead,
+      provider: 'claude',
+      mode: 'read_only',
+      task: 'still running',
+      prompt: 'still running',
+      mcpServers: [],
+      timeoutMs: 60_000,
+    });
+    assert.equal(agentRelayService.activeForSession(lead).length, 1);
+
+    const result = await sessionsService.deleteOrArchiveSessionById(lead);
+    assert.equal(result.action, 'archived');
+    assert.equal(Boolean(sessionsDb.getSessionById(lead)?.isArchived), true);
+    assert.equal(agentRelayService.get(relayId)?.status, 'cancelled');
+    assert.equal(agentRelayService.activeForSession(lead).length, 0);
   });
 });

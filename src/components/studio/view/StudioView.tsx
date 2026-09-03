@@ -67,7 +67,6 @@ type StudioViewProps = {
   projects: Project[];
   isVisible: boolean;
   onIdeateInChat: (input: { project: Project; prompt: string; title: string }) => void;
-  onOpenSwarm: () => void;
   onBackToChat?: () => void;
 } & StudioChatProps;
 
@@ -126,7 +125,6 @@ export default function StudioView({
   projects,
   isVisible,
   onIdeateInChat,
-  onOpenSwarm,
   onBackToChat,
   ws,
   sendMessage,
@@ -308,22 +306,6 @@ export default function StudioView({
       onIdeateInChat({ project, prompt, title: proto.title });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not start chat');
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const handleSwarm = async () => {
-    const proto = active ?? await createPrototype();
-    if (!proto || !project) return;
-    setBusy(true);
-    try {
-      const result = await studioApi.launchSwarm(project.projectId, proto.id);
-      setActive(result.prototype);
-      await loadList(project.projectId);
-      onOpenSwarm();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not start design swarm');
     } finally {
       setBusy(false);
     }
@@ -747,9 +729,6 @@ export default function StudioView({
                 <div className="ml-auto flex shrink-0 items-center gap-1">
                   <Button size="sm" variant="ghost" onClick={() => void handleIdeate()} disabled={!active || busy} title="Open this iteration in full chat" aria-label="Open this iteration in full chat">
                     <ExternalLink className="h-3.5 w-3.5" />
-                  </Button>
-                  <Button size="sm" variant="ghost" onClick={() => void handleSwarm()} disabled={!active || busy} title="Escalate to design swarm" aria-label="Escalate to design swarm">
-                    <Workflow className="h-3.5 w-3.5" />
                   </Button>
                 </div>
                 <span className="flex shrink-0 items-center gap-1 text-[10px] font-medium text-emerald-600"><span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />Live</span>

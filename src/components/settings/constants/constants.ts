@@ -5,7 +5,6 @@ import {
   BrainCircuit,
   FileCode2,
   FlaskConical,
-  Gauge,
   GitBranch,
   Info,
   Key,
@@ -13,7 +12,7 @@ import {
   ListChecks,
   Mic,
   MonitorPlay,
-  Waypoints,
+
   Palette,
   Puzzle,
   Server,
@@ -46,18 +45,6 @@ export const SETTINGS_MAIN_TABS: SettingsMainTabMeta[] = [
     label: 'Agent profiles',
     keywords: 'profiles model effort permissions kanban presets',
     icon: UserCog,
-  },
-  {
-    id: 'model-registry',
-    label: 'Model profiles',
-    keywords: 'model profiles registry capabilities benchmarks staffing swarm auto',
-    icon: Gauge,
-  },
-  {
-    id: 'agent-relay',
-    label: 'Agent Relay',
-    keywords: 'delegate delegation agents parallel cross-provider mcp skill sidekick opencode models allowlist whitelist',
-    icon: Waypoints,
   },
   {
     id: 'studio',

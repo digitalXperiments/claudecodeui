@@ -14,7 +14,7 @@ export type PaletteOps = {
   openNeedsYou: () => void;
   openMissionControl: () => void;
   openKanban: () => void;
-  openAgentSwarm: () => void;
+  openAgentRelay: () => void;
   openStudio: () => void;
   openStats: () => void;
   openNewProject: () => void;
@@ -37,7 +37,7 @@ const defaultOps: PaletteOps = {
   openNeedsYou: noop,
   openMissionControl: noop,
   openKanban: noop,
-  openAgentSwarm: noop,
+  openAgentRelay: noop,
   openStudio: noop,
   openStats: noop,
   openNewProject: noop,
@@ -63,7 +63,7 @@ export function usePaletteOps(): PaletteOps {
       openNeedsYou: () => (ref?.current.openNeedsYou ?? defaultOps.openNeedsYou)(),
       openMissionControl: () => (ref?.current.openMissionControl ?? defaultOps.openMissionControl)(),
       openKanban: () => (ref?.current.openKanban ?? defaultOps.openKanban)(),
-      openAgentSwarm: () => (ref?.current.openAgentSwarm ?? defaultOps.openAgentSwarm)(),
+      openAgentRelay: () => (ref?.current.openAgentRelay ?? defaultOps.openAgentRelay)(),
       openStudio: () => (ref?.current.openStudio ?? defaultOps.openStudio)(),
       openStats: () => (ref?.current.openStats ?? defaultOps.openStats)(),
       openNewProject: () => (ref?.current.openNewProject ?? defaultOps.openNewProject)(),

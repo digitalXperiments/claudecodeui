@@ -15,11 +15,11 @@ import {
   Sparkles,
 } from 'lucide-react';
 
-import { cn } from '../../../../lib/utils';
-import { authenticatedFetch } from '../../../../utils/api';
-import { Badge, Button } from '../../../../shared/view/ui';
-import SessionProviderLogo from '../../../llm-logo-provider/SessionProviderLogo';
-import { AGENT_NAMES, AGENT_PROVIDERS } from '../../constants/constants';
+import { cn } from '../../../lib/utils';
+import { authenticatedFetch } from '../../../utils/api';
+import { Badge, Button } from '../../../shared/view/ui';
+import SessionProviderLogo from '../../llm-logo-provider/SessionProviderLogo';
+import { AGENT_NAMES, AGENT_PROVIDERS } from '../../settings/constants/constants';
 
 type ModelCapability = {
   modelId: string;
@@ -250,7 +250,7 @@ function ConfidenceBadge({ capability }: { capability: ModelCapability }) {
   );
 }
 
-export default function ModelRegistrySettingsTab() {
+export default function AgentRelayModelProfilesPanel() {
   const [capabilities, setCapabilities] = useState<ModelCapability[]>([]);
   const [stale, setStale] = useState(true);
   const [loading, setLoading] = useState(true);

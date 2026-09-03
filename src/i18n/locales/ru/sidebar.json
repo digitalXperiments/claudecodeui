@@ -66,6 +66,7 @@
   "actions": {
     "refresh": "Обновить",
     "settings": "Настройки",
+    "missionControl": "Центр действий",
     "collapseAll": "Свернуть все",
     "expandAll": "Развернуть все",
     "cancel": "Отмена",

@@ -1,9 +1,8 @@
-import { useMemo, useState } from 'react';
+import { lazy, Suspense, useMemo, useState } from 'react';
 import ReactDOM from 'react-dom';
 import { AlertTriangle, Check, EyeOff, Folder, FolderPlus, Trash2 } from 'lucide-react';
 import type { TFunction } from 'i18next';
 import { Button } from '../../../../shared/view/ui';
-import Settings from '../../../settings/view/Settings';
 import VersionUpgradeModal from '../../../version-upgrade/view';
 import type { Project, ProjectCategory } from '../../../../types/app';
 import type { ReleaseInfo } from '../../../../types/sharedTypes';
@@ -71,10 +70,14 @@ type TypedSettingsProps = {
   initialTab: string;
 };
 
-const SettingsComponent = Settings as (props: TypedSettingsProps) => JSX.Element;
+const SettingsComponent = lazy(() => import('../../../settings/view/Settings'));
 
 function TypedSettings(props: TypedSettingsProps) {
-  return <SettingsComponent {...props} />;
+  return (
+    <Suspense fallback={null}>
+      <SettingsComponent {...props} />
+    </Suspense>
+  );
 }
 
 type CategoryEditorModalProps = {

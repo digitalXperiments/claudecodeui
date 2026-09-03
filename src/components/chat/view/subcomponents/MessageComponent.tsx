@@ -15,6 +15,7 @@ import { Reasoning, ReasoningTrigger, ReasoningContent } from '../../../../share
 
 import ChatMessageImages from './ChatMessageImages';
 import { Markdown } from './Markdown';
+import StreamingMarkdown from './StreamingMarkdown';
 import MessageCopyControl from './MessageCopyControl';
 import MessageSpeakControl from './MessageSpeakControl';
 
@@ -377,9 +378,15 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
               <Reasoning defaultOpen={false}>
                 <ReasoningTrigger />
                 <ReasoningContent>
-                  <Markdown className="prose prose-sm prose-gray max-w-none font-serif dark:prose-invert">
-                    {message.content}
-                  </Markdown>
+                  {/* Thinking streams republish the accumulated text every
+                      100ms on the store's well-known live id; once finalized
+                      the row gets a permanent id, so the prefix doubles as the
+                      is-still-streaming signal. */}
+                  <StreamingMarkdown
+                    content={String(message.content ?? '')}
+                    isStreaming={Boolean(message.id?.startsWith('__thinking_stream_'))}
+                    className="prose prose-sm prose-gray max-w-none font-serif dark:prose-invert"
+                  />
                   <div className="mt-3 flex items-center text-[11px]">
                     <MessageCopyControl content={String(message.content || '')} messageType="assistant" />
                   </div>
@@ -432,11 +439,17 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
                     }
                   }
 
-                  // Normal rendering for non-JSON content
+                  // Normal rendering for non-JSON content. StreamingMarkdown
+                  // splits a still-streaming reply at a safe block boundary so
+                  // each 100ms flush only re-parses the tail block, and stays
+                  // mounted after stream_end so the finished reply keeps its
+                  // DOM (and any text selection) instead of remounting.
                   return message.type === 'assistant' ? (
-                    <Markdown className="prose prose-sm prose-gray max-w-none font-serif dark:prose-invert">
-                      {content}
-                    </Markdown>
+                    <StreamingMarkdown
+                      content={content}
+                      isStreaming={Boolean(message.isStreaming)}
+                      className="prose prose-sm prose-gray max-w-none font-serif dark:prose-invert"
+                    />
                   ) : (
                     <div className="whitespace-pre-wrap">
                       {content}

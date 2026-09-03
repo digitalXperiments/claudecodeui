@@ -85,6 +85,46 @@ function coerceDrafts(raw: unknown): McDraftItem[] {
   return drafts;
 }
 
+function isSlackSection(section: McSection): boolean {
+  const sectionSignals = [
+    section.title,
+    ...section.produce_tools,
+    ...section.resolve_tools,
+  ].join(' ').toLowerCase();
+  return /\bslack\b/.test(sectionSignals);
+}
+
+/**
+ * Slack is intentionally stricter than generic Mission Control sections:
+ * both classification decisions must be explicit, positive model output.
+ * This keeps broad channel chatter out even when a provider returns otherwise
+ * valid-looking draft metadata.
+ */
+function isSlackReplyRequiredDraft(draft: McDraftItem): boolean {
+  const source = typeof draft.body.source === 'string'
+    ? draft.body.source.trim().toLowerCase()
+    : '';
+  return source === 'slack'
+    && draft.body.directedToMe === true
+    && draft.body.needsMyReply === true;
+}
+
+function filterSectionDrafts(section: McSection, drafts: McDraftItem[]): McDraftItem[] {
+  return isSlackSection(section)
+    ? drafts.filter(isSlackReplyRequiredDraft)
+    : drafts;
+}
+
+/** Slack replies are created only by the explicit Draft reply action. */
+function prepareDraftForSection(section: McSection, draft: McDraftItem): McDraftItem {
+  if (!isSlackSection(section)) return draft;
+  const body = { ...draft.body };
+  delete body.draft;
+  delete body.draftedAt;
+  delete body.operatorContext;
+  return { ...draft, body };
+}
+
 async function resolveMissionControlInterrupts(itemId: string, resolution: string): Promise<void> {
   try {
     const { interruptsService } = await import('@/modules/interrupt-queue/index.js');
@@ -171,6 +211,14 @@ export async function runSectionProduce(sectionId: string): Promise<ProduceRunRe
       code: 'MC_NO_PRODUCE_PROMPT',
       statusCode: 400,
     });
+  }
+  if (!section.enabled) {
+    return {
+      created: 0,
+      skipped: 0,
+      items: [],
+      message: 'Section is disabled. Enable it to run.',
+    };
   }
 
   try {
@@ -286,8 +334,18 @@ export async function runSectionProduce(sectionId: string): Promise<ProduceRunRe
       };
     }
 
-    const drafts = coerceDrafts(parsed);
+    const parsedDrafts = coerceDrafts(parsed);
+    const drafts = filterSectionDrafts(section, parsedDrafts);
     if (drafts.length === 0) {
+      if (isSlackSection(section) && parsedDrafts.length > 0) {
+        missionControlDb.markSectionRun(sectionId, { error: null });
+        return {
+          created: 0,
+          skipped: 0,
+          items: [],
+          message: 'Produce finished: no Slack messages addressed to you that need your reply.',
+        };
+      }
       const candidateCount = draftCandidates(parsed).length;
       // Empty produce is a normal no-op: nothing to queue and nothing to
       // resolve/auto-approve. Only treat as an error when the model returned
@@ -335,7 +393,10 @@ export async function runSectionProduce(sectionId: string): Promise<ProduceRunRe
           continue;
         }
       }
-      const item = missionControlDb.insertItemIfNew(section, draft);
+      const item = missionControlDb.insertItemIfNew(
+        section,
+        prepareDraftForSection(section, draft),
+      );
       if (!item) {
         skipped++;
         continue;
@@ -343,7 +404,7 @@ export async function runSectionProduce(sectionId: string): Promise<ProduceRunRe
       let current = item;
       if (section.auto_approve) {
         const approve = current.actions.find((a) => a.kind === 'approve');
-        if (approve) {
+        if (approve && (current.status === 'pending' || current.status === 'failed')) {
           const next = await applyItemAction(current.item_id, approve.id, undefined);
           // auto-approve should never hard-delete; if it did, skip the item
           if (!next) continue;
@@ -1089,7 +1150,7 @@ export async function retryItem(itemId: string): Promise<RetryItemResult> {
     };
   }
 
-  const drafts = coerceDrafts(parsed);
+  const drafts = filterSectionDrafts(section, coerceDrafts(parsed));
   const match = drafts.find(
     (draft) => draft.dedupeKey === item.dedupe_key || draft.title === item.title,
   );
@@ -1103,19 +1164,21 @@ export async function retryItem(itemId: string): Promise<RetryItemResult> {
 
   // Reset status to pending with the fresh body (clear the error, drop any
   // stale resolved_at) before patching title/summary/confidence.
+  const preparedMatch = prepareDraftForSection(section, match);
   missionControlDb.setItemStatus(itemId, 'pending', {
-    body: match.body,
+    body: preparedMatch.body,
     error: null,
     resolvedAt: null,
   });
   const updated = missionControlDb.updateItem(itemId, {
-    title: match.title,
-    summary: match.summary || item.summary,
-    confidence: match.confidence,
+    title: preparedMatch.title,
+    summary: preparedMatch.summary || item.summary,
+    confidence: preparedMatch.confidence,
   });
+  const refreshed = missionControlDb.getItem(itemId) ?? updated ?? item;
   return {
     success: true,
-    item: updated ?? missionControlDb.getItem(itemId)!,
+    item: refreshed,
     message: 'Item retried: refreshed from a fresh produce run.',
   };
 }

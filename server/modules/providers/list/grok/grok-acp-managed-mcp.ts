@@ -43,8 +43,17 @@ export type ResolvedMcpConnection = {
  *   Invalid params: data did not match any variant of untagged enum McpServer
  * which previously failed Mission Control produce runs that bound Obsidian/etc.
  */
+/**
+ * Relay workers must not wait on or advertise grok.com managed-gateway MCPs.
+ * Chat sessions still attach that catalog on session/new.
+ */
+export function grokRelayWorkerSkipsManagedGateway(relayWorker: unknown): boolean {
+  return relayWorker === true;
+}
+
 export function toGrokAcpMcpServers(
   resolvedServers: ResolvedMcpConnection[],
+  extraEnv: Record<string, string> = {},
 ): Array<Record<string, unknown>> {
   return resolvedServers
     .map((server) => {
@@ -58,7 +67,7 @@ export function toGrokAcpMcpServers(
           type: 'stdio',
           command: server.command,
           args: Array.isArray(server.args) ? server.args : [],
-          env: envRecordToAcpEnv(server.env),
+          env: stampGrokAcpMcpSessionEnv(envRecordToAcpEnv(server.env), extraEnv),
         };
         if (typeof server.cwd === 'string' && server.cwd.trim()) {
           entry.cwd = server.cwd;
@@ -100,6 +109,20 @@ function envRecordToAcpEnv(
   return Object.entries(env)
     .filter(([name, value]) => typeof name === 'string' && name && typeof value === 'string')
     .map(([name, value]) => ({ name, value }));
+}
+
+function stampGrokAcpMcpSessionEnv(
+  env: Array<{ name: string; value: string }>,
+  extraEnv: Record<string, string>,
+): Array<{ name: string; value: string }> {
+  const next = [...env];
+  for (const key of ['CLOUDCLI_LEAD_SESSION_ID', 'CLOUDCLI_SESSION_ID'] as const) {
+    const value = typeof extraEnv[key] === 'string' ? extraEnv[key].trim() : '';
+    if (value && !next.some((entry) => entry.name === key)) {
+      next.push({ name: key, value });
+    }
+  }
+  return next;
 }
 
 function headersRecordToAcpHeaders(

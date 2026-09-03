@@ -14,7 +14,7 @@ import cors from 'cors';
 import mime from 'mime-types';
 import Database from 'better-sqlite3';
 
-import { AppError, WORKSPACES_ROOT, getOpenCodeDatabasePath, validateWorkspacePath } from '@/shared/utils.js';
+import { AppError, FORBIDDEN_WORKSPACE_PATHS, WORKSPACES_ROOT, getOpenCodeDatabasePath, normalizeProjectPath, validateWorkspacePath } from '@/shared/utils.js';
 import {
     closeSessionsWatcher,
     initializeSessionsWatcher,
@@ -33,6 +33,7 @@ import {
 import { getConnectableHost } from '../shared/networkHosts.js';
 
 import { findAppRoot, getModuleDir } from './utils/runtime-paths.js';
+import { createGitignoreEntryFilter } from './utils/gitignore.js';
 import {
     queryClaudeSDK,
     injectClaudeMessage,
@@ -173,6 +174,7 @@ import {
     agentRelayService,
     configureAgentRelayRuntimes,
 } from './modules/agent-relay/index.js';
+import { configureAgentRelayLeadWake } from './modules/agent-relay/lead-session-wake.service.js';
 import webhooksRoutes from './modules/webhooks/webhooks.routes.js';
 import webhooksIngestRoutes from './modules/webhooks/webhooks-ingest.routes.js';
 import {
@@ -260,6 +262,7 @@ const providerAbortFns = {
 // when appSessionId is present); every other provider queues the follow-up
 // for the worker's next attempt instead.
 configureAgentRelayRuntimes(providerSpawnFns, providerAbortFns, { claude: injectClaudeMessage });
+configureAgentRelayLeadWake(providerSpawnFns);
 
 // Kanban runner reuses the same runtimes; automation reconciles task/run status
 // from run completions, the queue caps concurrent automated runs, and the
@@ -773,11 +776,81 @@ app.post('/api/create-folder', authenticateToken, async (req, res) => {
     }
 });
 
+const MWEB_FILE_MAX_BYTES = 512 * 1024;
+const MWEB_SECRET_SEGMENTS = new Set(['.git', '.env', '.ssh', '.aws', '.npmrc', '.pypirc', 'credentials', 'secrets']);
+function isMwebSecretSegment(segment) {
+    const lower = String(segment || '').toLowerCase();
+    return MWEB_SECRET_SEGMENTS.has(lower) || lower.startsWith('.env') || lower.includes('credential') || lower.includes('secret') || /\.(pem|key|p12|pfx)$/i.test(lower) || /^(id_rsa|id_dsa|id_ecdsa|id_ed25519)$/i.test(lower);
+}
+
+async function resolveMwebProjectPath(projectId, requestedPath, expectDirectory, allowAbsolute = false) {
+    if (typeof requestedPath !== 'string' || requestedPath.indexOf('\0') !== -1) {
+        const error = new Error('A valid project path is required'); error.statusCode = 400; throw error;
+    }
+    const projectRoot = await projectsDb.getProjectPathById(projectId);
+    if (!projectRoot) { const error = new Error('Project not found'); error.statusCode = 404; throw error; }
+    const rootReal = await fsPromises.realpath(projectRoot);
+    if (path.isAbsolute(requestedPath) && !allowAbsolute) { const error = new Error('A project-relative path is required'); error.statusCode = 400; throw error; }
+    const candidate = path.isAbsolute(requestedPath) ? path.resolve(requestedPath) : path.resolve(rootReal, requestedPath);
+    const lexicalRelative = path.relative(rootReal, candidate);
+    if (lexicalRelative === '..' || lexicalRelative.startsWith('..' + path.sep) || path.isAbsolute(lexicalRelative)) {
+        const error = new Error('Path must be under project root'); error.statusCode = 403; throw error;
+    }
+    const segments = lexicalRelative.split(path.sep).filter(Boolean);
+    if (segments.some((segment) => isMwebSecretSegment(segment))) { const error = new Error('This sensitive path is not available'); error.statusCode = 403; throw error; }
+    const targetReal = await fsPromises.realpath(candidate);
+    if (targetReal !== rootReal && !targetReal.startsWith(rootReal + path.sep)) {
+        const error = new Error('Path must be under project root'); error.statusCode = 403; throw error;
+    }
+    const stat = await fsPromises.stat(targetReal);
+    if (expectDirectory && !stat.isDirectory()) { const error = new Error('Directory not found'); error.statusCode = 404; throw error; }
+    if (!expectDirectory && !stat.isFile()) { const error = new Error('File not found'); error.statusCode = 404; throw error; }
+    return { rootReal, targetReal, stat, relativePath: path.relative(rootReal, targetReal) };
+}
+
+async function resolveMwebProjectWritePath(projectId, requestedPath) {
+    if (typeof requestedPath !== 'string' || requestedPath.indexOf('\0') !== -1) { const error = new Error('A valid project path is required'); error.statusCode = 400; throw error; }
+    const projectRoot = await projectsDb.getProjectPathById(projectId);
+    if (!projectRoot) { const error = new Error('Project not found'); error.statusCode = 404; throw error; }
+    const rootReal = await fsPromises.realpath(projectRoot);
+    const candidate = path.isAbsolute(requestedPath) ? path.resolve(requestedPath) : path.resolve(rootReal, requestedPath);
+    const lexicalRelative = path.relative(rootReal, candidate);
+    if (!lexicalRelative || lexicalRelative === '..' || lexicalRelative.startsWith('..' + path.sep) || path.isAbsolute(lexicalRelative) || lexicalRelative.split(path.sep).some(isMwebSecretSegment)) {
+        const error = new Error('This path cannot be written'); error.statusCode = 403; throw error;
+    }
+    const parentReal = await fsPromises.realpath(path.dirname(candidate));
+    if (parentReal !== rootReal && !parentReal.startsWith(rootReal + path.sep)) { const error = new Error('Path must be under project root'); error.statusCode = 403; throw error; }
+    try {
+        const existingReal = await fsPromises.realpath(candidate);
+        if (existingReal !== rootReal && !existingReal.startsWith(rootReal + path.sep)) { const error = new Error('Path must be under project root'); error.statusCode = 403; throw error; }
+        const lstat = await fsPromises.lstat(candidate);
+        if (lstat.isSymbolicLink()) { const error = new Error('Symbolic links cannot be written'); error.statusCode = 403; throw error; }
+    } catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+    }
+    return path.join(parentReal, path.basename(candidate));
+}
+
+function sendProjectFileError(res, error, fallback) {
+    if (error && error.statusCode) return res.status(error.statusCode).json({ error: error.message });
+    if (error && error.code === 'ENOENT') return res.status(404).json({ error: 'File not found' });
+    if (error && error.code === 'EACCES') return res.status(403).json({ error: 'Permission denied' });
+    return res.status(500).json({ error: fallback });
+}
+
 // Read file content endpoint
 app.get('/api/projects/:projectId/file', authenticateToken, async (req, res) => {
     try {
         const { projectId } = req.params;
-        const { filePath } = req.query;
+        const { filePath, path: litePath } = req.query;
+
+        if (typeof litePath === 'string') {
+            const resolvedLite = await resolveMwebProjectPath(projectId, litePath, false);
+            if (resolvedLite.stat.size > MWEB_FILE_MAX_BYTES) return res.status(413).json({ error: 'File is too large for CloudCLI Lite' });
+            const buffer = await fsPromises.readFile(resolvedLite.targetReal);
+            if (buffer.slice(0, 8192).includes(0)) return res.status(415).json({ error: 'Binary files cannot be opened in CloudCLI Lite' });
+            return res.json({ content: buffer.toString('utf8'), path: resolvedLite.relativePath, readOnly: true });
+        }
 
 
         // Security: ensure the requested path is inside the project root
@@ -785,33 +858,12 @@ app.get('/api/projects/:projectId/file', authenticateToken, async (req, res) => 
             return res.status(400).json({ error: 'Invalid file path' });
         }
 
-        // Resolve the absolute project root via the DB-backed helper; the
-        // caller passes the DB-assigned `projectId`, not a folder name.
-        const projectRoot = await projectsDb.getProjectPathById(projectId);
-        if (!projectRoot) {
-            return res.status(404).json({ error: 'Project not found' });
-        }
-
-        // Handle both absolute and relative paths
-        const resolved = path.isAbsolute(filePath)
-            ? path.resolve(filePath)
-            : path.resolve(projectRoot, filePath);
-        const normalizedRoot = path.resolve(projectRoot) + path.sep;
-        if (!resolved.startsWith(normalizedRoot)) {
-            return res.status(403).json({ error: 'Path must be under project root' });
-        }
-
-        const content = await fsPromises.readFile(resolved, 'utf8');
-        res.json({ content, path: resolved });
+        const resolved = await resolveMwebProjectPath(projectId, filePath, false, true);
+        const content = await fsPromises.readFile(resolved.targetReal, 'utf8');
+        res.json({ content, path: resolved.targetReal });
     } catch (error) {
         console.error('Error reading file:', error);
-        if (error.code === 'ENOENT') {
-            res.status(404).json({ error: 'File not found' });
-        } else if (error.code === 'EACCES') {
-            res.status(403).json({ error: 'Permission denied' });
-        } else {
-            res.status(500).json({ error: error.message });
-        }
+        sendProjectFileError(res, error, 'Failed to read file');
     }
 });
 
@@ -827,35 +879,14 @@ app.get('/api/projects/:projectId/files/content', authenticateToken, async (req,
             return res.status(400).json({ error: 'Invalid file path' });
         }
 
-        // Projects are now addressed by DB `projectId`, resolved to their path here.
-        const projectRoot = await projectsDb.getProjectPathById(projectId);
-        if (!projectRoot) {
-            return res.status(404).json({ error: 'Project not found' });
-        }
-
-        // Match the text reader endpoint so callers can pass either project-relative
-        // or absolute paths without changing how the bytes are served.
-        const resolved = path.isAbsolute(filePath)
-            ? path.resolve(filePath)
-            : path.resolve(projectRoot, filePath);
-        const normalizedRoot = path.resolve(projectRoot) + path.sep;
-        if (!resolved.startsWith(normalizedRoot)) {
-            return res.status(403).json({ error: 'Path must be under project root' });
-        }
-
-        // Check if file exists
-        try {
-            await fsPromises.access(resolved);
-        } catch (error) {
-            return res.status(404).json({ error: 'File not found' });
-        }
+        const resolved = await resolveMwebProjectPath(projectId, filePath, false, true);
 
         // Get file extension and set appropriate content type
-        const mimeType = mime.lookup(resolved) || 'application/octet-stream';
+        const mimeType = mime.lookup(resolved.targetReal) || 'application/octet-stream';
         res.setHeader('Content-Type', mimeType);
 
         // Stream the file
-        const fileStream = fs.createReadStream(resolved);
+        const fileStream = fs.createReadStream(resolved.targetReal);
         fileStream.pipe(res);
 
         fileStream.on('error', (error) => {
@@ -868,7 +899,7 @@ app.get('/api/projects/:projectId/files/content', authenticateToken, async (req,
     } catch (error) {
         console.error('Error serving binary file:', error);
         if (!res.headersSent) {
-            res.status(500).json({ error: error.message });
+            sendProjectFileError(res, error, 'Failed to serve file');
         }
     }
 });
@@ -889,20 +920,7 @@ app.put('/api/projects/:projectId/file', authenticateToken, async (req, res) => 
             return res.status(400).json({ error: 'Content is required' });
         }
 
-        // Projects are now addressed by DB `projectId`, resolved to their path here.
-        const projectRoot = await projectsDb.getProjectPathById(projectId);
-        if (!projectRoot) {
-            return res.status(404).json({ error: 'Project not found' });
-        }
-
-        // Handle both absolute and relative paths
-        const resolved = path.isAbsolute(filePath)
-            ? path.resolve(filePath)
-            : path.resolve(projectRoot, filePath);
-        const normalizedRoot = path.resolve(projectRoot) + path.sep;
-        if (!resolved.startsWith(normalizedRoot)) {
-            return res.status(403).json({ error: 'Path must be under project root' });
-        }
+        const resolved = await resolveMwebProjectWritePath(projectId, filePath);
 
         // Write the new content
         await fsPromises.writeFile(resolved, content, 'utf8');
@@ -914,18 +932,23 @@ app.put('/api/projects/:projectId/file', authenticateToken, async (req, res) => 
         });
     } catch (error) {
         console.error('Error saving file:', error);
-        if (error.code === 'ENOENT') {
-            res.status(404).json({ error: 'File or directory not found' });
-        } else if (error.code === 'EACCES') {
-            res.status(403).json({ error: 'Permission denied' });
-        } else {
-            res.status(500).json({ error: error.message });
-        }
+        sendProjectFileError(res, error, 'Failed to save file');
     }
 });
 
 app.get('/api/projects/:projectId/files', authenticateToken, async (req, res) => {
     try {
+
+        if (typeof req.query.path === 'string') {
+            const resolvedLite = await resolveMwebProjectPath(req.params.projectId, req.query.path, true);
+            const dirents = await fsPromises.readdir(resolvedLite.targetReal, { withFileTypes: true });
+            const entries = dirents
+                .filter((entry) => !isMwebSecretSegment(entry.name))
+                .map((entry) => ({ name: entry.name, path: path.join(resolvedLite.relativePath, entry.name).split(path.sep).join('/'), type: entry.isDirectory() ? 'directory' : (entry.isFile() ? 'file' : 'other') }))
+                .filter((entry) => entry.type !== 'other')
+                .sort((a, b) => (a.type === b.type ? a.name.localeCompare(b.name) : (a.type === 'directory' ? -1 : 1)));
+            return res.json({ path: resolvedLite.relativePath.split(path.sep).join('/'), entries, readOnly: true });
+        }
 
         // Using fsPromises from import
 
@@ -943,11 +966,24 @@ app.get('/api/projects/:projectId/files', authenticateToken, async (req, res) =>
             return res.status(404).json({ error: `Project path not found: ${actualPath}` });
         }
 
-        const files = await getFileTree(actualPath, 10, 0, true);
+        let includeEntry;
+        if (req.query.respectGitignore === 'true') {
+            let gitignoreContent = '';
+            try {
+                gitignoreContent = await fsPromises.readFile(path.join(actualPath, '.gitignore'), 'utf8');
+            } catch (error) {
+                if (error.code !== 'ENOENT') {
+                    console.warn('[file-tree] Unable to read project .gitignore:', error.message);
+                }
+            }
+            includeEntry = createGitignoreEntryFilter(actualPath, gitignoreContent);
+        }
+
+        const files = await getFileTree(actualPath, 10, 0, true, undefined, includeEntry);
         res.json(files);
     } catch (error) {
         console.error('[ERROR] File tree error:', error.message);
-        res.status(500).json({ error: error.message });
+        sendProjectFileError(res, error, 'Failed to list files');
     }
 });
 
@@ -1819,7 +1855,14 @@ function release() {
     activeFsOperations = Math.max(0, activeFsOperations - 1);
 }
 
-async function getFileTree(dirPath, maxDepth = 3, currentDepth = 0, showHidden = true, budget) {
+async function getFileTree(
+    dirPath,
+    maxDepth = 3,
+    currentDepth = 0,
+    showHidden = true,
+    budget,
+    includeEntry = () => true,
+) {
     // The budget is shared across the whole recursive call tree (created
     // once by the top-level caller) so it can bound total work regardless
     // of how wide or deep the directory structure turns out to be.
@@ -1854,7 +1897,12 @@ async function getFileTree(dirPath, maxDepth = 3, currentDepth = 0, showHidden =
         return [];
     }
 
-    const filteredEntries = entries.filter((entry) => !(entry.isDirectory() && IGNORED_DIRS.has(entry.name)));
+    const filteredEntries = entries.filter((entry) => {
+        if (entry.isDirectory() && IGNORED_DIRS.has(entry.name)) {
+            return false;
+        }
+        return includeEntry(path.join(dirPath, entry.name), entry.isDirectory());
+    });
 
     // Process every entry in parallel. On high-latency filesystems (NFS/SMB)
     // serial stat() was the real bottleneck — issuing them concurrently lets
@@ -1913,14 +1961,27 @@ async function getFileTree(dirPath, maxDepth = 3, currentDepth = 0, showHidden =
             item.permissionsRwx = '---------';
         }
 
-        if (entry.isDirectory() && currentDepth < maxDepth) {
+        // Skip recursing into pseudo-filesystems and other system-critical
+        // directories (e.g. /proc, /sys) — they're never valid project roots,
+        // and /proc in particular can contain thousands of virtual entries
+        // that make traversal from a broad root (e.g. "/") pathologically slow.
+        const isForbiddenSystemDir = FORBIDDEN_WORKSPACE_PATHS.includes(normalizeProjectPath(itemPath));
+
+        if (entry.isDirectory() && currentDepth < maxDepth && !isForbiddenSystemDir) {
             // Recurse. Let readdir's own EACCES bubble up through the catch in
             // the recursive call rather than doing a separate access() probe
             // (which doubled the round-trip count on SMB without adding info).
             // The recursive call starts with a bounded readdir; holding a permit
             // for the whole subtree can deadlock when sibling directories are
             // waiting on their own children.
-            item.children = await getFileTree(itemPath, maxDepth, currentDepth + 1, showHidden, budget);
+            item.children = await getFileTree(
+                itemPath,
+                maxDepth,
+                currentDepth + 1,
+                showHidden,
+                budget,
+                includeEntry,
+            );
         }
 
         return item;
@@ -2004,11 +2065,9 @@ async function startServer() {
             console.error('[CloudCLI] run/workspace reconciliation failed:', error.message);
         }
 
-        // Swarms own durable plans, attempts, workspaces, and execution leases,
-        // so they can resume after a process restart. Do not block server boot
-        // on provider work that may run for minutes.
+        // Agent Swarm is retired: abort leftover in-flight rows instead of resuming.
         void recoverActiveSwarms().catch((error) => {
-            console.error('[Swarm] boot recovery failed:', error.message);
+            console.error('[Swarm] retired abort on boot failed:', error.message);
         });
 
         // Fail any kanban runs left "running" by a previous process (crash/restart),

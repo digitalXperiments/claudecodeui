@@ -722,34 +722,11 @@ export const studioService = {
     await rm(dir, { recursive: true, force: true });
   },
 
-  async launchSwarm(projectId: string, prototypeId: string) {
-    const proto = await this.get(projectId, prototypeId);
-    assertNotBusy(proto);
-    const swarm = swarmService.start({
-      projectId,
-      goal: buildIdeatePrompt(proto),
-      agents: designStudioRoster(),
-      skills: ['clickable-prototype', ...proto.skills],
-      requirePlanApproval: false,
-      validateBeforePr: false,
-      prOnRedValidation: false,
-      parallelWriters: false,
-      stallTimeoutMs: 12 * 60 * 1000,
-      stepTimeoutMs: 18 * 60 * 1000,
-      stepMaxAttempts: 2,
-    });
-    await this.update(projectId, prototypeId, {
-      status: 'generating',
-      swarmId: swarm.swarm_id,
-      generation: {
-        kind: 'swarm',
-        startedAt: nowIso(),
-        message: proto.brief,
-        error: null,
-      },
-    });
-    watchSwarm(projectId, prototypeId, swarm.swarm_id);
-    return { swarmId: swarm.swarm_id, prototype: await this.get(projectId, prototypeId) };
+  async launchSwarm(_projectId: string, _prototypeId: string): Promise<{ swarmId: string; prototype: StudioPrototypeDetail }> {
+    throw new AppError(
+      'Agent Swarm is retired. Use Agent Relay from a provider chat, or iterate this prototype in Studio chat.',
+      { code: 'SWARM_RETIRED', statusCode: 410 },
+    );
   },
 
   async getTokens(projectId: string, id: string): Promise<StudioDesignTokens> {

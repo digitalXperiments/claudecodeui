@@ -30,7 +30,7 @@
     "dev": "concurrently --kill-others \"npm run server:dev\" \"npm run client\"",
     "predev:isolated": "node -e \"const f=require('node:fs');f.rmSync('tmp/cloudcli/dev-db',{recursive:true,force:true});f.mkdirSync('tmp/cloudcli/dev-db',{recursive:true})\"",
     "dev:isolated": "cross-env DATABASE_PATH=tmp/cloudcli/dev-db/auth.db node scripts/dev-isolated.mjs",
-    "server": "node dist-server/server/index.js",
+    "server": "node scripts/build-server.mjs recover && node dist-server/server/index.js",
     "server:dev": "tsx --tsconfig server/tsconfig.json server/index.js",
     "server:dev-watch": "tsx watch --tsconfig server/tsconfig.json server/index.js",
     "client": "vite",
@@ -203,7 +203,8 @@
     "tailwind-merge": "^3.3.1",
     "web-push": "^3.6.7",
     "ws": "^8.14.2",
-    "yaml": "^2.8.2"
+    "yaml": "^2.8.2",
+    "ignore": "^7.0.6"
   },
   "devDependencies": {
     "@commitlint/cli": "^20.5.0",

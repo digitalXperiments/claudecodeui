@@ -7,7 +7,6 @@ import {
   ChevronRight,
   FileCode2,
   FlaskConical,
-  Gauge,
   GitBranch,
   Info,
   Key,
@@ -21,7 +20,7 @@ import {
   Server,
   ShieldCheck,
   UserCog,
-  Waypoints,
+
   Webhook,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -55,8 +54,6 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { id: 'agents', labelKey: 'mainTabs.agents', fallbackLabel: 'Agents', keywords: 'providers login models permissions', icon: Bot },
       { id: 'agent-profiles', labelKey: 'mainTabs.agentProfiles', fallbackLabel: 'Agent profiles', keywords: 'presets roles swarm', icon: UserCog },
-      { id: 'model-registry', labelKey: 'mainTabs.modelProfiles', fallbackLabel: 'Model profiles', keywords: 'registry capabilities benchmarks staffing', icon: Gauge },
-      { id: 'agent-relay', labelKey: 'mainTabs.agentRelay', fallbackLabel: 'Agent Relay', keywords: 'delegate parallel cross-provider mcp skill sidekick opencode models allowlist whitelist', icon: Waypoints },
       { id: 'studio', labelKey: 'mainTabs.studio', fallbackLabel: 'Studio', keywords: 'design prototype', icon: Palette },
       { id: 'evals', labelKey: 'mainTabs.evals', fallbackLabel: 'Eval Center', keywords: 'tests evaluation quality', icon: FlaskConical },
     ],

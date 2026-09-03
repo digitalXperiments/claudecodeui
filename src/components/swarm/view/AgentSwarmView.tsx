@@ -1881,8 +1881,8 @@ export default function AgentSwarmView({
                 <div className="space-y-2">
                   <div className="rounded-lg border border-primary/20 bg-primary/5 px-3 py-2 text-[11px] leading-relaxed text-muted-foreground">
                     <span className="font-medium text-foreground">Auto roster: </span>
-                    pick a strong orchestrator model. Worker models come from Settings → Model
-                    profiles (enabled models on allowed providers). The swarm replans after each
+                    pick a strong orchestrator model. Worker models come from Agent Relay →
+                    Profiles (enabled models on allowed providers). The swarm replans after each
                     harvest — long-horizon by default.
                   </div>
                   <button
@@ -1891,12 +1891,12 @@ export default function AgentSwarmView({
                     onClick={() =>
                       window.dispatchEvent(
                         new CustomEvent('cloudcli:open-settings', {
-                          detail: { tab: 'model-registry' },
+                          detail: { tab: 'agent-relay' },
                         }),
                       )
                     }
                   >
-                    Enable or disable worker models in Settings → Model profiles
+                    Enable or disable worker models in Agent Relay → Profiles
                   </button>
                 </div>
               ) : (

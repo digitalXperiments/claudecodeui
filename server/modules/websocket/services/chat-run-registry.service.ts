@@ -9,6 +9,7 @@ import type {
   NormalizedMessage,
   RealtimeClientConnection,
 } from '@/shared/types.js';
+import { filterSkillBodyEvent } from '@/modules/websocket/services/chat-stream-filter.service.js';
 
 type ChatRunStatus = 'running' | 'completed';
 
@@ -37,6 +38,8 @@ type ChatRun = {
   startedAt: number;
   completedAt: number | null;
   onEvent?: (message: NormalizedMessage) => void;
+  /** Read calls whose SKILL.md result must be redacted when it arrives. */
+  skillReadToolIds: Set<string>;
 };
 
 /**
@@ -199,29 +202,34 @@ function evictRunLater(appSessionId: string): void {
  * 4. Flip the run to `completed` when the terminal `complete` event passes by.
  */
 function decorateAndRecordEvent(run: ChatRun, message: NormalizedMessage): NormalizedMessage | null {
+  const filteredMessage = filterSkillBodyEvent(message, run.skillReadToolIds);
+  if (!filteredMessage) {
+    return null;
+  }
+
   // Exactly-one-complete contract: when a run is aborted the chat handler
   // emits the terminal `complete` immediately, but the killed runtime may
   // still emit its own `complete` from its exit handler moments later.
   // Whichever arrives first wins; the duplicate is dropped here.
-  if (message.kind === 'complete' && run.status === 'completed') {
+  if (filteredMessage.kind === 'complete' && run.status === 'completed') {
     return null;
   }
 
   run.lastSeq += 1;
 
   const outbound: NormalizedMessage = {
-    ...message,
+    ...filteredMessage,
     sessionId: run.appSessionId,
     seq: run.lastSeq,
   };
 
-  if (message.kind === 'complete') {
+  if (filteredMessage.kind === 'complete') {
     // The provider may report its own id here; the frontend only ever knows
     // the app id, so the "actual" id is by definition the app id as well.
     outbound.actualSessionId = run.appSessionId;
     run.status = 'completed';
     run.completedAt = Date.now();
-    emitRunCompletion(run, message);
+    emitRunCompletion(run, filteredMessage);
     evictRunLater(run.appSessionId);
   }
 
@@ -319,6 +327,7 @@ export const chatRunRegistry = {
       startedAt: Date.now(),
       completedAt: null,
       onEvent: input.onEvent,
+      skillReadToolIds: new Set(),
     };
 
     run.writer = new ChatSessionWriter({
@@ -331,6 +340,13 @@ export const chatRunRegistry = {
       },
       decorateOutboundEvent: (message) => decorateAndRecordEvent(run, message),
     });
+
+    // An idle automated wake starts a fresh run after the previous lead turn
+    // completed. Preserve browser subscribers on that new run so the wake
+    // remains visible to the tab that was following the lead session.
+    if (existing?.status === 'completed') {
+      existing.writer.copyConnectionsTo(run.writer);
+    }
 
     runs.set(input.appSessionId, run);
     return run;

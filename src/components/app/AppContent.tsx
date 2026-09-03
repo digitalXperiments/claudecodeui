@@ -1,11 +1,10 @@
-import { useCallback, useEffect, useRef } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useRef } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 
 import Sidebar from '../sidebar/view/Sidebar';
 import { useSidebarResize } from '../sidebar/hooks/useSidebarResize';
 import MainContent from '../main-content/view/MainContent';
-import CommandPalette from '../command-palette/CommandPalette';
 import { useWebSocket } from '../../contexts/WebSocketContext';
 import { PaletteOpsProvider, usePaletteOpsRegister } from '../../contexts/PaletteOpsContext';
 import { useDeviceSettings } from '../../hooks/useDeviceSettings';
@@ -13,6 +12,8 @@ import { useSessionProtection } from '../../hooks/useSessionProtection';
 import { useProjectsState } from '../../hooks/useProjectsState';
 import { useQueuedMessageAutoSend } from '../../hooks/useQueuedMessageAutoSend';
 import { api } from '../../utils/api';
+
+const CommandPalette = lazy(() => import('../command-palette/CommandPalette'));
 
 type RunningSessionApiItem = {
   sessionId?: unknown;
@@ -349,14 +350,16 @@ function AppContentInner() {
         />
       </div>
 
-      <CommandPalette
-        projects={projects}
-        selectedProject={selectedProject}
-        onStartNewChat={handleNewSession}
-        onOpenSettings={openSettings}
-        onShowTab={setActiveTab}
-        onSelectProject={handleProjectSelect}
-      />
+      <Suspense fallback={null}>
+        <CommandPalette
+          projects={projects}
+          selectedProject={selectedProject}
+          onStartNewChat={handleNewSession}
+          onOpenSettings={openSettings}
+          onShowTab={setActiveTab}
+          onSelectProject={handleProjectSelect}
+        />
+      </Suspense>
     </div>
   );
 }

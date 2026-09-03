@@ -11,11 +11,37 @@ import type {
 } from '../../../../types/app';
 import { getIntrinsicMessageKey } from '../../utils/messageKeys';
 import { groupConsecutiveTools, isToolGroupItem } from '../../utils/toolGrouping';
+import { useLazyRowObserver } from '../../hooks/useLazyRowObserver';
 
 import MessageComponent from './MessageComponent';
 import ProviderSelectionEmptyState from './ProviderSelectionEmptyState';
 import ToolGroupContainer from './ToolGroupContainer';
 import LoadAllMessagesOverlay from './LoadAllMessagesOverlay';
+import LazyMessageRow from './LazyMessageRow';
+import ChatExportMenu from './ChatExportMenu';
+
+/**
+ * How many trailing rows mount their real content on first commit, so the
+ * initial scroll-to-bottom measures real heights instead of placeholder
+ * estimates. While a provider run is in flight the same tail stays
+ * force-mounted so growing rows are never swapped for placeholders.
+ */
+const INITIAL_MOUNTED_TAIL_ROWS = 30;
+
+/**
+ * Rows that are still growing or awaiting interaction must never lazy-unmount:
+ * a streaming assistant reply, a tool call whose result has not arrived yet
+ * (including one waiting on a permission prompt), an interactive prompt, or a
+ * subagent container that is still collecting child tools.
+ */
+function isLiveMessage(message: ChatMessage): boolean {
+  return Boolean(
+    message.isStreaming
+    || message.isInteractivePrompt
+    || (message.isToolUse && !message.toolResult)
+    || (message.isSubagentContainer && message.subagentState && !message.subagentState.isComplete),
+  );
+}
 
 interface ChatMessagesPaneProps {
   /**
@@ -82,6 +108,7 @@ interface ChatMessagesPaneProps {
   onFileOpen?: (filePath: string, diffInfo?: unknown) => void;
   onShowSettings?: () => void;
   onGrantToolPermission: (suggestion: { entry: string; toolName: string }) => { success: boolean };
+  onPrepareExport?: () => Promise<ChatMessage[]>;
   showRawParameters?: boolean;
   showThinking?: boolean;
   selectedProject: Project;
@@ -93,6 +120,7 @@ function ChatMessagesPane({
   onWheel,
   onTouchMove,
   isLoadingSessionMessages,
+  isProcessing = false,
   hasActivityIndicator = false,
   chatMessages,
   selectedSession,
@@ -144,11 +172,15 @@ function ChatMessagesPane({
   onFileOpen,
   onShowSettings,
   onGrantToolPermission,
+  onPrepareExport,
   showRawParameters,
   showThinking,
   selectedProject,
 }: ChatMessagesPaneProps) {
   const { t } = useTranslation('chat');
+  // One shared IntersectionObserver for every LazyMessageRow; null where
+  // IntersectionObserver is unavailable (tests), which keeps rows mounted.
+  const lazyRows = useLazyRowObserver(scrollContainerRef);
   const groupedVisibleMessages = useMemo(
     () => groupConsecutiveTools(visibleMessages, Boolean(showThinking)),
     [visibleMessages, showThinking],
@@ -198,6 +230,18 @@ function ChatMessagesPane({
         hasActivityIndicator ? 'pb-12 sm:pb-14' : 'pb-3 sm:pb-4'
       }`}
     >
+      {chatMessages.length > 0 && (
+        <div className="pointer-events-none sticky right-4 top-3 z-10 mb-2 flex justify-end px-4 sm:px-6">
+          <div className="pointer-events-auto">
+            <ChatExportMenu
+              messages={chatMessages}
+              sessionTitle={selectedSession?.title || selectedSession?.summary || selectedSession?.name}
+              onPrepareExport={onPrepareExport}
+              disabled={isLoadingAllMessages}
+            />
+          </div>
+        </div>
+      )}
       <div className="mx-auto w-full max-w-[54.25rem] space-y-3 px-4 sm:space-y-4">
       {isLoadingSessionMessages && chatMessages.length === 0 ? (
         <div className="mt-8 text-center text-gray-500 dark:text-gray-400">
@@ -294,34 +338,50 @@ function ChatMessagesPane({
 
           {(() => {
             let prevMessage: ChatMessage | null = null;
+            const rowCount = groupedVisibleMessages.length;
+            // While a run is in flight, everything in the tail band stays
+            // mounted — the growing thinking/stream/tool rows all live there.
+            const forcedTailStart = isProcessing
+              ? rowCount - INITIAL_MOUNTED_TAIL_ROWS
+              : Number.POSITIVE_INFINITY;
 
-            return groupedVisibleMessages.map((item) => {
+            return groupedVisibleMessages.map((item, index) => {
+              const initiallyNearViewport = index >= rowCount - INITIAL_MOUNTED_TAIL_ROWS;
+              const isInForcedTail = index >= forcedTailStart;
+
               if (isToolGroupItem(item)) {
                 const groupPrevMessage = prevMessage;
                 prevMessage = item.messages[item.messages.length - 1] || prevMessage;
 
                 return (
-                  <ToolGroupContainer
+                  <LazyMessageRow
                     key={`tool-group-${getMessageKey(item.messages[0])}`}
-                    group={item}
-                    prevMessage={groupPrevMessage}
-                    createDiff={createDiff}
-                    getMessageKey={getMessageKey}
-                    onFileOpen={onFileOpen}
-                    onShowSettings={onShowSettings}
-                    onGrantToolPermission={onGrantToolPermission}
-                    showRawParameters={showRawParameters}
-                    showThinking={showThinking}
-                    selectedProject={selectedProject}
-                    provider={provider}
-                  />
+                    lazyRows={lazyRows}
+                    timestamp={item.timestamp}
+                    initiallyNearViewport={initiallyNearViewport}
+                    forceMounted={isInForcedTail || item.messages.some(isLiveMessage)}
+                  >
+                    <ToolGroupContainer
+                      group={item}
+                      prevMessage={groupPrevMessage}
+                      createDiff={createDiff}
+                      getMessageKey={getMessageKey}
+                      onFileOpen={onFileOpen}
+                      onShowSettings={onShowSettings}
+                      onGrantToolPermission={onGrantToolPermission}
+                      showRawParameters={showRawParameters}
+                      showThinking={showThinking}
+                      selectedProject={selectedProject}
+                      provider={provider}
+                    />
+                  </LazyMessageRow>
                 );
               }
 
               const messagePrevMessage = prevMessage;
               prevMessage = item;
 
-              return (
+              const messageElement = (
                 <MessageComponent
                   key={getMessageKey(item)}
                   message={item}
@@ -335,6 +395,24 @@ function ChatMessagesPane({
                   selectedProject={selectedProject}
                   provider={provider}
                 />
+              );
+
+              // Hidden thinking rows render null; wrapping them would leave an
+              // empty spacer div (space-y margins) or a phantom placeholder.
+              if (item.isThinking && !showThinking) {
+                return messageElement;
+              }
+
+              return (
+                <LazyMessageRow
+                  key={getMessageKey(item)}
+                  lazyRows={lazyRows}
+                  timestamp={item.timestamp}
+                  initiallyNearViewport={initiallyNearViewport}
+                  forceMounted={isInForcedTail || isLiveMessage(item)}
+                >
+                  {messageElement}
+                </LazyMessageRow>
               );
             });
           })()}

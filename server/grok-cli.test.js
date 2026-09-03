@@ -6,6 +6,7 @@ import {
   emitGrokPromptCompletion,
   resolveGrokPromptCompletion,
   shouldDeferGrokIdleCleanup,
+  grokRelayWorkerSkipsManagedGateway,
 } from './grok-cli.js';
 
 const createWriter = (messages) => ({
@@ -74,6 +75,11 @@ test('idle cleanup is deferred while a Grok prompt is in flight', () => {
   assert.equal(shouldDeferGrokIdleCleanup({ inFlightPrompt: true }), true);
   assert.equal(shouldDeferGrokIdleCleanup({ inFlightPrompt: false }), false);
   assert.equal(shouldDeferGrokIdleCleanup(null), false);
+});
+
+test('Grok relay workers skip grok.com managed-gateway MCP wait and hint', () => {
+  assert.equal(grokRelayWorkerSkipsManagedGateway(true), true);
+  assert.equal(grokRelayWorkerSkipsManagedGateway(false), false);
 });
 
 test('unanswered unattended Grok permission produces an actionable timeout cause', () => {

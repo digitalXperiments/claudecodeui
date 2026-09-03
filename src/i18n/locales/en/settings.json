@@ -199,7 +199,7 @@
       "title": "Surfaces",
       "kanban": {
         "label": "Kanban board",
-        "description": "Show the Kanban rail button, panel, and Mission Control → board bridge. Off hides it completely."
+        "description": "Show the Kanban rail button, panel, and Action Centre → board bridge. Off hides it completely."
       }
     },
     "spend": {

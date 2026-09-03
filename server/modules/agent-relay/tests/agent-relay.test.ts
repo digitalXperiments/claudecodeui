@@ -3,10 +3,10 @@ import { mkdir, rm } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
 
-import { agentRelayDb } from '@/modules/agent-relay/agent-relay.repository.js';
-import { agentRelayService, allowedWorkerModelsFor, configureAgentRelayRuntimes, providerHonorsRelayMcpGrants, providerSupportsReadOnlyRelay, relayPermissionMode, resolveCatalogModelId, resolveRelayModelIdentity, resolveRelayWorkerModel, sanitizeWorkerMcpServers } from '@/modules/agent-relay/index.js';
+import { agentRelayDb, agentRelayService, allowedWorkerModelsFor, catalogEffortValuesForModel, configureAgentRelayRuntimes, configureRelayModelRegistry, providerHonorsRelayMcpGrants, providerSupportsReadOnlyRelay, relayPermissionMode, resolveAgentRelayMcpScope, resolveCatalogModelId, resolveRelayEffort, resolveRelayModelIdentity, resolveRelayWorkerModel, sanitizeWorkerMcpServers } from '@/modules/agent-relay/index.js';
 import { appConfigDb, closeConnection, getConnection, initializeDatabase, projectsDb, sessionsDb } from '@/modules/database/index.js';
 import { providerModelsService, sessionsService } from '@/modules/providers/index.js';
+import { upsertModelCapability } from '@/modules/swarm/index.js';
 import { runService } from '@/modules/runs/index.js';
 import { chatRunRegistry } from '@/modules/websocket/index.js';
 import { newRelayBatchId, newRelayJobId } from '@/shared/ids.js';
@@ -126,7 +126,7 @@ test('Agent Relay dispatches a fresh internal provider session and returns struc
     assert.equal(completed.runtime_resolved_model, 'claude-runtime-model');
     assert.equal(completed.model_selection_source, 'requested');
     assert.equal(completed.effort, 'high');
-    assert.equal(seenOptions[0]?.model, 'default');
+    assert.equal(seenOptions[0]?.model, 'claude-runtime-model');
     assert.equal(seenOptions[0]?.effort, 'high');
     assert.equal(seenOptions[0]?.permissionMode, 'plan');
     assert.equal(seenOptions[0]?.relayWorker, true);
@@ -403,17 +403,132 @@ test('the relay panel shows a batch when viewing any one worker session', async 
   }
 });
 
+test('HTTP MCP scope prefers bound lead id and rejects internal body claims', async () => {
+  const previousDatabasePath = process.env.DATABASE_PATH;
+  const root = await makeScratchDir('agent-relay-mcp-scope-');
+  closeConnection();
+  process.env.DATABASE_PATH = path.join(root, 'auth.db');
+  await initializeDatabase();
+  try {
+    const project = projectsDb.createProjectPath(path.join(root, 'project')).project!;
+    const lead = sessionsService.createAppSession('claude', project.project_path).sessionId;
+    const other = sessionsService.createAppSession('claude', project.project_path).sessionId;
+    const worker = sessionsService.createAppSession('claude', project.project_path, { internal: true }).sessionId;
+
+    assert.deepEqual(
+      resolveAgentRelayMcpScope({ headers: { 'x-cloudcli-lead-session-id': lead } }, { sourceSessionId: other }),
+      { sourceSessionId: lead },
+    );
+    assert.deepEqual(
+      resolveAgentRelayMcpScope({ headers: {} }, { sourceSessionId: lead }),
+      { sourceSessionId: null },
+    );
+    assert.deepEqual(
+      resolveAgentRelayMcpScope({ headers: { 'x-cloudcli-lead-session-id': worker } }, { sourceSessionId: lead }),
+      { sourceSessionId: null },
+    );
+    assert.deepEqual(
+      resolveAgentRelayMcpScope({ headers: { 'x-cloudcli-lead-session-id': 'missing-session' } }, {}),
+      { sourceSessionId: null },
+    );
+
+    const relayId = newRelayJobId();
+    agentRelayDb.create({
+      relayId,
+      batchId: newRelayBatchId(),
+      projectId: project.project_id,
+      projectPath: project.project_path,
+      sourceSessionId: lead,
+      provider: 'claude',
+      mode: 'read_only',
+      task: 'move me',
+      prompt: 'move me',
+      mcpServers: [],
+      timeoutMs: 60_000,
+    });
+    assert.equal(agentRelayService.rehomeSourceSession(lead, other), 1);
+    assert.equal(agentRelayService.get(relayId)?.source_session_id, other);
+  } finally {
+    closeConnection();
+    if (previousDatabasePath === undefined) delete process.env.DATABASE_PATH;
+    else process.env.DATABASE_PATH = previousDatabasePath;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('resolveRelayWorkerModel enforces the Settings allowlist', () => {
-  const restricted = { allowedWorkerModels: { claude: ['cheap-model', 'strong-model'] } };
-  assert.deepEqual(allowedWorkerModelsFor(restricted, 'claude'), ['cheap-model', 'strong-model']);
-  assert.equal(allowedWorkerModelsFor({ allowedWorkerModels: {} }, 'claude'), null);
-  assert.equal(resolveRelayWorkerModel(restricted, 'claude', null, 'strong-model'), 'strong-model');
-  assert.equal(resolveRelayWorkerModel(restricted, 'claude', 'cheap-model'), 'cheap-model');
-  assert.equal(resolveRelayWorkerModel(restricted, 'claude', null), 'cheap-model');
-  assert.throws(() => resolveRelayWorkerModel(restricted, 'claude', 'secret-model'), /not allowlisted/);
-  assert.equal(resolveRelayWorkerModel({ allowedWorkerModels: {} }, 'claude', null, 'catalog-default'), 'catalog-default');
-  assert.equal(resolveRelayWorkerModel({ allowedWorkerModels: {} }, 'claude', null), null);
-  assert.equal(resolveRelayWorkerModel({ allowedWorkerModels: {} }, 'claude', 'any-model'), 'any-model');
+  configureRelayModelRegistry(() => null);
+  try {
+    const restricted = { allowedWorkerModels: { claude: ['cheap-model', 'strong-model'] } };
+    assert.deepEqual(allowedWorkerModelsFor(restricted, 'claude'), ['cheap-model', 'strong-model']);
+    assert.equal(allowedWorkerModelsFor({ allowedWorkerModels: {} }, 'claude'), null);
+    assert.equal(resolveRelayWorkerModel(restricted, 'claude', null, 'strong-model'), 'strong-model');
+    assert.equal(resolveRelayWorkerModel(restricted, 'claude', 'cheap-model'), 'cheap-model');
+    assert.equal(resolveRelayWorkerModel(restricted, 'claude', null), 'cheap-model');
+    assert.throws(() => resolveRelayWorkerModel(restricted, 'claude', 'secret-model'), /not allowlisted/);
+    assert.equal(resolveRelayWorkerModel({ allowedWorkerModels: {} }, 'claude', null, 'catalog-default'), 'catalog-default');
+    assert.equal(resolveRelayWorkerModel({ allowedWorkerModels: {} }, 'claude', null), null);
+    assert.equal(resolveRelayWorkerModel({ allowedWorkerModels: {} }, 'claude', 'any-model'), 'any-model');
+  } finally {
+    configureRelayModelRegistry(null);
+  }
+});
+
+test('Agent Relay intersects Settings allowlist with enabled Model profiles', async () => {
+  const previousDatabasePath = process.env.DATABASE_PATH;
+  const root = await makeScratchDir('agent-relay-registry-intersect-');
+  closeConnection();
+  process.env.DATABASE_PATH = path.join(root, 'auth.db');
+  await initializeDatabase();
+
+  const sample = (modelId: string, enabled: boolean) => ({
+    modelId,
+    provider: 'claude' as const,
+    displayName: modelId,
+    contextWindow: 200_000,
+    maxContextWindow: null,
+    officialContextWindow: null,
+    inputCostPerMtok: 1,
+    outputCostPerMtok: 5,
+    codingScore: 0.8,
+    agenticScore: 0.7,
+    longContextScore: 0.6,
+    speedScore: 0.5,
+    confidence: 0.8,
+    sources: ['test'],
+    aliases: [] as string[],
+    assessmentKind: 'heuristic' as const,
+    fetchedAt: new Date().toISOString(),
+    enabled,
+  });
+
+  try {
+    getConnection().prepare('DELETE FROM model_capabilities').run();
+    upsertModelCapability(sample('cheap-model', true));
+    upsertModelCapability(sample('strong-model', true));
+    upsertModelCapability(sample('secret-model', false));
+
+    const unrestricted = { allowedWorkerModels: {} };
+    assert.deepEqual(
+      allowedWorkerModelsFor(unrestricted, 'claude')?.sort(),
+      ['cheap-model', 'strong-model'],
+    );
+    assert.equal(allowedWorkerModelsFor(unrestricted, 'codex'), null);
+
+    const explicit = { allowedWorkerModels: { claude: ['cheap-model', 'secret-model', 'ghost-model'] } };
+    assert.deepEqual(allowedWorkerModelsFor(explicit, 'claude'), ['cheap-model']);
+    assert.throws(
+      () => resolveRelayWorkerModel(explicit, 'claude', 'secret-model'),
+      /not allowlisted/,
+    );
+    assert.equal(resolveRelayWorkerModel(explicit, 'claude', 'cheap-model'), 'cheap-model');
+    assert.equal(resolveRelayWorkerModel(unrestricted, 'claude', null, 'strong-model'), 'strong-model');
+  } finally {
+    closeConnection();
+    if (previousDatabasePath === undefined) delete process.env.DATABASE_PATH;
+    else process.env.DATABASE_PATH = previousDatabasePath;
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test('Relay model identity preserves defaults, aliases, and provider-qualified OpenCode ids', () => {
@@ -518,6 +633,8 @@ test('resolveCatalogModelId redirects the retired NVIDIA deepseek-v4-flash id to
 });
 
 test('Unknown relay models fail with a 400 and catalog suggestions even when unrestricted', () => {
+  configureRelayModelRegistry(() => null);
+  try {
   assert.throws(
     () => resolveCatalogModelId('opencode', 'nvidia/deepseek-v9-turbo', NVIDIA_CATALOG),
     (error: unknown) => {
@@ -549,6 +666,9 @@ test('Unknown relay models fail with a 400 and catalog suggestions even when unr
     () => resolveRelayModelIdentity({ allowedWorkerModels: {} }, 'opencode', 'made-up-model', NVIDIA_CATALOG),
     /not in the opencode model catalog/,
   );
+  } finally {
+    configureRelayModelRegistry(null);
+  }
 });
 
 test('Agent Relay capabilities and dispatch honor the worker model allowlist', async () => {
@@ -653,6 +773,95 @@ test('relay workers never bypass the permission envelope or inherit the relay MC
     sanitizeWorkerMcpServers(['obsidian', 'cloudcli-agent-relay', 'browser']),
     ['obsidian', 'browser'],
   );
+});
+
+test('resolveRelayEffort rejects values missing from the catalog', () => {
+  const catalog = {
+    DEFAULT: 'default',
+    OPTIONS: [{
+      value: 'default',
+      label: 'Default',
+      effort: { default: 'medium', values: [{ value: 'low' }, { value: 'high' }] },
+    }],
+  };
+  assert.deepEqual(catalogEffortValuesForModel(catalog, 'default'), ['low', 'high']);
+  assert.equal(resolveRelayEffort('high', catalog, 'default'), 'high');
+  assert.equal(resolveRelayEffort('default', catalog, 'default'), null);
+  assert.equal(resolveRelayEffort('max', { DEFAULT: 'x', OPTIONS: [{ value: 'x', label: 'x' }] }, 'x'), 'max');
+  assert.throws(
+    () => resolveRelayEffort('max', catalog, 'default'),
+    /Effort "max" is not in the catalog/,
+  );
+});
+
+test('auto provider pick skips Cursor for read_only and still allows explicit isolated_write', async () => {
+  const previousDatabasePath = process.env.DATABASE_PATH;
+  const root = await makeScratchDir('agent-relay-auto-provider-');
+  const projectPath = path.join(root, 'project');
+  closeConnection();
+  process.env.DATABASE_PATH = path.join(root, 'auth.db');
+  await initializeDatabase();
+  await mkdir(projectPath, { recursive: true });
+  const originalGetProviderModels = providerModelsService.getProviderModels;
+  providerModelsService.getProviderModels = async (provider: string) => ({
+    models: {
+      DEFAULT: `${provider}-default`,
+      OPTIONS: [{ value: `${provider}-default`, label: `${provider} default` }],
+    },
+    cache: { updatedAt: new Date().toISOString(), expiresAt: new Date().toISOString(), source: 'fresh' },
+  });
+  configureAgentRelayRuntimes({
+    claude: async (_command, _options, writer) => {
+      const relayWriter = writer as { setSessionId: (id: string) => void; send: (message: unknown) => void };
+      relayWriter.setSessionId('relay-claude');
+      relayWriter.send({ kind: 'complete', provider: 'claude', exitCode: 0, success: true });
+    },
+    cursor: async (_command, _options, writer) => {
+      const relayWriter = writer as { setSessionId: (id: string) => void; send: (message: unknown) => void };
+      relayWriter.setSessionId('relay-cursor');
+      relayWriter.send({ kind: 'complete', provider: 'cursor', exitCode: 0, success: true });
+    },
+  }, {});
+  try {
+    appConfigDb.set('agent_relay.settings', JSON.stringify({
+      enabled: true,
+      leadProviders: ['claude'],
+      workerProviders: ['cursor', 'claude'],
+      maxConcurrency: 2,
+      defaultTimeoutMs: 60_000,
+      defaultMode: 'read_only',
+      installSkill: false,
+    }));
+    const autoRead = await agentRelayService.submitBatch({
+      projectPath,
+      tasks: [{ task: 'Scout the repo without a provider.' }],
+    });
+    assert.equal(autoRead.jobs[0]?.provider, 'claude');
+    assert.equal(autoRead.jobs[0]?.mode, 'read_only');
+
+    await assert.rejects(
+      () => agentRelayService.submitBatch({
+        projectPath,
+        tasks: [{ task: 'Cursor cannot be read-only.', provider: 'cursor', mode: 'read_only' }],
+      }),
+      /does not expose a host-enforceable read-only/,
+    );
+
+    const write = await agentRelayService.submitBatch({
+      projectPath,
+      tasks: [{ task: 'Cursor may write when chosen.', provider: 'cursor', mode: 'isolated_write' }],
+    });
+    assert.equal(write.jobs[0]?.provider, 'cursor');
+    assert.equal(write.jobs[0]?.mode, 'isolated_write');
+  } finally {
+    providerModelsService.getProviderModels = originalGetProviderModels;
+    configureAgentRelayRuntimes({}, {});
+    chatRunRegistry.clearAll();
+    closeConnection();
+    if (previousDatabasePath === undefined) delete process.env.DATABASE_PATH;
+    else process.env.DATABASE_PATH = previousDatabasePath;
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test('Agent Relay honors the project monthly run budget before queueing work', async () => {
@@ -775,7 +984,7 @@ test('workerProfiles persist, sanitize junk, fill and intersect MCP grants', asy
     });
     assert.deepEqual(persisted.workerProfiles.claude?.mcpServers, ['obsidian', 'browser']);
     assert.deepEqual(persisted.workerProfiles.grok?.mcpServers, ['obsidian', 'notes']);
-    assert.equal(persisted.workerProfiles.notAProvider, undefined);
+    assert.equal(Object.prototype.hasOwnProperty.call(persisted.workerProfiles, 'notAProvider'), false);
 
     const filledClaude = await agentRelayService.submitBatch({
       projectPath,
@@ -805,6 +1014,111 @@ test('workerProfiles persist, sanitize junk, fill and intersect MCP grants', asy
   } finally {
     providerModelsService.getProviderModels = originalGetProviderModels;
     configureAgentRelayRuntimes({}, {});
+    chatRunRegistry.clearAll();
+    closeConnection();
+    if (previousDatabasePath === undefined) delete process.env.DATABASE_PATH;
+    else process.env.DATABASE_PATH = previousDatabasePath;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('Agent Relay MCP scope ignores body sourceSessionId and requires a live interactive header', async () => {
+  const previousDatabasePath = process.env.DATABASE_PATH;
+  const root = await makeScratchDir('agent-relay-mcp-scope-');
+  closeConnection();
+  process.env.DATABASE_PATH = path.join(root, 'auth.db');
+  await initializeDatabase();
+  try {
+    const { resolveAgentRelayMcpScope } = await import('@/modules/agent-relay/agent-relay.routes.js');
+    const lead = sessionsService.createAppSession('claude', root).sessionId;
+    const worker = sessionsService.createAppSession('claude', root, { internal: true }).sessionId;
+    assert.equal(resolveAgentRelayMcpScope({ headers: {} }, { sourceSessionId: lead }).sourceSessionId, null);
+    assert.equal(
+      resolveAgentRelayMcpScope({ headers: { 'x-cloudcli-lead-session-id': lead } }, { sourceSessionId: worker }).sourceSessionId,
+      lead,
+    );
+    assert.equal(
+      resolveAgentRelayMcpScope({ headers: { 'x-cloudcli-lead-session-id': worker } }, {}).sourceSessionId,
+      null,
+    );
+    assert.equal(
+      resolveAgentRelayMcpScope({ headers: { 'x-cloudcli-lead-session-id': 'missing' } }, {}).sourceSessionId,
+      null,
+    );
+  } finally {
+    closeConnection();
+    if (previousDatabasePath === undefined) delete process.env.DATABASE_PATH;
+    else process.env.DATABASE_PATH = previousDatabasePath;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('Agent Relay purges terminal jobs older than the retention window', async () => {
+  const previousDatabasePath = process.env.DATABASE_PATH;
+  const root = await makeScratchDir('agent-relay-purge-');
+  const projectPath = path.join(root, 'project');
+  closeConnection();
+  process.env.DATABASE_PATH = path.join(root, 'auth.db');
+  await initializeDatabase();
+  await mkdir(projectPath, { recursive: true });
+  appConfigDb.set('agent_relay.settings', JSON.stringify({
+    enabled: false,
+    leadProviders: ['claude'],
+    workerProviders: ['claude'],
+    maxConcurrency: 1,
+    defaultTimeoutMs: 60_000,
+    defaultMode: 'read_only',
+    installSkill: true,
+  }));
+  try {
+    const project = projectsDb.createProjectPath(projectPath).project!;
+    const makeJob = (task: string) => agentRelayDb.create({
+      relayId: newRelayJobId(),
+      batchId: newRelayBatchId(),
+      projectId: project.project_id,
+      projectPath,
+      provider: 'claude',
+      mode: 'read_only',
+      task,
+      prompt: task,
+      mcpServers: [],
+      timeoutMs: 60_000,
+    });
+    const oldJob = makeJob('Old completed job.');
+    const freshJob = makeJob('Fresh completed job.');
+    const runningJob = makeJob('Still running job.');
+    agentRelayDb.finish(oldJob.relay_id, 'completed', {});
+    agentRelayDb.finish(freshJob.relay_id, 'completed', {});
+    getConnection().prepare(`
+      UPDATE agent_relay_jobs SET finished_at = datetime('now', '-20 days'), updated_at = datetime('now', '-20 days')
+      WHERE relay_id = ?
+    `).run(oldJob.relay_id);
+    getConnection().prepare(`
+      UPDATE agent_relay_jobs SET status = 'running', started_at = datetime('now', '-20 days'),
+        updated_at = datetime('now', '-20 days'), finished_at = NULL
+      WHERE relay_id = ?
+    `).run(runningJob.relay_id);
+    agentRelayDb.createApproval({
+      approvalId: `appr_${oldJob.relay_id}`,
+      relayId: oldJob.relay_id,
+      requestId: `req_${oldJob.relay_id}`,
+      toolName: 'Bash',
+      command: null,
+      paths: [],
+      cwd: null,
+      reason: 'stale',
+    });
+
+    const result = await agentRelayService.purgeExpiredJobs(14);
+    assert.equal(result.jobsDeleted, 1);
+    assert.equal(agentRelayDb.get(oldJob.relay_id), null);
+    assert.ok(agentRelayDb.get(freshJob.relay_id));
+    assert.equal(agentRelayDb.get(runningJob.relay_id)?.status, 'running');
+    assert.equal(
+      (getConnection().prepare('SELECT COUNT(*) AS n FROM agent_relay_approvals WHERE relay_id = ?').get(oldJob.relay_id) as { n: number }).n,
+      0,
+    );
+  } finally {
     chatRunRegistry.clearAll();
     closeConnection();
     if (previousDatabasePath === undefined) delete process.env.DATABASE_PATH;

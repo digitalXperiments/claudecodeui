@@ -88,7 +88,7 @@ export const authenticatedFetch = (url, options = {}) => {
  * returns its id plus the prompt the new session should start with.
  *
  * POST /api/providers/sessions/:sessionId/handoff
- * body: { targetProvider, targetModel?, mode: 'summary'|'full'|'fresh', saveToFile?, saveToMemory? }
+ * body: { targetProvider, targetModel?, permissionMode?, mode: 'summary'|'full'|'fresh', saveToFile?, saveToMemory? }
  * 200 data: { sessionId, provider, projectPath, handoffPrompt, handoffFilePath?, backupFilePath? }
  * In `summary` mode, `handoffPrompt` carries an LLM-generated summary of the
  * full transcript (not a naive truncation); `backupFilePath` points at the
@@ -96,7 +96,7 @@ export const authenticatedFetch = (url, options = {}) => {
  * Errors: 404 unknown source session, 400 invalid target/mode.
  *
  * @param {string} sessionId current app session id (the handoff source)
- * @param {{ targetProvider: string, targetModel?: string, mode: 'summary'|'full'|'fresh', saveToFile?: boolean, saveToMemory?: boolean }} body
+ * @param {{ targetProvider: string, targetModel?: string, permissionMode?: string, mode: 'summary'|'full'|'fresh', saveToFile?: boolean, saveToMemory?: boolean }} body
  * @returns {Promise<{ sessionId: string, provider: string, projectPath: string, handoffPrompt: string|null, handoffFilePath?: string, backupFilePath?: string }>}
  */
 export const createSessionHandoff = async (sessionId, body) => {
@@ -241,6 +241,10 @@ export const api = {
   },
   getArchivedSessions: () =>
     authenticatedFetch('/api/providers/sessions/archived'),
+  // Resolves one session (by app id or provider-native id) to its metadata and
+  // owning project — used when a /session/<id> URL is not in loaded payloads.
+  sessionDetails: (sessionId) =>
+    authenticatedFetch(`/api/providers/sessions/${encodeURIComponent(sessionId)}`),
   runningSessions: () =>
     authenticatedFetch('/api/providers/sessions/running'),
   restoreSession: (sessionId) =>
@@ -319,6 +323,8 @@ export const api = {
     }),
   getFiles: (projectId, options = {}) =>
     authenticatedFetch(`/api/projects/${projectId}/files`, options),
+  getMentionableFiles: (projectId, options = {}) =>
+    authenticatedFetch(`/api/projects/${projectId}/files?respectGitignore=true`, options),
 
   // File operations
   createFile: (projectId, { path, type, name }) =>

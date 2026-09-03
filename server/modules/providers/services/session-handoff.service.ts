@@ -7,6 +7,7 @@ import spawn from 'cross-spawn';
 import { sessionsDb } from '@/modules/database/index.js';
 import { kanbanDb } from '@/modules/kanban/index.js';
 import { sessionSummarizerService } from '@/modules/providers/services/session-summarizer.service.js';
+import { providerCapabilitiesService } from '@/modules/providers/services/provider-capabilities.service.js';
 import { sessionsService } from '@/modules/providers/services/sessions.service.js';
 import type { LLMProvider, NormalizedMessage } from '@/shared/types.js';
 import { AppError } from '@/shared/utils.js';
@@ -33,17 +34,21 @@ export type CreateHandoffSessionInput = {
   sourceSessionId: string;
   targetProvider: LLMProvider;
   targetModel?: string | null;
+  permissionMode?: string | null;
   mode?: SessionHandoffMode;
   saveToFile?: boolean;
   saveToMemory?: boolean;
   includeGitState?: boolean;
   includeKanbanState?: boolean;
+  /** Default true. Second-opinion side sessions keep jobs on the original lead. */
+  rehomeRelayJobs?: boolean;
 };
 
 export type ReverseHandoffInput = {
   sessionId: string;
   targetProvider?: LLMProvider;
   targetModel?: string | null;
+  permissionMode?: string | null;
   mode?: SessionHandoffMode;
   saveToFile?: boolean;
   saveToMemory?: boolean;
@@ -55,6 +60,7 @@ export type MergeSessionsInput = {
   sessionIds: string[];
   targetProvider?: LLMProvider;
   targetModel?: string | null;
+  permissionMode?: string | null;
   mode?: SessionHandoffMode;
   saveToFile?: boolean;
   saveToMemory?: boolean;
@@ -461,6 +467,7 @@ type MergedSession = {
   sessionId: string;
   provider: string;
   projectPath: string;
+  permissionMode: string | null;
   messages: NormalizedMessage[];
 };
 
@@ -547,8 +554,15 @@ const createContinuationSession = (
   provider: LLMProvider,
   projectPath: string,
   continuedFromSessionId: string,
+  permissionMode: string | null,
 ): { sessionId: string; provider: LLMProvider; projectPath: string } => {
-  const appSession = sessionsService.createAppSession(provider, projectPath);
+  const capabilities = providerCapabilitiesService.getProviderCapabilities(provider);
+  const resolvedPermissionMode = permissionMode && capabilities.permissionModes.includes(permissionMode)
+    ? permissionMode
+    : capabilities.defaultPermissionMode;
+  const appSession = sessionsService.createAppSession(provider, projectPath, {
+    permissionMode: resolvedPermissionMode,
+  });
   sessionsDb.setContinuedFrom(appSession.sessionId, continuedFromSessionId);
   return appSession;
 };
@@ -687,8 +701,18 @@ export const sessionHandoffService = {
       }
     }
 
-    const appSession = sessionsService.createAppSession(input.targetProvider, projectPath);
+    const targetCapabilities = providerCapabilitiesService.getProviderCapabilities(input.targetProvider);
+    const requestedPermissionMode = input.permissionMode ?? sourceSession.permission_mode;
+    const permissionMode = requestedPermissionMode && targetCapabilities.permissionModes.includes(requestedPermissionMode)
+      ? requestedPermissionMode
+      : targetCapabilities.defaultPermissionMode;
+    const appSession = sessionsService.createAppSession(input.targetProvider, projectPath, { permissionMode });
     sessionsDb.setContinuedFrom(appSession.sessionId, input.sourceSessionId);
+
+    if (input.rehomeRelayJobs !== false) {
+      const { agentRelayService } = await import('@/modules/agent-relay/index.js');
+      agentRelayService.rehomeSourceSession(input.sourceSessionId, appSession.sessionId);
+    }
 
     const handoffPrompt = markdown === null
       ? null
@@ -720,16 +744,19 @@ export const sessionHandoffService = {
     sourceSessionId: string;
     targetProvider: LLMProvider;
     targetModel?: string | null;
+    permissionMode?: string | null;
   }): Promise<CreateHandoffSessionResult> {
     const result = await sessionHandoffService.createHandoffSession({
       sourceSessionId: input.sourceSessionId,
       targetProvider: input.targetProvider,
       targetModel: input.targetModel,
+      permissionMode: input.permissionMode,
       mode: 'summary',
       saveToFile: false,
       saveToMemory: false,
       includeGitState: true,
       includeKanbanState: false,
+      rehomeRelayJobs: false,
     });
     const body = result.handoffPrompt?.trim() || 'Review the current session and git state.';
     return {
@@ -836,7 +863,12 @@ export const sessionHandoffService = {
       }
     }
 
-    const appSession = createContinuationSession(targetProvider, projectPath, input.sessionId);
+    const appSession = createContinuationSession(
+      targetProvider,
+      projectPath,
+      input.sessionId,
+      input.permissionMode ?? sourceSession.permission_mode,
+    );
 
     const handoffPrompt = markdown === null
       ? null
@@ -892,7 +924,13 @@ export const sessionHandoffService = {
         limit: null,
         offset: 0,
       });
-      resolved.push({ sessionId: session.session_id, provider: session.provider, projectPath, messages });
+      resolved.push({
+        sessionId: session.session_id,
+        provider: session.provider,
+        projectPath,
+        permissionMode: session.permission_mode,
+        messages,
+      });
     }
 
     const projectPaths = new Set(resolved.map((s) => s.projectPath));
@@ -949,7 +987,12 @@ export const sessionHandoffService = {
       }
     }
 
-    const appSession = createContinuationSession(targetProvider, projectPath, resolved[0].sessionId);
+    const appSession = createContinuationSession(
+      targetProvider,
+      projectPath,
+      resolved[0].sessionId,
+      input.permissionMode ?? resolved[0].permissionMode,
+    );
 
     const handoffPrompt = markdown === null
       ? null

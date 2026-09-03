@@ -1,29 +1,34 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { lazy, Suspense, useCallback, useEffect, useState } from 'react';
 
 import ChatInterface from '../../chat/view/ChatInterface';
-import FileTree from '../../file-tree/view/FileTree';
-import StandaloneShell from '../../standalone-shell/view/StandaloneShell';
-import GitPanel from '../../git-panel/view/GitPanel';
-import OperationsView from '../../operations/view/OperationsView';
-import PluginTabContent from '../../plugins/view/PluginTabContent';
-import StudioView from '../../studio/view/StudioView';
-import { BrowserUsePanel } from '../../browser-use';
 import type { MainContentProps } from '../types/types';
 import { useTaskMaster } from '../../../contexts/TaskMasterContext';
-import { usePaletteOps, usePaletteOpsRegister } from '../../../contexts/PaletteOpsContext';
+import { usePaletteOpsRegister } from '../../../contexts/PaletteOpsContext';
 import { useTasksSettings } from '../../../contexts/TasksSettingsContext';
 import { useUiPreferences } from '../../../hooks/useUiPreferences';
 import { useFileOpenResolver } from '../../../hooks/useFileOpenResolver';
 import { authenticatedFetch } from '../../../utils/api';
 import { useEditorSidebar } from '../../code-editor/hooks/useEditorSidebar';
-import EditorSidebar from '../../code-editor/view/EditorSidebar';
 import type { Project } from '../../../types/app';
-import { TaskMasterPanel } from '../../task-master';
 
 import ErrorBoundary from './ErrorBoundary';
 import MainContentHeader from './subcomponents/MainContentHeader';
 import MainContentStateView from './subcomponents/MainContentStateView';
 import MobileMenuButton from './subcomponents/MobileMenuButton';
+
+const StudioView = lazy(() => import('../../studio/view/StudioView'));
+const FileTree = lazy(() => import('../../file-tree/view/FileTree'));
+const StandaloneShell = lazy(() => import('../../standalone-shell/view/StandaloneShell'));
+const GitPanel = lazy(() => import('../../git-panel/view/GitPanel'));
+const OperationsView = lazy(() => import('../../operations/view/OperationsView'));
+const PluginTabContent = lazy(() => import('../../plugins/view/PluginTabContent'));
+const EditorSidebar = lazy(() => import('../../code-editor/view/EditorSidebar'));
+const TaskMasterPanel = lazy(() =>
+  import('../../task-master').then((module) => ({ default: module.TaskMasterPanel })),
+);
+const BrowserUsePanel = lazy(() =>
+  import('../../browser-use').then((module) => ({ default: module.BrowserUsePanel })),
+);
 
 type TaskMasterContextValue = {
   currentProject?: Project | null;
@@ -65,7 +70,6 @@ function MainContent({
   studioActive = false,
   onLeaveStudio,
 }: MainContentProps) {
-  const paletteOps = usePaletteOps();
   const { preferences } = useUiPreferences();
   const { showRawParameters, showThinking, sendByCtrlEnter } = preferences;
 
@@ -174,6 +178,35 @@ function MainContent({
   if (studioActive) {
     return (
       <div className="flex h-full min-h-0 flex-col">
+        {/* Keep the normal chat session alive while Studio owns the visible
+            surface. Its websocket subscription and processing state must not
+            disappear just because this route changes the main view. */}
+        {selectedProject ? (
+          <div className="hidden" aria-hidden="true">
+            <ErrorBoundary showDetails>
+              <ChatInterface
+                selectedProject={selectedProject}
+                selectedSession={selectedSession}
+                ws={ws}
+                sendMessage={sendMessage}
+                onFileOpen={handleFileOpen}
+                onInputFocusChange={onInputFocusChange}
+                onSessionProcessing={onSessionProcessing}
+                onSessionIdle={onSessionIdle}
+                processingSessions={processingSessions}
+                onNavigateToSession={onNavigateToSession}
+                onSessionEstablished={onSessionEstablished}
+                onShowSettings={onShowSettings}
+                showRawParameters={showRawParameters}
+                showThinking={showThinking}
+                sendByCtrlEnter={sendByCtrlEnter}
+                externalMessageUpdate={externalMessageUpdate}
+                newSessionTrigger={newSessionTrigger}
+                onShowAllTasks={tasksEnabled ? () => setActiveTab('tasks') : null}
+              />
+            </ErrorBoundary>
+          </div>
+        ) : null}
         {isMobile ? (
           <div className="pwa-header-safe flex-shrink-0 border-b border-border/50 bg-background/80 p-2 backdrop-blur-sm sm:p-3">
             <MobileMenuButton onMenuClick={onMenuClick} compact />
@@ -181,6 +214,7 @@ function MainContent({
         ) : null}
         <div className="min-h-0 flex-1 overflow-hidden">
           <ErrorBoundary showDetails>
+            <Suspense fallback={null}>
             <StudioView
               selectedProject={selectedProject}
               projects={projects.length > 0 ? projects : selectedProject ? [selectedProject] : []}
@@ -207,9 +241,9 @@ function MainContent({
                 );
                 onNewSession(project);
               }}
-              onOpenSwarm={() => paletteOps.openAgentSwarm()}
               onBackToChat={onLeaveStudio}
             />
+            </Suspense>
           </ErrorBoundary>
         </div>
       </div>
@@ -271,6 +305,7 @@ function MainContent({
               Mount when active OR already opened (effect latches shellEverOpened for subsequent hides). */}
           {(shellEverOpened || activeTab === 'shell') && (
             <div className={`h-full w-full overflow-hidden ${activeTab === 'shell' ? 'block' : 'hidden'}`}>
+              <Suspense fallback={null}>
               <StandaloneShell
                 project={selectedProject}
                 session={selectedSession}
@@ -279,46 +314,62 @@ function MainContent({
                 autoConnect={!selectedSessionIsProcessing}
                 waitForChat={selectedSessionIsProcessing}
               />
+              </Suspense>
             </div>
           )}
 
           {activeTab === 'files' && (
             <div className="h-full overflow-hidden">
+              <Suspense fallback={null}>
               <FileTree selectedProject={selectedProject} onFileOpen={handleFileOpen} />
+              </Suspense>
             </div>
           )}
 
           {activeTab === 'git' && (
             <div className="h-full overflow-hidden">
+              <Suspense fallback={null}>
               <GitPanel selectedProject={selectedProject} isMobile={isMobile} onFileOpen={handleFileOpen} />
+              </Suspense>
             </div>
           )}
 
           {activeTab === 'operations' && (
             <div className="h-full overflow-hidden">
+              <Suspense fallback={null}>
               <OperationsView selectedProject={selectedProject} />
+              </Suspense>
             </div>
           )}
 
-          {shouldShowTasksTab && <TaskMasterPanel isVisible={activeTab === 'tasks'} />}
+          {shouldShowTasksTab && (
+            <Suspense fallback={null}>
+              <TaskMasterPanel isVisible={activeTab === 'tasks'} />
+            </Suspense>
+          )}
 
           {shouldShowBrowserTab && activeTab === 'browser' && (
             <div className="h-full overflow-hidden">
+              <Suspense fallback={null}>
               <BrowserUsePanel isVisible={activeTab === 'browser'} onShowSettings={onShowSettings} />
+              </Suspense>
             </div>
           )}
 
           {activeTab.startsWith('plugin:') && (
             <div className="h-full overflow-hidden">
+              <Suspense fallback={null}>
               <PluginTabContent
                 pluginName={activeTab.replace('plugin:', '')}
                 selectedProject={selectedProject}
                 selectedSession={selectedSession}
               />
+              </Suspense>
             </div>
           )}
         </div>
 
+        <Suspense fallback={null}>
         <EditorSidebar
           editingFile={editingFile}
           isMobile={isMobile}
@@ -332,6 +383,7 @@ function MainContent({
           projectPath={selectedProject.path}
           fillSpace={activeTab === 'files'}
         />
+        </Suspense>
       </div>
     </div>
   );

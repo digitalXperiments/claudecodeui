@@ -46,6 +46,8 @@ import { expandMcpSelectionsToTools } from '@/shared/mcp-tool-expand.js';
 import { newRelayBatchId, newRelayJobId } from '@/shared/ids.js';
 import { TERMINAL_RUN_STATUSES, type RunStatus } from '@/shared/run-events.js';
 import type { AnyRecord, LLMProvider, NormalizedMessage, ProviderModelsDefinition } from '@/shared/types.js';
+import { enabledRegistryModelIdsForProvider } from '@/modules/swarm/index.js';
+import { notifyAgentRelayTerminal } from '@/modules/agent-relay/lead-session-wake.service.js';
 import { AppError } from '@/shared/utils.js';
 import { findAppRoot, findServerRoot, getModuleDir } from '@/utils/runtime-paths.js';
 
@@ -72,6 +74,8 @@ const DEFAULT_APPROVAL_TIMEOUT_MS = 3 * 60 * 1000;
 const MIN_APPROVAL_TIMEOUT_MS = 15_000;
 const MAX_APPROVAL_TIMEOUT_MS = 30 * 60 * 1000;
 const MAX_ALLOWED_MODELS_PER_PROVIDER = 200;
+/** Finished jobs older than this are deleted on boot. */
+export const AGENT_RELAY_RETENTION_DAYS = 14;
 
 const DEFAULT_SETTINGS: AgentRelaySettings = {
   enabled: false,
@@ -169,20 +173,98 @@ export function providerSupportsReadOnlyRelay(provider: LLMProvider): boolean {
   return READ_ONLY_PLAN_PROVIDERS.has(provider);
 }
 
+/** Catalog effort ids for a model, or null when the catalog does not constrain effort. */
+export function catalogEffortValuesForModel(
+  catalog: ProviderModelsDefinition | null | undefined,
+  model: string | null,
+): string[] | null {
+  if (!catalog || !model || !Array.isArray(catalog.OPTIONS)) return null;
+  const option = catalog.OPTIONS.find((candidate) => candidate.value === model)
+    ?? catalog.OPTIONS.find((candidate) => candidate.resolvedModel === model)
+    ?? null;
+  const values = option?.effort?.values;
+  if (!Array.isArray(values) || values.length === 0) return null;
+  const ids = [...new Set(
+    values
+      .map((entry) => (typeof entry?.value === 'string' ? entry.value.trim() : ''))
+      .filter(Boolean),
+  )];
+  return ids.length > 0 ? ids : null;
+}
+
+export function resolveRelayEffort(
+  requested: unknown,
+  catalog: ProviderModelsDefinition | null | undefined,
+  model: string | null,
+): string | null {
+  const trimmed = typeof requested === 'string' ? requested.trim() : '';
+  if (!trimmed || trimmed === 'default') return null;
+  const allowed = catalogEffortValuesForModel(catalog, model);
+  if (allowed && !allowed.includes(trimmed)) {
+    throw new AppError(
+      `Effort "${trimmed}" is not in the catalog for model "${model}". Allowed: ${allowed.join(', ')}.`,
+      { code: 'RELAY_EFFORT_NOT_IN_CATALOG', statusCode: 400 },
+    );
+  }
+  return trimmed;
+}
+
 export function providerHonorsRelayMcpGrants(provider: LLMProvider): boolean {
   return MCP_GRANT_PROVIDERS.has(provider);
+}
+
+type RegistryIdsFn = (provider: string) => string[] | null;
+
+let registryIdsLookup: RegistryIdsFn | null = null;
+
+/** Test seam: isolate allowlist intersection from the live Model profiles DB. */
+export function configureRelayModelRegistry(fn: RegistryIdsFn | null): void {
+  registryIdsLookup = fn;
+}
+
+function registryEnabledIds(provider: LLMProvider): string[] | null {
+  try {
+    return (registryIdsLookup ?? enabledRegistryModelIdsForProvider)(provider);
+  } catch {
+    return null;
+  }
+}
+
+function intersectModelIds(left: string[], right: string[]): string[] {
+  const rightSet = new Set(right);
+  return left.filter((id) => rightSet.has(id));
 }
 
 /**
  * Allowlisted worker model ids for one provider, or `null` when that provider
  * is unrestricted (legacy / "all models").
+ *
+ * When Model profiles has enabled rows for the provider, the catalog and
+ * dispatch lists are intersected with those ids. An explicit
+ * `allowedWorkerModels` entry is intersected as well. A missing key stays
+ * unrestricted only when the registry has no enabled models for the provider.
  */
 export function allowedWorkerModelsFor(
   settings: Pick<AgentRelaySettings, 'allowedWorkerModels'>,
   provider: LLMProvider,
 ): string[] | null {
   const list = settings.allowedWorkerModels?.[provider];
-  return list === undefined ? null : [...list];
+  const registryIds = registryEnabledIds(provider);
+  if (list === undefined) {
+    return registryIds === null ? null : [...registryIds];
+  }
+  if (registryIds === null) return [...list];
+  return intersectModelIds(list, registryIds);
+}
+
+function catalogModelIsAllowed(
+  allowed: string[] | null,
+  model: { value: string; resolvedModel?: string | null },
+): boolean {
+  if (allowed === null) return true;
+  if (allowed.includes(model.value)) return true;
+  const resolved = typeof model.resolvedModel === 'string' ? model.resolvedModel.trim() : '';
+  return Boolean(resolved && allowed.includes(resolved));
 }
 
 /** Near-miss catalog ids listed back to a lead that asked for a bad model. */
@@ -307,7 +389,7 @@ export function resolveRelayWorkerModel(
   if (allowed === null) return trimmed ?? normalizedDefault;
   if (allowed.length === 0) {
     throw new AppError(
-      `Provider "${provider}" has no allowed Agent Relay models. Pick models in Settings → Agent Relay.`,
+      `Provider "${provider}" has no allowed Agent Relay models. Pick models in Agent Relay settings.`,
       { code: 'RELAY_WORKER_MODEL_REQUIRED', statusCode: 400 },
     );
   }
@@ -448,10 +530,13 @@ function resolveWorkerMcpServers(input: {
   taskMcpServers: unknown;
   profile: AgentRelayWorkerProfile | undefined;
 }): string[] {
-  const taskSpecified = Array.isArray(input.taskMcpServers);
+  const rawTaskMcpServers = input.taskMcpServers;
+  const taskSpecified = Array.isArray(rawTaskMcpServers);
   const taskServers = sanitizeWorkerMcpServers(
-    taskSpecified
-      ? input.taskMcpServers.filter((entry): entry is string => typeof entry === 'string' && Boolean(entry.trim())).map((entry) => entry.trim())
+    Array.isArray(rawTaskMcpServers)
+      ? rawTaskMcpServers
+          .filter((entry: unknown): entry is string => typeof entry === 'string' && Boolean(entry.trim()))
+          .map((entry) => entry.trim())
       : [],
   );
   const profileServers = sanitizeWorkerMcpServers(input.profile?.mcpServers ?? []);
@@ -990,6 +1075,7 @@ function buildRuntimeOptions(job: AgentRelayJob, cwd: string): AnyRecord {
 function publish(job: AgentRelayJob | null): void {
   if (!job) return;
   broadcastSystemEvent({ kind: 'agent_relay_updated', job });
+  notifyAgentRelayTerminal(job);
 }
 
 /**
@@ -1531,7 +1617,7 @@ async function getCapabilities() {
       try {
         const result = await providerModelsService.getProviderModels(provider);
         const models = result.models.OPTIONS
-          .filter((model) => allowed === null || allowed.includes(model.value))
+          .filter((model) => catalogModelIsAllowed(allowed, model))
           .map((model) => ({
             value: model.value,
             label: model.label,
@@ -1662,7 +1748,7 @@ export const agentRelayService = {
       });
       if (usableWorkers.length === 0) {
         throw new AppError(
-          'Select at least one worker model in Settings → Agent Relay, or turn off the per-agent limit.',
+          'Select at least one worker model in Agent Relay settings, or turn off the per-agent limit.',
           { code: 'RELAY_WORKER_MODEL_REQUIRED', statusCode: 400 },
         );
       }
@@ -1760,10 +1846,18 @@ export const agentRelayService = {
         return !allowed || allowed.length > 0;
       });
       const runnable = eligible.filter((candidate) => runtimeSpawnFns[candidate]);
-      const pool = runnable.length > 0 ? runnable : eligible;
+      let pool = runnable.length > 0 ? runnable : eligible;
+      // Auto-pick must honor the requested/default mode. Cursor has no plan
+      // seat, so a read_only default used to land on it and then throw.
+      const requestedMode = task.mode === 'isolated_write' || task.mode === 'read_only' ? task.mode : null;
+      const poolMode = requestedMode ?? settings.defaultMode;
+      if (poolMode === 'read_only') {
+        const modeCapable = pool.filter((candidate) => providerSupportsReadOnlyRelay(candidate));
+        if (modeCapable.length > 0) pool = modeCapable;
+      }
       if (pool.length === 0) {
         throw new AppError(
-          'No Agent Relay worker models are allowed. Pick models in Settings → Agent Relay.',
+          'No Agent Relay worker models are allowed. Pick models in Agent Relay settings.',
           { code: 'RELAY_WORKER_MODEL_REQUIRED', statusCode: 409 },
         );
       }
@@ -1774,7 +1868,7 @@ export const agentRelayService = {
       const allowed = allowedWorkerModelsFor(settings, provider);
       if (allowed && allowed.length === 0) {
         throw new AppError(
-          `Provider "${provider}" has no allowed Agent Relay models. Pick models in Settings → Agent Relay.`,
+          `Provider "${provider}" has no allowed Agent Relay models. Pick models in Agent Relay settings.`,
           { code: 'RELAY_WORKER_MODEL_REQUIRED', statusCode: 400 },
         );
       }
@@ -1789,10 +1883,11 @@ export const agentRelayService = {
           { code: 'RELAY_READ_ONLY_UNSUPPORTED', statusCode: 400 },
         );
       }
-      const normalizedEffort = typeof task.effort === 'string' ? task.effort.trim() : '';
       let modelIdentity: ReturnType<typeof resolveRelayModelIdentity>;
+      let catalogModels: ProviderModelsDefinition | null = null;
       try {
         const catalog = await providerModelsService.getProviderModels(provider);
+        catalogModels = catalog.models;
         modelIdentity = resolveRelayModelIdentity(
           settings,
           provider,
@@ -1842,7 +1937,7 @@ export const agentRelayService = {
       return {
         provider,
         ...modelIdentity,
-        effort: normalizedEffort && normalizedEffort !== 'default' ? normalizedEffort : null,
+        effort: resolveRelayEffort(task.effort, catalogModels, modelIdentity.model),
         mode,
         approvalPolicy,
         label,
@@ -1908,6 +2003,10 @@ export const agentRelayService = {
   /** Lifecycle guard used before a lead/worker session or project is deleted. */
   activeForSession(sessionId: string): AgentRelayJob[] {
     return agentRelayDb.listActive().filter((job) => job.source_session_id === sessionId || job.app_session_id === sessionId);
+  },
+
+  rehomeSourceSession(fromSessionId: string, toSessionId: string): number {
+    return agentRelayDb.rehomeSourceSession(fromSessionId, toSessionId);
   },
 
   activeForProject(projectId: string): AgentRelayJob[] {
@@ -2250,6 +2349,29 @@ export const agentRelayService = {
 
   getMcpToken: getOrCreateMcpToken,
 
+  async purgeExpiredJobs(retentionDays = AGENT_RELAY_RETENTION_DAYS): Promise<{ jobsDeleted: number; workspacesDiscarded: number }> {
+    const expired = agentRelayDb.listTerminalOlderThan(retentionDays);
+    let workspacesDiscarded = 0;
+    const seenWorkspaces = new Set<string>();
+    for (const job of expired) {
+      const workspaceId = job.workspace_id;
+      if (!workspaceId || seenWorkspaces.has(workspaceId)) continue;
+      seenWorkspaces.add(workspaceId);
+      const workspace = workspaceService.get(workspaceId);
+      if (!workspace) continue;
+      // Isolated relay worktrees only — never the user's primary checkout.
+      if (workspace.mode !== 'git_worktree' && workspace.mode !== 'sandbox_copy') continue;
+      try {
+        await workspaceService.discard(workspaceId, { deleteBranch: true });
+        workspacesDiscarded += 1;
+      } catch (error) {
+        console.warn('[Agent Relay] failed to discard expired workspace', workspaceId, error);
+      }
+    }
+    const jobsDeleted = agentRelayDb.purgeTerminalOlderThan(retentionDays);
+    return { jobsDeleted, workspacesDiscarded };
+  },
+
   recoverOnBoot(): number {
     activeJobs.clear();
     leadLastScheduled.clear();
@@ -2258,6 +2380,9 @@ export const agentRelayService = {
     const interrupted = agentRelayDb.listActive();
     const failed = agentRelayDb.failNonterminalOnBoot();
     agentRelayDb.expireAllPendingApprovals('CloudCLI restarted before this request was answered.');
+    void this.purgeExpiredJobs().catch((error) => {
+      console.error('[Agent Relay] retention purge failed', error);
+    });
     for (const job of interrupted) {
       closeCanonicalRun(job.run_id, 'failed', 'CloudCLI restarted before this delegation finished.');
     }

@@ -6,6 +6,7 @@ import { promises as fs } from 'fs';
 import { projectsDb } from '../modules/database/index.js';
 import { queryClaudeSDK } from '../claude-sdk.js';
 import { spawnCursor } from '../cursor-cli.js';
+import { validateWorkspacePath } from '../shared/utils.js';
 
 const router = express.Router();
 const COMMIT_DIFF_CHARACTER_LIMIT = 500_000;
@@ -363,6 +364,35 @@ export function parseGitStatusOutput(statusOutput) {
 
   return { modified, added, deleted, untracked, staged };
 }
+
+// Initialize git for a registered project. The project path is always resolved
+// from the project id in the database; callers cannot provide an arbitrary cwd.
+router.post('/init', async (req, res) => {
+  const { project } = req.body;
+
+  if (!project) {
+    return res.status(400).json({ error: 'Project id is required' });
+  }
+
+  try {
+    const projectPath = await getActualProjectPath(project);
+    const pathValidation = await validateWorkspacePath(projectPath);
+
+    if (!pathValidation.valid) {
+      return res.status(403).json({ error: pathValidation.error });
+    }
+
+    const { stdout } = await spawnAsync('git', ['init'], { cwd: projectPath });
+    return res.json({
+      success: true,
+      output: stdout,
+      message: 'Git repository initialized successfully',
+    });
+  } catch (error) {
+    console.error('Git init error:', error);
+    return res.status(500).json({ error: error.message });
+  }
+});
 
 router.get('/status', async (req, res) => {
   const { project } = req.query;

@@ -1,11 +1,12 @@
-import { useEffect, useRef } from 'react';
+import { lazy, Suspense, useEffect, useRef } from 'react';
 import { X } from 'lucide-react';
 
 import { Button } from '../../../shared/view/ui';
 import type { Project } from '../../../types/app';
 import ErrorBoundary from '../../main-content/view/ErrorBoundary';
 
-import AgentSwarmView from './AgentSwarmView';
+
+const AgentSwarmView = lazy(() => import('./AgentSwarmView'));
 
 type AgentSwarmPanelProps = {
   isOpen: boolean;
@@ -107,7 +108,9 @@ export default function AgentSwarmPanel({
         </div>
         <div className="min-h-0 flex-1 overflow-hidden pb-safe-area-inset-bottom">
           <ErrorBoundary showDetails>
-            <AgentSwarmView selectedProject={selectedProject} projects={projects} isVisible={isOpen} />
+            <Suspense fallback={null}>
+              <AgentSwarmView selectedProject={selectedProject} projects={projects} isVisible={isOpen} />
+            </Suspense>
           </ErrorBoundary>
         </div>
       </div>

@@ -96,7 +96,7 @@ export default function SectionArchitect({
         </div>
         <button
           type="button"
-          className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-border/50 bg-background/60 px-2 py-1 text-[10px] font-medium text-muted-foreground transition hover:bg-background hover:text-foreground"
+          className="mc-tap-target inline-flex min-h-11 shrink-0 touch-manipulation items-center gap-1 rounded-lg border border-border/50 bg-background/60 px-3 py-2 text-[10px] font-medium text-muted-foreground transition hover:bg-background hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           onClick={() => setOpen((value) => !value)}
           aria-expanded={open}
         >
@@ -151,7 +151,7 @@ export default function SectionArchitect({
               <p className="text-[9px] text-muted-foreground">⌘/Ctrl + Enter</p>
               <button
                 type="button"
-                className="inline-flex items-center gap-1.5 rounded-xl bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground shadow-sm transition hover:bg-primary/90 disabled:opacity-50"
+                className="mc-tap-target inline-flex min-h-11 touch-manipulation items-center gap-1.5 rounded-xl bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground shadow-sm transition hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
                 onClick={() => void send()}
                 disabled={busy || !draft.trim()}
               >
@@ -179,7 +179,7 @@ export default function SectionArchitect({
               </p>
               <button
                 type="button"
-                className="mt-3 w-full rounded-xl bg-emerald-600 px-3 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-emerald-700"
+                className="mc-tap-target mt-3 min-h-11 w-full touch-manipulation rounded-xl bg-emerald-600 px-3 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-emerald-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 onClick={() => onApply(readyDraft)}
               >
                 Apply plan to section

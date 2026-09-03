@@ -7,6 +7,7 @@ import { makeScratchDir } from '@/shared/scratch.js';
 import {
   buildGrokPriorSessionContextHint,
   seedGrokSessionTranscript,
+  grokRelayWorkerSkipsManagedGateway,
   shouldPreferGrokAcpSessionLoad,
   toGrokAcpMcpServers,
 } from '@/modules/providers/list/grok/grok-acp-managed-mcp.js';
@@ -119,6 +120,35 @@ test('toGrokAcpMcpServers uses ACP env array + type (not config.toml map)', () =
   assert.deepEqual(out[1].headers, [{ name: 'Authorization', value: 'Bearer x' }]);
   // No undefined cwd key — ACP rejects unknown/null fields on the enum.
   assert.equal('cwd' in (out[0] as object), false);
+});
+
+test('toGrokAcpMcpServers stamps lead and session identity onto stdio env', () => {
+  const out = toGrokAcpMcpServers(
+    [
+      {
+        name: 'obsidian',
+        transport: 'stdio',
+        command: 'npx',
+        args: ['obsidian-mcp'],
+        env: { OBSIDIAN_API_KEY: 'secret' },
+      },
+    ],
+    {
+      CLOUDCLI_LEAD_SESSION_ID: 'lead-1',
+      CLOUDCLI_SESSION_ID: 'sess-1',
+    },
+  );
+
+  const env = out[0].env as Array<{ name: string; value: string }>;
+  assert.ok(env.some((entry) => entry.name === 'CLOUDCLI_LEAD_SESSION_ID' && entry.value === 'lead-1'));
+  assert.ok(env.some((entry) => entry.name === 'CLOUDCLI_SESSION_ID' && entry.value === 'sess-1'));
+  assert.ok(env.some((entry) => entry.name === 'OBSIDIAN_API_KEY' && entry.value === 'secret'));
+});
+
+test('grokRelayWorkerSkipsManagedGateway is true only for relay workers', () => {
+  assert.equal(grokRelayWorkerSkipsManagedGateway(true), true);
+  assert.equal(grokRelayWorkerSkipsManagedGateway(false), false);
+  assert.equal(grokRelayWorkerSkipsManagedGateway(undefined), false);
 });
 
 test('buildGrokPriorSessionContextHint extracts recent user turns', async () => {

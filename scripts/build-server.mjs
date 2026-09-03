@@ -17,6 +17,24 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const dest = path.join(root, 'dist-server');
 const staging = path.join(root, 'dist-server.next');
 const previous = path.join(root, 'dist-server.prev');
+const ENTRY = 'server/index.js';
+const mode = process.argv[2] ?? 'promote';
+
+if (mode === 'recover') {
+  // Ran before every packaged server start: if a promotion was interrupted
+  // between the two renames, put the previous build back so the server can boot.
+  if (!fs.existsSync(path.join(dest, ENTRY)) && fs.existsSync(path.join(previous, ENTRY))) {
+    console.error('build-server: restoring previous dist-server after an interrupted promotion.');
+    fs.rmSync(dest, { recursive: true, force: true });
+    fs.renameSync(previous, dest);
+  }
+  process.exit(0);
+}
+
+if (mode !== 'promote') {
+  console.error(`build-server: unknown mode "${mode}" (expected "promote" or "recover").`);
+  process.exit(64);
+}
 
 function run(command, args) {
   const result = spawnSync(command, args, {
@@ -51,5 +69,12 @@ rm(previous);
 if (fs.existsSync(dest)) {
   fs.renameSync(dest, previous);
 }
-fs.renameSync(staging, dest);
+try {
+  fs.renameSync(staging, dest);
+} catch (error) {
+  if (fs.existsSync(previous) && !fs.existsSync(dest)) {
+    fs.renameSync(previous, dest);
+  }
+  throw error;
+}
 rm(previous);

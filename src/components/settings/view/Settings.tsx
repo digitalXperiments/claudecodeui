@@ -7,8 +7,6 @@ import { Button } from '../../../shared/view/ui';
 import SettingsSidebar from '../view/SettingsSidebar';
 import AgentsSettingsTab from '../view/tabs/agents-settings/AgentsSettingsTab';
 import AgentProfilesSettingsTab from '../view/tabs/AgentProfilesSettingsTab';
-import ModelRegistrySettingsTab from '../view/tabs/ModelRegistrySettingsTab';
-import AgentRelaySettingsTab from '../view/tabs/AgentRelaySettingsTab';
 import StudioSettingsTab from '../view/tabs/StudioSettingsTab';
 import EvalCenterSettingsTab from '../view/tabs/EvalCenterSettingsTab';
 import SkillsSettingsTab from '../view/tabs/SkillsSettingsTab';
@@ -290,10 +288,6 @@ function Settings({ isOpen, onClose, projects = [], initialTab = 'agents' }: Set
               )}
 
               {activeTab === 'agent-profiles' && <AgentProfilesSettingsTab />}
-
-              {activeTab === 'model-registry' && <ModelRegistrySettingsTab />}
-
-              {activeTab === 'agent-relay' && <AgentRelaySettingsTab />}
 
               {activeTab === 'studio' && <StudioSettingsTab />}
 

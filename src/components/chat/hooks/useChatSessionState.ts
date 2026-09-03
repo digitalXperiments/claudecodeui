@@ -5,12 +5,16 @@ import { authenticatedFetch } from '../../../utils/api';
 import type { MarkSessionIdle, SessionActivityMap } from '../../../hooks/useSessionProtection';
 import type { Project, ProjectSession, LLMProvider } from '../../../types/app';
 import type { SessionStore, NormalizedMessage } from '../../../stores/useSessionStore';
+import { SESSION_MESSAGES_PAGE_SIZE } from '../../../stores/sessionMessagePagination';
 import type { ChatMessage } from '../types/types';
+import {
+  createMessageHistoryRefreshCoordinator,
+  type MessageHistoryRefreshCoordinator,
+} from '../utils/messageHistoryRefreshCoordinator';
 import { createCachedDiffCalculator, type DiffCalculator } from '../utils/messageTransforms';
 
 import { normalizedToChatMessages } from './useChatMessages';
 
-const MESSAGES_PER_PAGE = 20;
 const INITIAL_VISIBLE_MESSAGES = 100;
 
 interface UseChatSessionStateArgs {
@@ -235,6 +239,91 @@ export function useChatSessionState({
   processingSessionsRef.current = processingSessions;
 
   /* ---------------------------------------------------------------- */
+  /*  Coalesced, visibility-gated persisted-history refresh           */
+  /* ---------------------------------------------------------------- */
+
+  // Ref mirror so the (stable) coordinator callbacks always see the session
+  // currently in view without re-creating the coordinator.
+  const activeSessionIdRef = useRef<string | null>(activeSessionId);
+  activeSessionIdRef.current = activeSessionId;
+
+  /**
+   * "Visible" means the browser tab is shown AND the chat pane itself is not
+   * CSS-hidden (MainContent keeps ChatInterface mounted inside a
+   * `display: none` wrapper while another main tab is active, which makes the
+   * scroll container's offsetParent null). A missing container (empty state /
+   * first load) does not count as hidden.
+   */
+  const isChatPaneVisible = useCallback(() => {
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+      return false;
+    }
+    const container = scrollContainerRef.current;
+    if (container && container.offsetParent === null) {
+      return false;
+    }
+    return true;
+  }, []);
+
+  const canRefreshSessionNow = useCallback((sessionId: string) => (
+    isChatPaneVisible() && activeSessionIdRef.current === sessionId
+  ), [isChatPaneVisible]);
+
+  // The executor lives in a ref so the coordinator (created once) always calls
+  // the latest closure over sessionStore and the pagination setters.
+  const latestRefreshExecutorRef = useRef<(sessionId: string) => Promise<boolean | void>>(
+    async () => true,
+  );
+  latestRefreshExecutorRef.current = async (sessionId: string) => {
+    const result = await sessionStore.refreshLatestFromServer(sessionId, {
+      limit: SESSION_MESSAGES_PAGE_SIZE,
+      canRequest: () => canRefreshSessionNow(sessionId),
+    });
+    const slot = result.slot;
+    if (slot && activeSessionIdRef.current === sessionId && result.applied) {
+      setHasMoreMessages(slot.hasMore);
+      setTotalMessages(slot.total);
+      messagesOffsetRef.current = slot.offset;
+      if (slot.tokenUsage) setTokenBudget(slot.tokenUsage as Record<string, unknown>);
+    }
+    // `deferred` means the pane went hidden mid-request: keep the session
+    // dirty so the next flush (visibility/activation) retries.
+    return !result.deferred;
+  };
+
+  const refreshCoordinatorRef = useRef<MessageHistoryRefreshCoordinator | null>(null);
+  if (!refreshCoordinatorRef.current) {
+    refreshCoordinatorRef.current = createMessageHistoryRefreshCoordinator(
+      (sessionId) => latestRefreshExecutorRef.current(sessionId),
+      (sessionId) => canRefreshSessionNow(sessionId),
+    );
+  }
+
+  /**
+   * Single entry point for every automatic history refresh trigger (stale
+   * re-activation, external update / websocket reconnect). Visible sessions
+   * fetch one bounded latest page; hidden/inactive ones are marked dirty and
+   * flushed when they become visible again.
+   */
+  const requestLatestMessages = useCallback((sessionId: string, allowNetwork = true) => (
+    refreshCoordinatorRef.current?.request(sessionId, allowNetwork) ?? Promise.resolve()
+  ), []);
+
+  // Flush dirty sessions when the browser tab becomes visible again.
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const onVisibilityChange = () => {
+      if (document.visibilityState !== 'visible') return;
+      const sessionId = activeSessionIdRef.current;
+      if (sessionId) {
+        void refreshCoordinatorRef.current?.flushPending(sessionId);
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', onVisibilityChange);
+  }, []);
+
+  /* ---------------------------------------------------------------- */
   /*  Derive chatMessages from the store                              */
   /* ---------------------------------------------------------------- */
   const [pendingUserMessage, setPendingUserMessage] = useState<ChatMessage | null>(null);
@@ -366,7 +455,7 @@ export function useChatSessionState({
 
       try {
         const slot = await sessionStore.fetchMore(selectedSession.id, {
-          limit: MESSAGES_PER_PAGE,
+          limit: SESSION_MESSAGES_PAGE_SIZE,
         });
         if (!slot) return false;
         if (slot.serverMessages.length === 0) {
@@ -386,7 +475,7 @@ export function useChatSessionState({
         pendingScrollRestoreRef.current = { height: previousScrollHeight, top: previousScrollTop };
         setHasMoreMessages(slot.hasMore);
         setTotalMessages(slot.total);
-        setVisibleMessageCount((prev) => prev + MESSAGES_PER_PAGE);
+        setVisibleMessageCount((prev) => prev + SESSION_MESSAGES_PAGE_SIZE);
         if (!slot.hasMore) {
           allMessagesLoadedRef.current = true;
           setAllMessagesLoaded(true);
@@ -572,15 +661,16 @@ export function useChatSessionState({
     if (alreadyLoaded) {
       subscribeToSelectedSession(false);
       const viewedActivity = processingSessionsRef.current?.get(selectedSessionId);
-      if (sessionStore.isStale(selectedSessionId) && viewedActivity?.source !== 'chat') {
-        void sessionStore.refreshFromServer(selectedSessionId).then(() => {
-          const slot = sessionStore.getSessionSlot(selectedSessionId);
-          if (slot) {
-            setHasMoreMessages(slot.hasMore);
-            setTotalMessages(slot.total);
-            if (slot.tokenUsage) setTokenBudget(slot.tokenUsage as Record<string, unknown>);
-          }
-        });
+      if (viewedActivity?.source !== 'chat') {
+        if (sessionStore.isStale(selectedSessionId)) {
+          // Coalesced bounded tail refresh; the executor syncs hasMore/total/
+          // tokenBudget once the page is stitched in. Hidden panes are marked
+          // dirty instead of fetching.
+          void requestLatestMessages(selectedSessionId);
+        } else {
+          // Fresh cache, but a refresh may have been deferred while hidden.
+          void refreshCoordinatorRef.current?.flushPending(selectedSessionId);
+        }
       }
       return;
     }
@@ -620,10 +710,13 @@ export function useChatSessionState({
 
     lastLoadedSessionKeyRef.current = sessionKey;
 
+    // The full initial page load supersedes any refresh deferred while hidden.
+    refreshCoordinatorRef.current?.discardPending(selectedSessionId);
+
     // Fetch from server → store updates → chatMessages re-derives automatically
     setIsLoadingSessionMessages(true);
     sessionStore.fetchFromServer(selectedSessionId, {
-      limit: MESSAGES_PER_PAGE,
+      limit: SESSION_MESSAGES_PAGE_SIZE,
       offset: 0,
     }).then(slot => {
       if (slot) {
@@ -637,6 +730,7 @@ export function useChatSessionState({
     });
   }, [
     resetStreamingState,
+    requestLatestMessages,
     selectedProject?.projectId,
     selectedSession?.id,
     sendMessage,
@@ -646,7 +740,10 @@ export function useChatSessionState({
     sessionStore,
   ]);
 
-  // External message update (e.g. WebSocket reconnect, background refresh)
+  // External message update (e.g. WebSocket reconnect, background refresh).
+  // Routed through the coalescing coordinator: visible panes fetch one bounded
+  // latest page; hidden panes are marked dirty and flushed on activation
+  // instead of re-downloading the transcript behind a hidden tab.
   useEffect(() => {
     if (!externalMessageUpdate || !selectedSession || !selectedProject) return;
 
@@ -655,9 +752,12 @@ export function useChatSessionState({
         // Skip store refresh during an active Chatbar stream. Shell-owned
         // sessions still need a disk reload so Chat can catch up with the TUI.
         if (!isProcessing) {
-          await sessionStore.refreshFromServer(selectedSession.id);
+          // Capture before the await: the merge itself grows scrollHeight,
+          // which would otherwise flip the near-bottom check mid-refresh.
+          const shouldStickToBottom = isChatPaneVisible() && isNearBottom();
+          await requestLatestMessages(selectedSession.id);
 
-          if (isNearBottom()) {
+          if (shouldStickToBottom) {
             setTimeout(() => scrollToBottom(), 200);
           }
         }
@@ -669,13 +769,34 @@ export function useChatSessionState({
     reloadExternalMessages();
   }, [
     externalMessageUpdate,
+    isChatPaneVisible,
     isNearBottom,
+    requestLatestMessages,
     scrollToBottom,
     selectedProject,
     selectedSession,
-    sessionStore,
     isProcessing,
   ]);
+
+  // Flush a deferred refresh when the CSS-hidden chat pane becomes visible
+  // again (MainContent flips the wrapper from `hidden` to `block` with no
+  // React signal reaching this hook). The observer fires with
+  // isIntersecting=true the moment the scroll container regains layout.
+  const hasRenderedMessages = chatMessages.length > 0;
+  useEffect(() => {
+    if (!activeSessionId || typeof IntersectionObserver === 'undefined') return;
+    const container = scrollContainerRef.current;
+    if (!container) return;
+
+    const sessionId = activeSessionId;
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) {
+        void refreshCoordinatorRef.current?.flushPending(sessionId);
+      }
+    });
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, [activeSessionId, hasRenderedMessages]);
 
   // Search navigation target
   useEffect(() => {
@@ -940,5 +1061,6 @@ export function useChatSessionState({
     scrollToBottomAndReset,
     isNearBottom,
     handleScroll,
+    requestLatestMessages,
   };
 }

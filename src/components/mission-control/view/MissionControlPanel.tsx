@@ -12,8 +12,10 @@ import {
   Globe2,
   Layers3,
   Loader2,
+  MessageSquareText,
   Pencil,
   Play,
+  Power,
   Plus,
   Radar,
   RefreshCw,
@@ -35,6 +37,7 @@ import {
   type McSectionInput,
   type McSectionWorkshopDraft,
 } from '../api/missionControlApi';
+import { getActionSemantics } from '../utils/actionSemantics';
 import { isXArticleBody } from '../utils/xArticle';
 
 import ArticleDraftCard from './subcomponents/ArticleDraftCard';
@@ -224,6 +227,9 @@ export default function MissionControlPanel({
   const [editingBodyId, setEditingBodyId] = useState<string | null>(null);
   const [bodyDraft, setBodyDraft] = useState('');
   const [bodyError, setBodyError] = useState<string | null>(null);
+  const [replyContextId, setReplyContextId] = useState<string | null>(null);
+  const [replyContext, setReplyContext] = useState('');
+  const [togglingSectionId, setTogglingSectionId] = useState<string | null>(null);
 
   // Per-item retry / resolution preview
   const [retryingItemId, setRetryingItemId] = useState<string | null>(null);
@@ -271,7 +277,7 @@ export default function MissionControlPanel({
       setPendingCount(itemResult.pendingCount);
       onPendingCountChange?.(itemResult.pendingCount);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load Mission Control');
+      setError(err instanceof Error ? err.message : 'Failed to load Action Centre');
     } finally {
       setLoading(false);
     }
@@ -510,7 +516,7 @@ export default function MissionControlPanel({
       return;
     }
     if (!form.produce_prompt?.trim()) {
-      setError('Add a produce prompt so Mission Control knows what to run');
+      setError('Add a produce prompt so Action Centre knows what to run');
       return;
     }
     if (form.scope === 'project' && !form.project_id) {
@@ -556,6 +562,21 @@ export default function MissionControlPanel({
       await refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to delete section');
+    }
+  };
+
+  const toggleSectionEnabled = async (section: McSection) => {
+    setTogglingSectionId(section.section_id);
+    setError(null);
+    try {
+      const enabled = !section.enabled;
+      await missionControlApi.updateSection(section.section_id, { enabled });
+      setStatusMessage(`${section.title} is now ${enabled ? 'enabled' : 'disabled'}.`);
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update section');
+    } finally {
+      setTogglingSectionId(null);
     }
   };
 
@@ -616,12 +637,9 @@ export default function MissionControlPanel({
 
   const actOnItem = async (item: McItem, actionId: string) => {
     const action = item.actions.find((a) => a.id === actionId);
-    if (action?.kind === 'delete') {
-      const ok = window.confirm(
-        `Delete “${item.title}” permanently?\n\nThis frees its dedupe key so a re-run can recreate it. Dismiss keeps the key and blocks re-create.`,
-      );
-      if (!ok) return;
-    }
+    if (!action) return;
+    const semantics = getActionSemantics(action, item.title);
+    if (semantics.confirmation && !window.confirm(semantics.confirmation)) return;
 
     setActingItemId(item.item_id);
     setError(null);
@@ -648,6 +666,14 @@ export default function MissionControlPanel({
         }
         body = parsed;
       }
+      if (action.kind === 'draft_reply' || action.id === 'draft_reply') {
+        body = { ...(body ?? item.body) };
+        if (replyContextId === item.item_id && replyContext.trim()) {
+          body.operatorContext = replyContext.trim();
+        } else if (replyContextId === item.item_id) {
+          delete body.operatorContext;
+        }
+      }
       const result = await missionControlApi.applyAction(item.item_id, actionId, body);
       setPendingCount(result.pendingCount);
       onPendingCountChange?.(result.pendingCount);
@@ -655,7 +681,16 @@ export default function MissionControlPanel({
         setItems((prev) => prev.filter((i) => i.item_id !== item.item_id));
         cancelBodyEdit();
       } else {
+        if (action.kind === 'draft_reply' || action.id === 'draft_reply') {
+          setStatusMessage('Reply draft is ready for review.');
+        } else if (action.kind === 'send_reply' || action.id === 'send_reply') {
+          setStatusMessage('Reply sent.');
+        }
         cancelBodyEdit();
+        if (action.kind === 'draft_reply' || action.id === 'draft_reply') {
+          setReplyContextId(null);
+          setReplyContext('');
+        }
         await refresh();
       }
     } catch (err) {
@@ -804,7 +839,13 @@ export default function MissionControlPanel({
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="relative flex h-dvh max-h-dvh w-full flex-col overflow-hidden border-0 bg-background shadow-none md:h-[94vh] md:max-h-[94vh] md:max-w-[min(1600px,98vw)] md:rounded-2xl md:border md:border-border/70 md:shadow-2xl">
+      <div
+        className="relative flex h-dvh max-h-dvh w-full flex-col overflow-hidden border-0 bg-background shadow-none md:h-[94vh] md:max-h-[94vh] md:max-w-[min(1600px,98vw)] md:rounded-2xl md:border md:border-border/70 md:shadow-2xl"
+        style={{
+          paddingLeft: 'env(safe-area-inset-left, 0px)',
+          paddingRight: 'env(safe-area-inset-right, 0px)',
+        }}
+      >
         {/* Header */}
         <div className="relative flex flex-shrink-0 items-center justify-between gap-3 overflow-hidden border-b border-border/50 bg-background/85 px-3 py-3 pr-14 pt-[max(0.75rem,env(safe-area-inset-top))] backdrop-blur-xl md:px-6 md:py-5 md:pr-5">
           <div className="pointer-events-none absolute -left-24 -top-32 h-64 w-64 rounded-full bg-primary/10 blur-3xl" />
@@ -815,7 +856,7 @@ export default function MissionControlPanel({
             </div>
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
-                <h2 className="truncate text-lg font-semibold tracking-tight text-foreground">Mission Control</h2>
+                <h2 className="truncate text-lg font-semibold tracking-tight text-foreground">Action Centre</h2>
                 <span className="hidden rounded-full border border-emerald-500/20 bg-emerald-500/10 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.14em] text-emerald-700 dark:text-emerald-300 sm:inline-flex">
                   Automation studio
                 </span>
@@ -847,8 +888,8 @@ export default function MissionControlPanel({
               variant="ghost"
               size="sm"
               onClick={() => void openImport()}
-              className="hidden h-10 touch-manipulation gap-1.5 rounded-xl px-3 text-xs sm:inline-flex md:h-9"
-              title="Import from legacy Mission Control DB"
+              className="mc-tap-target hidden min-h-11 touch-manipulation gap-1.5 rounded-xl px-3 text-xs sm:inline-flex"
+              title="Import from legacy Action Centre database"
             >
               <Download className="h-3.5 w-3.5" />
               <span className="hidden sm:inline">Import</span>
@@ -858,7 +899,7 @@ export default function MissionControlPanel({
               size="sm"
               onClick={() => void refresh()}
               disabled={loading}
-              className="h-10 w-10 touch-manipulation rounded-xl p-0 md:h-9 md:w-9"
+              className="mc-tap-target h-11 w-11 touch-manipulation rounded-xl p-0"
               title="Refresh"
             >
               <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
@@ -867,7 +908,8 @@ export default function MissionControlPanel({
               variant="ghost"
               size="sm"
               onClick={onClose}
-              className="h-10 w-10 touch-manipulation rounded-xl p-0 md:h-9 md:w-9"
+              className="mc-tap-target h-11 w-11 touch-manipulation rounded-xl p-0"
+              aria-label="Close Action Centre"
             >
               <X className="h-5 w-5 md:h-4 md:w-4" />
             </Button>
@@ -880,7 +922,7 @@ export default function MissionControlPanel({
             <span className="min-w-0 flex-1 break-words">{error}</span>
             <button
               type="button"
-              className="shrink-0 touch-manipulation text-xs underline"
+              className="mc-tap-target shrink-0 touch-manipulation rounded px-2 text-xs underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               onClick={() => setError(null)}
             >
               Dismiss
@@ -893,7 +935,7 @@ export default function MissionControlPanel({
             <span className="min-w-0 flex-1 break-words">{statusMessage}</span>
             <button
               type="button"
-              className="shrink-0 touch-manipulation text-xs underline"
+              className="mc-tap-target shrink-0 touch-manipulation rounded px-2 text-xs underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               onClick={() => setStatusMessage(null)}
             >
               Dismiss
@@ -901,15 +943,15 @@ export default function MissionControlPanel({
           </div>
         ) : null}
 
-        <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-gradient-to-b from-background via-background to-muted/20 md:flex-row">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-gradient-to-b from-background via-background to-muted/20 lg:flex-row">
           {/* Mobile: horizontal section pills */}
-          <div className="flex flex-shrink-0 flex-col gap-2 border-b border-border px-3 py-2 md:hidden">
+          <div className="flex flex-shrink-0 flex-col gap-2 border-b border-border px-3 py-2 lg:hidden">
             <div className="flex items-center gap-2">
               <PillBar className="scrollbar-hide min-w-0 flex-1 overflow-x-auto">
                 <Pill
                   isActive={selectedSectionId === 'all'}
                   onClick={() => setSelectedSectionId('all')}
-                  className="flex-shrink-0 whitespace-nowrap"
+                  className="mc-tap-target flex-shrink-0 whitespace-nowrap"
                 >
                   All
                 </Pill>
@@ -918,7 +960,7 @@ export default function MissionControlPanel({
                     key={section.section_id}
                     isActive={selectedSectionId === section.section_id}
                     onClick={() => setSelectedSectionId(section.section_id)}
-                    className="max-w-40 flex-shrink-0 truncate whitespace-nowrap"
+                    className="mc-tap-target max-w-40 flex-shrink-0 truncate whitespace-nowrap"
                   >
                     {section.title}
                     {!section.enabled ? ' (off)' : ''}
@@ -928,7 +970,7 @@ export default function MissionControlPanel({
               <Button
                 variant="ghost"
                 size="sm"
-                className="h-9 w-9 shrink-0 touch-manipulation p-0"
+                className="mc-tap-target h-11 w-11 shrink-0 touch-manipulation p-0"
                 onClick={openCreate}
                 title="New section"
               >
@@ -947,9 +989,9 @@ export default function MissionControlPanel({
                 </span>
                 <button
                   type="button"
-                  className="inline-flex touch-manipulation items-center gap-1 rounded-md bg-muted px-2 py-1.5 text-[11px] font-medium text-foreground"
+                  className="mc-tap-target inline-flex min-h-11 touch-manipulation items-center gap-1 rounded-lg bg-muted px-3 py-2 text-[11px] font-medium text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   onClick={() => void runNow(selectedSection.section_id)}
-                  disabled={runningSectionId === selectedSection.section_id}
+                  disabled={!selectedSection.enabled || runningSectionId === selectedSection.section_id}
                 >
                   {runningSectionId === selectedSection.section_id ? (
                     <Loader2 className="h-3 w-3 animate-spin" />
@@ -960,14 +1002,24 @@ export default function MissionControlPanel({
                 </button>
                 <button
                   type="button"
-                  className="touch-manipulation rounded-md bg-muted px-2 py-1.5 text-[11px] font-medium text-foreground"
+                  className={`mc-tap-target inline-flex min-h-11 touch-manipulation items-center gap-1 rounded-lg px-3 py-2 text-[11px] font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${selectedSection.enabled ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' : 'bg-muted text-muted-foreground'}`}
+                  onClick={() => void toggleSectionEnabled(selectedSection)}
+                  disabled={togglingSectionId === selectedSection.section_id}
+                  aria-pressed={selectedSection.enabled}
+                >
+                  {togglingSectionId === selectedSection.section_id ? <Loader2 className="h-3 w-3 animate-spin" /> : <Power className="h-3 w-3" />}
+                  {selectedSection.enabled ? 'Enabled' : 'Disabled'}
+                </button>
+                <button
+                  type="button"
+                  className="mc-tap-target min-h-11 touch-manipulation rounded-lg bg-muted px-3 py-2 text-[11px] font-medium text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   onClick={() => openEdit(selectedSection)}
                 >
                   Edit
                 </button>
                 <button
                   type="button"
-                  className="touch-manipulation rounded-md bg-muted px-2 py-1.5 text-[11px] text-red-600 dark:text-red-400"
+                  className="mc-tap-target min-h-11 min-w-11 touch-manipulation rounded-lg bg-muted px-3 py-2 text-[11px] text-red-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:text-red-400"
                   onClick={() => void deleteSection(selectedSection.section_id)}
                   aria-label="Delete section"
                 >
@@ -980,12 +1032,12 @@ export default function MissionControlPanel({
           </div>
 
           {/* Desktop: vertical sections sidebar */}
-          <aside className="hidden w-72 flex-shrink-0 flex-col border-r border-border/60 bg-card/35 md:flex xl:w-80">
+          <aside className="hidden w-72 flex-shrink-0 flex-col border-r border-border/60 bg-card/35 lg:flex xl:w-80">
             <div className="flex items-center justify-between px-4 py-3">
               <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
                 Sections
               </span>
-              <Button variant="ghost" size="sm" className="h-8 gap-1 rounded-lg px-2 text-[11px] text-primary" onClick={openCreate} title="New section">
+              <Button variant="ghost" size="sm" className="mc-tap-target min-h-11 gap-1 rounded-lg px-2 text-[11px] text-primary" onClick={openCreate} title="New section">
                 <Plus className="h-3.5 w-3.5" /> New
               </Button>
             </div>
@@ -993,6 +1045,7 @@ export default function MissionControlPanel({
               <button
                 type="button"
                 onClick={() => setSelectedSectionId('all')}
+                aria-current={selectedSectionId === 'all' ? 'true' : undefined}
                 className={`flex w-full items-center justify-between rounded-xl border px-3 py-3 text-left text-sm transition-all ${
                   selectedSectionId === 'all'
                     ? 'border-primary/30 bg-primary/[0.08] text-foreground shadow-sm'
@@ -1017,7 +1070,8 @@ export default function MissionControlPanel({
                   <button
                     type="button"
                     onClick={() => setSelectedSectionId(section.section_id)}
-                    className="flex w-full flex-col gap-1 px-3 py-3 text-left"
+                    className="flex w-full flex-col gap-1 px-3 py-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+                    aria-current={selectedSectionId === section.section_id ? 'true' : undefined}
                   >
                     <span className="flex w-full items-center gap-2">
                       <span className={`h-2 w-2 shrink-0 rounded-full ${section.last_run_error ? 'bg-red-500' : section.enabled ? 'bg-emerald-500' : 'bg-muted-foreground/40'}`} />
@@ -1042,12 +1096,12 @@ export default function MissionControlPanel({
                       </span>
                     ) : null}
                   </button>
-                  <div className="flex gap-1 border-t border-border/30 px-2.5 py-2 opacity-80 group-hover:opacity-100">
+                  <div className="flex gap-1 border-t border-border/30 px-2.5 py-2 opacity-100">
                     <button
                       type="button"
-                      className="rounded px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-background hover:text-foreground"
+                      className="mc-tap-target rounded-lg px-2 py-1.5 text-[10px] text-muted-foreground hover:bg-background hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                       onClick={() => void runNow(section.section_id)}
-                      disabled={runningSectionId === section.section_id}
+                      disabled={!section.enabled || runningSectionId === section.section_id}
                       title="Run now"
                     >
                       {runningSectionId === section.section_id ? (
@@ -1059,15 +1113,27 @@ export default function MissionControlPanel({
                     </button>
                     <button
                       type="button"
-                      className="rounded px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-background hover:text-foreground"
+                      className="mc-tap-target rounded-lg px-2 py-1.5 text-[10px] text-muted-foreground hover:bg-background hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                       onClick={() => openEdit(section)}
                     >
                       Edit
                     </button>
                     <button
                       type="button"
-                      className="rounded px-1.5 py-0.5 text-[10px] text-red-600 hover:bg-background dark:text-red-400"
+                      className={`mc-tap-target rounded-lg px-2 py-1.5 text-[10px] hover:bg-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${section.enabled ? 'text-emerald-700 dark:text-emerald-300' : 'text-muted-foreground'}`}
+                      onClick={() => void toggleSectionEnabled(section)}
+                      disabled={togglingSectionId === section.section_id}
+                      aria-pressed={section.enabled}
+                      title={section.enabled ? 'Disable section' : 'Enable section'}
+                    >
+                      {togglingSectionId === section.section_id ? <Loader2 className="inline h-3 w-3 animate-spin" /> : <Power className="inline h-3 w-3" />}{' '}
+                      {section.enabled ? 'On' : 'Off'}
+                    </button>
+                    <button
+                      type="button"
+                      className="mc-tap-target rounded-lg px-2 py-1.5 text-[10px] text-red-600 hover:bg-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:text-red-400"
                       onClick={() => void deleteSection(section.section_id)}
+                      aria-label={`Delete section ${section.title}`}
                     >
                       <Trash2 className="inline h-3 w-3" />
                     </button>
@@ -1076,7 +1142,7 @@ export default function MissionControlPanel({
               ))}
               {sections.length === 0 && !loading ? (
                 <p className="px-2 py-4 text-xs text-muted-foreground">
-                  No sections yet. Create one or import from the legacy Mission Control app.
+                  No sections yet. Create one or import from the legacy Action Centre app.
                 </p>
               ) : null}
             </div>
@@ -1089,7 +1155,8 @@ export default function MissionControlPanel({
                 <button
                   type="button"
                   onClick={() => setStatusFilter('actionable')}
-                  className={`touch-manipulation whitespace-nowrap rounded-md px-2.5 py-1.5 text-xs ${
+                  aria-pressed={statusFilter === 'actionable'}
+                  className={`mc-tap-target min-h-11 touch-manipulation whitespace-nowrap rounded-lg px-3 py-2 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
                     statusFilter === 'actionable'
                       ? 'bg-accent font-medium text-foreground'
                       : 'text-muted-foreground'
@@ -1100,7 +1167,8 @@ export default function MissionControlPanel({
                 <button
                   type="button"
                   onClick={() => setStatusFilter('all')}
-                  className={`touch-manipulation whitespace-nowrap rounded-md px-2.5 py-1.5 text-xs ${
+                  aria-pressed={statusFilter === 'all'}
+                  className={`mc-tap-target min-h-11 touch-manipulation whitespace-nowrap rounded-lg px-3 py-2 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
                     statusFilter === 'all'
                       ? 'bg-accent font-medium text-foreground'
                       : 'text-muted-foreground'
@@ -1113,8 +1181,8 @@ export default function MissionControlPanel({
                 <Button
                   size="sm"
                   variant="outline"
-                  className="hidden h-8 shrink-0 touch-manipulation gap-1.5 text-xs md:inline-flex"
-                  disabled={runningSectionId === selectedSectionId}
+                  className="mc-tap-target hidden min-h-11 shrink-0 touch-manipulation gap-1.5 text-xs md:inline-flex"
+                  disabled={!selectedSection?.enabled || runningSectionId === selectedSectionId}
                   onClick={() => void runNow(selectedSectionId)}
                 >
                   {runningSectionId === selectedSectionId ? (
@@ -1149,6 +1217,16 @@ export default function MissionControlPanel({
                 const section = sections.find((s) => s.section_id === item.section_id);
                 const isEditingBody = editingBodyId === item.item_id;
                 const actionable = item.status === 'pending' || item.status === 'failed';
+                const rawReplyDraft = item.body.draft;
+                const replyDraft = typeof rawReplyDraft === 'string' && rawReplyDraft.trim()
+                  ? rawReplyDraft.trim()
+                  : null;
+                const canDraftReply = actionable && item.actions.some(
+                  (action) => action.kind === 'draft_reply' || action.id === 'draft_reply',
+                );
+                const storedReplyContext = typeof item.body.operatorContext === 'string'
+                  ? item.body.operatorContext
+                  : '';
                 return (
                   <article
                     key={item.item_id}
@@ -1181,12 +1259,65 @@ export default function MissionControlPanel({
                       </p>
                     ) : null}
 
+                    {replyDraft ? (
+                      <div className="mb-3 rounded-lg border border-primary/25 bg-primary/[0.05] p-3">
+                        <div className="mb-1 flex items-center justify-between gap-2">
+                          <p className="text-[10px] font-medium uppercase tracking-wide text-primary">
+                            Reply draft
+                          </p>
+                          {typeof item.body.draftedAt === 'string' ? (
+                            <span className="text-[10px] text-muted-foreground">
+                              {new Date(item.body.draftedAt).toLocaleString()}
+                            </span>
+                          ) : null}
+                        </div>
+                        <p className="whitespace-pre-wrap break-words text-sm leading-relaxed text-foreground">
+                          {replyDraft}
+                        </p>
+                        {actionable ? (
+                          <p className="mt-2 text-[10px] text-muted-foreground">
+                            Review this draft, then use Send reply when it is ready.
+                          </p>
+                        ) : null}
+                      </div>
+                    ) : null}
+
+                    {canDraftReply ? (
+                      <div className="mb-3 rounded-xl border border-violet-500/25 bg-violet-500/[0.05] p-3">
+                        <div className="mb-1.5 flex items-center gap-2">
+                          <MessageSquareText className="h-3.5 w-3.5 text-violet-500" />
+                          <p className="text-[10px] font-medium uppercase tracking-wide text-violet-700 dark:text-violet-300">
+                            Context for reply (optional)
+                          </p>
+                        </div>
+                        <textarea
+                          className="field-input min-h-[72px] resize-y bg-background/70 text-xs"
+                          value={replyContextId === item.item_id ? replyContext : storedReplyContext}
+                          onFocus={() => {
+                            if (replyContextId !== item.item_id) {
+                              setReplyContextId(item.item_id);
+                              setReplyContext(storedReplyContext);
+                            }
+                          }}
+                          onChange={(event) => {
+                            setReplyContextId(item.item_id);
+                            setReplyContext(event.target.value);
+                          }}
+                          placeholder="Add facts, corrections, tone, or the outcome you want the reply to aim for…"
+                          disabled={actingItemId === item.item_id}
+                        />
+                        <p className="mt-1.5 text-[10px] text-muted-foreground">
+                          Your guidance is used when you click Draft reply. Nothing is sent until you review it and click Send reply.
+                        </p>
+                      </div>
+                    ) : null}
+
                     <div className="mb-1 flex items-center justify-between gap-2">
                       <p className="text-[10px] font-medium uppercase text-muted-foreground">Body</p>
                       {actionable ? (
                         <button
                           type="button"
-                          className="inline-flex touch-manipulation items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground"
+                          className="mc-tap-target inline-flex min-h-11 touch-manipulation items-center gap-1 rounded-lg px-2 text-[10px] text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                           onClick={() => (isEditingBody ? cancelBodyEdit() : startBodyEdit(item))}
                         >
                           <Pencil className="h-3 w-3" />
@@ -1230,6 +1361,8 @@ export default function MissionControlPanel({
                       </pre>
                     )}
 
+                    <ItemSource source={item.source} />
+
                     {item.result ? (
                       <div className="mb-3">
                         <p className="mb-1 text-[10px] font-medium uppercase text-muted-foreground">
@@ -1263,7 +1396,7 @@ export default function MissionControlPanel({
                                 </p>
                                 <button
                                   type="button"
-                                  className="shrink-0 text-muted-foreground hover:text-foreground"
+                                  className="mc-tap-target shrink-0 rounded-lg text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                                   onClick={() => setPreviewData(null)}
                                   aria-label="Close preview"
                                 >
@@ -1281,14 +1414,14 @@ export default function MissionControlPanel({
                               </pre>
                             </div>
                           ) : null}
-                          <div className="flex flex-wrap gap-2">
+                          <div className="mc-item-actions sticky bottom-0 z-[1] -mx-3 -mb-3 flex flex-wrap gap-2 border-t border-border/60 bg-card/95 px-3 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] shadow-[0_-8px_18px_-18px_rgba(0,0,0,0.45)] backdrop-blur sm:-mx-4 sm:-mb-4 sm:px-4 md:static md:mx-0 md:mb-0 md:border-0 md:bg-transparent md:p-0 md:shadow-none md:backdrop-blur-none">
                             {actionable ? (
                               <button
                                 type="button"
                                 disabled={actingItemId === item.item_id || retryingItemId === item.item_id}
                                 onClick={() => void retryItem(item)}
                                 title="Re-run produce for just this item"
-                                className="inline-flex min-h-9 touch-manipulation items-center gap-1 rounded-lg border border-border bg-background px-3 py-2 text-xs font-medium text-foreground transition-colors hover:bg-muted/70 disabled:opacity-50 sm:min-h-0 sm:py-1.5"
+                                className="mc-tap-target inline-flex min-h-11 touch-manipulation items-center gap-1 rounded-lg border border-border bg-background px-3 py-2 text-xs font-medium text-foreground transition-colors hover:bg-muted/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
                               >
                                 {retryingItemId === item.item_id ? (
                                   <Loader2 className="h-3 w-3 animate-spin" />
@@ -1298,13 +1431,15 @@ export default function MissionControlPanel({
                                 Retry
                               </button>
                             ) : null}
-                            {visibleActions.map((action) => (
-                              <div key={action.id} className="flex items-center gap-1.5">
+                            {visibleActions.map((action) => {
+                              const semantics = getActionSemantics(action, item.title);
+                              return (
+                              <div key={action.id} className="flex min-w-0 flex-wrap items-center gap-1.5">
                                 <button
                                   type="button"
                                   disabled={actingItemId === item.item_id}
                                   onClick={() => void actOnItem(item, action.id)}
-                                  className={`inline-flex min-h-9 touch-manipulation items-center gap-1 rounded-lg px-3 py-2 text-xs font-medium transition-colors disabled:opacity-50 sm:min-h-0 sm:py-1.5 ${actionButtonClass(action.style)}`}
+                                  className={`mc-tap-target inline-flex min-h-11 touch-manipulation items-center gap-2 rounded-lg px-3 py-2 text-left text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 ${actionButtonClass(action.style)}`}
                                 >
                                   {actingItemId === item.item_id ? (
                                     <Loader2 className="h-3 w-3 animate-spin" />
@@ -1317,7 +1452,10 @@ export default function MissionControlPanel({
                                   ) : action.kind === 'dismiss' ? (
                                     <X className="h-3 w-3" />
                                   ) : null}
-                                  {action.label}
+                                  <span className="flex min-w-0 flex-col">
+                                    <span>{action.label}</span>
+                                    <span className="text-[9px] font-normal opacity-75">{semantics.detail}</span>
+                                  </span>
                                 </button>
                                 {actionable && action.kind === 'approve' ? (
                                   <button
@@ -1325,7 +1463,7 @@ export default function MissionControlPanel({
                                     disabled={actingItemId === item.item_id || previewingItemId === item.item_id}
                                     onClick={() => void previewItem(item, action.id)}
                                     title={`Preview “${action.label}” result`}
-                                    className="inline-flex h-9 touch-manipulation items-center gap-1 rounded-lg border border-border bg-background px-2 text-[10px] font-medium text-muted-foreground transition-colors hover:bg-muted/70 hover:text-foreground disabled:opacity-50 sm:h-auto sm:py-1.5"
+                                    className="mc-tap-target inline-flex min-h-11 touch-manipulation items-center gap-1 rounded-lg border border-border bg-background px-3 py-2 text-[10px] font-medium text-muted-foreground transition-colors hover:bg-muted/70 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
                                   >
                                     {previewingItemId === item.item_id ? (
                                       <Loader2 className="h-3 w-3 animate-spin" />
@@ -1336,7 +1474,8 @@ export default function MissionControlPanel({
                                   </button>
                                 ) : null}
                               </div>
-                            ))}
+                              );
+                            })}
                           </div>
                         </div>
                       );
@@ -1366,8 +1505,9 @@ export default function MissionControlPanel({
                 <Button
                   variant="ghost"
                   size="sm"
-                  className="h-10 w-10 touch-manipulation p-0 md:h-8 md:w-8"
+                  className="mc-tap-target h-11 w-11 touch-manipulation p-0"
                   onClick={() => setShowEditor(false)}
+                  aria-label="Close section editor"
                 >
                   <X className="h-4 w-4" />
                 </Button>
@@ -1406,7 +1546,7 @@ export default function MissionControlPanel({
                             <button
                               key={starter.label}
                               type="button"
-                              className="rounded-xl border border-border/60 bg-background/70 p-3 text-left transition hover:border-primary/30 hover:bg-primary/[0.05]"
+                              className="mc-tap-target min-h-11 touch-manipulation rounded-xl border border-border/60 bg-background/70 p-3 text-left transition hover:border-primary/30 hover:bg-primary/[0.05] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                               onClick={() => applyStarter(starter.patch)}
                             >
                               <span className="block text-xs font-semibold text-foreground">{starter.label}</span>
@@ -1765,8 +1905,8 @@ export default function MissionControlPanel({
                 </div>
               </div>
               <div className="flex justify-end gap-2 border-t border-border/60 bg-background/85 px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] lg:hidden">
-                <Button variant="ghost" size="sm" className="touch-manipulation" onClick={() => setShowEditor(false)}>Cancel</Button>
-                <Button size="sm" className="touch-manipulation" onClick={() => void saveSection()} disabled={saving || !sectionReady}>
+                <Button variant="ghost" size="sm" className="mc-tap-target min-h-11 touch-manipulation" onClick={() => setShowEditor(false)}>Cancel</Button>
+                <Button size="sm" className="mc-tap-target min-h-11 touch-manipulation" onClick={() => void saveSection()} disabled={saving || !sectionReady}>
                   {saving ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : null}{editingId ? 'Save' : 'Create'}
                 </Button>
               </div>
@@ -1778,7 +1918,7 @@ export default function MissionControlPanel({
         {showImport ? (
           <div className="absolute inset-0 z-20 flex items-end justify-center bg-background/70 p-0 backdrop-blur-sm sm:items-center sm:p-4">
             <div className="w-full max-w-md rounded-t-xl border border-border bg-background p-4 pb-[max(1rem,env(safe-area-inset-bottom))] shadow-2xl sm:rounded-xl sm:pb-4">
-              <h3 className="mb-1 text-sm font-semibold">Import from Mission Control</h3>
+              <h3 className="mb-1 text-sm font-semibold">Import from Action Centre</h3>
               <p className="mb-3 text-xs text-muted-foreground">
                 Import section configs (prompts, MCP, schedule, engine) from the legacy
                 mission-control.db. Existing items are not imported.
@@ -1792,10 +1932,10 @@ export default function MissionControlPanel({
                 />
               </Field>
               <div className="mt-4 flex justify-end gap-2">
-                <Button variant="ghost" size="sm" onClick={() => setShowImport(false)}>
+                <Button variant="ghost" size="sm" className="mc-tap-target min-h-11 touch-manipulation" onClick={() => setShowImport(false)}>
                   Cancel
                 </Button>
-                <Button size="sm" onClick={() => void runImport()} disabled={importing}>
+                <Button size="sm" className="mc-tap-target min-h-11 touch-manipulation" onClick={() => void runImport()} disabled={importing}>
                   {importing ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : null}
                   Import sections
                 </Button>
@@ -1818,6 +1958,29 @@ export default function MissionControlPanel({
         .field-input:focus {
           outline: 2px solid hsl(var(--ring));
           outline-offset: 1px;
+        }
+        @media (pointer: coarse), (max-width: 767px) {
+          .mc-tap-target {
+            min-height: 44px;
+            min-width: 44px;
+          }
+          .field-input {
+            min-height: 44px;
+            font-size: 16px;
+          }
+        }
+        @media (pointer: coarse) {
+          .mc-item-actions {
+            position: sticky;
+            margin-right: -1rem;
+            margin-bottom: -1rem;
+            margin-left: -1rem;
+            border-top-width: 1px;
+            background: hsl(var(--card) / 0.95);
+            padding: 0.75rem 1rem max(0.75rem, env(safe-area-inset-bottom));
+            box-shadow: 0 -8px 18px -18px rgb(0 0 0 / 0.45);
+            backdrop-filter: blur(8px);
+          }
         }
       `}</style>
     </div>
@@ -1865,6 +2028,29 @@ function SummaryTile({ icon, value, label }: { icon: ReactNode; value: string; l
   );
 }
 
+function ItemSource({ source }: { source: Record<string, unknown> }) {
+  const entries = Object.entries(source ?? {}).filter(([, value]) => value != null && value !== '');
+  if (entries.length === 0) return null;
+
+  return (
+    <details className="mb-3 rounded-lg border border-border/60 bg-muted/25 px-3 py-2 text-[11px] open:bg-muted/35">
+      <summary className="mc-tap-target cursor-pointer touch-manipulation py-3 font-medium text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+        Source details
+      </summary>
+      <dl className="grid min-w-0 gap-x-3 gap-y-1.5 border-t border-border/50 pt-2 sm:grid-cols-[minmax(6rem,auto)_minmax(0,1fr)]">
+        {entries.map(([key, value]) => (
+          <div key={key} className="contents">
+            <dt className="font-medium text-muted-foreground">{key.replace(/[_-]+/g, ' ')}</dt>
+            <dd className="min-w-0 whitespace-pre-wrap break-all text-foreground/90">
+              {typeof value === 'string' ? value : JSON.stringify(value, null, 2)}
+            </dd>
+          </div>
+        ))}
+      </dl>
+    </details>
+  );
+}
+
 function McpMultiSelect({
   loading,
   options,
@@ -1897,7 +2083,7 @@ function McpMultiSelect({
         return (
           <label
             key={name}
-            className={`flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-xs transition-colors ${
+            className={`mc-tap-target flex min-h-11 cursor-pointer touch-manipulation items-center gap-2 rounded-md px-2 py-2 text-xs transition-colors focus-within:ring-2 focus-within:ring-ring ${
               checked ? 'bg-primary/10 text-foreground' : 'text-muted-foreground hover:bg-muted/60'
             }`}
           >

@@ -1,40 +1,33 @@
 <!DOCTYPE html>
-<html>
+<html class="theme-fog">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#ebe4d4" id="metaThemeColor">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="CloudCLI">
+<meta name="apple-mobile-web-app-status-bar-style" content="black" id="metaStatusBar">
+<link rel="apple-touch-icon" sizes="152x152" href="/icons/icon-152x152.png">
 <title>CloudCLI Lite</title>
 <style>
-  * { box-sizing: border-box; }
-  html, body { margin: 0; padding: 0; height: 100%; background: #111; color: #eee; font-family: Helvetica, Arial, sans-serif; }
-  body.theme-light, body.theme-light html { background: #f4f4f4; color: #1a1a1a; }
-  body.theme-light .screen { background: #f4f4f4; }
-  body.theme-light h1 { color: #111; }
-  body.theme-light label { color: #444; }
-  body.theme-light input[type="text"], body.theme-light input[type="password"], body.theme-light select, body.theme-light textarea {
-    background: #fff; color: #111; border: 1px solid #ccc;
-  }
-  body.theme-light button.secondary { background: #ddd; color: #111; }
-  body.theme-light .row { border-bottom: 1px solid #ddd; }
-  body.theme-light .row .meta { color: #666; }
-  body.theme-light .topbar { background: #e8e8e8; border-bottom: 1px solid #ccc; }
-  body.theme-light .topbar .title { color: #111; }
-  body.theme-light #chatList { background: #f4f4f4; }
-  body.theme-light .msg.assistant { background: #e2e2e2; color: #111; }
-  body.theme-light .chatInputBar { background: #e8e8e8; border-top: 1px solid #ccc; }
-  body.theme-light .list { border-top: 1px solid #ddd; }
+  * { -webkit-box-sizing: border-box; box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; height: 100%; background: #eceef1; color: #2c3238; font-family: Helvetica, Arial, sans-serif; }
+  html.theme-paper, html.theme-paper body, body.theme-paper { background: #f4efe4; color: #2a261f; }
+  html.theme-fog, html.theme-fog body, body.theme-fog { background: #eceef1; color: #2c3238; }
+  html.theme-dusk, html.theme-dusk body, body.theme-dusk { background: #1c1a17; color: #e8e2d4; }
+  html.theme-ink, html.theme-ink body, body.theme-ink { background: #16181a; color: #d5d8dc; }
   body { display: -webkit-box; display: -webkit-flex; display: flex; -webkit-box-orient: vertical; -webkit-flex-direction: column; flex-direction: column; height: 100%; }
   .screen { display: none; padding: 12px; }
   .screen.active { display: block; }
-  h1 { font-size: 18px; margin: 0 0 12px 0; color: #fff; }
-  label { display: block; margin: 10px 0 4px 0; font-size: 14px; color: #ccc; }
+  h1 { font-size: 18px; margin: 0 0 12px 0; color: #2a261f; }
+  label { display: block; margin: 10px 0 4px 0; font-size: 14px; color: #8a8170; }
   input[type="text"], input[type="password"], select, textarea {
     width: 100%;
     padding: 12px;
     font-size: 16px;
-    background: #222;
-    color: #fff;
-    border: 1px solid #444;
+    background: #f4efe4;
+    color: #2a261f;
+    border: 1px solid #d5ccba;
     border-radius: 6px;
   }
   button {
@@ -43,25 +36,73 @@
     padding: 14px;
     font-size: 16px;
     margin-top: 12px;
-    background: #2a6df4;
+    background: #5b6b45;
     color: #fff;
     border: none;
     border-radius: 6px;
+    min-height: 44px;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: rgba(91,107,69,0.18);
   }
-  button.secondary { background: #333; }
+  button.secondary { background: #e4dccb; color: #2a261f; }
   button.small { width: auto; display: inline-block; padding: 8px 14px; font-size: 14px; margin-top: 0; margin-right: 8px; }
-  .row { display: -webkit-box; display: -webkit-flex; display: flex; -webkit-box-pack: justify; -webkit-justify-content: space-between; justify-content: space-between; -webkit-box-align: center; -webkit-align-items: center; align-items: center; padding: 14px 12px; border-bottom: 1px solid #333; }
-  .row .meta { font-size: 12px; color: #999; }
+  button:disabled { opacity: 0.45; }
+  .row { display: -webkit-box; display: -webkit-flex; display: flex; -webkit-box-pack: justify; -webkit-justify-content: space-between; justify-content: space-between; -webkit-box-align: center; -webkit-align-items: center; align-items: center; padding: 14px 12px; border-bottom: 1px solid #e4dccb; }
+  .row.rowLast { background: #ebe4d4; }
+  .row .meta { font-size: 12px; color: #8a8170; }
   .row .swatch { width: 12px; height: 12px; border-radius: 50%; margin-right: 10px; display: inline-block; -webkit-flex-shrink: 0; flex-shrink: 0; }
   .row .rowMain { display: -webkit-box; display: -webkit-flex; display: flex; -webkit-box-align: center; -webkit-align-items: center; align-items: center; }
-  .topbar { display: -webkit-box; display: -webkit-flex; display: flex; -webkit-box-pack: justify; -webkit-justify-content: space-between; justify-content: space-between; -webkit-box-align: center; -webkit-align-items: center; align-items: center; padding: 10px 12px; background: #1a1a1a; border-bottom: 1px solid #333; -webkit-flex-shrink: 0; flex-shrink: 0; }
-  .topbar .title { font-size: 16px; font-weight: bold; color: #fff; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .topbar { display: -webkit-box; display: -webkit-flex; display: flex; -webkit-box-pack: justify; -webkit-justify-content: space-between; justify-content: space-between; -webkit-box-align: center; -webkit-align-items: center; align-items: center; padding: 10px 12px; background: #ebe4d4; border-bottom: 1px solid #e4dccb; -webkit-flex-shrink: 0; flex-shrink: 0; }
+  .topbar .title { font-size: 16px; font-weight: bold; color: #2a261f; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .topbar button { width: auto; padding: 8px 12px; margin-top: 0; font-size: 13px; }
+  .topbar > div:last-child { display: -webkit-box; display: -webkit-flex; display: flex; -webkit-box-align: center; -webkit-align-items: center; align-items: center; }
+  .topbar > div:last-child button { margin-left: 5px; margin-right: 0; }
+  .connectionStatus { font-size: 11px; color: #8a8170; padding: 3px 8px; border-radius: 10px; background: #e4dccb; white-space: nowrap; }
+  .connectionStatus.online { color: #5b6b45; }
+  .connectionStatus.offline { color: #8b4a3a; }
+  #appErr { display: none; margin: 8px 12px; padding: 8px 10px; border-radius: 6px; background: #fde2e2; color: #8d1616; font-size: 13px; }
+  .rowActions { display: -webkit-box; display: -webkit-flex; display: flex; -webkit-flex-shrink: 0; flex-shrink: 0; margin-left: 8px; }
+  .rowActions button { width: auto; padding: 6px 8px; margin: 0 0 0 5px; font-size: 12px; }
+  .sectionTools { padding: 8px 12px; display: -webkit-box; display: -webkit-flex; display: flex; -webkit-flex-wrap: wrap; flex-wrap: wrap; }
+  .sectionTools button { width: auto; margin: 4px 6px 4px 0; padding: 9px 12px; font-size: 13px; }
+  .btnSpinner { display: inline-block; margin-right: 6px; vertical-align: middle; }
+  .btnSpinner span { display: inline-block; width: 5px; height: 5px; margin-right: 2px; border-radius: 50%; background: currentColor; -webkit-animation: pulse 1.2s infinite ease-in-out; animation: pulse 1.2s infinite ease-in-out; }
+  .btnSpinner span:nth-child(2) { -webkit-animation-delay: 0.2s; animation-delay: 0.2s; }
+  .btnSpinner span:nth-child(3) { -webkit-animation-delay: 0.4s; animation-delay: 0.4s; }
+  @media (max-width: 360px) {
+    .topbar { padding: 7px 8px; }
+    .topbar .title { font-size: 14px; max-width: 115px; }
+    .topbar button { padding: 7px 8px; font-size: 12px; }
+    .topbar > div:last-child button { margin-left: 3px; }
+    .connectionStatus { padding: 3px 5px; max-width: 72px; overflow: hidden; text-overflow: ellipsis; }
+  }
   #err { color: #ff6b6b; font-size: 13px; margin-top: 8px; min-height: 16px; }
   #chatList { padding: 10px; overflow-y: auto; -webkit-overflow-scrolling: touch; -webkit-box-flex: 1; -webkit-flex: 1 1 auto; flex: 1 1 auto; min-height: 0; }
-  .msg { margin-bottom: 10px; padding: 10px 12px; border-radius: 14px; max-width: 85%; word-wrap: break-word; overflow-wrap: break-word; }
-  .msg.user { background: #2a6df4; color: #fff; margin-left: auto; text-align: left; border-bottom-right-radius: 4px; }
-  .msg.assistant { background: #2a2a2a; color: #eee; margin-right: auto; border-bottom-left-radius: 4px; }
+  .msg { margin-bottom: 10px; padding: 10px 12px; word-wrap: break-word; overflow-wrap: break-word; }
+  .msg.user { background: #dfe8d4; color: #2a261f; margin-left: auto; text-align: left; max-width: 72%; border-radius: 14px; border-bottom-right-radius: 4px; }
+  .msg.assistant { background: transparent; color: inherit; margin-right: auto; max-width: 100%; border-radius: 0; padding: 8px 2px 10px; border-bottom: 1px solid #e4dccb; }
+  .msg .msgBody { word-wrap: break-word; overflow-wrap: break-word; }
+  .msg .msgMeta { display: -webkit-box; display: -webkit-flex; display: flex; -webkit-box-pack: justify; -webkit-justify-content: space-between; justify-content: space-between; -webkit-box-align: center; -webkit-align-items: center; align-items: center; margin-top: 6px; font-size: 11px; color: #8a8170; }
+  .msg.user .msgMeta { color: #8a8170; }
+  .msg .msgTime { -webkit-box-flex: 1; -webkit-flex: 1; flex: 1; }
+  .msg .msgCopy { width: auto; display: inline-block; padding: 2px 8px; margin-top: 0; margin-left: 8px; font-size: 11px; background: transparent; color: #8a8170; border-radius: 4px; }
+  .msg.user .msgCopy { background: transparent; color: #8a8170; }
+  #loadOlderBtn { display: block; width: 100%; margin: 0 0 10px 0; padding: 10px; font-size: 13px; background: #e4dccb; color: #2a261f; }
+  #btnLatest { display: none; position: fixed; right: 14px; bottom: 72px; z-index: 80; width: auto; margin-top: 0; padding: 10px 14px; font-size: 13px; border-radius: 20px; -webkit-box-shadow: 0 2px 8px rgba(0,0,0,0.35); box-shadow: 0 2px 8px rgba(0,0,0,0.35); }
+  #screenChat.screen.active #btnLatest { display: block; }
+  .sessionSetup { padding: 8px 12px 10px 12px; }
+  .sessionSetup .setupGrid { margin: 0 -4px; }
+  .sessionSetup .setupGrid:after { content: ''; display: table; clear: both; }
+  .sessionSetup .setupField {
+    float: left;
+    width: 50%;
+    padding: 0 4px;
+    margin-bottom: 8px;
+    -webkit-box-sizing: border-box; box-sizing: border-box;
+  }
+  .sessionSetup label { margin: 0 0 3px 0; font-size: 11px; }
+  .sessionSetup select { padding: 7px 8px; font-size: 16px; }
+  .sessionSetup #btnNewSession { margin-top: 2px; padding: 10px; font-size: 15px; }
   .msg p { margin: 0 0 8px 0; }
   .msg p:last-child { margin-bottom: 0; }
   .msg h1, .msg h2, .msg h3 { margin: 10px 0 6px 0; line-height: 1.25; }
@@ -76,25 +117,20 @@
   .msg code { font-family: Menlo, Consolas, monospace; font-size: 14px; }
   .msg pre code { background: none; padding: 0; }
   .msg :not(pre) > code { background: rgba(0,0,0,0.25); padding: 1px 5px; border-radius: 4px; }
-  .msg a { color: #8ab4ff; text-decoration: underline; word-break: break-word; }
-  .msg.user a { color: #fff; }
-  body.theme-light .msg pre { background: rgba(0,0,0,0.08); }
-  body.theme-light .msg :not(pre) > code { background: rgba(0,0,0,0.08); }
-  body.theme-light .msg blockquote { border-left-color: #999; }
-  body.theme-light .msg a { color: #1a53d6; }
-  body.theme-light .msg.user a { color: #fff; }
+  .msg a { color: #4a5c32; text-decoration: underline; word-break: break-word; }
+  .msg.user a { color: #4a5c32; }
   .msg .md-table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 0 0 8px 0; }
   .msg table.md-table { white-space: normal; border-collapse: collapse; width: 100%; font-size: 13px; }
   .msg table.md-table th, .msg table.md-table td { padding: 6px 8px; border: 1px solid #555; text-align: left; }
   .msg table.md-table th { font-weight: bold; }
-  body.theme-light .msg table.md-table th, body.theme-light .msg table.md-table td { border-color: #ccc; }
-  .msg.typing { display: -webkit-box; display: -webkit-flex; display: flex; -webkit-box-align: center; -webkit-align-items: center; align-items: center; color: #999; font-size: 13px; }
+  body.theme-paper .msg table.md-table th, body.theme-paper .msg table.md-table td { border-color: #d5ccba; }
+  .msg.typing { display: -webkit-box; display: -webkit-flex; display: flex; -webkit-box-align: center; -webkit-align-items: center; align-items: center; color: #8a8170; font-size: 13px; }
   .msg.typing .typingDots { display: inline-block; margin-right: 8px; }
   .msg.typing .typingDots span { display: inline-block; width: 6px; height: 6px; margin-right: 3px; border-radius: 50%; background: #999; -webkit-animation: pulse 1.2s infinite ease-in-out; animation: pulse 1.2s infinite ease-in-out; }
   .msg.typing .typingDots span:nth-child(2) { -webkit-animation-delay: 0.2s; animation-delay: 0.2s; }
   .msg.typing .typingDots span:nth-child(3) { -webkit-animation-delay: 0.4s; animation-delay: 0.4s; }
-  body.theme-light .msg.typing { color: #777; }
-  body.theme-light .msg.typing .typingDots span { background: #777; }
+  body.theme-paper .msg.typing { color: #8a8170; }
+  body.theme-paper .msg.typing .typingDots span { background: #8a8170; }
   @-webkit-keyframes pulse {
     0%, 80%, 100% { opacity: 0.3; }
     40% { opacity: 1; }
@@ -111,35 +147,308 @@
     height: 100%;
     padding: 0;
   }
-  .chatInputBar { display: -webkit-box; display: -webkit-flex; display: flex; padding: 8px; border-top: 1px solid #333; background: #1a1a1a; -webkit-flex-shrink: 0; flex-shrink: 0; }
+  .chatInputBar { display: -webkit-box; display: -webkit-flex; display: flex; padding: 8px; border-top: 1px solid #e4dccb; background: #ebe4d4; -webkit-flex-shrink: 0; flex-shrink: 0; }
   .chatInputBar textarea { -webkit-box-flex: 1; -webkit-flex: 1; flex: 1; resize: none; height: 44px; }
   .chatInputBar button { width: auto; margin-top: 0; margin-left: 8px; padding: 0 16px; }
-  .list { border-top: 1px solid #333; }
-  .permCard { margin-bottom: 10px; padding: 10px 12px; border-radius: 10px; background: #2a2a2a; border: 1px solid #444; max-width: 92%; }
-  body.theme-light .permCard { background: #e2e2e2; border-color: #ccc; }
+  .list { border-top: 1px solid #e4dccb; }
+  .permCard { margin-bottom: 10px; padding: 10px 12px; border-radius: 10px; background: #ebe4d4; border: 1px solid #e4dccb; max-width: 92%; }
   .permCard .permTitle { font-weight: bold; margin-bottom: 6px; }
   .permCard .permInput { font-family: Menlo, Consolas, monospace; font-size: 12px; background: rgba(0,0,0,0.25); padding: 6px 8px; border-radius: 6px; margin-bottom: 8px; white-space: pre-wrap; word-break: break-word; }
-  body.theme-light .permCard .permInput { background: rgba(0,0,0,0.08); }
+  body.theme-paper .permCard .permInput { background: rgba(42,38,31,0.06); }
   .permCard .permBtns { display: -webkit-box; display: -webkit-flex; display: flex; }
   .permCard .permBtns button { -webkit-box-flex: 1; -webkit-flex: 1; flex: 1; margin-top: 0; margin-right: 8px; }
   .permCard .permBtns button:last-child { margin-right: 0; }
-  .permCard .permBtn.allow { background: #2a6df4; }
+  .permCard .permBtn.allow { background: #5b6b45; }
   .permCard .permBtn.deny { background: #a33; }
   .permCard .permStatus { font-size: 13px; color: #999; text-align: center; }
-  .reviewCard { margin-bottom: 10px; padding: 12px; border-radius: 10px; background: #2a2a2a; border: 1px solid #444; }
-  body.theme-light .reviewCard { background: #e2e2e2; border-color: #ccc; }
+  .reviewCard { margin-bottom: 10px; padding: 12px; border-radius: 10px; background: #ebe4d4; border: 1px solid #e4dccb; }
+  #screenReview.screen.active { display: -webkit-box; display: -webkit-flex; display: flex; -webkit-box-orient: vertical; -webkit-flex-direction: column; flex-direction: column; height: 100%; min-height: 0; padding: 0; }
+  #screenReview .topbar { position: relative; z-index: 2; }
+  #reviewList { overflow-y: auto; -webkit-overflow-scrolling: touch; -webkit-box-flex: 1; -webkit-flex: 1 1 auto; flex: 1 1 auto; min-height: 0; padding: 12px; padding-bottom: calc(20px + constant(safe-area-inset-bottom)); padding-bottom: calc(20px + env(safe-area-inset-bottom)); }
+  .reviewSection { margin-bottom: 18px; }
+  .reviewSectionTitle { margin: 2px 2px 10px; font-size: 15px; font-weight: bold; }
   .reviewCard .reviewTitle { font-weight: bold; margin-bottom: 6px; }
   .reviewCard .reviewSummary { font-size: 13px; color: #999; margin-bottom: 8px; }
   .reviewCard .reviewStatus { font-size: 12px; color: #999; margin-bottom: 8px; }
-  .reviewCard .reviewBtns { display: -webkit-box; display: -webkit-flex; display: flex; -webkit-flex-wrap: wrap; flex-wrap: wrap; }
-  .reviewCard .reviewBtns button { -webkit-box-flex: 1; -webkit-flex: 1; flex: 1; margin-top: 0; margin-right: 8px; min-width: 80px; }
-  .reviewCard .reviewBtns button:last-child { margin-right: 0; }
-  #ptrBar { display: none; position: fixed; top: 0; left: 0; right: 0; z-index: 999; text-align: center; padding: 8px 0; font-size: 12px; background: #2a6df4; color: #fff; }
+  .reviewCard .reviewFeedback { min-height: 18px; margin: 4px 0 8px; font-size: 13px; color: #4a5c32; }
+  .reviewCard .reviewFeedback.success { color: #28733d; }
+  .reviewCard .reviewFeedback.error, #reviewList > .reviewFeedback.error { color: #a33; }
+  .reviewCard .reviewBtns { position: -webkit-sticky; position: sticky; bottom: 0; display: -webkit-box; display: -webkit-flex; display: flex; -webkit-flex-wrap: wrap; flex-wrap: wrap; margin: 0 -4px -4px; padding-top: 4px; background: inherit; }
+  .reviewCard .reviewBtns button { -webkit-box-flex: 1; -webkit-flex: 1 1 120px; flex: 1 1 120px; min-width: 100px; min-height: 44px; margin: 4px; padding: 10px 12px; touch-action: manipulation; }
+  .reviewCard .reviewBtns button.destructive { background: #a33; color: #fff; }
+
+  #toolOutput pre { white-space: pre-wrap; word-break: break-word; font-size: 12px; max-height: 420px; overflow: auto; }
+  .gitSection { padding: 12px; }
+  .gitBranchRow { display: -webkit-box; display: -webkit-flex; display: flex; -webkit-box-align: center; -webkit-align-items: center; align-items: center; margin-bottom: 10px; }
+  .gitBranchRow select { -webkit-box-flex: 1; -webkit-flex: 1; flex: 1; margin-right: 8px; }
+  .gitBranchRow button { width: auto; margin-top: 0; -webkit-flex-shrink: 0; flex-shrink: 0; }
+  .gitCurrentBranch { font-size: 14px; margin-bottom: 10px; color: #8a8170; }
+  .gitBadge { display: inline-block; min-width: 18px; padding: 2px 6px; margin-right: 8px; border-radius: 4px; font-size: 11px; font-weight: bold; text-align: center; background: #555; color: #fff; -webkit-flex-shrink: 0; flex-shrink: 0; }
+  .gitBadge.M { background: #c90; }
+  .gitBadge.A { background: #2a6; }
+  .gitBadge.D { background: #a33; }
+  .gitBadge.U { background: #66a; }
+  .gitBadge.S { background: #5b6b45; }
+  .gitFileRow .rowMain { -webkit-box-flex: 1; -webkit-flex: 1; flex: 1; min-width: 0; }
+  .gitFileRow .gitFileName { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
+  .gitFileRow input[type="checkbox"] { margin-right: 10px; width: 18px; height: 18px; -webkit-flex-shrink: 0; flex-shrink: 0; }
+  #gitDiff { margin: 12px 0 0 0; padding: 8px 0; border-radius: 6px; background: #f4efe4; border: 1px solid #d5ccba; color: #2a261f; font-family: Menlo, Consolas, monospace; font-size: 12px; overflow-x: auto; -webkit-overflow-scrolling: touch; max-height: 280px; overflow-y: auto; display: none; }
+  #gitDiff .diffLine { display: block; white-space: pre-wrap; word-wrap: break-word; padding: 0 10px; }
+  #gitDiff .diffAdd { color: #7dce8a; background: #16351c; }
+  #gitDiff .diffDel { color: #f08a8a; background: #3a1818; }
+  #gitDiff .diffHunk { color: #7eb6ff; background: #1a2740; }
+  #gitDiff .diffMeta { color: #999; }
+  body.theme-paper #gitDiff .diffAdd { color: #0a7a2f; background: #e3f8e8; }
+  body.theme-paper #gitDiff .diffDel { color: #b42318; background: #fde8e6; }
+  body.theme-paper #gitDiff .diffHunk { color: #4a5c32; background: #e8efe0; }
+  body.theme-paper #gitDiff .diffMeta { color: #8a8170; }
+  #gitErr { color: #ff6b6b; font-size: 13px; margin: 8px 0; min-height: 16px; }
+  #gitCommitMsg { height: 72px; resize: vertical; }
+  .gitCommitRow { margin-top: 12px; }
+  .gitCommitRow button { margin-top: 8px; }
+  .chatInputBar #btnMic { display: none; width: auto; margin-top: 0; margin-left: 8px; padding: 0 12px; background: #e4dccb; color: #2a261f; }
+  .chatInputBar #btnMic.listening { background: #a33; color: #fff; }
+  #ptrBar { display: none; position: fixed; top: 0; left: 0; right: 0; z-index: 999; text-align: center; padding: 8px 0; font-size: 12px; background: #5b6b45; color: #fff; }
+
+  html.theme-paper .screen, body.theme-paper .screen { background: #f4efe4; }
+  html.theme-paper h1, body.theme-paper h1 { color: #2a261f; }
+  html.theme-paper label, body.theme-paper label { color: #8a8170; }
+  html.theme-paper input[type="text"], html.theme-paper input[type="password"], html.theme-paper select, html.theme-paper textarea,
+  body.theme-paper input[type="text"], body.theme-paper input[type="password"], body.theme-paper select, body.theme-paper textarea {
+    background: #f4efe4; color: #2a261f; border: 1px solid #d5ccba;
+  }
+  html.theme-paper button, body.theme-paper button { background: #5b6b45; color: #fff; }
+  html.theme-paper button.secondary, body.theme-paper button.secondary { background: #e4dccb; color: #2a261f; }
+  html.theme-paper .row, body.theme-paper .row { border-bottom: 1px solid #e4dccb; }
+  html.theme-paper .row .meta, body.theme-paper .row .meta { color: #8a8170; }
+  html.theme-paper .row.rowLast, body.theme-paper .row.rowLast { background: #ebe4d4; }
+  html.theme-paper .topbar, body.theme-paper .topbar { background: #ebe4d4; border-bottom: 1px solid #e4dccb; }
+  html.theme-paper .topbar .title, body.theme-paper .topbar .title { color: #2a261f; }
+  html.theme-paper #chatList, body.theme-paper #chatList { background: #f4efe4; }
+  html.theme-paper .msg.user, body.theme-paper .msg.user { background: #dfe8d4; color: #2a261f; }
+  html.theme-paper .msg.assistant, body.theme-paper .msg.assistant { background: transparent; color: #2a261f; border-bottom: 1px solid #e4dccb; }
+  html.theme-paper .msgMeta, body.theme-paper .msgMeta, html.theme-paper .msg .msgMeta, body.theme-paper .msg .msgMeta { color: #8a8170; }
+  html.theme-paper .msgCopy, body.theme-paper .msgCopy { background: transparent; color: #8a8170; }
+  html.theme-paper .chatInputBar, body.theme-paper .chatInputBar { background: #ebe4d4; border-top: 1px solid #e4dccb; }
+  html.theme-paper .list, body.theme-paper .list { border-top: 1px solid #e4dccb; }
+  html.theme-paper #btnLatest, body.theme-paper #btnLatest { background: #5b6b45; color: #fff; }
+  html.theme-paper #loadOlderBtn, body.theme-paper #loadOlderBtn { background: #e4dccb; color: #2a261f; }
+  html.theme-paper .connectionStatus, body.theme-paper .connectionStatus { background: #e4dccb; color: #8a8170; }
+  html.theme-paper .connectionStatus.online, body.theme-paper .connectionStatus.online { color: #5b6b45; }
+  html.theme-paper .connectionStatus.offline, body.theme-paper .connectionStatus.offline { color: #8b4a3a; }
+  html.theme-paper .msg a, body.theme-paper .msg a { color: #4a5c32; }
+  html.theme-paper .msg pre, body.theme-paper .msg pre { background: rgba(42,38,31,0.06); }
+  html.theme-paper .msg :not(pre) > code, body.theme-paper .msg :not(pre) > code { background: rgba(42,38,31,0.06); }
+
+  html.theme-dusk, html.theme-dusk body, body.theme-dusk { background: #1c1a17; color: #e8e2d4; }
+  html.theme-dusk .screen, body.theme-dusk .screen { background: #1c1a17; }
+  html.theme-dusk h1, body.theme-dusk h1 { color: #e8e2d4; }
+  html.theme-dusk label, body.theme-dusk label { color: #9a917f; }
+  html.theme-dusk input[type="text"], html.theme-dusk input[type="password"], html.theme-dusk select, html.theme-dusk textarea,
+  body.theme-dusk input[type="text"], body.theme-dusk input[type="password"], body.theme-dusk select, body.theme-dusk textarea {
+    background: #1c1a17; color: #e8e2d4; border: 1px solid #3a352c;
+  }
+  html.theme-dusk button, body.theme-dusk button { background: #6b7a52; color: #fff; }
+  html.theme-dusk button.secondary, body.theme-dusk button.secondary { background: #3a352c; color: #e8e2d4; }
+  html.theme-dusk .row, body.theme-dusk .row { border-bottom: 1px solid #3a352c; }
+  html.theme-dusk .row .meta, body.theme-dusk .row .meta { color: #9a917f; }
+  html.theme-dusk .row.rowLast, body.theme-dusk .row.rowLast { background: #25221c; }
+  html.theme-dusk .topbar, body.theme-dusk .topbar { background: #25221c; border-bottom: 1px solid #3a352c; }
+  html.theme-dusk .topbar .title, body.theme-dusk .topbar .title { color: #e8e2d4; }
+  html.theme-dusk #chatList, body.theme-dusk #chatList { background: #1c1a17; }
+  html.theme-dusk .msg.user, body.theme-dusk .msg.user { background: #3d4a38; color: #e8e2d4; }
+  html.theme-dusk .msg.assistant, body.theme-dusk .msg.assistant { background: transparent; color: #e8e2d4; border-bottom: 1px solid #3a352c; }
+  html.theme-dusk .msgMeta, body.theme-dusk .msgMeta, html.theme-dusk .msg .msgMeta, body.theme-dusk .msg .msgMeta { color: #9a917f; }
+  html.theme-dusk .msgCopy, body.theme-dusk .msgCopy { background: transparent; color: #9a917f; }
+  html.theme-dusk .chatInputBar, body.theme-dusk .chatInputBar { background: #25221c; border-top: 1px solid #3a352c; }
+  html.theme-dusk .list, body.theme-dusk .list { border-top: 1px solid #3a352c; }
+  html.theme-dusk #btnLatest, body.theme-dusk #btnLatest { background: #6b7a52; color: #fff; }
+  html.theme-dusk #loadOlderBtn, body.theme-dusk #loadOlderBtn { background: #3a352c; color: #e8e2d4; }
+  html.theme-dusk .connectionStatus, body.theme-dusk .connectionStatus { background: #3a352c; color: #9a917f; }
+  html.theme-dusk .connectionStatus.online, body.theme-dusk .connectionStatus.online { color: #8fa66e; }
+  html.theme-dusk .connectionStatus.offline, body.theme-dusk .connectionStatus.offline { color: #c47a6a; }
+  html.theme-dusk #appErr, body.theme-dusk #appErr { background: #4a1818; color: #ffd0d0; }
+  html.theme-dusk .msg a, body.theme-dusk .msg a { color: #b8c99a; }
+  html.theme-dusk .msg.user a, body.theme-dusk .msg.user a { color: #b8c99a; }
+  html.theme-dusk .msg pre, body.theme-dusk .msg pre { background: rgba(0,0,0,0.35); }
+  html.theme-dusk .msg :not(pre) > code, body.theme-dusk .msg :not(pre) > code { background: rgba(0,0,0,0.25); }
+  html.theme-dusk .msg blockquote, body.theme-dusk .msg blockquote { border-left-color: #3a352c; }
+  html.theme-dusk .msg table.md-table th, html.theme-dusk .msg table.md-table td,
+  body.theme-dusk .msg table.md-table th, body.theme-dusk .msg table.md-table td { border-color: #3a352c; }
+  html.theme-dusk .msg.typing, body.theme-dusk .msg.typing { color: #9a917f; }
+  html.theme-dusk .msg.typing .typingDots span, body.theme-dusk .msg.typing .typingDots span { background: #9a917f; }
+  html.theme-dusk .permCard, body.theme-dusk .permCard { background: #25221c; border-color: #3a352c; }
+  html.theme-dusk .reviewCard, body.theme-dusk .reviewCard { background: #25221c; border-color: #3a352c; }
+  html.theme-dusk .gitCurrentBranch, body.theme-dusk .gitCurrentBranch { color: #9a917f; }
+  html.theme-dusk #gitDiff, body.theme-dusk #gitDiff { background: #1c1a17; border-color: #3a352c; color: #e8e2d4; }
+  html.theme-dusk #ptrBar, body.theme-dusk #ptrBar { background: #6b7a52; color: #fff; }
+  html.theme-dusk .chatInputBar #btnMic, body.theme-dusk .chatInputBar #btnMic { background: #3a352c; color: #e8e2d4; }
+
+  html.theme-fog, html.theme-fog body, body.theme-fog { background: #eceef1; color: #2c3238; }
+  html.theme-fog .screen, body.theme-fog .screen { background: #eceef1; }
+  html.theme-fog h1, body.theme-fog h1 { color: #2c3238; }
+  html.theme-fog label, body.theme-fog label { color: #6e7780; }
+  html.theme-fog input[type="text"], html.theme-fog input[type="password"], html.theme-fog select, html.theme-fog textarea,
+  body.theme-fog input[type="text"], body.theme-fog input[type="password"], body.theme-fog select, body.theme-fog textarea {
+    background: #f5f6f8; color: #2c3238; border: 1px solid #d4dae0;
+  }
+  html.theme-fog button, body.theme-fog button { background: #5a6b78; color: #fff; }
+  html.theme-fog button.secondary, body.theme-fog button.secondary { background: #dce1e6; color: #2c3238; }
+  html.theme-fog .row, body.theme-fog .row { border-bottom: 1px solid #dce1e6; }
+  html.theme-fog .row .meta, body.theme-fog .row .meta { color: #6e7780; }
+  html.theme-fog .row.rowLast, body.theme-fog .row.rowLast { background: #e2e6ea; }
+  html.theme-fog .topbar, body.theme-fog .topbar { background: #e2e6ea; border-bottom: 1px solid #dce1e6; }
+  html.theme-fog .topbar .title, body.theme-fog .topbar .title { color: #2c3238; }
+  html.theme-fog #chatList, body.theme-fog #chatList { background: #eceef1; }
+  html.theme-fog .msg.user, body.theme-fog .msg.user { background: #d8e0e6; color: #2c3238; }
+  html.theme-fog .msg.assistant, body.theme-fog .msg.assistant { background: transparent; color: #2c3238; border-bottom: 1px solid #dce1e6; }
+  html.theme-fog .msgMeta, body.theme-fog .msgMeta, html.theme-fog .msg .msgMeta, body.theme-fog .msg .msgMeta { color: #6e7780; }
+  html.theme-fog .msgCopy, body.theme-fog .msgCopy { background: transparent; color: #6e7780; }
+  html.theme-fog .chatInputBar, body.theme-fog .chatInputBar { background: #e2e6ea; border-top: 1px solid #dce1e6; }
+  html.theme-fog .list, body.theme-fog .list { border-top: 1px solid #dce1e6; }
+  html.theme-fog #btnLatest, body.theme-fog #btnLatest { background: #5a6b78; color: #fff; }
+  html.theme-fog #loadOlderBtn, body.theme-fog #loadOlderBtn { background: #dce1e6; color: #2c3238; }
+  html.theme-fog .connectionStatus, body.theme-fog .connectionStatus { background: #dce1e6; color: #6e7780; }
+  html.theme-fog .connectionStatus.online, body.theme-fog .connectionStatus.online { color: #3d6b4f; }
+  html.theme-fog .connectionStatus.offline, body.theme-fog .connectionStatus.offline { color: #8b4a3a; }
+  html.theme-fog .msg a, body.theme-fog .msg a { color: #3d5568; }
+  html.theme-fog .msg pre, body.theme-fog .msg pre { background: rgba(44,50,56,0.06); }
+  html.theme-fog .msg :not(pre) > code, body.theme-fog .msg :not(pre) > code { background: rgba(44,50,56,0.06); }
+  html.theme-fog .msg table.md-table th, html.theme-fog .msg table.md-table td,
+  body.theme-fog .msg table.md-table th, body.theme-fog .msg table.md-table td { border-color: #d4dae0; }
+  html.theme-fog .msg.typing, body.theme-fog .msg.typing { color: #6e7780; }
+  html.theme-fog .msg.typing .typingDots span, body.theme-fog .msg.typing .typingDots span { background: #6e7780; }
+  html.theme-fog .permCard, body.theme-fog .permCard { background: #e2e6ea; border-color: #dce1e6; }
+  html.theme-fog .permCard .permInput, body.theme-fog .permCard .permInput { background: rgba(44,50,56,0.06); }
+  html.theme-fog .reviewCard, body.theme-fog .reviewCard { background: #e2e6ea; border-color: #dce1e6; }
+  html.theme-fog .gitCurrentBranch, body.theme-fog .gitCurrentBranch { color: #6e7780; }
+  html.theme-fog #gitDiff, body.theme-fog #gitDiff { background: #f5f6f8; border-color: #d4dae0; color: #2c3238; }
+  html.theme-fog #gitDiff .diffAdd, body.theme-fog #gitDiff .diffAdd { color: #0a7a2f; background: #e3f8e8; }
+  html.theme-fog #gitDiff .diffDel, body.theme-fog #gitDiff .diffDel { color: #b42318; background: #fde8e6; }
+  html.theme-fog #gitDiff .diffHunk, body.theme-fog #gitDiff .diffHunk { color: #3d5568; background: #e4eaf0; }
+  html.theme-fog #gitDiff .diffMeta, body.theme-fog #gitDiff .diffMeta { color: #6e7780; }
+  html.theme-fog #ptrBar, body.theme-fog #ptrBar { background: #5a6b78; color: #fff; }
+  html.theme-fog .chatInputBar #btnMic, body.theme-fog .chatInputBar #btnMic { background: #dce1e6; color: #2c3238; }
+
+  html.theme-ink, html.theme-ink body, body.theme-ink { background: #16181a; color: #d5d8dc; }
+  html.theme-ink .screen, body.theme-ink .screen { background: #16181a; }
+  html.theme-ink h1, body.theme-ink h1 { color: #d5d8dc; }
+  html.theme-ink label, body.theme-ink label { color: #8b9198; }
+  html.theme-ink input[type="text"], html.theme-ink input[type="password"], html.theme-ink select, html.theme-ink textarea,
+  body.theme-ink input[type="text"], body.theme-ink input[type="password"], body.theme-ink select, body.theme-ink textarea {
+    background: #16181a; color: #d5d8dc; border: 1px solid #2e3338;
+  }
+  html.theme-ink button, body.theme-ink button { background: #6d7a86; color: #fff; }
+  html.theme-ink button.secondary, body.theme-ink button.secondary { background: #2a2e32; color: #d5d8dc; }
+  html.theme-ink .row, body.theme-ink .row { border-bottom: 1px solid #2e3338; }
+  html.theme-ink .row .meta, body.theme-ink .row .meta { color: #8b9198; }
+  html.theme-ink .row.rowLast, body.theme-ink .row.rowLast { background: #222528; }
+  html.theme-ink .topbar, body.theme-ink .topbar { background: #222528; border-bottom: 1px solid #2e3338; }
+  html.theme-ink .topbar .title, body.theme-ink .topbar .title { color: #d5d8dc; }
+  html.theme-ink #chatList, body.theme-ink #chatList { background: #16181a; }
+  html.theme-ink .msg.user, body.theme-ink .msg.user { background: #2a333c; color: #d5d8dc; }
+  html.theme-ink .msg.assistant, body.theme-ink .msg.assistant { background: transparent; color: #d5d8dc; border-bottom: 1px solid #2e3338; }
+  html.theme-ink .msgMeta, body.theme-ink .msgMeta, html.theme-ink .msg .msgMeta, body.theme-ink .msg .msgMeta { color: #8b9198; }
+  html.theme-ink .msgCopy, body.theme-ink .msgCopy { background: transparent; color: #8b9198; }
+  html.theme-ink .chatInputBar, body.theme-ink .chatInputBar { background: #222528; border-top: 1px solid #2e3338; }
+  html.theme-ink .list, body.theme-ink .list { border-top: 1px solid #2e3338; }
+  html.theme-ink #btnLatest, body.theme-ink #btnLatest { background: #6d7a86; color: #fff; }
+  html.theme-ink #loadOlderBtn, body.theme-ink #loadOlderBtn { background: #2a2e32; color: #d5d8dc; }
+  html.theme-ink .connectionStatus, body.theme-ink .connectionStatus { background: #2a2e32; color: #8b9198; }
+  html.theme-ink .connectionStatus.online, body.theme-ink .connectionStatus.online { color: #8fa66e; }
+  html.theme-ink .connectionStatus.offline, body.theme-ink .connectionStatus.offline { color: #c47a6a; }
+  html.theme-ink #appErr, body.theme-ink #appErr { background: #4a1818; color: #ffd0d0; }
+  html.theme-ink .msg a, body.theme-ink .msg a { color: #a8b8c8; }
+  html.theme-ink .msg.user a, body.theme-ink .msg.user a { color: #a8b8c8; }
+  html.theme-ink .msg pre, body.theme-ink .msg pre { background: rgba(0,0,0,0.35); }
+  html.theme-ink .msg :not(pre) > code, body.theme-ink .msg :not(pre) > code { background: rgba(0,0,0,0.25); }
+  html.theme-ink .msg blockquote, body.theme-ink .msg blockquote { border-left-color: #2e3338; }
+  html.theme-ink .msg table.md-table th, html.theme-ink .msg table.md-table td,
+  body.theme-ink .msg table.md-table th, body.theme-ink .msg table.md-table td { border-color: #2e3338; }
+  html.theme-ink .msg.typing, body.theme-ink .msg.typing { color: #8b9198; }
+  html.theme-ink .msg.typing .typingDots span, body.theme-ink .msg.typing .typingDots span { background: #8b9198; }
+  html.theme-ink .permCard, body.theme-ink .permCard { background: #222528; border-color: #2e3338; }
+  html.theme-ink .reviewCard, body.theme-ink .reviewCard { background: #222528; border-color: #2e3338; }
+  html.theme-ink .gitCurrentBranch, body.theme-ink .gitCurrentBranch { color: #8b9198; }
+  html.theme-ink #gitDiff, body.theme-ink #gitDiff { background: #16181a; border-color: #2e3338; color: #d5d8dc; }
+  html.theme-ink #ptrBar, body.theme-ink #ptrBar { background: #6d7a86; color: #fff; }
+  html.theme-ink .chatInputBar #btnMic, body.theme-ink .chatInputBar #btnMic { background: #2a2e32; color: #d5d8dc; }
+
+  #themePicker, #logoutConfirm { display: none; position: fixed; left: 0; right: 0; top: 0; bottom: 0; z-index: 2000; background: rgba(0,0,0,0.4); padding: 28px 16px; }
+  #themePicker.open, #logoutConfirm.open { display: block; }
+  #themePicker .themePickerCard, #logoutConfirm .themePickerCard { max-width: 360px; margin: 0 auto; padding: 14px; border-radius: 10px; background: #e2e6ea; }
+  html.theme-paper #themePicker .themePickerCard, html.theme-paper #logoutConfirm .themePickerCard { background: #ebe4d4; }
+  html.theme-dusk #themePicker .themePickerCard, html.theme-dusk #logoutConfirm .themePickerCard { background: #25221c; }
+  html.theme-ink #themePicker .themePickerCard, html.theme-ink #logoutConfirm .themePickerCard { background: #222528; }
+  html.theme-fog #themePicker .themePickerCard, html.theme-fog #logoutConfirm .themePickerCard { background: #e2e6ea; }
+  #themePicker .themePickerTitle, #logoutConfirm .themePickerTitle { font-size: 16px; font-weight: bold; margin: 0 0 10px 0; }
+  #logoutConfirm .themeHint { font-size: 13px; opacity: 0.75; }
+  #themePicker .themeChoice { text-align: left; margin-top: 8px; }
+  #themePicker .themeChoice .themeHint { display: block; font-size: 12px; opacity: 0.7; margin-top: 3px; }
+  #themePicker .themeChoice.current { outline: 2px solid currentColor; }
+  #themePicker .themePickerCard { max-height: 90%; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+  #themePicker .typeSizeLabel { margin: 14px 0 6px 0; font-size: 13px; font-weight: bold; }
+  #themePicker .typeSizeRow { margin: 0 -4px 8px -4px; }
+  #themePicker .typeSizeRow:after { content: ''; display: table; clear: both; }
+  #themePicker .typeSizeBtn {
+    float: left;
+    width: 33.33%;
+    -webkit-box-sizing: border-box; box-sizing: border-box;
+    margin-top: 0;
+    padding: 10px 4px;
+    text-align: center;
+  }
+  #themePicker .typeSizeBtn.current { outline: 2px solid currentColor; }
+
+  html.font-sm, html.font-sm body, body.font-sm { font-size: 14px; }
+  html.font-sm .msg { font-size: 14px; }
+  html.font-sm .topbar .title { font-size: 15px; }
+  html.font-sm button { font-size: 15px; }
+  html.font-md, html.font-md body, body.font-md { font-size: 16px; }
+  html.font-md .msg { font-size: 16px; }
+  html.font-lg, html.font-lg body, body.font-lg { font-size: 18px; }
+  html.font-lg .msg { font-size: 18px; }
+  html.font-lg .msg h1 { font-size: 22px; }
+  html.font-lg .msg h2 { font-size: 20px; }
+  html.font-lg .topbar .title { font-size: 18px; }
+  html.font-lg button { font-size: 17px; }
+  html.font-lg .chatInputBar textarea { font-size: 18px; height: 52px; }
+  html.font-lg .msg .msgMeta { font-size: 12px; }
+
+  .sessionSetup .setupGrid { display: none; }
+  .sessionSetup.open .setupGrid { display: block; }
+  .sessionSetup #btnCancelNewSession { display: none; margin-top: 8px; }
+  .sessionSetup.open #btnCancelNewSession { display: block; }
 </style>
 </head>
-<body>
+<body class="theme-fog">
 
 <div id="ptrBar">Refreshing&hellip;</div>
+<div id="appErr"></div>
+<div id="themePicker">
+  <div class="themePickerCard">
+    <div class="themePickerTitle">Theme</div>
+    <button class="themeChoice secondary" id="themeChoiceFog" data-theme="fog">Fog<span class="themeHint">Cool gray — easiest on the eyes</span></button>
+    <button class="themeChoice secondary" id="themeChoicePaper" data-theme="paper">Paper<span class="themeHint">Warm cream + olive</span></button>
+    <button class="themeChoice secondary" id="themeChoiceDusk" data-theme="dusk">Dusk<span class="themeHint">Warm brown night</span></button>
+    <button class="themeChoice secondary" id="themeChoiceInk" data-theme="ink">Ink<span class="themeHint">Cool dark gray</span></button>
+    <div class="typeSizeLabel">Type size</div>
+    <div class="typeSizeRow">
+      <button class="secondary typeSizeBtn" id="typeSizeSm" data-size="sm">S</button>
+      <button class="secondary typeSizeBtn" id="typeSizeMd" data-size="md">M</button>
+      <button class="secondary typeSizeBtn" id="typeSizeLg" data-size="lg">L</button>
+    </div>
+    <button class="secondary" id="btnThemePickerClose">Close</button>
+  </div>
+</div>
+<div id="logoutConfirm">
+  <div class="themePickerCard">
+    <div class="themePickerTitle">Log out?</div>
+    <div class="themeHint" style="margin-bottom:10px;">You'll need to sign in again.</div>
+    <button class="secondary" id="btnLogoutCancel">Cancel</button>
+    <button id="btnLogoutConfirm">Log out</button>
+  </div>
+</div>
 
 <div id="screenLogin" class="screen active">
   <div class="topbar">
@@ -165,7 +474,7 @@
     <div class="title">Projects</div>
     <div>
       <button class="secondary small" id="btnThemeCategories">Theme</button>
-      <button class="secondary small" id="btnReviewFromCategories">Review</button>
+      <button class="secondary small" id="btnReviewFromCategories" aria-label="Action Centre">MC</button>
       <button class="secondary small" id="btnLogoutCategories">Logout</button>
     </div>
   </div>
@@ -177,6 +486,7 @@
     <div class="title" id="projectsTitle">Projects</div>
     <div>
       <button class="secondary small" id="btnThemeProjects">Theme</button>
+      <button class="secondary small" id="btnGitFromProjects" style="display:none;">Git</button>
       <button class="secondary small" id="btnBackToCategories">Back</button>
     </div>
   </div>
@@ -188,42 +498,61 @@
     <div class="title" id="sessionsTitle">Sessions</div>
     <div>
       <button class="secondary small" id="btnThemeSessions">Theme</button>
+      <button class="secondary small" id="btnGitFromSessions">Git</button>
       <button class="secondary small" id="btnBackToProjects">Back</button>
     </div>
   </div>
-  <div style="padding:12px;">
-    <label>Provider</label>
-    <select id="providerSelect"></select>
-    <label>Model</label>
-    <select id="modelSelect"></select>
-    <label>Effort</label>
-    <select id="effortSelect"></select>
-    <label>Permissions mode</label>
-    <select id="permissionModeSelect"></select>
+  <div class="sessionSetup" id="sessionSetup">
+    <div class="setupGrid" id="sessionSetupGrid">
+      <div class="setupField">
+        <label>Provider</label>
+        <select id="providerSelect"></select>
+      </div>
+      <div class="setupField">
+        <label>Model</label>
+        <select id="modelSelect"></select>
+      </div>
+      <div class="setupField">
+        <label>Effort</label>
+        <select id="effortSelect"></select>
+      </div>
+      <div class="setupField">
+        <label>Permissions</label>
+        <select id="permissionModeSelect"></select>
+      </div>
+    </div>
     <button id="btnNewSession">New session</button>
+    <button class="secondary" id="btnCancelNewSession">Cancel</button>
   </div>
   <div id="sessionList" class="list"></div>
+  <div class="sectionTools">
+    <button class="secondary small" id="btnLoadMoreSessions">Load more</button>
+    <button class="secondary small" id="btnArchivedSessions">Archived</button>
+  </div>
 </div>
 
 <div id="screenChat" class="screen">
   <div class="topbar">
     <div class="title" id="chatTitle">Chat</div>
     <div>
+      <span class="connectionStatus" id="connectionStatus">Offline</span>
       <button class="secondary small" id="btnThemeChat">Theme</button>
       <button class="secondary small" id="btnStopChat">Stop</button>
       <button class="secondary small" id="btnBackToSessions">Back</button>
     </div>
   </div>
   <div id="chatList"></div>
+  <button id="btnLatest" type="button">Latest</button>
   <div class="chatInputBar">
     <textarea id="chatInput" placeholder="Message"></textarea>
+    <button id="btnMic" type="button" title="Voice">Mic</button>
     <button id="btnSend">Send</button>
   </div>
 </div>
 
 <div id="screenReview" class="screen">
   <div class="topbar">
-    <div class="title">Review</div>
+    <div class="title">Action Centre</div>
     <div>
       <button class="secondary small" id="btnThemeReview">Theme</button>
       <button class="secondary small" id="btnRefreshReview">Refresh</button>
@@ -233,17 +562,57 @@
   <div id="reviewList" class="list"></div>
 </div>
 
+<div id="screenGit" class="screen">
+  <div class="topbar">
+    <div class="title" id="gitTitle">Git</div>
+    <div>
+      <button class="secondary small" id="btnThemeGit">Theme</button>
+      <button class="secondary small" id="btnRefreshGit">Refresh</button>
+      <button class="secondary small" id="btnBackFromGit">Back</button>
+    </div>
+  </div>
+  <div class="gitSection">
+    <div id="gitErr"></div>
+    <div class="gitCurrentBranch" id="gitCurrentBranch">Branch: —</div>
+    <div class="gitBranchRow">
+      <select id="gitBranchSelect"></select>
+      <button class="secondary small" id="btnGitCheckout">Checkout</button>
+    </div>
+    <div class="sectionTools">
+      <button class="secondary small" id="btnGitNewBranch">New branch</button>
+      <button class="secondary small" id="btnGitDeleteBranch">Delete branch</button>
+      <button class="secondary small" id="btnGitStage">Stage</button>
+      <button class="secondary small" id="btnGitUnstage">Unstage</button>
+      <button class="secondary small" id="btnGitHistory">History</button>
+      <button class="secondary small" id="btnGitFetch">Fetch</button>
+      <button class="secondary small" id="btnGitPull">Pull</button>
+      <button class="secondary small" id="btnGitPush">Push</button>
+    </div>
+    <div id="gitFileList" class="list"></div>
+    <pre id="gitDiff"></pre>
+    <div class="gitCommitRow">
+      <label>Commit message</label>
+      <textarea id="gitCommitMsg" placeholder="Commit message"></textarea>
+      <button id="btnGitCommit">Commit</button>
+    </div>
+  </div>
+</div>
+
 <script>
 (function () {
   'use strict';
 
   var TOKEN_KEY = 'cloudcli_mweb_token';
   var THEME_KEY = 'cloudcli_mweb_theme';
+  var FONT_KEY = 'cloudcli_mweb_font';
+  var DRAFT_KEY = 'cloudcli_mweb_drafts';
   var PROVIDER_KEY = 'cloudcli_mweb_provider';
   var MODEL_KEY = 'cloudcli_mweb_model';
   var EFFORT_KEY = 'cloudcli_mweb_effort';
   var PERMISSION_KEY = 'cloudcli_mweb_permission_mode';
   var NAV_KEY = 'cloudcli_mweb_nav';
+  var LAST_SESSION_KEY = 'cloudcli_mweb_last_session';
+  var MSG_PAGE_LIMIT = 30;
   var DROP_KINDS = {
     tool_use: true,
     tool_result: true,
@@ -272,10 +641,31 @@
     capabilities: {},
     modelsByProvider: {},
     currentSessionId: null,
+    currentSessionProvider: '',
     sessionOptions: {},
     ws: null,
     lastAssistantEl: null,
-    reviewPollTimer: null
+    reviewPollTimer: null,
+    reviewActionStates: {},
+    messagesOffset: 0,
+    messagesHasMore: false,
+    messagesLoading: false,
+    sessionsOffset: 0,
+    sessionsHasMore: false,
+    sessionsLoading: false,
+    sessionsArchived: false,
+    thinking: false,
+    wsSend: null,
+    wsConnected: false,
+    wsReconnectTimer: null,
+    wsReconnectAttempts: 0,
+    wsGeneration: 0,
+    manualWsClose: false,
+    streamingText: '',
+    gitSelectedFile: null,
+    gitBranch: '',
+    speechRec: null,
+    speechListening: false
   };
 
   function $(id) { return document.getElementById(id); }
@@ -287,10 +677,20 @@
     }
     $(id).className = 'screen active';
     state.activeScreen = id;
+    if (id === 'screenSessions') { setSessionSetupOpen(false); }
+    if (id !== 'screenReview' && state.reviewPollTimer) {
+      clearInterval(state.reviewPollTimer);
+      state.reviewPollTimer = null;
+    }
   }
 
   function setErr(msg) {
-    $('err').innerHTML = msg || '';
+    var text = msg || '';
+    $('err').innerHTML = text;
+    if ($('appErr')) {
+      $('appErr').innerHTML = escapeHtml(text);
+      $('appErr').style.display = text && state.activeScreen !== 'screenLogin' ? 'block' : 'none';
+    }
   }
 
   // ---- Theme ----
@@ -309,19 +709,216 @@
     } catch (e) {}
   }
 
-  function applyTheme(theme) {
-    if (theme === 'light') {
-      document.body.className = 'theme-light';
-    } else {
-      document.body.className = '';
+  function getDraftMap() {
+    var raw = getStoredItem(DRAFT_KEY);
+    if (!raw) { return {}; }
+    try {
+      var parsed = JSON.parse(raw);
+      return (parsed && typeof parsed === 'object') ? parsed : {};
+    } catch (e) {
+      return {};
     }
   }
 
-  function toggleTheme() {
-    var current = getStoredItem(THEME_KEY) || 'dark';
-    var next = current === 'light' ? 'dark' : 'light';
+  function saveDraft(sessionId, text) {
+    if (!sessionId) { return; }
+    var map = getDraftMap();
+    var value = text || '';
+    if (value.length > 20000) { value = value.substring(0, 20000); }
+    if (value) {
+      map[sessionId] = value;
+    } else {
+      delete map[sessionId];
+    }
+    setStoredItem(DRAFT_KEY, JSON.stringify(map));
+  }
+
+  function loadDraft(sessionId) {
+    if (!sessionId) { return ''; }
+    var map = getDraftMap();
+    return map[sessionId] || '';
+  }
+
+  function saveCurrentDraft() {
+    var input = $('chatInput');
+    if (!input || !state.currentSessionId) { return; }
+    saveDraft(state.currentSessionId, input.value);
+  }
+
+  function setSessionSetupOpen(open) {
+    var el = $('sessionSetup');
+    var btn = $('btnNewSession');
+    if (!el) { return; }
+    el.className = open ? 'sessionSetup open' : 'sessionSetup';
+    if (btn) { btn.innerHTML = open ? 'Start session' : 'New session'; }
+  }
+
+  function isSessionSetupOpen() {
+    var el = $('sessionSetup');
+    return !!(el && (' ' + el.className + ' ').indexOf(' open ') !== -1);
+  }
+
+  var THEME_META = {
+    fog: { cls: 'theme-fog', bg: '#eceef1', bar: '#e2e6ea', status: 'default' },
+    paper: { cls: 'theme-paper', bg: '#f4efe4', bar: '#ebe4d4', status: 'default' },
+    dusk: { cls: 'theme-dusk', bg: '#1c1a17', bar: '#25221c', status: 'black' },
+    ink: { cls: 'theme-ink', bg: '#16181a', bar: '#222528', status: 'black' }
+  };
+
+  function normalizeTheme(theme) {
+    if (theme === 'light' || theme === 'paper') { return 'paper'; }
+    if (theme === 'dark' || theme === 'dusk') { return 'dusk'; }
+    if (theme === 'fog') { return 'fog'; }
+    if (theme === 'ink') { return 'ink'; }
+    return 'fog';
+  }
+
+  function normalizeFont(size) {
+    if (size === 'sm' || size === 'small') { return 'sm'; }
+    if (size === 'lg' || size === 'large') { return 'lg'; }
+    return 'md';
+  }
+
+  function chromeClassName(themeName, fontName) {
+    var theme = normalizeTheme(themeName);
+    var font = normalizeFont(fontName);
+    var meta = THEME_META[theme] || THEME_META.fog;
+    return meta.cls + ' font-' + font;
+  }
+
+  function updateThemeButtons(name) {
+    var ids = ['btnThemeLogin', 'btnThemeCategories', 'btnThemeProjects', 'btnThemeSessions', 'btnThemeChat', 'btnThemeReview', 'btnThemeGit'];
+    var i;
+    var el;
+    var choices = ['themeChoiceFog', 'themeChoicePaper', 'themeChoiceDusk', 'themeChoiceInk'];
+    var sizes = ['typeSizeSm', 'typeSizeMd', 'typeSizeLg'];
+    var font = normalizeFont(getStoredItem(FONT_KEY));
+    for (i = 0; i < ids.length; i++) {
+      el = $(ids[i]);
+      if (el) { el.innerHTML = 'Theme'; }
+    }
+    for (i = 0; i < choices.length; i++) {
+      el = $(choices[i]);
+      if (!el) { continue; }
+      el.className = el.getAttribute('data-theme') === name ? 'themeChoice secondary current' : 'themeChoice secondary';
+    }
+    for (i = 0; i < sizes.length; i++) {
+      el = $(sizes[i]);
+      if (!el) { continue; }
+      el.className = el.getAttribute('data-size') === font ? 'secondary typeSizeBtn current' : 'secondary typeSizeBtn';
+    }
+  }
+
+  function applyTheme(theme) {
+    var name = normalizeTheme(theme);
+    var font = normalizeFont(getStoredItem(FONT_KEY));
+    var meta = THEME_META[name] || THEME_META.fog;
+    var cls = chromeClassName(name, font);
+    var root = document.documentElement;
+    var metaColor = document.getElementById('metaThemeColor');
+    var metaBar = document.getElementById('metaStatusBar');
+    document.body.className = cls;
+    root.className = cls;
+    root.style.backgroundColor = meta.bg;
+    document.body.style.backgroundColor = meta.bg;
+    if (metaColor) { metaColor.setAttribute('content', meta.bar); }
+    if (metaBar) { metaBar.setAttribute('content', meta.status); }
+    updateThemeButtons(name);
+  }
+
+  function chooseFont(size) {
+    setStoredItem(FONT_KEY, normalizeFont(size));
+    applyTheme(getStoredItem(THEME_KEY));
+  }
+
+  function openThemePicker() {
+    var picker = $('themePicker');
+    if (picker) { picker.className = 'open'; }
+    updateThemeButtons(normalizeTheme(getStoredItem(THEME_KEY)));
+  }
+
+  function closeThemePicker() {
+    var picker = $('themePicker');
+    if (picker) { picker.className = ''; }
+  }
+
+  function chooseTheme(name) {
+    var next = normalizeTheme(name);
     setStoredItem(THEME_KEY, next);
     applyTheme(next);
+  }
+
+  function getLastSessionsMap() {
+    var raw = getStoredItem(LAST_SESSION_KEY);
+    if (!raw) { return {}; }
+    try {
+      var parsed = JSON.parse(raw);
+      return (parsed && typeof parsed === 'object') ? parsed : {};
+    } catch (e) {
+      return {};
+    }
+  }
+
+  function setLastSession(projectId, sessionId) {
+    if (!projectId || !sessionId) { return; }
+    var map = getLastSessionsMap();
+    map[projectId] = sessionId;
+    setStoredItem(LAST_SESSION_KEY, JSON.stringify(map));
+  }
+
+  function getLastSession(projectId) {
+    if (!projectId) { return null; }
+    var map = getLastSessionsMap();
+    return map[projectId] || null;
+  }
+
+  function setThinking(active) {
+    state.thinking = !!active;
+    var btn = $('btnSend');
+    if (!btn) { return; }
+    btn.disabled = state.thinking;
+    btn.style.opacity = state.thinking ? '0.45' : '';
+  }
+
+  function formatMsgTime(iso) {
+    if (!iso) { return ''; }
+    var d = new Date(iso);
+    if (isNaN(d.getTime())) { return ''; }
+    var pad = function (n) { return (n < 10 ? '0' : '') + n; };
+    return pad(d.getMonth() + 1) + '/' + pad(d.getDate()) + ' ' +
+      pad(d.getHours()) + ':' + pad(d.getMinutes());
+  }
+
+  function copyPlainText(text) {
+    var ta = document.getElementById('copyHelper');
+    if (!ta) {
+      ta = document.createElement('textarea');
+      ta.id = 'copyHelper';
+      ta.setAttribute('readonly', 'readonly');
+      ta.style.position = 'absolute';
+      ta.style.left = '-9999px';
+      ta.style.top = '0';
+      ta.style.height = '1px';
+      ta.style.width = '1px';
+      document.body.appendChild(ta);
+    }
+    ta.value = text || '';
+    var prevEditable = ta.contentEditable;
+    ta.contentEditable = 'true';
+    ta.focus();
+    ta.select();
+    try {
+      ta.setSelectionRange(0, ta.value.length);
+    } catch (e1) {}
+    try {
+      document.execCommand('copy');
+    } catch (e2) {}
+    ta.contentEditable = prevEditable;
+    try { ta.blur(); } catch (e3) {}
+  }
+
+  function toggleTheme() {
+    openThemePicker();
   }
 
   function xhr(method, url, body, headers, onSuccess, onError) {
@@ -337,6 +934,12 @@
     }
     req.onreadystatechange = function () {
       if (req.readyState === 4) {
+        var refreshed = null;
+        try { refreshed = req.getResponseHeader('X-Refreshed-Token'); } catch (e0) {}
+        if (refreshed) {
+          state.token = refreshed;
+          setStoredItem(TOKEN_KEY, refreshed);
+        }
         var data = null;
         try {
           data = req.responseText ? JSON.parse(req.responseText) : null;
@@ -397,6 +1000,9 @@
       return '#/chat/' + encodeURIComponent(params.sessionId || '') +
         '?p=' + encodeURIComponent(params.projectId || '') +
         '&c=' + encodeURIComponent(catToken(params.categoryId));
+    }
+    if (screen === 'screenGit') {
+      return '#/git/' + encodeURIComponent(params.projectId || '');
     }
     if (screen === 'screenReview') { return '#/review'; }
     return '#/categories';
@@ -507,11 +1113,25 @@
       }
       var navChat = getNav();
       var title = (navChat && navChat.title) || 'Chat';
-      openChat(sessionId, title);
+      openChat(sessionId, title, (navChat && navChat.provider) || '');
       return;
     }
     if (route.name === 'review') {
       openReview();
+      return;
+    }
+    if (route.name === 'git') {
+      var gitProjectId = route.id;
+      if (!gitProjectId) { navGoCategories(); return; }
+      var navGit = getNav();
+      if (navGit && navGit.projectId === gitProjectId) {
+        state.currentCategoryId = (navGit.categoryId === 'uncat') ? null : navGit.categoryId;
+        state.currentCategoryName = navGit.categoryName || state.currentCategoryName;
+        state.currentProjectName = navGit.projectName || findProjectName(gitProjectId);
+      } else {
+        state.currentProjectName = findProjectName(gitProjectId);
+      }
+      openGit(gitProjectId, state.currentProjectName);
       return;
     }
     navGoCategories();
@@ -630,6 +1250,7 @@
     state.currentCategoryId = categoryId;
     state.currentCategoryName = name;
     $('projectsTitle').innerHTML = escapeHtml(name);
+    updateGitEntryButtons();
     renderProjects();
     showScreen('screenProjects');
     updateHashAndNav('screenProjects', { categoryId: categoryId, categoryName: name });
@@ -660,8 +1281,16 @@
     state.currentProjectId = projectId;
     state.currentProjectName = name;
     $('sessionsTitle').innerHTML = escapeHtml(name);
+    updateGitEntryButtons();
     loadProviders();
     loadSessions();
+  }
+
+  function updateGitEntryButtons() {
+    var btn = $('btnGitFromProjects');
+    if (btn) {
+      btn.style.display = state.currentProjectId ? '' : 'none';
+    }
   }
 
   function escapeHtml(s) {
@@ -989,15 +1618,36 @@
 
   // ---- Sessions ----
 
-  function loadSessions(onDone) {
-    xhr('GET', '/api/projects/' + encodeURIComponent(state.currentProjectId) + '/sessions', null, authHeaders(), function (data) {
+  function setSessionsLoadMoreBusy(busy) {
+    var btn = $('btnLoadMoreSessions');
+    state.sessionsLoading = !!busy;
+    if (!btn) { return; }
+    btn.disabled = !!busy;
+    if (busy) {
+      btn.innerHTML = '<span class="btnSpinner"><span></span><span></span><span></span></span>Loading';
+      btn.style.display = 'inline-block';
+    } else {
+      btn.innerHTML = '';
+      btn.appendChild(document.createTextNode('Load more'));
+    }
+  }
+
+  function loadSessions(onDone, append) {
+    if (append && state.sessionsLoading) { return; }
+    if (!append) { state.sessionsOffset = 0; state.sessionsArchived = false; }
+    var offset = append ? state.sessionsOffset : 0;
+    if (append) { setSessionsLoadMoreBusy(true); }
+    xhr('GET', '/api/projects/' + encodeURIComponent(state.currentProjectId) + '/sessions?limit=20&offset=' + encodeURIComponent(String(offset)), null, authHeaders(), function (data) {
+      if (append) { setSessionsLoadMoreBusy(false); }
       var list = [];
       if (data && Array.isArray(data.sessions)) {
         list = data.sessions;
       } else if (Array.isArray(data)) {
         list = data;
       }
-      state.sessions = list;
+      state.sessions = append ? state.sessions.concat(list) : list;
+      state.sessionsOffset = offset + list.length;
+      state.sessionsHasMore = list.length === 20;
       renderSessions();
       showScreen('screenSessions');
       updateHashAndNav('screenSessions', {
@@ -1008,6 +1658,7 @@
       });
       if (onDone) { onDone(); }
     }, function (data) {
+      if (append) { setSessionsLoadMoreBusy(false); }
       setErr((data && data.error) || 'Failed to load sessions');
       if (onDone) { onDone(); }
     });
@@ -1031,19 +1682,73 @@
     if (!sessions || !Array.isArray(sessions)) {
       sessions = [];
     }
+    var lastId = getLastSession(state.currentProjectId);
     for (var i = 0; i < sessions.length; i++) {
       (function (s) {
         var row = document.createElement('div');
-        row.className = 'row';
         var sid = s.sessionId || s.id;
         var title = sessionTitle(s);
-        row.innerHTML = '<div><div>' + escapeHtml(title) + '</div><div class="meta">' + escapeHtml(sid) + '</div></div>';
-        row.onclick = function () {
-          openChat(sid, title);
+        row.className = (lastId && sid === lastId) ? 'row rowLast' : 'row';
+        var main = document.createElement('div');
+        main.innerHTML = '<div>' + escapeHtml(title) + '</div><div class="meta">' + escapeHtml(sid) + '</div>';
+        main.style.webkitBoxFlex = '1';
+        main.style.webkitFlex = '1';
+        main.style.flex = '1';
+        main.onclick = function () {
+          openChat(sid, title, s.provider || '');
         };
+        row.appendChild(main);
+        var actions = document.createElement('div');
+        actions.className = 'rowActions';
+        var rename = document.createElement('button');
+        rename.className = 'secondary'; rename.appendChild(document.createTextNode('Rename'));
+        rename.onclick = function (evt) {
+          if (evt && evt.stopPropagation) { evt.stopPropagation(); }
+          var next = window.prompt('Session name', title);
+          if (!next || next === title) { return; }
+          xhr('PUT', '/api/providers/sessions/' + encodeURIComponent(sid), { summary: next }, authHeaders(), function () { loadSessions(); }, function (d) { setErr((d && d.error) || 'Rename failed'); });
+        };
+        var archive = document.createElement('button');
+        archive.className = 'secondary'; archive.appendChild(document.createTextNode('Archive'));
+        archive.onclick = function (evt) {
+          if (evt && evt.stopPropagation) { evt.stopPropagation(); }
+          if (!window.confirm('Archive this session?')) { return; }
+          xhr('DELETE', '/api/providers/sessions/' + encodeURIComponent(sid), null, authHeaders(), function () { loadSessions(); }, function (d) { setErr((d && d.error) || 'Archive failed'); });
+        };
+        actions.appendChild(rename); actions.appendChild(archive); row.appendChild(actions);
         el.appendChild(row);
       })(sessions[i]);
     }
+    $('btnLoadMoreSessions').style.display = state.sessionsArchived || !state.sessionsHasMore ? 'none' : 'inline-block';
+  }
+
+  function loadArchivedSessions() {
+    xhr('GET', '/api/providers/sessions/archived', null, authHeaders(), function (data) {
+      var payload = unwrap(data);
+      state.sessions = (payload && payload.sessions) || (Array.isArray(payload) ? payload : []);
+      state.sessionsArchived = true;
+      state.sessionsHasMore = false;
+      var el = $('sessionList'); el.innerHTML = '';
+      for (var i = 0; i < state.sessions.length; i++) {
+        (function (s) {
+          var sid = s.sessionId || s.id;
+          var row = document.createElement('div'); row.className = 'row';
+          row.innerHTML = '<div><div>' + escapeHtml(sessionTitle(s)) + '</div><div class="meta">' + escapeHtml(sid) + '</div></div>';
+          var restore = document.createElement('button'); restore.className = 'secondary small'; restore.appendChild(document.createTextNode('Restore'));
+          restore.onclick = function () { xhr('POST', '/api/providers/sessions/' + encodeURIComponent(sid) + '/restore', {}, authHeaders(), function () { loadArchivedSessions(); }, function (d) { setErr((d && d.error) || 'Restore failed'); }); };
+          row.appendChild(restore); el.appendChild(row);
+        })(state.sessions[i]);
+      }
+      $('btnLoadMoreSessions').style.display = 'none';
+    }, function (d) { setErr((d && d.error) || 'Failed to load archived sessions'); });
+  }
+
+  function onNewSessionClick() {
+    if (!isSessionSetupOpen()) {
+      setSessionSetupOpen(true);
+      return;
+    }
+    newSession();
   }
 
   function newSession() {
@@ -1061,16 +1766,15 @@
     if (effort) { setStoredItem(EFFORT_KEY, effort); }
     if (permissionMode) { setStoredItem(PERMISSION_KEY, permissionMode); }
 
-    xhr('POST', '/api/providers/sessions', { provider: provider, projectId: state.currentProjectId }, authHeaders(), function (data) {
+    xhr('POST', '/api/providers/sessions', { provider: provider, projectId: state.currentProjectId, permissionMode: permissionMode }, authHeaders(), function (data) {
       var payload = unwrap(data);
       var sessionId = (payload && payload.sessionId) || (data && data.sessionId);
       if (sessionId) {
         var options = {};
         if (model) { options.model = model; }
         if (effort) { options.effort = effort; }
-        if (permissionMode) { options.permissionMode = permissionMode; }
         state.sessionOptions[sessionId] = options;
-        openChat(sessionId, 'Chat');
+        openChat(sessionId, 'Chat', provider);
       } else {
         setErr('Failed to create session');
       }
@@ -1081,9 +1785,19 @@
 
   // ---- Chat ----
 
-  function openChat(sessionId, title) {
+  function openChat(sessionId, title, provider) {
+    saveCurrentDraft();
+    state.manualWsClose = true;
+    if (state.ws) { try { state.ws.close(); } catch (closeErr) {} }
     state.currentSessionId = sessionId;
+    state.currentSessionProvider = provider || '';
     state.lastAssistantEl = null;
+    state.streamingText = '';
+    state.messagesOffset = 0;
+    state.messagesHasMore = false;
+    state.messagesLoading = false;
+    setThinking(false);
+    setLastSession(state.currentProjectId, sessionId);
     $('chatTitle').innerHTML = escapeHtml(title || 'Chat');
     $('chatList').innerHTML = '';
     hideTyping();
@@ -1092,36 +1806,179 @@
       sessionId: sessionId,
       projectId: state.currentProjectId,
       categoryId: state.currentCategoryId,
-      title: title || 'Chat'
+      title: title || 'Chat',
+      provider: state.currentSessionProvider
     });
     loadMessages(sessionId);
     connectWs();
+    hydrateSessionPermissionMode(sessionId);
+    $('chatInput').value = loadDraft(sessionId);
   }
 
-  function loadMessages(sessionId) {
-    xhr('GET', '/api/providers/sessions/' + encodeURIComponent(sessionId) + '/messages', null, authHeaders(), function (data) {
+  function persistSessionPermissionMode(mode) {
+    if (!mode) { return; }
+    setStoredItem(PERMISSION_KEY, mode);
+    if (!state.currentSessionId) { return; }
+    var sent = false;
+    if (state.wsSend && state.wsConnected) {
+      sent = !!state.wsSend({
+        type: 'chat.session-preferences',
+        sessionId: state.currentSessionId,
+        preferences: { permissionMode: mode }
+      });
+    }
+    if (!sent) {
+      xhr(
+        'PUT',
+        '/api/providers/sessions/' + encodeURIComponent(state.currentSessionId) + '/runtime-preferences',
+        { permissionMode: mode },
+        authHeaders(),
+        function () {},
+        function () {}
+      );
+    }
+  }
+
+  function hydrateSessionPermissionMode(sessionId) {
+    xhr('GET', '/api/providers/sessions/' + encodeURIComponent(sessionId) + '/meta', null, authHeaders(), function (data) {
       var payload = unwrap(data);
-      var messages = (payload && payload.messages) || [];
-      for (var i = 0; i < messages.length; i++) {
-        renderMessage(messages[i]);
+      var session = payload && payload.session;
+      var mode = session && session.permissionMode;
+      if (!mode) { return; }
+      var permSel = $('permissionModeSelect');
+      if (!permSel) { return; }
+      var options = permSel.options;
+      var found = false;
+      for (var i = 0; i < options.length; i++) {
+        if (options[i].value === mode) { found = true; break; }
       }
-      scrollChatToBottom();
+      if (found) {
+        permSel.value = mode;
+        setStoredItem(PERMISSION_KEY, mode);
+      }
     }, function () {});
   }
 
-  function reloadMessagesForRefresh(onDone) {
-    var sessionId = state.currentSessionId;
-    xhr('GET', '/api/providers/sessions/' + encodeURIComponent(sessionId) + '/messages', null, authHeaders(), function (data) {
+  function messagesUrl(sessionId, limit, offset) {
+    return '/api/providers/sessions/' + encodeURIComponent(sessionId) +
+      '/messages?limit=' + encodeURIComponent(String(limit)) +
+      '&offset=' + encodeURIComponent(String(offset));
+  }
+
+  function updateLoadOlderButton() {
+    var list = $('chatList');
+    var existing = $('loadOlderBtn');
+    if (!state.messagesHasMore) {
+      if (existing && existing.parentNode) {
+        existing.parentNode.removeChild(existing);
+      }
+      return;
+    }
+    if (!existing) {
+      existing = document.createElement('button');
+      existing.id = 'loadOlderBtn';
+      existing.type = 'button';
+      existing.className = 'secondary';
+      existing.appendChild(document.createTextNode('Load older'));
+      existing.onclick = function () { loadOlderMessages(); };
+    }
+    existing.disabled = !!state.messagesLoading;
+    existing.style.opacity = state.messagesLoading ? '0.45' : '';
+    if (list.firstChild !== existing) {
+      list.insertBefore(existing, list.firstChild);
+    }
+  }
+
+  function applyMessagesPage(payload, opts) {
+    opts = opts || {};
+    var messages = (payload && payload.messages) || [];
+    var reqOffset = (typeof opts.reqOffset === 'number') ? opts.reqOffset : 0;
+    state.messagesHasMore = !!(payload && payload.hasMore);
+    state.messagesOffset = reqOffset + messages.length;
+    return messages;
+  }
+
+  function loadMessages(sessionId) {
+    state.messagesLoading = true;
+    xhr('GET', messagesUrl(sessionId, MSG_PAGE_LIMIT, 0), null, authHeaders(), function (data) {
+      state.messagesLoading = false;
+      if (state.currentSessionId !== sessionId) { return; }
       var payload = unwrap(data);
-      var messages = (payload && payload.messages) || [];
+      var messages = applyMessagesPage(payload, { reqOffset: 0 });
       $('chatList').innerHTML = '';
       state.lastAssistantEl = null;
       for (var i = 0; i < messages.length; i++) {
         renderMessage(messages[i]);
       }
+      updateLoadOlderButton();
+      scrollChatToBottom();
+    }, function () {
+      state.messagesLoading = false;
+      updateLoadOlderButton();
+    });
+  }
+
+  function loadOlderMessages() {
+    if (!state.messagesHasMore || state.messagesLoading) { return; }
+    var sessionId = state.currentSessionId;
+    if (!sessionId) { return; }
+    var list = $('chatList');
+    var prevHeight = list.scrollHeight;
+    var prevTop = list.scrollTop;
+    var nextOffset = state.messagesOffset;
+    state.messagesLoading = true;
+    updateLoadOlderButton();
+    xhr('GET', messagesUrl(sessionId, MSG_PAGE_LIMIT, nextOffset), null, authHeaders(), function (data) {
+      state.messagesLoading = false;
+      if (state.currentSessionId !== sessionId) { return; }
+      var payload = unwrap(data);
+      var messages = applyMessagesPage(payload, { reqOffset: nextOffset });
+      var anchor = $('loadOlderBtn');
+      var insertBeforeNode = anchor ? anchor.nextSibling : list.firstChild;
+      var frag = document.createDocumentFragment();
+      var created = [];
+      for (var i = 0; i < messages.length; i++) {
+        var el = buildMessageEl(messages[i]);
+        if (el) {
+          created.push(el);
+          frag.appendChild(el);
+        }
+      }
+      if (created.length) {
+        list.insertBefore(frag, insertBeforeNode);
+      }
+      updateLoadOlderButton();
+      list.scrollTop = prevTop + (list.scrollHeight - prevHeight);
+    }, function () {
+      state.messagesLoading = false;
+      updateLoadOlderButton();
+    });
+  }
+
+  function reloadMessagesForRefresh(onDone) {
+    var sessionId = state.currentSessionId;
+    state.messagesOffset = 0;
+    state.messagesHasMore = false;
+    state.messagesLoading = true;
+    xhr('GET', messagesUrl(sessionId, MSG_PAGE_LIMIT, 0), null, authHeaders(), function (data) {
+      state.messagesLoading = false;
+      if (state.currentSessionId !== sessionId) {
+        if (onDone) { onDone(); }
+        return;
+      }
+      var payload = unwrap(data);
+      var messages = applyMessagesPage(payload, { reqOffset: 0 });
+      $('chatList').innerHTML = '';
+      state.lastAssistantEl = null;
+      for (var i = 0; i < messages.length; i++) {
+        renderMessage(messages[i]);
+      }
+      updateLoadOlderButton();
       scrollChatToBottom();
       if (onDone) { onDone(); }
     }, function () {
+      state.messagesLoading = false;
+      updateLoadOlderButton();
       if (onDone) { onDone(); }
     });
   }
@@ -1153,20 +2010,52 @@
     return '';
   }
 
-  function renderMessage(m) {
-    if (!shouldRenderMessage(m)) { return; }
+  function buildMessageEl(m) {
+    if (!shouldRenderMessage(m)) { return null; }
     var text = messageText(m);
-    if (!text) { return; }
+    if (!text) { return null; }
     var role = m.role;
     var div = document.createElement('div');
-    var cls = role === 'user' ? 'msg user' : 'msg assistant';
-    div.className = cls;
-    div.innerHTML = renderMarkdown(text);
+    div.className = role === 'user' ? 'msg user' : 'msg assistant';
+    div._copyText = text;
+
+    var body = document.createElement('div');
+    body.className = 'msgBody';
+    body.innerHTML = renderMarkdown(text);
+    div.appendChild(body);
+
+    var meta = document.createElement('div');
+    meta.className = 'msgMeta';
+    var timeEl = document.createElement('span');
+    timeEl.className = 'msgTime';
+    timeEl.appendChild(document.createTextNode(formatMsgTime(m.timestamp)));
+    meta.appendChild(timeEl);
+
+    var copyBtn = document.createElement('button');
+    copyBtn.type = 'button';
+    copyBtn.className = 'msgCopy';
+    copyBtn.appendChild(document.createTextNode('Copy'));
+    copyBtn.onclick = function (evt) {
+      if (evt && evt.stopPropagation) { evt.stopPropagation(); }
+      if (evt && evt.preventDefault) { evt.preventDefault(); }
+      copyPlainText(div._copyText || '');
+      return false;
+    };
+    meta.appendChild(copyBtn);
+    div.appendChild(meta);
+    return div;
+  }
+
+  function renderMessage(m) {
+    var div = buildMessageEl(m);
+    if (!div) { return; }
     $('chatList').appendChild(div);
-    if (role === 'assistant') {
+    if (m.role === 'assistant') {
       state.lastAssistantEl = div;
+      state.streamingText = div._copyText || '';
     } else {
       state.lastAssistantEl = null;
+      state.streamingText = '';
     }
     keepTypingAtBottom();
   }
@@ -1201,17 +2090,53 @@
     return proto + '//' + window.location.host + '/ws?token=' + encodeURIComponent(state.token);
   }
 
-  function connectWs() {
+  function setConnectionStatus(text, css) {
+    var el = $('connectionStatus');
+    if (!el) { return; }
+    el.className = 'connectionStatus' + (css ? ' ' + css : '');
+    el.innerHTML = escapeHtml(text || 'Offline');
+  }
+
+  function clearWsReconnect() {
+    if (state.wsReconnectTimer) { clearTimeout(state.wsReconnectTimer); state.wsReconnectTimer = null; }
+  }
+
+  function scheduleWsReconnect() {
+    if (state.manualWsClose || state.activeScreen !== 'screenChat' || !state.currentSessionId) { return; }
+    clearWsReconnect();
+    state.wsReconnectAttempts += 1;
+    var delay = Math.min(15000, 1000 * Math.pow(2, Math.min(state.wsReconnectAttempts - 1, 4)));
+    setConnectionStatus('Retry ' + Math.ceil(delay / 1000) + 's', 'offline');
+    state.wsReconnectTimer = setTimeout(function () { connectWs(true); }, delay);
+  }
+
+  function connectWs(isRetry) {
+    if (!state.currentSessionId || state.activeScreen !== 'screenChat') { return; }
+    clearWsReconnect();
     if (state.ws) {
+      if (state.ws.readyState === 0 || state.ws.readyState === 1) {
+        if (isRetry) { return; }
+      }
+      state.manualWsClose = true;
       try { state.ws.close(); } catch (e) {}
       state.ws = null;
     }
+    state.manualWsClose = false;
+    state.wsGeneration += 1;
+    var generation = state.wsGeneration;
+    var subscribedSessionId = state.currentSessionId;
+    setConnectionStatus(isRetry ? 'Reconnecting' : 'Connecting', '');
     var ws = new WebSocket(wsUrl());
     state.ws = ws;
     ws.onopen = function () {
+      if (generation !== state.wsGeneration) { try { ws.close(); } catch (e0) {} return; }
+      state.wsConnected = true;
+      state.wsReconnectAttempts = 0;
+      setConnectionStatus('Online', 'online');
       send({ type: 'chat.subscribe', sessions: [{ sessionId: state.currentSessionId }] });
     };
     ws.onmessage = function (evt) {
+      if (generation !== state.wsGeneration || subscribedSessionId !== state.currentSessionId) { return; }
       var data = null;
       try {
         data = JSON.parse(evt.data);
@@ -1220,13 +2145,22 @@
       }
       handleWsFrame(data);
     };
-    ws.onclose = function () {};
-    ws.onerror = function () {};
+    ws.onclose = function () {
+      if (generation !== state.wsGeneration) { return; }
+      state.wsConnected = false;
+      state.wsSend = null;
+      setConnectionStatus(navigator.onLine === false ? 'Offline' : 'Disconnected', 'offline');
+      if (state.thinking) { hideTyping(); setThinking(false); setErr('Connection lost before the reply completed.'); }
+      scheduleWsReconnect();
+    };
+    ws.onerror = function () { setConnectionStatus('Connection error', 'offline'); };
 
     function send(obj) {
       if (ws.readyState === 1) {
         ws.send(JSON.stringify(obj));
+        return true;
       }
+      return false;
     }
     state.wsSend = send;
   }
@@ -1299,6 +2233,8 @@
   function handleWsFrame(data) {
     if (!data || typeof data !== 'object') { return; }
     var kind = data.kind || data.type;
+    var frameSessionId = data.sessionId || (data.session && data.session.sessionId);
+    if (frameSessionId && state.currentSessionId && frameSessionId !== state.currentSessionId) { return; }
 
     if (kind === 'chat_subscribed') {
       var pending = data.pendingPermissions;
@@ -1320,8 +2256,13 @@
       return;
     }
 
-    if (kind === 'complete' || kind === 'error' || kind === 'stream_end') {
+    if (kind === 'complete' || kind === 'error' || kind === 'stream_end' || kind === 'protocol_error') {
       hideTyping();
+      setThinking(false);
+      if (kind === 'error' || kind === 'protocol_error') {
+        setErr(data.error || data.message || 'Chat protocol error');
+      }
+      scrollChatToBottom();
     }
 
     if (kind && DROP_KINDS.hasOwnProperty(kind)) { return; }
@@ -1336,11 +2277,31 @@
         }
       }
       if (!deltaText.length || isJsonDump(deltaText)) { return; }
+      if (!state.thinking) { setThinking(true); }
       if (state.lastAssistantEl) {
-        state.lastAssistantEl.innerHTML = renderMarkdown(deltaText);
+        if (deltaText.indexOf(state.streamingText) === 0 && deltaText.length >= state.streamingText.length) {
+          state.streamingText = deltaText;
+        } else {
+          state.streamingText += deltaText;
+        }
+        var bodyEl = null;
+        var kids = state.lastAssistantEl.childNodes;
+        for (var bi = 0; bi < kids.length; bi++) {
+          if (kids[bi].className === 'msgBody') {
+            bodyEl = kids[bi];
+            break;
+          }
+        }
+        if (bodyEl) {
+          bodyEl.innerHTML = renderMarkdown(state.streamingText);
+        } else {
+          state.lastAssistantEl.innerHTML = renderMarkdown(state.streamingText);
+        }
+        state.lastAssistantEl._copyText = state.streamingText;
         keepTypingAtBottom();
       } else {
         renderMessage({ role: 'assistant', displayText: deltaText });
+        state.streamingText = deltaText;
       }
       scrollChatToBottom();
       return;
@@ -1352,30 +2313,418 @@
     scrollChatToBottom();
   }
 
+  function buildSessionSendOptions(sessionId) {
+    var existing = state.sessionOptions[sessionId] || {};
+    var options = {};
+    for (var key in existing) {
+      if (Object.prototype.hasOwnProperty.call(existing, key)) {
+        options[key] = existing[key];
+      }
+    }
+
+    state.sessionOptions[sessionId] = options;
+    return options;
+  }
+
   function sendChat() {
     var text = $('chatInput').value;
     if (!text) { return; }
-    if (!state.wsSend) { return; }
+    if (!state.wsSend || !state.wsConnected) { setErr('Chat is offline. Reconnecting…'); scheduleWsReconnect(); return; }
+    if (state.thinking) { return; }
     var frame = { type: 'chat.send', sessionId: state.currentSessionId, content: text };
-    var options = state.sessionOptions[state.currentSessionId];
-    if (options) {
-      frame.options = options;
-    }
-    state.wsSend(frame);
+    frame.options = buildSessionSendOptions(state.currentSessionId);
+    if (!state.wsSend(frame)) { setErr('Message was not sent because the connection closed.'); scheduleWsReconnect(); return; }
     hideTyping();
-    renderMessage({ role: 'user', kind: 'text', displayText: text });
+    renderMessage({ role: 'user', kind: 'text', displayText: text, timestamp: new Date().toISOString() });
     showTyping();
+    setThinking(true);
     scrollChatToBottom();
     $('chatInput').value = '';
+    saveDraft(state.currentSessionId, '');
   }
 
   function stopChat() {
     if (!state.wsSend) { return; }
     state.wsSend({ type: 'chat.abort', sessionId: state.currentSessionId });
     hideTyping();
+    setThinking(false);
   }
 
-  // ---- Mission Control Review ----
+  // ---- Voice input (feature-detect only; hide if unsupported) ----
+
+  function getSpeechRecognitionCtor() {
+    return window.SpeechRecognition || window.webkitSpeechRecognition || null;
+  }
+
+  function setupVoiceInput() {
+    var btn = $('btnMic');
+    if (!btn) { return; }
+    var Ctor = getSpeechRecognitionCtor();
+    if (!Ctor) {
+      btn.style.display = 'none';
+      return;
+    }
+    var rec = null;
+    try {
+      rec = new Ctor();
+    } catch (e) {
+      btn.style.display = 'none';
+      return;
+    }
+    btn.style.display = 'block';
+    rec.continuous = false;
+    rec.interimResults = false;
+    try {
+      rec.lang = (navigator.language || 'en-US');
+    } catch (e2) {}
+    rec.onresult = function (event) {
+      var transcript = '';
+      if (event && event.results) {
+        for (var i = event.resultIndex || 0; i < event.results.length; i++) {
+          var res = event.results[i];
+          if (res && res[0] && res[0].transcript) {
+            transcript += res[0].transcript;
+          }
+        }
+      }
+      if (transcript) {
+        var input = $('chatInput');
+        var cur = input.value || '';
+        if (cur && cur.charAt(cur.length - 1) !== ' ') {
+          cur += ' ';
+        }
+        input.value = cur + transcript;
+      }
+    };
+    rec.onend = function () {
+      state.speechListening = false;
+      btn.className = btn.className.replace(/\s*listening\b/g, '');
+    };
+    rec.onerror = function () {
+      state.speechListening = false;
+      btn.className = btn.className.replace(/\s*listening\b/g, '');
+    };
+    state.speechRec = rec;
+    btn.onclick = function () {
+      if (!state.speechRec) { return; }
+      if (state.speechListening) {
+        try { state.speechRec.stop(); } catch (e3) {}
+        state.speechListening = false;
+        btn.className = btn.className.replace(/\s*listening\b/g, '');
+        return;
+      }
+      try {
+        state.speechRec.start();
+        state.speechListening = true;
+        if (btn.className.indexOf('listening') === -1) {
+          btn.className += ' listening';
+        }
+      } catch (e4) {
+        state.speechListening = false;
+        btn.className = btn.className.replace(/\s*listening\b/g, '');
+      }
+    };
+  }
+
+  // ---- Git ----
+
+  function setGitErr(msg) {
+    var el = $('gitErr');
+    if (el) { el.innerHTML = msg || ''; }
+  }
+
+  function openGit(projectId, name) {
+    if (!projectId) { return; }
+    state.currentProjectId = projectId;
+    if (name) { state.currentProjectName = name; }
+    state.gitSelectedFile = null;
+    updateGitEntryButtons();
+    $('gitTitle').innerHTML = escapeHtml((state.currentProjectName || 'Git') + ' · Git');
+    $('gitDiff').style.display = 'none';
+    $('gitDiff').innerHTML = '';
+    $('gitCommitMsg').value = '';
+    setGitErr('');
+    showScreen('screenGit');
+    updateHashAndNav('screenGit', {
+      categoryId: state.currentCategoryId,
+      categoryName: state.currentCategoryName,
+      projectId: state.currentProjectId,
+      projectName: state.currentProjectName
+    });
+    loadGitStatus();
+    loadGitBranches();
+  }
+
+  function leaveGit() {
+    if (state.currentProjectId) {
+      openProject(state.currentProjectId, state.currentProjectName || findProjectName(state.currentProjectId));
+    } else {
+      navGoCategories();
+    }
+  }
+
+  function collectGitFiles(status) {
+    var files = [];
+    var seen = {};
+    function addAll(arr, badge) {
+      if (!arr || !arr.length) { return; }
+      for (var i = 0; i < arr.length; i++) {
+        var f = arr[i];
+        if (!f || seen[f]) { continue; }
+        seen[f] = true;
+        files.push({ path: f, badge: badge });
+      }
+    }
+    addAll(status.staged, 'S');
+    addAll(status.modified, 'M');
+    addAll(status.added, 'A');
+    addAll(status.deleted, 'D');
+    addAll(status.untracked, '?');
+    return files;
+  }
+
+  function loadGitStatus(onDone) {
+    var projectId = state.currentProjectId;
+    if (!projectId) {
+      setGitErr('No project selected');
+      if (onDone) { onDone(); }
+      return;
+    }
+    xhr('GET', '/api/git/status?project=' + encodeURIComponent(projectId), null, authHeaders(), function (data) {
+      if (!data || data.error) {
+        var msg = (data && (data.details || data.error)) || 'Not a git repository';
+        setGitErr(msg);
+        state.gitBranch = '';
+        $('gitCurrentBranch').innerHTML = 'Branch: —';
+        $('gitFileList').innerHTML = '';
+        $('gitDiff').style.display = 'none';
+        if (onDone) { onDone(); }
+        return;
+      }
+      setGitErr('');
+      state.gitBranch = data.branch || '';
+      $('gitCurrentBranch').innerHTML = 'Branch: ' + escapeHtml(state.gitBranch || '—');
+      renderGitFiles(collectGitFiles(data));
+      selectGitBranchOption(state.gitBranch);
+      if (onDone) { onDone(); }
+    }, function (data) {
+      setGitErr((data && (data.details || data.error)) || 'Failed to load git status');
+      state.gitBranch = '';
+      $('gitCurrentBranch').innerHTML = 'Branch: —';
+      $('gitFileList').innerHTML = '';
+      if (onDone) { onDone(); }
+    });
+  }
+
+  function selectGitBranchOption(branch) {
+    var sel = $('gitBranchSelect');
+    if (!sel || !branch) { return; }
+    for (var i = 0; i < sel.options.length; i++) {
+      if (sel.options[i].value === branch) {
+        sel.selectedIndex = i;
+        return;
+      }
+    }
+  }
+
+  function renderGitFiles(files) {
+    var el = $('gitFileList');
+    el.innerHTML = '';
+    if (!files || !files.length) {
+      var empty = document.createElement('div');
+      empty.style.padding = '12px';
+      empty.style.color = '#999';
+      empty.appendChild(document.createTextNode('No changed files'));
+      el.appendChild(empty);
+      return;
+    }
+    for (var i = 0; i < files.length; i++) {
+      (function (file) {
+        var row = document.createElement('div');
+        row.className = 'row gitFileRow';
+
+        var check = document.createElement('input');
+        check.type = 'checkbox';
+        check.setAttribute('data-file', file.path);
+        check.checked = true;
+        check.onclick = function (e) {
+          if (e && e.stopPropagation) { e.stopPropagation(); }
+        };
+
+        var badgeClass = file.badge === '?' ? 'U' : file.badge;
+        var badge = document.createElement('span');
+        badge.className = 'gitBadge ' + badgeClass;
+        badge.appendChild(document.createTextNode(file.badge));
+
+        var main = document.createElement('div');
+        main.className = 'rowMain';
+        var name = document.createElement('div');
+        name.className = 'gitFileName';
+        name.appendChild(document.createTextNode(file.path));
+        main.appendChild(badge);
+        main.appendChild(name);
+
+        row.appendChild(check);
+        row.appendChild(main);
+        row.onclick = function () {
+          showGitDiff(file.path);
+        };
+        el.appendChild(row);
+      })(files[i]);
+    }
+  }
+
+  function gitDiffLineClass(line) {
+    if (line.indexOf('+++') === 0 || line.indexOf('---') === 0 || line.indexOf('diff ') === 0 || line.indexOf('index ') === 0) {
+      return 'diffMeta';
+    }
+    if (line.indexOf('@@') === 0) { return 'diffHunk'; }
+    if (line.charAt(0) === '+') { return 'diffAdd'; }
+    if (line.charAt(0) === '-') { return 'diffDel'; }
+    return '';
+  }
+
+  function renderGitDiff(pre, diff) {
+    pre.innerHTML = '';
+    var lines = String(diff).split('\n');
+    var i;
+    var row;
+    var cls;
+    for (i = 0; i < lines.length; i++) {
+      if (i === lines.length - 1 && lines[i] === '') { continue; }
+      cls = gitDiffLineClass(lines[i]);
+      row = document.createElement('span');
+      row.className = 'diffLine' + (cls ? ' ' + cls : '');
+      row.appendChild(document.createTextNode(lines[i].length ? lines[i] : ' '));
+      pre.appendChild(row);
+    }
+  }
+
+  function showGitDiff(filePath) {
+    var projectId = state.currentProjectId;
+    if (!projectId || !filePath) { return; }
+    state.gitSelectedFile = filePath;
+    var pre = $('gitDiff');
+    pre.style.display = 'block';
+    pre.innerHTML = 'Loading diff\u2026';
+    xhr('GET', '/api/git/diff?project=' + encodeURIComponent(projectId) + '&file=' + encodeURIComponent(filePath), null, authHeaders(), function (data) {
+      if (!data || data.error) {
+        pre.innerHTML = escapeHtml((data && data.error) || 'Failed to load diff');
+        return;
+      }
+      var diff = data.diff || '(no diff)';
+      renderGitDiff(pre, diff);
+    }, function (data) {
+      pre.innerHTML = escapeHtml((data && data.error) || 'Failed to load diff');
+    });
+  }
+
+  function loadGitBranches(onDone) {
+    var projectId = state.currentProjectId;
+    var sel = $('gitBranchSelect');
+    if (!projectId) {
+      sel.innerHTML = '';
+      if (onDone) { onDone(); }
+      return;
+    }
+    xhr('GET', '/api/git/branches?project=' + encodeURIComponent(projectId), null, authHeaders(), function (data) {
+      sel.innerHTML = '';
+      if (!data || data.error) {
+        if (onDone) { onDone(); }
+        return;
+      }
+      var branches = data.branches || data.localBranches || [];
+      var current = state.gitBranch || '';
+      for (var i = 0; i < branches.length; i++) {
+        var opt = document.createElement('option');
+        opt.value = branches[i];
+        opt.innerHTML = escapeHtml(branches[i]);
+        if (branches[i] === current) { opt.selected = true; }
+        sel.appendChild(opt);
+      }
+      selectGitBranchOption(current);
+      if (onDone) { onDone(); }
+    }, function () {
+      if (onDone) { onDone(); }
+    });
+  }
+
+  function checkoutGitBranch() {
+    var projectId = state.currentProjectId;
+    var branch = $('gitBranchSelect').value;
+    if (!projectId || !branch) {
+      setGitErr('Select a branch');
+      return;
+    }
+    setGitErr('');
+    xhr('POST', '/api/git/checkout', { project: projectId, branch: branch }, authHeaders(), function () {
+      loadGitStatus();
+      loadGitBranches();
+    }, function (data) {
+      setGitErr((data && data.error) || 'Checkout failed');
+    });
+  }
+
+  function getCheckedGitFiles() {
+    var checks = $('gitFileList').getElementsByTagName('input');
+    var files = [];
+    for (var i = 0; i < checks.length; i++) {
+      if (checks[i].type === 'checkbox' && checks[i].checked) {
+        var f = checks[i].getAttribute('data-file');
+        if (f) { files.push(f); }
+      }
+    }
+    return files;
+  }
+
+  function commitGitFiles() {
+    var projectId = state.currentProjectId;
+    var message = $('gitCommitMsg').value;
+    if (!message || !String(message).replace(/^\s+|\s+$/g, '').length) {
+      setGitErr('Enter a commit message');
+      return;
+    }
+    var files = getCheckedGitFiles();
+    if (!files.length) {
+      setGitErr('Select at least one file');
+      return;
+    }
+    setGitErr('');
+    var btn = $('btnGitCommit');
+    btn.disabled = true;
+    xhr('POST', '/api/git/commit', { project: projectId, message: message, files: files }, authHeaders(), function () {
+      btn.disabled = false;
+      $('gitCommitMsg').value = '';
+      $('gitDiff').style.display = 'none';
+      $('gitDiff').innerHTML = '';
+      loadGitStatus();
+    }, function (data) {
+      btn.disabled = false;
+      setGitErr((data && data.error) || 'Commit failed');
+    });
+  }
+
+  function gitFilesAction(pathName) {
+    var files = getCheckedGitFiles(); if (!files.length) { setGitErr('Select at least one file'); return; }
+    xhr('POST', '/api/git/' + pathName, { project: state.currentProjectId, files: files }, authHeaders(), function () { loadGitStatus(); }, function (d) { setGitErr((d && d.error) || (pathName + ' failed')); });
+  }
+  function gitBranchAction(pathName, promptText, confirmText) {
+    var branch = promptText ? window.prompt(promptText, $('gitBranchSelect').value || '') : $('gitBranchSelect').value;
+    if (!branch) { return; } if (confirmText && !window.confirm(confirmText + ' ' + branch + '?')) { return; }
+    xhr('POST', '/api/git/' + pathName, { project: state.currentProjectId, branch: branch }, authHeaders(), function () { loadGitBranches(); loadGitStatus(); }, function (d) { setGitErr((d && d.error) || (pathName + ' failed')); });
+  }
+  function gitRemoteAction(pathName) {
+    if ((pathName === 'pull' || pathName === 'push') && !window.confirm(pathName.charAt(0).toUpperCase() + pathName.substring(1) + ' remote changes?')) { return; }
+    xhr('POST', '/api/git/' + pathName, { project: state.currentProjectId }, authHeaders(), function (d) { window.alert((d && (d.output || d.message)) || (pathName + ' complete')); loadGitStatus(); }, function (d) { setGitErr((d && (d.details || d.error)) || (pathName + ' failed')); });
+  }
+  function showGitHistory() {
+    xhr('GET', '/api/git/commits?project=' + encodeURIComponent(state.currentProjectId) + '&limit=20', null, authHeaders(), function (d) {
+      var commits = (d && d.commits) || [], diff = $('gitDiff'); diff.innerHTML = ''; diff.style.display = 'block';
+      for (var i = 0; i < commits.length; i++) { (function (c) { var line = document.createElement('button'); line.className = 'secondary'; line.style.margin = '4px 8px'; line.style.width = 'calc(100% - 16px)'; line.appendChild(document.createTextNode((c.hash || c.shortHash || '').substring(0, 8) + ' ' + (c.subject || c.message || ''))); line.onclick = function () { xhr('GET', '/api/git/commit-diff?project=' + encodeURIComponent(state.currentProjectId) + '&commit=' + encodeURIComponent(c.hash || c.commit), null, authHeaders(), function (dd) { renderGitDiff($('gitDiff'), (dd && dd.diff) || ''); }); }; diff.appendChild(line); })(commits[i]); }
+    }, function (d) { setGitErr((d && d.error) || 'History failed'); });
+  }
+
+  // ---- Action Centre (Mission Control API) ----
 
   function openReview() {
     showScreen('screenReview');
@@ -1394,45 +2743,141 @@
   }
 
   function loadReviewItems(onDone) {
+    var sections = [];
+    var items = [];
+    var remaining = 2;
+    var loadError = '';
+
+    function finished() {
+      remaining -= 1;
+      if (remaining > 0) { return; }
+      renderReviewItems(sections, items, loadError);
+      if (onDone) { onDone(); }
+    }
+
+    xhr('GET', '/api/mission-control/sections', null, authHeaders(), function (data) {
+      var payload = unwrap(data);
+      sections = (payload && payload.sections) || [];
+      finished();
+    }, function () {
+      loadError = 'Some Action Centre sections could not be loaded.';
+      finished();
+    });
+
     xhr('GET', '/api/mission-control/items?status=pending,failed', null, authHeaders(), function (data) {
       var payload = unwrap(data);
-      var items = (payload && payload.items) || [];
-      renderReviewItems(items);
-      if (onDone) { onDone(); }
+      items = (payload && payload.items) || [];
+      finished();
     }, function (data) {
-      var el = $('reviewList');
-      el.innerHTML = '';
-      var errDiv = document.createElement('div');
-      errDiv.style.padding = '12px';
-      errDiv.style.color = '#ff6b6b';
-      errDiv.appendChild(document.createTextNode((data && data.error) || 'Failed to load review items'));
-      el.appendChild(errDiv);
-      if (onDone) { onDone(); }
+      loadError = (data && data.error) || 'Failed to load Action Centre items.';
+      finished();
     });
   }
 
-  function performReviewAction(itemId, actionId, btn) {
-    if (btn) { btn.disabled = true; }
-    xhr('POST', '/api/mission-control/items/' + encodeURIComponent(itemId) + '/actions', { actionId: actionId }, authHeaders(), function () {
-      loadReviewItems();
-    }, function () {
-      if (btn) { btn.disabled = false; }
+  function actionNeedsConfirmation(action) {
+    var text = String((action && action.id) || '') + ' ' + String((action && action.label) || '') + ' ' + String((action && action.kind) || '') + ' ' + String((action && action.style) || '');
+    if (/draft[\s_-]*reply/i.test(text)) { return false; }
+    return /(send|archive|mark[\s_-]*read|delete|destructive|remote)/i.test(text);
+  }
+
+  function setReviewButtonsDisabled(card, disabled) {
+    var buttons = card.getElementsByTagName('button');
+    for (var i = 0; i < buttons.length; i++) { buttons[i].disabled = disabled; }
+  }
+
+  function setReviewFeedback(card, message, className) {
+    var nodes = card.getElementsByClassName('reviewFeedback');
+    if (!nodes.length) { return; }
+    nodes[0].className = 'reviewFeedback' + (className ? ' ' + className : '');
+    nodes[0].innerHTML = '';
+    nodes[0].appendChild(document.createTextNode(message));
+  }
+
+  function performReviewAction(itemId, action, card) {
+    var label = action.label || action.id || 'action';
+    if (actionNeedsConfirmation(action) && !window.confirm('Confirm "' + label + '"? This may change the connected service.')) {
+      setReviewFeedback(card, 'Action cancelled.', '');
+      return;
+    }
+    setReviewButtonsDisabled(card, true);
+    card.setAttribute('aria-busy', 'true');
+    setReviewFeedback(card, 'Working on ' + label + '\u2026', '');
+    state.reviewActionStates[itemId] = { busy: true, message: 'Working on ' + label + '\u2026', className: '' };
+    xhr('POST', '/api/mission-control/items/' + encodeURIComponent(itemId) + '/actions', { actionId: action.id }, authHeaders(), function () {
+      card.setAttribute('aria-busy', 'false');
+      setReviewFeedback(card, 'Completed: ' + label, 'success');
+      state.reviewActionStates[itemId] = { busy: false, message: 'Completed: ' + label, className: 'success' };
+      window.setTimeout(function () { delete state.reviewActionStates[itemId]; loadReviewItems(); }, 700);
+    }, function (data) {
+      var message = (data && data.error) || ('Could not complete ' + label + '.');
+      card.setAttribute('aria-busy', 'false');
+      setReviewButtonsDisabled(card, false);
+      setReviewFeedback(card, message, 'error');
+      state.reviewActionStates[itemId] = { busy: false, message: message, className: 'error' };
     });
   }
 
-  function renderReviewItems(items) {
+  function combinedActions(sectionActions, itemActions) {
+    var result = [];
+    var seen = {};
+    var lists = [itemActions || [], sectionActions || []];
+    for (var i = 0; i < lists.length; i++) {
+      for (var j = 0; j < lists[i].length; j++) {
+        var action = lists[i][j];
+        var key = String(action.id || action.kind || action.label || '');
+        if (key && !seen[key]) { seen[key] = true; result.push(action); }
+      }
+    }
+    return result;
+  }
+
+  function renderReviewItems(sections, items, loadError) {
     var el = $('reviewList');
     el.innerHTML = '';
+    if (loadError) {
+      var errDiv = document.createElement('div');
+      errDiv.className = 'reviewFeedback error';
+      errDiv.setAttribute('role', 'alert');
+      errDiv.appendChild(document.createTextNode(loadError));
+      el.appendChild(errDiv);
+    }
     if (!items || !items.length) {
       var empty = document.createElement('div');
       empty.style.padding = '12px';
       empty.style.color = '#999';
-      empty.appendChild(document.createTextNode('No pending reviews'));
+      empty.appendChild(document.createTextNode('No pending actions'));
       el.appendChild(empty);
       return;
     }
+
+    var sectionMap = {};
+    var groups = [];
+    for (var s = 0; s < sections.length; s++) {
+      sectionMap[sections[s].section_id] = sections[s];
+      groups.push({ section: sections[s], items: [] });
+    }
     for (var i = 0; i < items.length; i++) {
-      (function (item) {
+      var group = null;
+      for (var g = 0; g < groups.length; g++) {
+        if (groups[g].section.section_id === items[i].section_id) { group = groups[g]; break; }
+      }
+      if (!group) {
+        group = { section: { section_id: items[i].section_id, title: 'Other actions', actions: [] }, items: [] };
+        groups.push(group);
+      }
+      group.items.push(items[i]);
+    }
+
+    for (var groupIndex = 0; groupIndex < groups.length; groupIndex++) {
+      if (!groups[groupIndex].items.length) { continue; }
+      var groupEl = document.createElement('section');
+      groupEl.className = 'reviewSection';
+      var sectionTitle = document.createElement('div');
+      sectionTitle.className = 'reviewSectionTitle';
+      sectionTitle.appendChild(document.createTextNode((groups[groupIndex].section.icon ? groups[groupIndex].section.icon + ' ' : '') + (groups[groupIndex].section.title || 'Actions')));
+      groupEl.appendChild(sectionTitle);
+      for (var itemIndex = 0; itemIndex < groups[groupIndex].items.length; itemIndex++) {
+        (function (item, section) {
         var card = document.createElement('div');
         card.className = 'reviewCard';
 
@@ -1455,18 +2900,25 @@
           card.appendChild(statusDiv);
         }
 
-        var actions = item.actions || [];
+        var feedback = document.createElement('div');
+        feedback.className = 'reviewFeedback';
+        feedback.setAttribute('role', 'status');
+        feedback.setAttribute('aria-live', 'polite');
+        card.appendChild(feedback);
+
+        var actions = combinedActions(section.actions, item.actions);
         if (actions.length) {
           var btnRow = document.createElement('div');
           btnRow.className = 'reviewBtns';
           for (var j = 0; j < actions.length; j++) {
             (function (action) {
               var btn = document.createElement('button');
-              btn.className = 'secondary small';
-              if (action.style === 'primary') { btn.className = 'small'; }
-              btn.appendChild(document.createTextNode(action.label || action.id || ''));
+              var label = action.label || action.id || '';
+              btn.className = action.style === 'primary' ? 'small' : 'secondary small';
+              if (action.style === 'destructive') { btn.className = 'small destructive'; }
+              btn.appendChild(document.createTextNode(label));
               btn.onclick = function () {
-                performReviewAction(item.item_id, action.id, btn);
+                performReviewAction(item.item_id, action, card);
               };
               btnRow.appendChild(btn);
             })(actions[j]);
@@ -1474,14 +2926,34 @@
           card.appendChild(btnRow);
         }
 
-        el.appendChild(card);
-      })(items[i]);
+        var actionState = state.reviewActionStates[item.item_id];
+        if (actionState) {
+          card.setAttribute('aria-busy', actionState.busy ? 'true' : 'false');
+          setReviewFeedback(card, actionState.message, actionState.className);
+          setReviewButtonsDisabled(card, actionState.busy);
+        }
+
+        groupEl.appendChild(card);
+        })(groups[groupIndex].items[itemIndex], groups[groupIndex].section);
+      }
+      el.appendChild(groupEl);
     }
   }
 
   // ---- Logout ----
 
+  function confirmLogout() {
+    var sheet = $('logoutConfirm');
+    if (sheet) { sheet.className = 'open'; }
+  }
+
+  function closeLogoutConfirm() {
+    var sheet = $('logoutConfirm');
+    if (sheet) { sheet.className = ''; }
+  }
+
   function logout() {
+    closeLogoutConfirm();
     state.token = null;
     state.currentCategoryId = null;
     state.currentProjectId = null;
@@ -1494,6 +2966,7 @@
       clearInterval(state.reviewPollTimer);
       state.reviewPollTimer = null;
     }
+    state.reviewActionStates = {};
     try {
       window.localStorage.removeItem(TOKEN_KEY);
     } catch (e) {}
@@ -1509,19 +2982,41 @@
   $('btnThemeSessions').onclick = toggleTheme;
   $('btnThemeChat').onclick = toggleTheme;
   $('btnThemeReview').onclick = toggleTheme;
+  $('btnThemeGit').onclick = toggleTheme;
+  $('btnThemePickerClose').onclick = closeThemePicker;
+  $('themeChoiceFog').onclick = function () { chooseTheme('fog'); };
+  $('themeChoicePaper').onclick = function () { chooseTheme('paper'); };
+  $('themeChoiceDusk').onclick = function () { chooseTheme('dusk'); };
+  $('themeChoiceInk').onclick = function () { chooseTheme('ink'); };
+  $('typeSizeSm').onclick = function () { chooseFont('sm'); };
+  $('typeSizeMd').onclick = function () { chooseFont('md'); };
+  $('typeSizeLg').onclick = function () { chooseFont('lg'); };
+  $('themePicker').onclick = function (evt) {
+    if (evt && evt.target && evt.target.id === 'themePicker') { closeThemePicker(); }
+  };
   $('providerSelect').onchange = onProviderChange;
   $('modelSelect').onchange = function () { renderEffortOptions(); };
-  $('btnLogoutCategories').onclick = logout;
+  $('permissionModeSelect').onchange = function () {
+    persistSessionPermissionMode($('permissionModeSelect').value);
+  };
+  $('btnLogoutCategories').onclick = confirmLogout;
+  $('btnLogoutCancel').onclick = closeLogoutConfirm;
+  $('btnLogoutConfirm').onclick = logout;
+  $('logoutConfirm').onclick = function (evt) {
+    if (evt && evt.target && evt.target.id === 'logoutConfirm') { closeLogoutConfirm(); }
+  };
   $('btnBackToCategories').onclick = function () { navGoCategories(); };
   $('btnBackToProjects').onclick = function () {
     openCategory(state.currentCategoryId, state.currentCategoryName || 'Projects');
   };
   $('btnBackToSessions').onclick = function () {
+    saveCurrentDraft();
     if (state.ws) {
       try { state.ws.close(); } catch (e) {}
       state.ws = null;
     }
     hideTyping();
+    setThinking(false);
     showScreen('screenSessions');
     updateHashAndNav('screenSessions', {
       categoryId: state.currentCategoryId,
@@ -1530,14 +3025,56 @@
       projectName: state.currentProjectName
     });
   };
-  $('btnNewSession').onclick = newSession;
+  $('btnNewSession').onclick = onNewSessionClick;
+  $('btnCancelNewSession').onclick = function () { setSessionSetupOpen(false); };
+  $('btnLoadMoreSessions').onclick = function () { loadSessions(null, true); };
+  $('btnArchivedSessions').onclick = loadArchivedSessions;
   $('btnSend').onclick = sendChat;
   $('btnStopChat').onclick = stopChat;
+  $('btnLatest').onclick = function () { scrollChatToBottom(); };
   $('btnReviewFromCategories').onclick = function () { openReview(); };
   $('btnRefreshReview').onclick = function () { loadReviewItems(); };
   $('btnBackFromReview').onclick = leaveReview;
+  $('btnGitFromProjects').onclick = function () {
+    if (!state.currentProjectId) { return; }
+    openGit(state.currentProjectId, state.currentProjectName);
+  };
+  $('btnGitFromSessions').onclick = function () {
+    if (!state.currentProjectId) { return; }
+    openGit(state.currentProjectId, state.currentProjectName);
+  };
+  $('btnBackFromGit').onclick = leaveGit;
+  $('btnRefreshGit').onclick = function () {
+    loadGitStatus();
+    loadGitBranches();
+  };
+  $('btnGitCheckout').onclick = checkoutGitBranch;
+  $('btnGitCommit').onclick = commitGitFiles;
+  $('btnGitNewBranch').onclick = function () { gitBranchAction('create-branch', 'New branch name'); };
+  $('btnGitDeleteBranch').onclick = function () { gitBranchAction('delete-branch', null, 'Delete branch'); };
+  $('btnGitStage').onclick = function () { gitFilesAction('stage'); };
+  $('btnGitUnstage').onclick = function () { gitFilesAction('unstage'); };
+  $('btnGitHistory').onclick = showGitHistory;
+  $('btnGitFetch').onclick = function () { gitRemoteAction('fetch'); };
+  $('btnGitPull').onclick = function () { gitRemoteAction('pull'); };
+  $('btnGitPush').onclick = function () { gitRemoteAction('push'); };
 
-  applyTheme(getStoredItem(THEME_KEY) || 'dark');
+  setupVoiceInput();
+  updateGitEntryButtons();
+  (function initTheme() {
+    var stored = getStoredItem(THEME_KEY);
+    var name = normalizeTheme(stored);
+    if (stored !== name) { setStoredItem(THEME_KEY, name); }
+    applyTheme(name);
+  })();
+  (function initFont() {
+    var stored = getStoredItem(FONT_KEY);
+    var name = normalizeFont(stored);
+    if (stored !== name) { setStoredItem(FONT_KEY, name); }
+    applyTheme(getStoredItem(THEME_KEY));
+  })();
+  $('chatInput').onkeyup = function () { saveCurrentDraft(); };
+  $('chatInput').onblur = function () { saveCurrentDraft(); };
 
   window.addEventListener('hashchange', function () {
     if (state.suppressHashChange) {
@@ -1546,6 +3083,16 @@
     }
     if (!state.token) { return; }
     applyRouteFromHash();
+  }, false);
+
+  window.addEventListener('online', function () {
+    if (state.activeScreen === 'screenChat' && !state.wsConnected) { connectWs(true); }
+  }, false);
+  window.addEventListener('offline', function () {
+    setConnectionStatus('Offline', 'offline');
+  }, false);
+  document.addEventListener('visibilitychange', function () {
+    if (!document.hidden && state.activeScreen === 'screenChat' && !state.wsConnected) { connectWs(true); }
   }, false);
 
   // ---- Pull to refresh ----
@@ -1578,6 +3125,9 @@
       loadReviewItems(done);
     } else if (screen === 'screenChat') {
       reloadMessagesForRefresh(done);
+    } else if (screen === 'screenGit') {
+      loadGitBranches();
+      loadGitStatus(done);
     } else {
       hidePtrBar();
     }

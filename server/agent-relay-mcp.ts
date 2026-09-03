@@ -28,9 +28,14 @@ const tools = AGENT_RELAY_MCP_TOOLS;
 
 async function callApi(toolName: string, input: Record<string, unknown>): Promise<unknown> {
   if (!apiToken) throw new Error('CLOUDCLI_AGENT_RELAY_MCP_TOKEN is not configured. Enable Agent Relay in CloudCLI Settings.');
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${apiToken}`,
+    'Content-Type': 'application/json',
+  };
+  if (leadSessionId) headers['X-CloudCLI-Lead-Session-Id'] = leadSessionId;
   const response = await fetch(`${apiUrl}/tools/${encodeURIComponent(toolName)}`, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${apiToken}`, 'Content-Type': 'application/json' },
+    headers,
     body: JSON.stringify(input),
     signal: AbortSignal.timeout(API_TIMEOUT_MS),
   });
@@ -56,7 +61,6 @@ async function handleMessage(message: JsonRpcRequest): Promise<unknown> {
     const data = await callApi(name, {
       ...args,
       projectPath: args.projectPath || process.cwd(),
-      sourceSessionId: leadSessionId || undefined,
     });
     return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
   }

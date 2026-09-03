@@ -164,7 +164,7 @@ type SidebarContentProps = {
   onShowMissionControl?: () => void;
   missionControlPendingCount?: number;
   onShowKanban?: () => void;
-  onShowAgentSwarm?: () => void;
+  onShowAgentRelay?: () => void;
   onShowStudio?: () => void;
   studioActive?: boolean;
   onShowStats?: () => void;
@@ -218,7 +218,7 @@ export default function SidebarContent({
   onShowMissionControl,
   missionControlPendingCount = 0,
   onShowKanban,
-  onShowAgentSwarm,
+  onShowAgentRelay,
   onShowStudio,
   studioActive = false,
   onShowStats,
@@ -682,7 +682,7 @@ export default function SidebarContent({
       }}
       runningSessionsCount={runningSessionsCount}
       onShowKanban={onShowKanban}
-      onShowAgentSwarm={onShowAgentSwarm ?? (() => {})}
+      onShowAgentRelay={onShowAgentRelay ?? (() => {})}
       onShowStudio={onShowStudio ?? (() => {})}
       studioActive={studioActive}
       onShowMissionControl={onShowMissionControl ?? (() => {})}

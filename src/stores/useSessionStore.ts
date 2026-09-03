@@ -13,6 +13,16 @@ import { authenticatedFetch } from '../utils/api';
 import type { LLMProvider } from '../types/app';
 
 import { computeMerged, pruneRealtimeSupersededByServer } from './sessionStoreMerge';
+import {
+  buildSessionMessagesUrl,
+  hasReachedCachedTailTimeBoundary,
+  mergeLatestServerPage,
+  mergeOlderServerPage,
+  planLatestPageBridge,
+  resolveLatestPagePagination,
+  SESSION_MESSAGES_PAGE_SIZE,
+} from './sessionMessagePagination';
+import type { SessionMessagesRequestOptions } from './sessionMessagePagination';
 
 // ─── NormalizedMessage (mirrors server/adapters/types.js) ────────────────────
 
@@ -149,6 +159,222 @@ function recomputeMergedIfNeeded(slot: SessionSlot): boolean {
   slot._lastRealtimeRef = slot.realtimeMessages;
   slot.merged = computeMerged(slot.serverMessages, slot.realtimeMessages);
   return true;
+}
+
+// ─── Bounded latest-page refresh ─────────────────────────────────────────────
+
+type SessionHistoryPage = {
+  messages: NormalizedMessage[];
+  total: number;
+  hasMore: boolean;
+  tokenUsage?: unknown;
+};
+
+export type CanRequestHistory = () => boolean;
+
+export type LatestHistoryRefreshResult = {
+  slot: SessionSlot;
+  /** The fetched tail was stitched onto the cached suffix and applied. */
+  applied: boolean;
+  /** Slot state changed (messages and/or tokenUsage) — consumers re-rendered. */
+  changed: boolean;
+  /** canRequest() vetoed the network — the caller should retry when visible. */
+  deferred: boolean;
+};
+
+async function requestSessionHistoryPage(
+  sessionId: string,
+  options: SessionMessagesRequestOptions,
+): Promise<SessionHistoryPage> {
+  const response = await authenticatedFetch(buildSessionMessagesUrl(sessionId, options));
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+  const body = await response.json();
+  const data = body?.data ?? body;
+  const messages: NormalizedMessage[] = Array.isArray(data.messages) ? data.messages : [];
+
+  return {
+    messages,
+    total: typeof data.total === 'number' ? data.total : messages.length,
+    hasMore: Boolean(data.hasMore),
+    ...(
+      data && typeof data === 'object' && 'tokenUsage' in data
+        ? { tokenUsage: data.tokenUsage }
+        : {}
+    ),
+  };
+}
+
+function readMessageTime(m: NormalizedMessage): number | null {
+  const time = Date.parse(m.timestamp);
+  return Number.isFinite(time) ? time : null;
+}
+
+// Token usage is JSON response data, so compare its serialized value instead
+// of treating each freshly parsed response object as a state change.
+function hasEquivalentTokenUsage(left: unknown, right: unknown): boolean {
+  return Object.is(left, right) || JSON.stringify(left) === JSON.stringify(right);
+}
+
+function olderPagePrecedesCachedHistory(
+  olderMessages: NormalizedMessage[],
+  cachedMessages: NormalizedMessage[],
+): boolean {
+  const olderNewest = olderMessages[olderMessages.length - 1];
+  const cachedOldest = cachedMessages[0];
+  if (!olderNewest || !cachedOldest) return true;
+
+  const olderTime = readMessageTime(olderNewest);
+  const cachedTime = readMessageTime(cachedOldest);
+  return olderTime === null || cachedTime === null || olderTime <= cachedTime;
+}
+
+/**
+ * Fetches and atomically applies a bounded persisted-tail reconciliation.
+ * Every request is finite. Claude/Codex bridge discovery may use more than one
+ * bounded chunk because their response `total` omits paginated tool results.
+ *
+ * Concurrency uses the store's `_fetchSeq`/`_appliedFetchSeq` ticket guard:
+ * the ticket is taken before the first request and a stale ticket (a
+ * later-started fetch already applied) discards the whole reconciliation
+ * instead of winding the transcript back.
+ */
+async function refreshLatestSlotFromServer(
+  sessionId: string,
+  slot: SessionSlot,
+  limit: number,
+  canRequest: CanRequestHistory = () => true,
+): Promise<Omit<LatestHistoryRefreshResult, 'slot'>> {
+  if (!canRequest()) {
+    return { applied: false, changed: false, deferred: true };
+  }
+
+  const fetchTicket = ++slot._fetchSeq;
+  const previousServerMessages = slot.serverMessages;
+  const previousTotal = slot.total;
+  const previousHasMore = slot.hasMore;
+  const latestPage = await requestSessionHistoryPage(sessionId, {
+    limit,
+    offset: 0,
+  });
+
+  let nextServerMessages: NormalizedMessage[] | null = null;
+  let nextHasMore = previousHasMore;
+
+  // A page with no older rows is the complete authoritative transcript. This
+  // also removes cached rows after a provider-side truncation.
+  if (!latestPage.hasMore) {
+    nextServerMessages = latestPage.messages;
+    nextHasMore = false;
+  } else if (previousServerMessages.length === 0) {
+    nextServerMessages = latestPage.messages;
+    nextHasMore = true;
+  } else {
+    let fetchedWindow = latestPage.messages;
+    let oldestFetchedPage = latestPage;
+    let bridgeRowsFetched = 0;
+    let reachedStartOfHistory = false;
+    let mergedPage = mergeLatestServerPage(previousServerMessages, fetchedWindow);
+
+    while (
+      mergedPage.overlapLength === 0
+      && !hasReachedCachedTailTimeBoundary(previousServerMessages, fetchedWindow)
+    ) {
+      const bridgeRequest = planLatestPageBridge(
+        previousServerMessages,
+        latestPage.messages,
+        previousTotal,
+        latestPage.total,
+        bridgeRowsFetched,
+      );
+      if (!bridgeRequest) break;
+      if (!canRequest()) {
+        return { applied: false, changed: false, deferred: true };
+      }
+      // A later-started fetch already applied while we were bridging — its
+      // transcript is fresher than anything this reconciliation could stitch.
+      if (fetchTicket <= slot._appliedFetchSeq) {
+        return { applied: false, changed: false, deferred: false };
+      }
+
+      const bridgePage = await requestSessionHistoryPage(sessionId, bridgeRequest);
+      if (bridgePage.total !== latestPage.total) {
+        console.warn(`[SessionStore] History changed while bridging ${sessionId}; retaining cached suffix.`);
+        return { applied: false, changed: false, deferred: false };
+      }
+      if (bridgePage.messages.length === 0) break;
+
+      const bridgeMerge = mergeOlderServerPage(fetchedWindow, bridgePage.messages);
+      if (
+        bridgeMerge.overlapLength > 0
+        || !olderPagePrecedesCachedHistory(bridgePage.messages, fetchedWindow)
+      ) {
+        console.warn(`[SessionStore] History shifted while bridging ${sessionId}; retaining cached suffix.`);
+        return { applied: false, changed: false, deferred: false };
+      }
+
+      fetchedWindow = bridgeMerge.messages;
+      oldestFetchedPage = bridgePage;
+      bridgeRowsFetched += bridgePage.messages.length;
+      mergedPage = mergeLatestServerPage(previousServerMessages, fetchedWindow);
+
+      if (!bridgePage.hasMore) {
+        reachedStartOfHistory = true;
+        break;
+      }
+    }
+
+    if (reachedStartOfHistory) {
+      nextServerMessages = fetchedWindow;
+      nextHasMore = false;
+    } else if (mergedPage.overlapLength > 0) {
+      nextServerMessages = mergedPage.messages;
+      nextHasMore = resolveLatestPagePagination(
+        previousServerMessages.length,
+        nextServerMessages.length,
+        previousHasMore,
+        oldestFetchedPage.hasMore,
+      ).hasMore;
+    }
+  }
+
+  // A later-started fetch already applied: applying this stale reconciliation
+  // would erase rows the user has already seen (and re-prune realtime rows
+  // against an outdated snapshot).
+  if (fetchTicket <= slot._appliedFetchSeq) {
+    return { applied: false, changed: false, deferred: false };
+  }
+
+  let changed = false;
+  if (
+    latestPage.tokenUsage !== undefined
+    && !hasEquivalentTokenUsage(latestPage.tokenUsage, slot.tokenUsage)
+  ) {
+    slot.tokenUsage = latestPage.tokenUsage;
+    changed = true;
+  }
+
+  if (!nextServerMessages) {
+    console.warn(`[SessionStore] Could not bridge latest history for ${sessionId}; retaining cached suffix.`);
+    return { applied: false, changed, deferred: false };
+  }
+
+  slot._appliedFetchSeq = fetchTicket;
+  slot.serverMessages = nextServerMessages;
+  slot.total = latestPage.total;
+  slot.offset = nextServerMessages.length;
+  slot.hasMore = nextHasMore;
+  slot.fetchedAt = Date.now();
+  // Only drop realtime rows the server transcript now owns. A blind clear
+  // here caused the chat pane to flash "Continue your conversation" after
+  // `complete` while JSONL / provider_session_id indexing was still behind.
+  slot.realtimeMessages = pruneRealtimeSupersededByServer(
+    slot.serverMessages,
+    slot.realtimeMessages,
+  );
+  recomputeMergedIfNeeded(slot);
+
+  return { applied: true, changed: true, deferred: false };
 }
 
 // ─── Stale threshold ─────────────────────────────────────────────────────────
@@ -344,44 +570,57 @@ export function useSessionStore() {
   }, [getSlot, notify]);
 
   /**
-   * Re-fetch serverMessages from the provider sessions endpoint.
+   * Re-sync serverMessages with the persisted transcript.
+   *
+   * This used to re-download the ENTIRE transcript (no limit/offset) on every
+   * automatic refresh — megabytes per completed turn on long sessions. It now
+   * fetches only the newest page and stitches it onto the cached suffix via
+   * the bounded tail reconciliation, preserving pagination state. Explicit
+   * "Load all" still goes through `fetchFromServer(limit: null)`.
    */
   const refreshFromServer = useCallback(async (
     sessionId: string,
   ) => {
     const slot = getSlot(sessionId);
-    const fetchTicket = ++slot._fetchSeq;
     try {
-      const url = `/api/providers/sessions/${encodeURIComponent(sessionId)}/messages`;
-      const response = await authenticatedFetch(url);
-
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const body = await response.json();
-      const data = body?.data ?? body;
-
-      // A later-started fetch already applied: applying this stale transcript
-      // would erase rows the user has already seen (and re-prune realtime
-      // rows against an outdated snapshot).
-      if (fetchTicket <= slot._appliedFetchSeq) {
-        return;
-      }
-      slot._appliedFetchSeq = fetchTicket;
-
-      slot.serverMessages = data.messages || [];
-      slot.total = data.total ?? slot.serverMessages.length;
-      slot.hasMore = Boolean(data.hasMore);
-      slot.fetchedAt = Date.now();
-      // Only drop realtime rows the server transcript now owns. A blind clear
-      // here caused the chat pane to flash "Continue your conversation" after
-      // `complete` while JSONL / provider_session_id indexing was still behind.
-      slot.realtimeMessages = pruneRealtimeSupersededByServer(
-        slot.serverMessages,
-        slot.realtimeMessages,
+      const result = await refreshLatestSlotFromServer(
+        sessionId,
+        slot,
+        SESSION_MESSAGES_PAGE_SIZE,
       );
-      recomputeMergedIfNeeded(slot);
-      notify(sessionId);
+      if (result.changed) notify(sessionId);
     } catch (error) {
       console.error(`[SessionStore] refresh failed for ${sessionId}:`, error);
+    }
+  }, [getSlot, notify]);
+
+  /**
+   * Refreshes only the persisted tail and stitches it onto the contiguous
+   * cached suffix. Large turns request a small offset bridge rather than the
+   * whole transcript, and the final state is applied atomically. `canRequest`
+   * is consulted before every network request so hidden/inactive panes can
+   * defer instead of fetching.
+   */
+  const refreshLatestFromServer = useCallback(async (
+    sessionId: string,
+    opts: {
+      limit?: number;
+      canRequest?: CanRequestHistory;
+    } = {},
+  ): Promise<LatestHistoryRefreshResult> => {
+    const slot = getSlot(sessionId);
+    try {
+      const result = await refreshLatestSlotFromServer(
+        sessionId,
+        slot,
+        opts.limit ?? SESSION_MESSAGES_PAGE_SIZE,
+        opts.canRequest,
+      );
+      if (result.changed) notify(sessionId);
+      return { slot, ...result };
+    } catch (error) {
+      console.error(`[SessionStore] latest refresh failed for ${sessionId}:`, error);
+      return { slot, applied: false, changed: false, deferred: false };
     }
   }, [getSlot, notify]);
 
@@ -580,6 +819,7 @@ export function useSessionStore() {
     appendRealtime,
     appendRealtimeBatch,
     refreshFromServer,
+    refreshLatestFromServer,
     setActiveSession,
     setStatus,
     isStale,
@@ -592,7 +832,7 @@ export function useSessionStore() {
     getSessionSlot,
   }), [
     getSlot, has, fetchFromServer, fetchMore,
-    appendRealtime, appendRealtimeBatch, refreshFromServer,
+    appendRealtime, appendRealtimeBatch, refreshFromServer, refreshLatestFromServer,
     setActiveSession, setStatus, isStale, updateStreaming, finalizeStreaming,
     updateThinkingStream, finalizeThinkingStream,
     clearRealtime, getMessages, getSessionSlot,

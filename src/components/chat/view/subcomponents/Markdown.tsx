@@ -2,9 +2,9 @@ import React, { memo, useMemo, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
+import type { PluggableList } from 'unified';
 import rehypeKatex from 'rehype-katex';
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { oneDark, oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import { SyntaxHighlighter, oneDark, oneLight } from '../../../../shared/syntaxHighlighter';
 import { useTranslation } from 'react-i18next';
 import { normalizeInlineCodeFences } from '../../utils/chatFormatting';
 import { copyTextToClipboard } from '../../../../utils/clipboard';
@@ -187,9 +187,23 @@ const markdownComponents = {
   ),
 };
 
-export const Markdown = memo(function Markdown({ children, className }: MarkdownProps) {
+type MarkdownBodyProps = {
+  children: string;
+};
+
+/**
+ * The markdown pipeline without the outer container: fence normalization, the
+ * shared remark/rehype plugins and the shared component overrides. <Markdown>
+ * wraps it for the normal case; <StreamingMarkdown> renders two of them side
+ * by side (settled prefix + streaming tail) so the memo on the text lets the
+ * prefix skip re-parsing on every stream tick.
+ */
+export const MarkdownBody = memo(function MarkdownBody({ children }: MarkdownBodyProps) {
   const content = normalizeInlineCodeFences(String(children ?? ''));
-  const remarkPlugins = useMemo(() => [remarkGfm, remarkMath], []);
+  const remarkPlugins = useMemo(
+    (): PluggableList => [remarkGfm, [remarkMath, { singleDollarTextMath: false }]],
+    [],
+  );
   const rehypePlugins = useMemo(() => [rehypeKatex], []);
   const { openFileInEditor } = usePaletteOps();
 
@@ -233,10 +247,16 @@ export const Markdown = memo(function Markdown({ children, className }: Markdown
   );
 
   return (
+    <ReactMarkdown remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} components={components as any}>
+      {content}
+    </ReactMarkdown>
+  );
+}, (prev, next) => prev.children === next.children);
+
+export const Markdown = memo(function Markdown({ children, className }: MarkdownProps) {
+  return (
     <div className={className}>
-      <ReactMarkdown remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} components={components as any}>
-        {content}
-      </ReactMarkdown>
+      <MarkdownBody>{String(children ?? '')}</MarkdownBody>
     </div>
   );
 }, (prev, next) =>

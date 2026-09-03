@@ -704,7 +704,9 @@ export function useChatComposerState({
     noKeyboard: true,
   });
 
-  // Snapshot of everything `chat.send` needs beyond the text itself. Built at
+  // Snapshot of turn-scoped `chat.send` options. Permission mode is persisted
+  // on the server-owned session and therefore is deliberately not repeated.
+  // Built at
   // send time for immediate sends and at queue time for queued ones, so a
   // queued message keeps the provider settings it was composed under even if
   // it is later dispatched outside this composer (app-level auto-send).
@@ -721,7 +723,6 @@ export function useChatComposerState({
     return {
       model: currentProviderModel,
       effort: currentProviderEffort,
-      permissionMode: resolvePermissionModeForProvider(provider, permissionMode),
       toolsSettings,
       skipPermissions: toolsSettings?.skipPermissions || false,
       sessionSummary: getNotificationSessionSummary(selectedSession, currentInput),
@@ -732,9 +733,7 @@ export function useChatComposerState({
     currentProviderModel,
     currentProviderEffort,
     fastMode,
-    permissionMode,
     provider,
-    resolvePermissionModeForProvider,
     selectedSession,
   ]);
 
@@ -880,6 +879,7 @@ export function useChatComposerState({
               provider,
               projectId: selectedProject.projectId,
               projectPath: resolvedProjectPath,
+              permissionMode: resolvePermissionModeForProvider(provider, permissionMode),
             }),
           });
           if (!response.ok) {
@@ -1008,8 +1008,10 @@ export function useChatComposerState({
       isLoading,
       onSessionProcessing,
       onSessionEstablished,
+      permissionMode,
       persistSessionModelEffort,
       provider,
+      resolvePermissionModeForProvider,
       resetCommandMenuState,
       scrollToBottom,
       selectedProject,

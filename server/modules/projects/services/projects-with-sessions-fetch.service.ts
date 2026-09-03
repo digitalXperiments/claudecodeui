@@ -9,6 +9,7 @@ import { AppError } from '@/shared/utils.js';
 
 type SessionSummary = {
   id: string;
+  provider_session_id: string | null;
   provider: string;
   summary: string;
   messageCount: number;
@@ -18,6 +19,7 @@ type SessionSummary = {
 type SessionRepositoryRow = {
   provider: string;
   session_id: string;
+  provider_session_id?: string | null;
   custom_name?: string | null;
   updated_at?: string | null;
   created_at?: string | null;
@@ -122,6 +124,7 @@ function normalizeSessionPagination(options: SessionPaginationOptions = {}): { l
 function mapSessionRowToSummary(row: SessionRepositoryRow): SessionSummary {
   return {
     id: row.session_id,
+    provider_session_id: row.provider_session_id ?? null,
     provider: row.provider,
     summary: row.custom_name || '',
     messageCount: 0,

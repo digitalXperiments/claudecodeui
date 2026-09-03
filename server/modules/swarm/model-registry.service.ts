@@ -467,7 +467,7 @@ function upsert(capability: ModelCapability): void {
          input_cost_per_mtok, output_cost_per_mtok,
          coding_score, agentic_score, long_context_score, speed_score,
          confidence, source_json, aliases_json, assessment_kind, fetched_at, enabled, available
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1)
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
        ON CONFLICT(provider, model_id) DO UPDATE SET
          display_name=excluded.display_name,
          context_window=excluded.context_window,
@@ -484,6 +484,7 @@ function upsert(capability: ModelCapability): void {
          aliases_json=excluded.aliases_json,
          assessment_kind=excluded.assessment_kind,
          fetched_at=excluded.fetched_at,
+         enabled=excluded.enabled,
          available=1`
     )
     .run(
@@ -504,6 +505,7 @@ function upsert(capability: ModelCapability): void {
       JSON.stringify(capability.aliases),
       capability.assessmentKind,
       capability.fetchedAt,
+      capability.enabled ? 1 : 0,
     );
 }
 
@@ -513,6 +515,26 @@ export function listModelCapabilities(): ModelCapability[] {
     .prepare(`SELECT * FROM model_capabilities WHERE available != 0 ORDER BY coding_score DESC, model_id ASC`)
     .all() as CapabilityRow[];
   return rows.map(rowToCapability);
+}
+
+/**
+ * Enabled registry ids (canonical + aliases) for a provider.
+ * Returns `null` when the registry has no enabled rows for that provider,
+ * meaning Agent Relay should not restrict by profiles.
+ */
+export function enabledRegistryModelIdsForProvider(provider: string): string[] | null {
+  const enabled = listModelCapabilities().filter((capability) => (
+    capability.provider === provider && capability.enabled
+  ));
+  if (enabled.length === 0) return null;
+  const ids = new Set<string>();
+  for (const capability of enabled) {
+    ids.add(capability.modelId);
+    for (const alias of capability.aliases) {
+      if (alias.trim()) ids.add(alias);
+    }
+  }
+  return [...ids];
 }
 
 export function setModelEnabled(provider: string, modelId: string, enabled: boolean): boolean {

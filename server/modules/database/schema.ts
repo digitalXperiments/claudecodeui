@@ -135,6 +135,9 @@ CREATE TABLE IF NOT EXISTS sessions (
     -- Set when this session was created by a cross-provider/model handoff:
     -- points at the app-facing session id the conversation continues from.
     continued_from_session_id TEXT,
+    -- CloudCLI runtime policy inherited by each new turn. NULL is reserved
+    -- for imported/legacy sessions that have not chosen an app preference.
+    permission_mode TEXT,
     custom_name TEXT,
     project_path TEXT,
     -- The logical project owns the session; this keeps the actual provider cwd

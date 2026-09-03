@@ -315,6 +315,14 @@ export class ClaudeProviderAuth implements IProviderAuth {
       return { kind: 'authenticated', status: { authenticated: true, email: 'Configured via settings.json', method: 'api_key' } };
     }
 
+    if (env.CLAUDE_CODE_OAUTH_TOKEN?.trim()) {
+      return { kind: 'authenticated', status: { authenticated: true, email: 'OAuth Token (long-lived)', method: 'environment' } };
+    }
+
+    if (readOptionalString(settingsEnv.CLAUDE_CODE_OAUTH_TOKEN)) {
+      return { kind: 'authenticated', status: { authenticated: true, email: 'OAuth Token (long-lived)', method: 'environment' } };
+    }
+
     // Keychain first on macOS: when present it is current; .credentials.json is
     // often a stale leftover after Claude moved OAuth into the keychain.
     const keychain = await this.readMacOSKeychainCredentials();

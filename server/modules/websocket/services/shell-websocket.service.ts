@@ -1086,14 +1086,25 @@ export function handleShellConnection(
       return;
     }
 
+    // Mobile networks can deliver an old socket's close after its replacement
+    // has attached. Only the socket that currently owns the PTY may detach it.
+    if (session.ws !== ws) {
+      return;
+    }
+
     // The client closed (tab switch / unmount) but the PTY stays alive for
     // the reconnect window. Sync whatever the TUI already wrote so the Chat
     // tab reflects shell work immediately on return.
     captureShellSessionSync(dependencies, session);
 
     session.ws = null;
+    if (session.timeoutId) {
+      clearTimeout(session.timeoutId);
+    }
     session.timeoutId = setTimeout(() => {
-      if (ptySessionsMap.get(ptySessionKey as string) !== session) {
+      // A reconnect may win just as this timer becomes runnable. Re-check the
+      // active socket so a queued cleanup can never kill a reattached PTY.
+      if (ptySessionsMap.get(ptySessionKey as string) !== session || session.ws !== null) {
         return;
       }
 

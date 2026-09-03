@@ -8,6 +8,7 @@ import PermissionContext from '../../../contexts/PermissionContext';
 import { QuickSettingsPanel } from '../../quick-settings-panel';
 import type { ChatInterfaceProps, Provider  } from '../types/types';
 import { useChatProviderState } from '../hooks/useChatProviderState';
+import { normalizedToChatMessages } from '../hooks/useChatMessages';
 import { useChatSessionState } from '../hooks/useChatSessionState';
 import { useChatRealtimeHandlers } from '../hooks/useChatRealtimeHandlers';
 import { useChatComposerState } from '../hooks/useChatComposerState';
@@ -229,6 +230,23 @@ function ChatInterface({
     sessionStore,
   });
 
+  const prepareChatExport = useCallback(async () => {
+    if (!allMessagesLoaded) {
+      await loadAllMessages();
+    }
+    const activeSessionId = selectedSession?.id || currentSessionId;
+    return activeSessionId
+      ? normalizedToChatMessages(sessionStore.getMessages(activeSessionId))
+      : chatMessages;
+  }, [
+    allMessagesLoaded,
+    chatMessages,
+    currentSessionId,
+    loadAllMessages,
+    selectedSession?.id,
+    sessionStore,
+  ]);
+
   // Agent Relay/internal worker transcripts are opened for observation only —
   // this is the single predicate every composer/header control below defers
   // to; see resolveReadOnlyWorkerSession for the fail-closed navigation rules.
@@ -248,6 +266,28 @@ function ChatInterface({
     onSessionEstablished?.(sessionId, context);
     onNavigateToSession?.(sessionId);
   }, [setCurrentSessionId, onSessionEstablished, onNavigateToSession]);
+
+  const handleCyclePermissionMode = useCallback(() => {
+    const nextMode = cyclePermissionMode();
+    const sessionId = currentSessionId || selectedSession?.id || null;
+    if (!sessionId) return;
+
+    // This frame and the next chat.send share one ordered WebSocket, so a
+    // rapid toggle-then-send cannot start with the previous session policy.
+    const sent = sendMessage({
+      type: 'chat.session-preferences',
+      sessionId,
+      preferences: { permissionMode: nextMode },
+    });
+    if (!sent) {
+      void authenticatedFetch(`/api/providers/sessions/${encodeURIComponent(sessionId)}/runtime-preferences`, {
+        method: 'PUT',
+        body: JSON.stringify({ permissionMode: nextMode }),
+      }).catch((error) => {
+        console.error('Failed to persist session permission mode:', error);
+      });
+    }
+  }, [cyclePermissionMode, currentSessionId, selectedSession?.id, sendMessage]);
 
   const handleSaveAsSkill = useCallback(() => {
     if (isReadOnlyWorkerSession) {
@@ -319,7 +359,11 @@ function ChatInterface({
           if (!selectedProject || !projectPath) return;
           const response = await authenticatedFetch('/api/providers/sessions', {
             method: 'POST',
-            body: JSON.stringify({ provider: targetProvider, projectPath }),
+            body: JSON.stringify({
+              provider: targetProvider,
+              projectPath,
+              permissionMode: resolvePermissionModeForProvider(targetProvider, permissionMode),
+            }),
           });
           if (!response.ok) {
             throw new Error(`Failed to allocate Studio chat session (${response.status})`);
@@ -357,6 +401,8 @@ function ChatInterface({
     provider,
     selectedProject,
     handleSessionEstablished,
+    permissionMode,
+    resolvePermissionModeForProvider,
   ]);
 
   // Confirm handler for the model picker's switch-options step. Runs the
@@ -374,6 +420,7 @@ function ChatInterface({
       mode: request.mode,
       saveToFile: request.saveToFile,
       saveToMemory: request.saveToMemory,
+      permissionMode: resolvePermissionModeForProvider(request.targetProvider, permissionMode),
     })) as {
       sessionId?: string;
       provider?: string;
@@ -427,7 +474,13 @@ function ChatInterface({
         ? data.handoffFilePath
         : (typeof data?.backupFilePath === 'string' ? data.backupFilePath : undefined),
     });
-  }, [selectedProject, setProvider, handleSessionEstablished]);
+  }, [
+    selectedProject,
+    setProvider,
+    handleSessionEstablished,
+    permissionMode,
+    resolvePermissionModeForProvider,
+  ]);
 
   // Auto-send the handoff prompt as the new session's first message through
   // the normal WS chat.send path — but only once the view (and with it
@@ -584,7 +637,7 @@ function ChatInterface({
     currentSessionId,
     provider,
     permissionMode: composerPermissionMode,
-    cyclePermissionMode,
+    cyclePermissionMode: handleCyclePermissionMode,
     currentProviderModel,
     currentProviderEffort,
     fastMode,
@@ -800,6 +853,7 @@ function ChatInterface({
           showRawParameters={showRawParameters}
           showThinking={showThinking}
           selectedProject={selectedProject}
+          onPrepareExport={prepareChatExport}
         />
 
         <div className="relative flex-shrink-0">
@@ -845,7 +899,7 @@ function ChatInterface({
           onAbortSession={guardWhenReadOnly(isReadOnlyWorkerSession, handleAbortSession)}
           provider={provider}
           permissionMode={composerPermissionMode}
-          onModeSwitch={studioMode || isReadOnlyWorkerSession ? () => undefined : cyclePermissionMode}
+          onModeSwitch={studioMode || isReadOnlyWorkerSession ? () => undefined : handleCyclePermissionMode}
           effort={currentProviderEffort}
           availableEffortOptions={currentProviderEffortOptions}
           onSelectEffort={guardWhenReadOnly(isReadOnlyWorkerSession, (nextEffort: string) =>

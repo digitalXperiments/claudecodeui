@@ -8,20 +8,18 @@ import {
   Loader2,
   RefreshCw,
   Save,
-  Server,
   Sparkles,
   Waypoints,
 } from 'lucide-react';
 
-import { agentRelayApi } from '../../../agent-relay/api/agentRelayApi';
-import AgentRelayMcpToolsPanel from '../../../agent-relay/view/AgentRelayMcpToolsPanel';
-import type { AgentRelayRuntimeStatus, AgentRelaySettings, AgentRelayWorkerProfile } from '../../../agent-relay/types';
-import type { LLMProvider } from '../../../../types/app';
-import { authenticatedFetch } from '../../../../utils/api';
-import { Button } from '../../../../shared/view/ui';
-import { AGENT_NAMES, AGENT_PROVIDERS } from '../../constants/constants';
-import SettingsSection from '../SettingsSection';
-import SettingsToggle from '../SettingsToggle';
+import { agentRelayApi } from '../api/agentRelayApi';
+import type { AgentRelayRuntimeStatus, AgentRelaySettings, AgentRelayWorkerProfile } from '../types';
+import type { LLMProvider } from '../../../types/app';
+import { authenticatedFetch } from '../../../utils/api';
+import { Button } from '../../../shared/view/ui';
+import { AGENT_NAMES, AGENT_PROVIDERS } from '../../settings/constants/constants';
+import SettingsSection from '../../settings/view/SettingsSection';
+import SettingsToggle from '../../settings/view/SettingsToggle';
 
 type WorkerModelOption = { value: string; label: string };
 type WorkerModelCatalog = {
@@ -29,6 +27,48 @@ type WorkerModelCatalog = {
   defaultModel: string | null;
   error: string | null;
 };
+
+type RegistryCapability = {
+  modelId: string;
+  provider: string;
+  displayName: string | null;
+  aliases: string[];
+  codingScore: number;
+  agenticScore: number;
+  longContextScore: number;
+  speedScore: number | null;
+  enabled: boolean;
+};
+
+type StrengthKey = 'coding' | 'agentic' | 'long_context' | 'speed' | 'unrated';
+
+const STRENGTH_GROUPS: Array<{ key: StrengthKey; title: string }> = [
+  { key: 'coding', title: 'Coding' },
+  { key: 'agentic', title: 'Agentic' },
+  { key: 'long_context', title: 'Long context' },
+  { key: 'speed', title: 'Speed' },
+  { key: 'unrated', title: 'Unrated' },
+];
+
+function primaryStrengthFromScores(scores: {
+  codingScore: number;
+  agenticScore: number;
+  longContextScore: number;
+  speedScore: number | null;
+} | null): StrengthKey {
+  if (!scores) return 'unrated';
+  const scored: Array<{ key: Exclude<StrengthKey, 'unrated'>; value: number }> = [
+    { key: 'coding', value: scores.codingScore },
+    { key: 'agentic', value: scores.agenticScore },
+    { key: 'long_context', value: scores.longContextScore },
+    { key: 'speed', value: scores.speedScore ?? 0 },
+  ];
+  let best = scored[0];
+  for (const entry of scored) {
+    if (entry.value > best.value) best = entry;
+  }
+  return best.value > 0 ? best.key : 'unrated';
+}
 
 const hydrateSettings = (next: AgentRelaySettings): AgentRelaySettings => ({
   ...next,
@@ -40,10 +80,30 @@ const providerTone = (available: boolean) => available
   ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
   : 'border-border bg-muted/40 text-muted-foreground';
 
-type AgentRelaySubTab = 'settings' | 'mcp';
+function workerRuntimeHint(runtime: AgentRelayRuntimeStatus['providers'][number] | undefined): {
+  dot: string;
+  title: string;
+  label: string;
+} {
+  if (!runtime) {
+    return { dot: 'bg-muted-foreground/30', title: 'Status unknown', label: 'unknown' };
+  }
+  if (runtime.error) {
+    return { dot: 'bg-red-500', title: runtime.error, label: 'error' };
+  }
+  if (!runtime.installed) {
+    return { dot: 'bg-muted-foreground/30', title: 'Not installed', label: 'not installed' };
+  }
+  if (!runtime.authenticated) {
+    return { dot: 'bg-amber-500', title: 'Installed, not authenticated', label: 'unauthenticated' };
+  }
+  if (!runtime.runtimeAvailable) {
+    return { dot: 'bg-amber-500', title: 'Installed but runtime unavailable', label: 'unavailable' };
+  }
+  return { dot: 'bg-emerald-500', title: 'Authenticated and available', label: 'ready' };
+}
 
-export default function AgentRelaySettingsTab() {
-  const [subTab, setSubTab] = useState<AgentRelaySubTab>('settings');
+export default function AgentRelaySettingsForm() {
   const [settings, setSettings] = useState<AgentRelaySettings | null>(null);
   const [savedSettings, setSavedSettings] = useState<AgentRelaySettings | null>(null);
   const [status, setStatus] = useState<AgentRelayRuntimeStatus | null>(null);
@@ -51,12 +111,14 @@ export default function AgentRelaySettingsTab() {
   const [saving, setSaving] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [syncWarnings, setSyncWarnings] = useState<string[]>([]);
   const [catalogs, setCatalogs] = useState<Partial<Record<LLMProvider, WorkerModelCatalog>>>({});
   const [catalogsLoading, setCatalogsLoading] = useState(false);
   const [modelSearch, setModelSearch] = useState<Partial<Record<LLMProvider, string>>>({});
   const [mcpCatalogByProvider, setMcpCatalogByProvider] = useState<Partial<Record<LLMProvider, string[]>>>({});
   const [mcpCatalogLoading, setMcpCatalogLoading] = useState(false);
   const [honorsMcpGrants, setHonorsMcpGrants] = useState<Partial<Record<LLMProvider, boolean>>>({});
+  const [registryCapabilities, setRegistryCapabilities] = useState<RegistryCapability[]>([]);
 
   const refresh = useCallback(async () => {
     const [nextSettings, nextStatus] = await Promise.all([
@@ -75,6 +137,23 @@ export default function AgentRelaySettingsTab() {
       .catch((caught) => setError(caught instanceof Error ? caught.message : 'Could not load Agent Relay.'))
       .finally(() => setLoading(false));
   }, [refresh]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void authenticatedFetch('/api/model-registry')
+      .then(async (response) => {
+        const payload = await response.json() as { capabilities?: RegistryCapability[] };
+        if (!cancelled && Array.isArray(payload.capabilities)) {
+          setRegistryCapabilities(payload.capabilities);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setRegistryCapabilities([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const save = async () => {
     if (!settings) return;
@@ -98,11 +177,14 @@ export default function AgentRelaySettingsTab() {
     }
     setSaving(true);
     setError(null);
+    setSyncWarnings([]);
     try {
       const next = hydrateSettings(await agentRelayApi.updateSettings(settings));
       setSettings(next);
       setSavedSettings(next);
       setStatus(await agentRelayApi.getStatus());
+      const synced = await agentRelayApi.sync();
+      setSyncWarnings(synced.warnings);
       window.dispatchEvent(new Event('agentRelaySettingsChanged'));
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Could not save Agent Relay settings.');
@@ -321,8 +403,10 @@ export default function AgentRelaySettingsTab() {
   const runSync = async () => {
     setSyncing(true);
     setError(null);
+    setSyncWarnings([]);
     try {
-      await agentRelayApi.sync();
+      const synced = await agentRelayApi.sync();
+      setSyncWarnings(synced.warnings);
       await refresh();
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Could not sync Agent Relay integrations.');
@@ -340,6 +424,26 @@ export default function AgentRelaySettingsTab() {
     [savedSettings, settings],
   );
 
+  const registryByProvider = useMemo(() => {
+    const map = new Map<string, RegistryCapability[]>();
+    for (const capability of registryCapabilities) {
+      const list = map.get(capability.provider) ?? [];
+      list.push(capability);
+      map.set(capability.provider, list);
+    }
+    return map;
+  }, [registryCapabilities]);
+
+  const matchRegistry = (provider: LLMProvider, option: WorkerModelOption): RegistryCapability | null => {
+    const rows = registryByProvider.get(provider) ?? [];
+    const value = option.value;
+    return rows.find((row) => (
+      row.modelId === value
+      || row.displayName === option.label
+      || row.aliases.includes(value)
+    )) ?? null;
+  };
+
   if (loading || !settings) {
     return <div className="flex min-h-64 items-center justify-center"><Loader2 className="h-6 w-6 animate-spin text-muted-foreground" /></div>;
   }
@@ -350,29 +454,6 @@ export default function AgentRelaySettingsTab() {
         title="Agent Relay"
         description="Let a normal Claude, Codex, OpenCode, or other lead chat fan work out to fresh provider agents through a lightweight MCP broker."
       >
-        <div className="inline-flex items-center gap-1 rounded-lg border border-border bg-muted/20 p-1">
-          <button
-            type="button"
-            onClick={() => setSubTab('settings')}
-            className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${subTab === 'settings' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
-          >
-            <Waypoints className="h-3.5 w-3.5" />
-            Settings
-          </button>
-          <button
-            type="button"
-            onClick={() => setSubTab('mcp')}
-            className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${subTab === 'mcp' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
-          >
-            <Server className="h-3.5 w-3.5" />
-            MCP
-          </button>
-        </div>
-
-        {subTab === 'mcp' ? (
-          <AgentRelayMcpToolsPanel />
-        ) : (
-          <>
         <div className="overflow-hidden rounded-2xl border border-border bg-card/50">
           <div className="border-b border-border bg-gradient-to-br from-primary/[0.12] via-transparent to-transparent p-5 sm:p-6">
             <div className="flex flex-col gap-5 sm:flex-row sm:items-start sm:justify-between">
@@ -424,6 +505,20 @@ export default function AgentRelaySettingsTab() {
           </div>
         ) : null}
 
+        {syncWarnings.length > 0 ? (
+          <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-800 dark:text-amber-200">
+            <div className="flex items-start gap-2 font-medium">
+              <CircleAlert className="mt-0.5 h-4 w-4 shrink-0" />
+              Integration warnings
+            </div>
+            <ul className="mt-2 list-disc space-y-1 pl-6 text-xs">
+              {syncWarnings.map((warning) => (
+                <li key={warning}>{warning}</li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+
         <div className="grid gap-5 xl:grid-cols-2">
           <div className="rounded-xl border border-border bg-card p-4">
             <div className="flex items-center gap-2">
@@ -456,7 +551,7 @@ export default function AgentRelaySettingsTab() {
             <div className="mt-4 grid gap-2 sm:grid-cols-2">
               {AGENT_PROVIDERS.map((provider) => {
                 const runtime = statusByProvider.get(provider);
-                const available = Boolean(runtime?.runtimeAvailable && runtime?.authenticated);
+                const hint = workerRuntimeHint(runtime);
                 return (
                   <label key={provider} className="flex cursor-pointer items-center gap-2.5 rounded-lg border border-border/70 px-3 py-2.5 hover:bg-muted/40">
                     <input
@@ -467,7 +562,10 @@ export default function AgentRelaySettingsTab() {
                       className="h-4 w-4 rounded border-border accent-primary"
                     />
                     <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">{AGENT_NAMES[provider]}</span>
-                    <span className={`h-2 w-2 rounded-full ${available ? 'bg-emerald-500' : 'bg-muted-foreground/30'}`} title={available ? 'Authenticated and available' : 'Unavailable or not authenticated'} />
+                    <span className="flex max-w-[9rem] items-center gap-1.5" title={hint.title}>
+                      <span className={`h-2 w-2 shrink-0 rounded-full ${hint.dot}`} />
+                      <span className="truncate text-[10px] text-muted-foreground">{hint.label}</span>
+                    </span>
                   </label>
                 );
               })}
@@ -562,21 +660,34 @@ export default function AgentRelaySettingsTab() {
                           <p className="px-2 py-3 text-xs text-muted-foreground">
                             {catalog?.options.length ? 'No models match that search.' : 'No models available for this agent.'}
                           </p>
-                        ) : options.map((option) => (
-                          <label key={option.value} className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-muted/40">
-                            <input
-                              type="checkbox"
-                              checked={selected.has(option.value)}
-                              onChange={() => toggleWorkerModel(provider, option.value)}
-                              disabled={saving || syncing}
-                              className="h-4 w-4 shrink-0 rounded border-border accent-primary"
-                            />
-                            <span className="min-w-0 flex-1 truncate text-foreground">{option.label}</span>
-                            {catalog?.defaultModel === option.value ? (
-                              <span className="shrink-0 rounded bg-primary/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-primary">Default</span>
-                            ) : null}
-                          </label>
-                        ))}
+                        ) : STRENGTH_GROUPS.map((group) => {
+                          const items = options.filter((option) => (
+                            primaryStrengthFromScores(matchRegistry(provider, option)) === group.key
+                          ));
+                          if (items.length === 0) return null;
+                          return (
+                            <div key={group.key} className="mb-2 last:mb-0">
+                              <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+                                {group.title} · {items.length}
+                              </div>
+                              {items.map((option) => (
+                                <label key={option.value} className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-muted/40">
+                                  <input
+                                    type="checkbox"
+                                    checked={selected.has(option.value)}
+                                    onChange={() => toggleWorkerModel(provider, option.value)}
+                                    disabled={saving || syncing}
+                                    className="h-4 w-4 shrink-0 rounded border-border accent-primary"
+                                  />
+                                  <span className="min-w-0 flex-1 truncate text-foreground">{option.label}</span>
+                                  {catalog?.defaultModel === option.value ? (
+                                    <span className="shrink-0 rounded bg-primary/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-primary">Default</span>
+                                  ) : null}
+                                </label>
+                              ))}
+                            </div>
+                          );
+                        })}
                       </div>
                     </div>
                   ) : null}
@@ -694,9 +805,9 @@ export default function AgentRelaySettingsTab() {
               <input
                 type="number"
                 min={1}
-                max={12}
+                max={16}
                 value={settings.maxConcurrency}
-                onChange={(event) => setSettings((current) => current ? { ...current, maxConcurrency: Math.min(12, Math.max(1, Number(event.target.value) || 1)) } : current)}
+                onChange={(event) => setSettings((current) => current ? { ...current, maxConcurrency: Math.min(16, Math.max(1, Number(event.target.value) || 1)) } : current)}
                 disabled={saving || syncing}
                 className="h-10 w-full rounded-lg border border-border bg-background px-3 text-sm text-foreground"
               />
@@ -705,13 +816,15 @@ export default function AgentRelaySettingsTab() {
               Worker timeout (minutes)
               <input
                 type="number"
-                min={1}
+                min={0.5}
                 max={60}
-                value={Math.round(settings.defaultTimeoutMs / 60_000)}
-                onChange={(event) => setSettings((current) => current ? { ...current, defaultTimeoutMs: Math.min(60, Math.max(1, Number(event.target.value) || 15)) * 60_000 } : current)}
+                step={0.5}
+                value={settings.defaultTimeoutMs / 60_000}
+                onChange={(event) => setSettings((current) => current ? { ...current, defaultTimeoutMs: Math.min(60 * 60_000, Math.max(30_000, Math.round((Number(event.target.value) || 15) * 60_000))) } : current)}
                 disabled={saving || syncing}
                 className="h-10 w-full rounded-lg border border-border bg-background px-3 text-sm text-foreground"
               />
+              <span className="font-normal text-[11px]">30 seconds to 60 minutes. Clamped on save.</span>
             </label>
             <label className="space-y-1.5 text-xs font-medium text-muted-foreground">
               <span title="How long a worker waits for the lead to answer an out-of-envelope permission request before it is denied.">
@@ -719,13 +832,15 @@ export default function AgentRelaySettingsTab() {
               </span>
               <input
                 type="number"
-                min={1}
+                min={0.25}
                 max={30}
-                value={Math.max(1, Math.round(settings.approvalTimeoutMs / 60_000))}
-                onChange={(event) => setSettings((current) => current ? { ...current, approvalTimeoutMs: Math.min(30, Math.max(1, Number(event.target.value) || 3)) * 60_000 } : current)}
+                step={0.25}
+                value={settings.approvalTimeoutMs / 60_000}
+                onChange={(event) => setSettings((current) => current ? { ...current, approvalTimeoutMs: Math.min(30 * 60_000, Math.max(15_000, Math.round((Number(event.target.value) || 3) * 60_000))) } : current)}
                 disabled={saving || syncing}
                 className="h-10 w-full rounded-lg border border-border bg-background px-3 text-sm text-foreground"
               />
+              <span className="font-normal text-[11px]">15 seconds to 30 minutes. Always ends at least 30s before job timeout.</span>
             </label>
             <label className="space-y-1.5 text-xs font-medium text-muted-foreground">
               Default mode
@@ -776,6 +891,47 @@ export default function AgentRelaySettingsTab() {
           </div>
         </div>
 
+        <div className="rounded-xl border border-border bg-card p-4">
+          <h4 className="text-sm font-semibold text-foreground">Hard limits and integration</h4>
+          <p className="mt-1 text-xs leading-5 text-muted-foreground">
+            These are host-enforced. Changing concurrency, timeouts, mode, and approval policy above is the full settings surface; batch size, task length, and retention are fixed by CloudCLI.
+          </p>
+          <dl className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <div className="rounded-lg border border-border/70 p-3">
+              <dt className="text-[11px] uppercase tracking-wide text-muted-foreground">MCP server</dt>
+              <dd className="mt-1 truncate font-mono text-xs text-foreground">{status?.mcpServerName ?? 'cloudcli-agent-relay'}</dd>
+            </div>
+            <div className="rounded-lg border border-border/70 p-3">
+              <dt className="text-[11px] uppercase tracking-wide text-muted-foreground">Managed skill</dt>
+              <dd className="mt-1 truncate font-mono text-xs text-foreground">{status?.skillName ?? 'delegate-agent-work'}</dd>
+            </div>
+            <div className="rounded-lg border border-border/70 p-3">
+              <dt className="text-[11px] uppercase tracking-wide text-muted-foreground">Max tasks / batch</dt>
+              <dd className="mt-1 text-sm font-semibold text-foreground">20</dd>
+            </div>
+            <div className="rounded-lg border border-border/70 p-3">
+              <dt className="text-[11px] uppercase tracking-wide text-muted-foreground">Max task size</dt>
+              <dd className="mt-1 text-sm font-semibold text-foreground">12,000 chars</dd>
+            </div>
+            <div className="rounded-lg border border-border/70 p-3">
+              <dt className="text-[11px] uppercase tracking-wide text-muted-foreground">Retries</dt>
+              <dd className="mt-1 text-sm font-semibold text-foreground">0–2 per task</dd>
+            </div>
+            <div className="rounded-lg border border-border/70 p-3">
+              <dt className="text-[11px] uppercase tracking-wide text-muted-foreground">Job retention</dt>
+              <dd className="mt-1 text-sm font-semibold text-foreground">14 days after finish</dd>
+            </div>
+            <div className="rounded-lg border border-border/70 p-3">
+              <dt className="text-[11px] uppercase tracking-wide text-muted-foreground">Fair scheduling</dt>
+              <dd className="mt-1 text-xs text-foreground">One lead can use full concurrency. Competing leads share seats.</dd>
+            </div>
+            <div className="rounded-lg border border-border/70 p-3">
+              <dt className="text-[11px] uppercase tracking-wide text-muted-foreground">Worktrees</dt>
+              <dd className="mt-1 text-xs text-foreground">Isolated writers only. No auto-merge.</dd>
+            </div>
+          </dl>
+        </div>
+
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
             {dirty ? <CircleAlert className="h-4 w-4 text-amber-500" /> : savedSettings?.enabled ? <CheckCircle2 className="h-4 w-4 text-emerald-500" /> : <CircleAlert className="h-4 w-4" />}
@@ -792,8 +948,6 @@ export default function AgentRelaySettingsTab() {
             </Button>
           </div>
         </div>
-          </>
-        )}
       </SettingsSection>
     </div>
   );

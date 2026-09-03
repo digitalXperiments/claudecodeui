@@ -1,5 +1,6 @@
 import express from 'express';
 
+import { sessionsDb } from '@/modules/database/index.js';
 import { agentRelayService } from '@/modules/agent-relay/agent-relay.service.js';
 import {
   AGENT_RELAY_PROVIDERS,
@@ -336,19 +337,30 @@ agentRelayMcpRoutes.use((req, res, next) => {
 });
 
 /**
- * The calling lead's identity. The relay MCP process inherits
- * `CLOUDCLI_LEAD_SESSION_ID` from the provider run that launched it and sends
- * it on every call, which is what scopes each chat to its own workers.
- *
- * A caller that cannot prove an identity gets an empty scope, so it sees
- * nothing rather than everything.
+ * The calling lead's identity. Only `X-CloudCLI-Lead-Session-Id` counts —
+ * the stdio MCP bridge stamps it from `CLOUDCLI_LEAD_SESSION_ID`. Body
+ * `sourceSessionId` is ignored so a shared installation bearer cannot
+ * impersonate another chat. Residual: the MCP token is still installation-
+ * wide, so a caller who also knows another lead's session id can send it
+ * on the header.
  */
-function mcpScope(input: Record<string, unknown>): AgentRelayScope {
-  return { sourceSessionId: optionalString(input.sourceSessionId) ?? null };
+export function resolveAgentRelayMcpScope(
+  req: { headers: express.Request['headers'] },
+  _input: Record<string, unknown> = {},
+): AgentRelayScope {
+  const headerId = optionalString(req.headers['x-cloudcli-lead-session-id']);
+  if (!headerId) return { sourceSessionId: null };
+  const session = sessionsDb.getSessionById(headerId);
+  if (!session || session.is_internal) return { sourceSessionId: null };
+  return { sourceSessionId: headerId };
 }
 
-function requireMcpScope(input: Record<string, unknown>): AgentRelayScope {
-  const scope = mcpScope(input);
+function mcpScope(req: express.Request, input: Record<string, unknown>): AgentRelayScope {
+  return resolveAgentRelayMcpScope(req, input);
+}
+
+function requireMcpScope(req: express.Request, input: Record<string, unknown>): AgentRelayScope {
+  const scope = mcpScope(req, input);
   if (!scope.sourceSessionId) {
     throw new AppError(
       'This Agent Relay call could not be attributed to a CloudCLI chat session. Restart the chat so the relay MCP picks up its session id.',
@@ -363,7 +375,7 @@ agentRelayMcpRoutes.post('/tools/:toolName', asyncHandler(async (req, res) => {
   let data: unknown;
   switch (req.params.toolName) {
     case 'relay_delegate': {
-      const scope = requireMcpScope(input);
+      const scope = requireMcpScope(req, input);
       const result = await agentRelayService.submitBatch({
         projectPath: optionalString(input.projectPath) ?? process.cwd(),
         sourceSessionId: scope.sourceSessionId ?? null,
@@ -373,7 +385,7 @@ agentRelayMcpRoutes.post('/tools/:toolName', asyncHandler(async (req, res) => {
       break;
     }
     case 'relay_status': {
-      const scope = mcpScope(input);
+      const scope = mcpScope(req, input);
       const ids = stringList(input.relayIds) ?? (optionalString(input.relayId) ? [requiredString(input.relayId, 'relayId')] : []);
       // With no ids, report every relay this lead owns — that is how a lead
       // reconnects to its own fleet without remembering ids.
@@ -390,7 +402,7 @@ agentRelayMcpRoutes.post('/tools/:toolName', asyncHandler(async (req, res) => {
       const waited = await agentRelayService.wait(stringList(input.relayIds) ?? [], {
         returnWhen: input.returnWhen === 'all' ? 'all' : 'any',
         timeoutMs: optionalNumber(input.timeoutMs),
-        scope: requireMcpScope(input),
+        scope: requireMcpScope(req, input),
       });
       data = {
         timedOut: waited.timedOut,
@@ -402,7 +414,7 @@ agentRelayMcpRoutes.post('/tools/:toolName', asyncHandler(async (req, res) => {
     case 'relay_result':
       data = agentRelayService.getResult(requiredString(input.relayId, 'relayId'), {
         includeOutput: input.includeOutput !== false,
-        scope: requireMcpScope(input),
+        scope: requireMcpScope(req, input),
       });
       break;
     case 'relay_follow_up':
@@ -410,22 +422,22 @@ agentRelayMcpRoutes.post('/tools/:toolName', asyncHandler(async (req, res) => {
         requiredString(input.relayId, 'relayId'),
         requiredString(input.prompt, 'prompt'),
         optionalNumber(input.timeoutMs),
-        requireMcpScope(input),
+        requireMcpScope(req, input),
       )) };
       break;
     case 'relay_cancel':
-      data = { job: agentRelayService.summarize(await agentRelayService.cancel(requiredString(input.relayId, 'relayId'), requireMcpScope(input))) };
+      data = { job: agentRelayService.summarize(await agentRelayService.cancel(requiredString(input.relayId, 'relayId'), requireMcpScope(req, input))) };
       break;
     case 'relay_diff':
       data = { diff: await agentRelayService.diff(
         requiredString(input.relayId, 'relayId'),
         input.includePatch === true,
-        requireMcpScope(input),
+        requireMcpScope(req, input),
       ) };
       break;
     case 'relay_peek': {
       const relayId = requiredString(input.relayId, 'relayId');
-      const scope = requireMcpScope(input);
+      const scope = requireMcpScope(req, input);
       const peek = agentRelayService.peek(relayId, {
         limit: optionalNumber(input.limit),
         scope,
@@ -443,7 +455,7 @@ agentRelayMcpRoutes.post('/tools/:toolName', asyncHandler(async (req, res) => {
       data = {
         approvals: agentRelayService.listApprovals({
           relayId: optionalString(input.relayId),
-          scope: mcpScope(input),
+          scope: mcpScope(req, input),
           status: 'pending',
           limit: 50,
         }).map(compactApproval),
@@ -456,7 +468,7 @@ agentRelayMcpRoutes.post('/tools/:toolName', asyncHandler(async (req, res) => {
           allow: req.params.toolName === 'relay_approve',
           reason: optionalString(input.reason) ?? null,
           decidedBy: 'lead',
-          scope: requireMcpScope(input),
+          scope: requireMcpScope(req, input),
         }),
       };
       break;

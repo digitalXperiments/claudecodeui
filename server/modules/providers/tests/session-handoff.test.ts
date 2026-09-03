@@ -4,7 +4,9 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test, { mock } from 'node:test';
 
-import { closeConnection, initializeDatabase, sessionsDb } from '@/modules/database/index.js';
+import { agentRelayDb, agentRelayService } from '@/modules/agent-relay/index.js';
+import { closeConnection, initializeDatabase, projectsDb, sessionsDb } from '@/modules/database/index.js';
+import { newRelayBatchId, newRelayJobId } from '@/shared/ids.js';
 import { sessionHandoffService } from '@/modules/providers/services/session-handoff.service.js';
 import { sessionSummarizerService } from '@/modules/providers/services/session-summarizer.service.js';
 import { sessionsService } from '@/modules/providers/services/sessions.service.js';
@@ -366,6 +368,37 @@ test('createHandoffSession fresh mode skips history and returns a null prompt', 
     } finally {
       fetchMock.mock.restore();
     }
+  });
+});
+
+test('createHandoffSession re-points in-flight Agent Relay jobs to the new lead', async () => {
+  await withIsolatedDatabase(async ({ projectPath }) => {
+    sessionsDb.createAppSession('source-session-id', 'claude', projectPath);
+    const project = projectsDb.createProjectPath(projectPath).project!;
+    const relayId = newRelayJobId();
+    agentRelayDb.create({
+      relayId,
+      batchId: newRelayBatchId(),
+      projectId: project.project_id,
+      projectPath: project.project_path,
+      sourceSessionId: 'source-session-id',
+      provider: 'claude',
+      mode: 'read_only',
+      task: 'in flight',
+      prompt: 'in flight',
+      mcpServers: [],
+      timeoutMs: 60_000,
+    });
+
+    const result = await sessionHandoffService.createHandoffSession({
+      sourceSessionId: 'source-session-id',
+      targetProvider: 'codex',
+      mode: 'fresh',
+    });
+
+    const job = agentRelayService.get(relayId);
+    assert.equal(job?.source_session_id, result.sessionId);
+    assert.equal(job?.status, 'queued');
   });
 });
 

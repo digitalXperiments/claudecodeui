@@ -447,7 +447,10 @@ export async function runMissionControlAgent(params: {
   }
 
   const projectPath = resolveProjectPath(section);
-  const created = sessionsService.createAppSession(provider, projectPath);
+  // Produce/resolve/workshop turns are headless automation. Keep their app
+  // sessions out of the interactive session picker and provider watcher
+  // adoption path; they must never be mistaken for the selected chat's run.
+  const created = sessionsService.createAppSession(provider, projectPath, { internal: true });
   const appSessionId = created.sessionId;
 
   const canonicalRun = runService.create({

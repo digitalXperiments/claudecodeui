@@ -5,13 +5,14 @@ import path from 'node:path';
 import { projectsDb, sessionsDb } from '@/modules/database/index.js';
 import { chatRunRegistry, shellSessionRegistry } from '@/modules/websocket/index.js';
 import { providerRegistry } from '@/modules/providers/provider.registry.js';
+import { sessionHistoryCache } from '@/modules/providers/services/session-history-cache.service.js';
 import type {
   FetchHistoryOptions,
   FetchHistoryResult,
   LLMProvider,
   NormalizedMessage,
 } from '@/shared/types.js';
-import { AppError } from '@/shared/utils.js';
+import { AppError, sliceTailPage } from '@/shared/utils.js';
 
 type CreateAppSessionResult = {
   sessionId: string;
@@ -30,6 +31,26 @@ type ArchivedSessionListItem = {
   updatedAt: string | null;
   lastActivity: string | null;
   isProjectArchived: boolean;
+};
+
+type SessionDetails = {
+  /** Canonical app-facing session id (may differ from the looked-up id when a provider-native id was given). */
+  sessionId: string;
+  provider: LLMProvider;
+  summary: string;
+  createdAt: string | null;
+  updatedAt: string | null;
+  lastActivity: string | null;
+  isArchived: boolean;
+  isInternal: boolean;
+  project: {
+    projectId: string;
+    path: string;
+    fullPath: string;
+    displayName: string;
+    isStarred: boolean;
+    isArchived: boolean;
+  } | null;
 };
 
 /**
@@ -168,7 +189,7 @@ export const sessionsService = {
   createAppSession(
     provider: LLMProvider,
     projectPath: string,
-    options: { internal?: boolean } = {},
+    options: { internal?: boolean; permissionMode?: string | null } = {},
   ): CreateAppSessionResult {
     const normalizedProjectPath = projectPath.trim();
     if (!normalizedProjectPath) {
@@ -186,6 +207,49 @@ export const sessionsService = {
       sessionId,
       provider,
       projectPath: logicalProjectPath,
+    };
+  },
+
+  /**
+   * Resolves one session (by app id, falling back to the provider-native id)
+   * to its metadata plus the owning project.
+   *
+   * Project responses are paginated, so an older session may not be present in
+   * the client-side project payload even though its direct URL is valid. This
+   * lookup is the authoritative session-to-project resolution for deep links.
+   */
+  getSessionDetailsById(sessionId: string): SessionDetails {
+    const session =
+      sessionsDb.getSessionById(sessionId) ?? sessionsDb.getSessionByProviderSessionId(sessionId);
+    if (!session) {
+      throw new AppError(`Session "${sessionId}" was not found.`, {
+        code: 'SESSION_NOT_FOUND',
+        statusCode: 404,
+      });
+    }
+
+    const projectPath = session.project_path?.trim() ? session.project_path : null;
+    const project = projectPath ? projectsDb.getProjectPath(projectPath) : null;
+
+    return {
+      sessionId: session.session_id,
+      provider: session.provider as LLMProvider,
+      summary: session.custom_name?.trim() || '',
+      createdAt: session.created_at ?? null,
+      updatedAt: session.updated_at ?? null,
+      lastActivity: session.updated_at ?? session.created_at ?? null,
+      isArchived: Boolean(session.isArchived),
+      isInternal: Boolean(session.is_internal),
+      project: project && projectPath
+        ? {
+            projectId: project.project_id,
+            path: projectPath,
+            fullPath: projectPath,
+            displayName: resolveProjectDisplayName(projectPath, project.custom_project_name),
+            isStarred: Boolean(project.isStarred),
+            isArchived: Boolean(project.isArchived),
+          }
+        : null,
     };
   },
 
@@ -225,15 +289,56 @@ export const sessionsService = {
     }
 
     const provider = session.provider as LLMProvider;
-    const result = await providerRegistry.resolveProvider(provider).sessions.fetchHistory(sessionId, {
-      limit: options.limit ?? null,
-      offset: options.offset ?? 0,
-      // project_path is the logical owner shown in the UI; provider history
-      // may live inside the isolated worktree recorded separately here.
-      projectPath: session.runtime_project_path ?? session.project_path ?? '',
-      providerSessionId: session.provider_session_id,
-      jsonlPath: session.jsonl_path,
+    const providerSessions = providerRegistry.resolveProvider(provider).sessions;
+    // project_path is the logical owner shown in the UI; provider history
+    // may live inside the isolated worktree recorded separately here.
+    const projectPath = session.runtime_project_path ?? session.project_path ?? '';
+    const providerSessionId = session.provider_session_id;
+    const requestedLimit = options.limit ?? null;
+    const requestedOffset = options.offset ?? 0;
+
+    // Claude and Codex history readers parse `jsonl_path` itself, so a page
+    // can be sliced from the stat-validated full-transcript cache instead of
+    // re-parsing the whole file per request. The other providers read their
+    // messages from elsewhere (Cursor's store.db, OpenCode's shared SQLite,
+    // Grok's sibling chat_history.jsonl), so that file's stat says nothing
+    // about their history — they stay on the direct path.
+    const transcriptPath = provider === 'claude' || provider === 'codex'
+      ? session.jsonl_path
+      : null;
+    const fullHistory = await sessionHistoryCache.getFullHistory({
+      sessionId,
+      transcriptPath,
+      loadFull: () => providerSessions.fetchHistory(sessionId, {
+        limit: null,
+        offset: 0,
+        projectPath,
+        providerSessionId,
+        jsonlPath: session.jsonl_path,
+      }),
     });
+
+    let result: FetchHistoryResult;
+    if (fullHistory) {
+      // Providers slice with this same helper, so a cached page is identical
+      // to what a direct `(limit, offset)` read would have returned.
+      const { page, hasMore } = sliceTailPage(fullHistory.messages, requestedLimit, Math.max(0, requestedOffset));
+      result = {
+        ...fullHistory,
+        messages: page,
+        hasMore,
+        offset: requestedOffset,
+        limit: requestedLimit,
+      };
+    } else {
+      result = await providerSessions.fetchHistory(sessionId, {
+        limit: requestedLimit,
+        offset: requestedOffset,
+        projectPath,
+        providerSessionId,
+        jsonlPath: session.jsonl_path,
+      });
+    }
 
     return {
       ...result,
@@ -302,6 +407,12 @@ export const sessionsService = {
       });
     }
 
+    // Archiving or force-deleting a lead/worker must not leave provider
+    // processes running without an owner/transcript. Dynamic import avoids
+    // making the providers module statically depend on the optional Relay feature.
+    const { agentRelayService } = await import('@/modules/agent-relay/index.js');
+    await Promise.all(agentRelayService.activeForSession(sessionId).map((job) => agentRelayService.cancel(job.relay_id)));
+
     if (!options.force) {
       sessionsDb.updateSessionIsArchived(sessionId, true);
       return {
@@ -310,12 +421,6 @@ export const sessionsService = {
         deletedFromDisk: false,
       };
     }
-
-    // A force-deleted lead or worker session must not leave provider processes
-    // running without an owner/transcript. Dynamic import avoids making the
-    // providers module statically depend on the optional Relay feature.
-    const { agentRelayService } = await import('@/modules/agent-relay/index.js');
-    await Promise.all(agentRelayService.activeForSession(sessionId).map((job) => agentRelayService.cancel(job.relay_id)));
 
     let removedFromDisk = false;
     if (options.deletedFromDisk && session.jsonl_path) {

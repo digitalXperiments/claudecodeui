@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { useDeviceSettings } from '../../../hooks/useDeviceSettings';
@@ -11,16 +11,18 @@ import { usePaletteOps, usePaletteOpsRegister } from '../../../contexts/PaletteO
 import { useTasksSettings } from '../../../contexts/TasksSettingsContext';
 import type { Project, ProjectCategory, LLMProvider } from '../../../types/app';
 import type { MCPServerStatus, SidebarProps } from '../types/types';
-import MissionControlPanel, { type WorkThisSessionRequest } from '../../mission-control/view/MissionControlPanel';
+import { type WorkThisSessionRequest } from '../../mission-control/view/MissionControlPanel';
 import { missionControlApi } from '../../mission-control/api/missionControlApi';
 import KanbanPanel from '../../kanban/view/KanbanPanel';
-import AgentSwarmPanel from '../../swarm/view/AgentSwarmPanel';
 import StatsPanel from '../../stats/view/StatsPanel';
 
 import SidebarContent from './subcomponents/SidebarContent';
 import SidebarModals from './subcomponents/SidebarModals';
 import NeedsYouPanel from './subcomponents/NeedsYouPanel';
 import type { SidebarProjectListProps } from './subcomponents/SidebarProjectList';
+
+const MissionControlPanel = lazy(() => import('../../mission-control/view/MissionControlPanel'));
+const AgentRelayPanel = lazy(() => import('../../agent-relay/view/AgentRelayPanel'));
 
 type TaskMasterSidebarContext = {
   setCurrentProject: (project: Project) => void;
@@ -68,7 +70,7 @@ function Sidebar({
   const [showMissionControl, setShowMissionControl] = useState(false);
   const [missionControlPendingCount, setMissionControlPendingCount] = useState(0);
   const [showKanban, setShowKanban] = useState(false);
-  const [showAgentSwarm, setShowAgentSwarm] = useState(false);
+  const [showAgentRelay, setShowAgentRelay] = useState(false);
   const [showStats, setShowStats] = useState(false);
   const handleMissionControlPendingChange = useCallback((count: number) => {
     setMissionControlPendingCount(count);
@@ -199,11 +201,22 @@ function Sidebar({
     void paletteOps.refreshProjects();
   };
 
+  useEffect(() => {
+    const onOpenSettings = (event: Event) => {
+      const tab = (event as CustomEvent<{ tab?: string }>).detail?.tab;
+      if (tab === 'agent-relay' || tab === 'model-registry') {
+        setShowAgentRelay(true);
+      }
+    };
+    window.addEventListener('cloudcli:open-settings', onOpenSettings);
+    return () => window.removeEventListener('cloudcli:open-settings', onOpenSettings);
+  }, []);
+
   usePaletteOpsRegister({
     openNeedsYou: () => setShowNeedsYou(true),
     openMissionControl: () => setShowMissionControl(true),
     openKanban: features.kanbanEnabled ? () => setShowKanban(true) : undefined,
-    openAgentSwarm: () => setShowAgentSwarm(true),
+    openAgentRelay: () => setShowAgentRelay(true),
     openStudio: () => onShowStudio?.(),
     openStats: () => setShowStats(true),
     openNewProject: () => setShowNewProject(true),
@@ -407,7 +420,7 @@ function Sidebar({
         onShowMissionControl={() => setShowMissionControl(true)}
         missionControlPendingCount={missionControlPendingCount}
         onShowKanban={features.kanbanEnabled ? () => setShowKanban(true) : undefined}
-        onShowAgentSwarm={() => setShowAgentSwarm(true)}
+        onShowAgentRelay={() => setShowAgentRelay(true)}
         onShowStudio={() => onShowStudio?.()}
         studioActive={studioActive}
         onShowStats={() => setShowStats(true)}
@@ -422,6 +435,8 @@ function Sidebar({
         onCountChange={setNeedsYouCount}
       />
 
+      {showMissionControl ? (
+        <Suspense fallback={null}>
       <MissionControlPanel
         isOpen={showMissionControl}
         onClose={() => setShowMissionControl(false)}
@@ -449,6 +464,8 @@ function Sidebar({
           });
         }}
       />
+        </Suspense>
+      ) : null}
 
       {features.kanbanEnabled ? (
         <KanbanPanel
@@ -459,12 +476,15 @@ function Sidebar({
         />
       ) : null}
 
-      <AgentSwarmPanel
-        isOpen={showAgentSwarm}
-        onClose={() => setShowAgentSwarm(false)}
+      {showAgentRelay ? (
+        <Suspense fallback={null}>
+      <AgentRelayPanel
+        isOpen={showAgentRelay}
+        onClose={() => setShowAgentRelay(false)}
         selectedProject={selectedProject}
-        projects={projects}
       />
+        </Suspense>
+      ) : null}
 
       <StatsPanel
         isOpen={showStats}

@@ -66,6 +66,7 @@
   "actions": {
     "refresh": "Actualiser",
     "settings": "Paramètres",
+    "missionControl": "Centre d’action",
     "collapseAll": "Tout réduire",
     "expandAll": "Tout développer",
     "cancel": "Annuler",

@@ -21,7 +21,6 @@ import {
   MessageSquarePlus,
   MonitorPlay,
   Moon,
-  Network,
   Palette,
   PanelLeft,
   Radar,
@@ -29,6 +28,7 @@ import {
   Search,
   Settings,
   SquareKanban,
+  Waypoints,
   Sun,
   SunMoon,
   Terminal,
@@ -304,9 +304,9 @@ export default function CommandPalette({
                   <CircleAlert className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
                   <span className="flex-1">Needs you</span>
                 </CommandItem>
-                <CommandItem value="Open Mission Control inbox" onSelect={() => run(() => ops.openMissionControl())}>
+                <CommandItem value="Open Action Centre inbox" onSelect={() => run(() => ops.openMissionControl())}>
                   <Radar className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
-                  <span className="flex-1">Mission Control</span>
+                  <span className="flex-1">Action Centre</span>
                 </CommandItem>
                 {features.kanbanEnabled && (
                   <CommandItem value="Open Kanban board" onSelect={() => run(() => ops.openKanban())}>
@@ -314,9 +314,9 @@ export default function CommandPalette({
                     <span className="flex-1">Kanban</span>
                   </CommandItem>
                 )}
-                <CommandItem value="Open Agent Swarm" onSelect={() => run(() => ops.openAgentSwarm())}>
-                  <Network className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
-                  <span className="flex-1">Agent Swarm</span>
+                <CommandItem value="Open Agent Relay delegation workers" onSelect={() => run(() => ops.openAgentRelay())}>
+                  <Waypoints className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
+                  <span className="flex-1">Agent Relay</span>
                 </CommandItem>
                 <CommandItem value="Open Studio prototype design" onSelect={() => run(() => ops.openStudio())}>
                   <Palette className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />

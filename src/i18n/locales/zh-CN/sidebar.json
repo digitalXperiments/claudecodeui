@@ -66,6 +66,7 @@
   "actions": {
     "refresh": "刷新",
     "settings": "设置",
+    "missionControl": "操作中心",
     "collapseAll": "全部折叠",
     "expandAll": "全部展开",
     "cancel": "取消",

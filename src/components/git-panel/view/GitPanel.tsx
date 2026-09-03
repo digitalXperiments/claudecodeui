@@ -36,6 +36,7 @@ export default function GitPanel({ selectedProject, isMobile = false, onFileOpen
     isPushing,
     isPublishing,
     isCreatingInitialCommit,
+    isInitializingGit,
     operationError,
     clearOperationError,
     refreshAll,
@@ -54,6 +55,7 @@ export default function GitPanel({ selectedProject, isMobile = false, onFileOpen
     generateCommitMessage,
     commitChanges,
     createInitialCommit,
+    initializeGitRepository,
     openFile,
   } = useGitPanelController({
     selectedProject,
@@ -117,7 +119,12 @@ export default function GitPanel({ selectedProject, isMobile = false, onFileOpen
       />
 
       {gitStatus?.error ? (
-        <GitRepositoryErrorState error={gitStatus.error} details={gitStatus.details} />
+        <GitRepositoryErrorState
+          error={gitStatus.error}
+          details={gitStatus.details}
+          onInitializeGit={initializeGitRepository}
+          isInitializingGit={isInitializingGit}
+        />
       ) : (
         <>
           <GitViewTabs

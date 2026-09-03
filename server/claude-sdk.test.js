@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  applyPlanModeAllowedTools,
   createRequestId,
   extractPermissionPaths,
   extractTokenBudget,
@@ -102,6 +103,21 @@ test('bounded waitForToolApproval resolves null on expiry (deny path)', async ()
   const requestId = createRequestId();
   const decision = await waitForToolApproval(requestId, { timeoutMs: 25 });
   assert.equal(decision, null);
+});
+
+test('plan mode does not inject Task for relay workers or when Task is disallowed', () => {
+  const interactive = applyPlanModeAllowedTools(['Read'], {});
+  assert.ok(interactive.includes('Task'));
+  assert.ok(interactive.includes('exit_plan_mode'));
+
+  const relay = applyPlanModeAllowedTools(['Read'], { relayWorker: true, disallowedTools: ['Task', 'Agent'] });
+  assert.equal(relay.includes('Task'), false);
+  assert.ok(relay.includes('Read'));
+  assert.ok(relay.includes('WebSearch'));
+
+  const disallowed = applyPlanModeAllowedTools([], { disallowedTools: ['Task'] });
+  assert.equal(disallowed.includes('Task'), false);
+  assert.ok(disallowed.includes('TodoRead'));
 });
 
 test('bounded waitForToolApproval still accepts a broker decision in time', async () => {

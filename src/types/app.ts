@@ -40,6 +40,8 @@ export type AppTab = 'chat' | 'files' | 'shell' | 'git' | 'operations' | 'tasks'
 
 export interface ProjectSession {
   id: string;
+  /** Provider-native session id, when the provider mapping is known. */
+  provider_session_id?: string | null;
   title?: string;
   summary?: string;
   name?: string;

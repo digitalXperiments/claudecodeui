@@ -66,6 +66,7 @@
   "actions": {
     "refresh": "Aktualisieren",
     "settings": "Einstellungen",
+    "missionControl": "Aktionszentrale",
     "collapseAll": "Alle einklappen",
     "expandAll": "Alle ausklappen",
     "cancel": "Abbrechen",

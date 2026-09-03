@@ -48,8 +48,11 @@ export const agentRelayApi = {
     return data.status;
   },
 
-  async sync(): Promise<void> {
-    await readData(await authenticatedFetch('/api/agent-relay/sync', { method: 'POST' }));
+  async sync(): Promise<{ settings?: AgentRelaySettings; warnings: string[] }> {
+    const data = await readData<{ settings?: AgentRelaySettings; warnings?: string[] }>(
+      await authenticatedFetch('/api/agent-relay/sync', { method: 'POST' }),
+    );
+    return { settings: data.settings, warnings: Array.isArray(data.warnings) ? data.warnings : [] };
   },
 
   /**

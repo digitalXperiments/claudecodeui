@@ -4,6 +4,7 @@ import ReactMarkdown from 'react-markdown';
 import rehypeKatex from 'rehype-katex';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
+import type { PluggableList } from 'unified';
 import MarkdownCodeBlock from './MarkdownCodeBlock';
 
 type MarkdownPreviewProps = {
@@ -40,7 +41,10 @@ const markdownPreviewComponents: Components = {
 };
 
 export default function MarkdownPreview({ content }: MarkdownPreviewProps) {
-  const remarkPlugins = useMemo(() => [remarkGfm, remarkMath], []);
+  const remarkPlugins = useMemo(
+    (): PluggableList => [remarkGfm, [remarkMath, { singleDollarTextMath: false }]],
+    [],
+  );
   const rehypePlugins = useMemo(() => [rehypeKatex], []);
 
   return (

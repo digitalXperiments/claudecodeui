@@ -19,6 +19,7 @@ import {
 import {
   buildGrokPriorSessionContextHint,
   seedGrokSessionTranscript,
+  grokRelayWorkerSkipsManagedGateway,
   shouldPreferGrokAcpSessionLoad,
   toGrokAcpMcpServers,
 } from './modules/providers/list/grok/grok-acp-managed-mcp.js';
@@ -492,7 +493,7 @@ function createJsonRpcClient(child) {
   };
 }
 
-async function createAcpSession(workingDir, resumeSessionId, spawnArgs, envOverrides = {}, mcpServers = []) {
+async function createAcpSession(workingDir, resumeSessionId, spawnArgs, envOverrides = {}, mcpServers = [], sessionOptions = {}) {
   const child = spawnFunction('grok', spawnArgs, {
     cwd: workingDir,
     stdio: ['pipe', 'pipe', 'pipe'],
@@ -508,6 +509,7 @@ async function createAcpSession(workingDir, resumeSessionId, spawnArgs, envOverr
 
   let sessionResult;
   let injectManagedMcpHint = false;
+  const skipManagedGateway = grokRelayWorkerSkipsManagedGateway(sessionOptions.relayWorker);
   /** @type {string} */
   let injectPriorContextHint = '';
   try {
@@ -565,8 +567,8 @@ async function createAcpSession(workingDir, resumeSessionId, spawnArgs, envOverr
         console.warn(
           `[grok-cli] session/load failed for ${resumeSessionId}; forking a new Grok session`,
         );
-        mcpReady = armGrokMcpReadyWait(rpc, child, { waitManagedGateway: true });
-        injectManagedMcpHint = true;
+        mcpReady = armGrokMcpReadyWait(rpc, child, { waitManagedGateway: !skipManagedGateway });
+        injectManagedMcpHint = !skipManagedGateway;
         forkedFromSessionId = resumeSessionId;
         sessionResult = await rpc.request('session/new', {
           cwd: workingDir,
@@ -582,8 +584,9 @@ async function createAcpSession(workingDir, resumeSessionId, spawnArgs, envOverr
         forkedFromSessionId = resumeSessionId;
       }
       // Arm before session/new so early mcp_initialized / catalog stderr is not missed.
-      mcpReady = armGrokMcpReadyWait(rpc, child, { waitManagedGateway: true });
-      injectManagedMcpHint = true;
+      // Relay workers skip the grok.com managed-gateway wait and hint.
+      mcpReady = armGrokMcpReadyWait(rpc, child, { waitManagedGateway: !skipManagedGateway });
+      injectManagedMcpHint = !skipManagedGateway;
       sessionResult = await rpc.request('session/new', {
         cwd: workingDir,
         mcpServers,
@@ -751,7 +754,6 @@ async function spawnGrok(command, options = {}, ws) {
   const resolvedMcpServers = Array.isArray(requestedMcpServerNames) && requestedMcpServerNames.length > 0
     ? await mcpCatalogService.resolveForProvider('grok', requestedMcpServerNames)
     : [];
-  const acpMcpServers = toGrokAcpMcpServers(resolvedMcpServers);
 
   const permissionRuntime = resolveGrokPermissionRuntime(permissionMode);
   const managedGrokHome = ensureManagedGrokHome(permissionRuntime.configPermissionMode, { relayWorker });
@@ -763,6 +765,9 @@ async function spawnGrok(command, options = {}, ws) {
     spawnEnv.CLOUDCLI_PROVIDER = 'grok';
     spawnEnv.CLOUDCLI_PROJECT_PATH = workingDir;
   }
+  // ACP-attached stdio MCPs get their own env array; stamp session identity
+  // there the same way OpenCode does (process inherit is not enough).
+  const acpMcpServers = toGrokAcpMcpServers(resolvedMcpServers, spawnEnv);
   const spawnArgs = buildSpawnArgs({
     model: resolvedModel,
     effort: resolvedEffort,
@@ -795,7 +800,7 @@ async function spawnGrok(command, options = {}, ws) {
     }
 
     try {
-      handle = await createAcpSession(workingDir, sessionId, spawnArgs, spawnEnv, acpMcpServers);
+      handle = await createAcpSession(workingDir, sessionId, spawnArgs, spawnEnv, acpMcpServers, { relayWorker });
     } catch (setupError) {
       // createAcpSession runs before the prompt try/catch below — without this
       // the failure only hits startProviderRun's safety-net complete (exit 1)
@@ -1284,4 +1289,5 @@ export {
   resolveGrokPromptCompletion,
   emitGrokPromptCompletion,
   shouldDeferGrokIdleCleanup,
+  grokRelayWorkerSkipsManagedGateway,
 };

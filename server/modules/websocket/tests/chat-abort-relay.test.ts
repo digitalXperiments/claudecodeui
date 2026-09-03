@@ -75,3 +75,51 @@ test('stopping a lead cancels its Agent Relay workers', async () => {
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test('aborting a first run with no provider session id still reaches the abort fn', async () => {
+  const previousDatabasePath = process.env.DATABASE_PATH;
+  const root = await makeScratchDir('chat-abort-first-run-');
+  closeConnection();
+  process.env.DATABASE_PATH = `${root}/auth.db`;
+  await initializeDatabase();
+
+  const connection = new FakeConnection();
+  const leadSessionId = 'lead-session-first-abort';
+  sessionsDb.createAppSession(leadSessionId, 'claude', '/workspace/demo');
+  chatRunRegistry.startRun({
+    appSessionId: leadSessionId,
+    provider: 'claude',
+    providerSessionId: null,
+    connection,
+    userId: null,
+  });
+
+  const abortTargets: string[] = [];
+  const dependencies = {
+    abortFns: {
+      claude: async (target: string) => {
+        abortTargets.push(target);
+        return true;
+      },
+    },
+  } as unknown as ChatWebSocketDependencies;
+
+  try {
+    await handleChatAbort(
+      connection as unknown as WebSocket,
+      { sessionId: leadSessionId },
+      dependencies,
+    );
+
+    assert.deepEqual(abortTargets, [leadSessionId]);
+    assert.equal(chatRunRegistry.isProcessing(leadSessionId), false);
+    assert.equal(connection.frames.at(-1)?.kind, 'complete');
+    assert.equal(connection.frames.at(-1)?.aborted, true);
+  } finally {
+    chatRunRegistry.clearAll();
+    closeConnection();
+    if (previousDatabasePath === undefined) delete process.env.DATABASE_PATH;
+    else process.env.DATABASE_PATH = previousDatabasePath;
+    await rm(root, { recursive: true, force: true });
+  }
+});

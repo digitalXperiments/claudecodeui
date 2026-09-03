@@ -178,6 +178,19 @@ export const agentRelayDb = {
     ).all() as AgentRelayRow[]).map(mapRow);
   },
 
+  /**
+   * Move in-flight jobs from one lead session to another (handoff). Finished
+   * jobs keep their original source for history.
+   */
+  rehomeSourceSession(fromSessionId: string, toSessionId: string): number {
+    return getConnection().prepare(`
+      UPDATE agent_relay_jobs
+      SET source_session_id = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE source_session_id = ?
+        AND status IN ('queued', 'running', 'waiting_approval')
+    `).run(toSessionId, fromSessionId).changes;
+  },
+
   /** All open jobs for lifecycle operations that must never truncate at a UI page size. */
   listActive(): AgentRelayJob[] {
     return (getConnection().prepare(
@@ -468,6 +481,30 @@ export const agentRelayDb = {
       -- are failed because blindly replaying them could duplicate side effects.
       WHERE status IN ('running', 'waiting_approval')
     `).run().changes);
+  },
+
+  listTerminalOlderThan(retentionDays: number): AgentRelayJob[] {
+    const days = Math.min(Math.max(Math.trunc(retentionDays), 1), 365);
+    return (getConnection().prepare(`
+      SELECT * FROM agent_relay_jobs
+      WHERE status IN ('completed', 'failed', 'cancelled', 'timed_out')
+        AND finished_at IS NOT NULL
+        AND datetime(finished_at) < datetime('now', ?)
+    `).all(`-${days} days`) as AgentRelayRow[]).map(mapRow);
+  },
+
+  /**
+   * Drop finished jobs (and cascaded approvals) older than `retentionDays`.
+   * Active rows are never deleted.
+   */
+  purgeTerminalOlderThan(retentionDays: number): number {
+    const days = Math.min(Math.max(Math.trunc(retentionDays), 1), 365);
+    return Number(getConnection().prepare(`
+      DELETE FROM agent_relay_jobs
+      WHERE status IN ('completed', 'failed', 'cancelled', 'timed_out')
+        AND finished_at IS NOT NULL
+        AND datetime(finished_at) < datetime('now', ?)
+    `).run(`-${days} days`).changes);
   },
 
   expireAllPendingApprovals(reason: string): number {

@@ -67,6 +67,7 @@ export default function AgentRelayActivityControl({ projectId, sessionId, newSes
   const [projectJobCount, setProjectJobCount] = useState(0);
   const [busyApprovalId, setBusyApprovalId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [peekError, setPeekError] = useState<string | null>(null);
   const [refreshError, setRefreshError] = useState<string | null>(null);
   const [lastUpdatedAt, setLastUpdatedAt] = useState<number | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -102,7 +103,7 @@ export default function AgentRelayActivityControl({ projectId, sessionId, newSes
     }
     const scopeToSession = !showAllSessions;
     const sessionFilter = scopeToSession ? sessionId : undefined;
-    const [activeJobs, recentJobs, nextApprovals, projectJobs] = await Promise.all([
+    const [activeJobs, recentJobs, projectJobs] = await Promise.all([
       agentRelayApi.listJobs({
         projectId,
         sessionId: sessionFilter,
@@ -114,13 +115,19 @@ export default function AgentRelayActivityControl({ projectId, sessionId, newSes
         sessionId: sessionFilter,
         limit: 12,
       }),
-      agentRelayApi.listPendingApprovals({ sessionId: sessionFilter }),
       scopeToSession ? agentRelayApi.listJobs({ projectId, limit: 12 }) : Promise.resolve([]),
     ]);
     if (requestId !== loadRequestRef.current) return;
     const merged = new Map<string, AgentRelayJob>();
     for (const job of [...activeJobs, ...recentJobs]) merged.set(job.relay_id, job);
-    setJobs([...merged.values()].sort((left, right) => right.created_at.localeCompare(left.created_at)));
+    const nextJobs = [...merged.values()].sort((left, right) => right.created_at.localeCompare(left.created_at));
+    // Approvals are stored against the lead source session. A worker transcript
+    // must query that lead id, not the worker's own app_session_id.
+    const leadFromJobs = nextJobs.find((job) => job.app_session_id === sessionId)?.source_session_id;
+    const approvalSessionId = scopeToSession ? (leadFromJobs || sessionId) : undefined;
+    const nextApprovals = await agentRelayApi.listPendingApprovals({ sessionId: approvalSessionId });
+    if (requestId !== loadRequestRef.current) return;
+    setJobs(nextJobs);
     setApprovals(nextApprovals);
     setProjectJobCount(projectJobs.length);
     setLastUpdatedAt(Date.now());
@@ -188,6 +195,7 @@ export default function AgentRelayActivityControl({ projectId, sessionId, newSes
     setProjectJobCount(0);
     setExpandedId(null);
     setError(null);
+    setPeekError(null);
     setRefreshError(null);
   }, [projectId, sessionId, showAllSessions]);
 
@@ -224,9 +232,12 @@ export default function AgentRelayActivityControl({ projectId, sessionId, newSes
     const timer = window.setInterval(() => {
       void agentRelayApi.peek(expandedId)
         .then((peek) => {
+          setPeekError(null);
           setPeekById((current) => ({ ...current, [expandedId]: peek }));
         })
-        .catch(() => undefined);
+        .catch((caught) => {
+          setPeekError(caught instanceof Error ? caught.message : 'Could not refresh worker activity.');
+        });
     }, 2000);
     return () => window.clearInterval(timer);
   }, [enabled, expandedId, expandedJobActive, open]);
@@ -235,12 +246,13 @@ export default function AgentRelayActivityControl({ projectId, sessionId, newSes
 
   const peekJob = async (relayId: string) => {
     setError(null);
+    setPeekError(null);
     setExpandedId((current) => (current === relayId ? null : relayId));
     try {
       const peek = await agentRelayApi.peek(relayId);
       setPeekById((current) => ({ ...current, [relayId]: peek }));
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'Could not peek at that worker.');
+      setPeekError(caught instanceof Error ? caught.message : 'Could not peek at that worker.');
     }
   };
 
@@ -389,6 +401,9 @@ export default function AgentRelayActivityControl({ projectId, sessionId, newSes
           </div>
 
           {error ? <div className="border-b border-border bg-red-500/10 px-3 py-2 text-[10px] text-red-600 dark:text-red-300">{error}</div> : null}
+          {peekError ? (
+            <div className="border-b border-border bg-amber-500/10 px-3 py-2 text-[10px] text-amber-700 dark:text-amber-300">{peekError}</div>
+          ) : null}
           {refreshError ? (
             <div className="border-b border-border bg-amber-500/10 px-3 py-2 text-[10px] text-amber-700 dark:text-amber-300">
               Showing the last known Relay state{lastUpdatedAt ? ` from ${new Date(lastUpdatedAt).toLocaleTimeString()}` : ''}. {refreshError}
@@ -406,7 +421,7 @@ export default function AgentRelayActivityControl({ projectId, sessionId, newSes
                     {approval.tool_name || 'Tool use'} needs approval
                   </div>
                   {approval.command ? (
-                    <code className="mt-1 block truncate rounded bg-muted px-1.5 py-1 text-[10px] text-muted-foreground">{approval.command}</code>
+                    <code className="mt-1 block truncate rounded bg-muted px-1.5 py-1 text-[10px] text-muted-foreground" title={approval.command}>{approval.command}</code>
                   ) : null}
                   {approval.cwd ? (
                     <div className="mt-1 truncate text-[10px] text-muted-foreground" title={approval.cwd}>cwd: {approval.cwd}</div>
@@ -491,8 +506,21 @@ export default function AgentRelayActivityControl({ projectId, sessionId, newSes
                       <span>·</span>
                       <span>{job.status.replace('_', ' ')}</span>
                       {job.status === 'queued' && job.queue_position ? <><span>·</span><span>queue #{job.queue_position}</span></> : null}
-                      {job.usage?.totalTokens ? <><span>·</span><span title={`${job.usage.totalTokens.toLocaleString()} tokens`}>{formatTokens(job.usage.totalTokens)} tokens</span></> : null}
-                      {job.usage?.costUsd ? <><span>·</span><span>{formatCost(job.usage.costUsd)}</span></> : null}
+                      {ACTIVE.has(job.status) ? (
+                        <>
+                          {job.usage?.totalTokens ? <><span>·</span><span title={`${job.usage.totalTokens.toLocaleString()} tokens`}>{formatTokens(job.usage.totalTokens)} tokens</span></> : null}
+                          {job.usage?.costUsd ? <><span>·</span><span>{formatCost(job.usage.costUsd)}</span></> : null}
+                        </>
+                      ) : (
+                        <>
+                          <span>·</span>
+                          <span title={job.usage?.totalTokens ? `${job.usage.totalTokens.toLocaleString()} tokens` : 'Usage not recorded'}>
+                            {job.usage?.totalTokens ? `${formatTokens(job.usage.totalTokens)} tokens` : 'n/a tokens'}
+                          </span>
+                          <span>·</span>
+                          <span>{job.usage?.costUsd ? formatCost(job.usage.costUsd) : 'n/a'}</span>
+                        </>
+                      )}
                     </div>
                     {job.result?.summary ? <p className="mt-1.5 line-clamp-3 text-[10px] leading-4 text-muted-foreground">{job.result.summary}</p> : null}
                     {job.result?.outputValidation && !job.result.outputValidation.valid ? (

@@ -49,11 +49,27 @@ export default defineConfig(({ mode }) => {
     },
     build: {
       outDir: 'dist',
-      chunkSizeWarningLimit: 1000,
+      // Chat shell stays eager (~1.2 MB). Heavy views and vendors are split out.
+      chunkSizeWarningLimit: 1500,
       rollupOptions: {
         output: {
+          // Keep manual chunks limited to dependency families with clean module
+          // boundaries. Grouping the markdown/remark/rehype graph by path can
+          // split circular dependencies across chunks and trigger a TDZ error
+          // before React mounts ("Cannot access ... before initialization").
           manualChunks: {
             'vendor-react': ['react', 'react-dom', 'react-router-dom'],
+            'vendor-i18n': ['i18next', 'i18next-browser-languagedetector', 'react-i18next'],
+            'vendor-ui': [
+              'lucide-react',
+              'cmdk',
+              'react-dropzone',
+              'react-error-boundary',
+              '@dnd-kit/core',
+              '@dnd-kit/sortable',
+              '@dnd-kit/utilities'
+            ],
+            'vendor-utils': ['dompurify', 'fuse.js', 'jszip', 'jsonrepair', 'yaml'],
             'vendor-codemirror': [
               '@uiw/react-codemirror',
               '@codemirror/lang-css',

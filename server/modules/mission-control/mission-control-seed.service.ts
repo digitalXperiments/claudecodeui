@@ -16,6 +16,17 @@ import {
   X_ARTICLES_SECTION_TITLE,
 } from '@/modules/mission-control/x-articles-seed.js';
 import { ensureArticleStudioWorkspace } from '@/modules/mission-control/article-studio.service.js';
+import {
+  buildPersonalGmailSectionInput,
+  buildSlackSectionInput,
+  buildWorkGmailSectionInput,
+  PERSONAL_GMAIL_PROMPT_VERSION,
+  PERSONAL_GMAIL_SECTION_TITLE,
+  SLACK_PROMPT_VERSION,
+  SLACK_SECTION_TITLE,
+  WORK_GMAIL_PROMPT_VERSION,
+  WORK_GMAIL_SECTION_TITLE,
+} from '@/modules/mission-control/action-centre-seed.js';
 
 /** Stable title used for idempotent seeding (do not rename casually). */
 export const TRELLO_TASKS_SECTION_TITLE = 'Trello Tasks';
@@ -41,6 +52,9 @@ export const MC_SEED_KEYS = {
   xArticles: 'x-articles',
   swipeDigest: 'swipe-digest',
   trelloTasks: 'trello-tasks',
+  workGmail: 'work-gmail',
+  slack: 'slack',
+  personalGmail: 'personal-gmail',
 } as const;
 
 export type McSeedKey = (typeof MC_SEED_KEYS)[keyof typeof MC_SEED_KEYS];
@@ -49,6 +63,11 @@ const SEED_TITLE_TO_KEY = new Map<string, McSeedKey>([
   [X_ARTICLES_SECTION_TITLE.trim().toLowerCase(), MC_SEED_KEYS.xArticles],
   [SWIPE_DIGEST_SECTION_TITLE.trim().toLowerCase(), MC_SEED_KEYS.swipeDigest],
   [TRELLO_TASKS_SECTION_TITLE.trim().toLowerCase(), MC_SEED_KEYS.trelloTasks],
+  [WORK_GMAIL_SECTION_TITLE.trim().toLowerCase(), MC_SEED_KEYS.workGmail],
+  [SLACK_SECTION_TITLE.trim().toLowerCase(), MC_SEED_KEYS.slack],
+  // Older Action Centre installs used the more descriptive display title.
+  ['slack messages', MC_SEED_KEYS.slack],
+  [PERSONAL_GMAIL_SECTION_TITLE.trim().toLowerCase(), MC_SEED_KEYS.personalGmail],
 ]);
 
 function normalizeTitle(title: string): string {
@@ -296,23 +315,33 @@ export function ensureTrelloTasksSection(): EnsureSectionResult {
 }
 
 /**
- * Seed one article-studio section, keeping the versioned prompt current while
- * leaving everything the user tunes from the UI alone.
+ * Seed one built-in section, keeping its versioned prompt/tool fields current
+ * while leaving everything the user tunes from the UI alone (provider, model,
+ * schedule, enabled, actions survive untouched once created).
  *
- * The section is bound to the studio project so the agent runs *inside* the
- * working directory and picks up CLAUDE.md, the voice spec, the pattern library
- * and `.claude/skills/`. `project_id` is re-pointed on refresh: if the studio
- * moves, the section has to follow it or the writing system silently vanishes.
+ * For project-scoped sections (e.g. the article studio pair) `project_id` is
+ * re-pointed on refresh: if the project moves, the section has to follow it
+ * or the working directory it depends on silently vanishes. For global
+ * sections (e.g. Action Centre communications) scope/project_id are constant.
  */
-function ensureArticleSection(
+function ensureVersionedSeedSection(
   title: string,
   seedKey: McSeedKey,
   versionMarker: string,
   input: CreateMcSectionInput,
+  opts: { aliases?: string[]; refreshActions?: boolean } = {},
 ): EnsureSectionResult {
+  // Article-studio sections version their action list together with the
+  // prompt (established convention); Action Centre communication sections opt
+  // out (refreshActions: false) so a user's action tweaks are never clobbered.
+  const refreshActions = opts.refreshActions !== false;
+
+  const matchingTitles = new Set(
+    [title, ...(opts.aliases ?? [])].map((value) => normalizeTitle(value)),
+  );
   const existing = missionControlDb
     .listSections()
-    .find((s) => s.title.trim().toLowerCase() === title.toLowerCase());
+    .find((s) => matchingTitles.has(normalizeTitle(s.title)));
 
   if (!existing) {
     if (isSeedSuppressed(seedKey)) {
@@ -335,14 +364,17 @@ function ensureArticleSection(
     existing.scope !== input.scope ||
     existing.project_id !== input.project_id ||
     JSON.stringify(existing.produce_tools) !== JSON.stringify(input.produce_tools) ||
-    JSON.stringify(existing.actions ?? []) !== JSON.stringify(input.actions ?? existing.actions ?? []);
+    JSON.stringify(existing.resolve_tools) !== JSON.stringify(input.resolve_tools ?? []) ||
+    (refreshActions &&
+      JSON.stringify(existing.actions ?? []) !== JSON.stringify(input.actions ?? existing.actions ?? []));
 
   if (!stale) {
     return { created: false, updated: false, section: existing, suppressed: false };
   }
 
-  // Refresh prompt-shaped fields and the studio binding only. Provider, model,
-  // cron and enabled stay as the user set them.
+  // Refresh prompt-shaped fields (and, where opted in, the versioned action
+  // list) only. Provider, model, cron and enabled always stay as the user set
+  // them; actions do too when refreshActions is false.
   const section = missionControlDb.updateSection(existing.section_id, {
     scope: input.scope,
     project_id: input.project_id,
@@ -350,7 +382,7 @@ function ensureArticleSection(
     produce_tools: input.produce_tools,
     resolve_prompt: input.resolve_prompt,
     resolve_tools: input.resolve_tools,
-    ...(input.actions ? { actions: input.actions } : {}),
+    ...(refreshActions && input.actions ? { actions: input.actions } : {}),
     auto_approve: false,
     create_kanban_task: false,
   });
@@ -367,7 +399,7 @@ function ensureArticleSection(
 
 /** Ensure the X Articles drafting section exists and points at the studio. */
 export function ensureXArticlesSection(projectId: string): EnsureSectionResult {
-  return ensureArticleSection(
+  return ensureVersionedSeedSection(
     X_ARTICLES_SECTION_TITLE,
     MC_SEED_KEYS.xArticles,
     `Prompt version: ${X_ARTICLES_PROMPT_VERSION}`,
@@ -377,11 +409,47 @@ export function ensureXArticlesSection(projectId: string): EnsureSectionResult {
 
 /** Ensure the Swipe Digest section exists and points at the studio. */
 export function ensureSwipeDigestSection(projectId: string): EnsureSectionResult {
-  return ensureArticleSection(
+  return ensureVersionedSeedSection(
     SWIPE_DIGEST_SECTION_TITLE,
     MC_SEED_KEYS.swipeDigest,
     `Prompt version: ${SWIPE_DIGEST_PROMPT_VERSION}`,
     buildSwipeDigestSectionInput(projectId),
+  );
+}
+
+/**
+ * Ensure the Work Gmail Action Centre section exists. Global, no project or
+ * user config file required — the MCP server id and account are fixed.
+ */
+export function ensureWorkGmailSection(): EnsureSectionResult {
+  return ensureVersionedSeedSection(
+    WORK_GMAIL_SECTION_TITLE,
+    MC_SEED_KEYS.workGmail,
+    `Prompt version: ${WORK_GMAIL_PROMPT_VERSION}`,
+    buildWorkGmailSectionInput(),
+    { refreshActions: false },
+  );
+}
+
+/** Ensure the Slack Action Centre section exists. Global, no project required. */
+export function ensureSlackSection(): EnsureSectionResult {
+  return ensureVersionedSeedSection(
+    SLACK_SECTION_TITLE,
+    MC_SEED_KEYS.slack,
+    `Prompt version: ${SLACK_PROMPT_VERSION}`,
+    buildSlackSectionInput(),
+    { aliases: ['Slack Messages'], refreshActions: false },
+  );
+}
+
+/** Ensure the Personal Gmail Action Centre section exists. Global, no project required. */
+export function ensurePersonalGmailSection(): EnsureSectionResult {
+  return ensureVersionedSeedSection(
+    PERSONAL_GMAIL_SECTION_TITLE,
+    MC_SEED_KEYS.personalGmail,
+    `Prompt version: ${PERSONAL_GMAIL_PROMPT_VERSION}`,
+    buildPersonalGmailSectionInput(),
+    { refreshActions: false },
   );
 }
 
@@ -417,6 +485,12 @@ export function ensureMissionControlSeedSections(): McSection[] {
   const out: McSection[] = [];
   const trello = ensureTrelloTasksSection();
   if (trello.section) out.push(trello.section);
+  const workGmail = ensureWorkGmailSection();
+  if (workGmail.section) out.push(workGmail.section);
+  const slack = ensureSlackSection();
+  if (slack.section) out.push(slack.section);
+  const personalGmail = ensurePersonalGmailSection();
+  if (personalGmail.section) out.push(personalGmail.section);
   return out;
 }
 

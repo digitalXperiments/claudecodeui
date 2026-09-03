@@ -67,7 +67,7 @@
   "actions": {
     "refresh": "Refresh",
     "settings": "Settings",
-    "missionControl": "Mission Control",
+    "missionControl": "Action Centre",
     "kanban": "Kanban",
     "studio": "Studio",
     "stats": "Usage Stats",

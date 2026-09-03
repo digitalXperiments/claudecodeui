@@ -1,19 +1,23 @@
 export {
   agentRelayService,
   allowedWorkerModelsFor,
+  catalogEffortValuesForModel,
   configureAgentRelayRuntimes,
+  configureRelayModelRegistry,
   mcpTokensEqual,
   parseStructuredResult,
   providerHonorsRelayMcpGrants,
   providerSupportsReadOnlyRelay,
   relayPermissionMode,
   resolveCatalogModelId,
+  resolveRelayEffort,
   resolveRelayModelIdentity,
   resolveRelayWorkerModel,
   sanitizeWorkerMcpServers,
   type ParsedWorkerResult,
 } from '@/modules/agent-relay/agent-relay.service.js';
-export { agentRelayRoutes, agentRelayMcpRoutes } from '@/modules/agent-relay/agent-relay.routes.js';
+export { agentRelayDb } from '@/modules/agent-relay/agent-relay.repository.js';
+export { agentRelayRoutes, agentRelayMcpRoutes, resolveAgentRelayMcpScope } from '@/modules/agent-relay/agent-relay.routes.js';
 export {
   agentRelayPermissionBroker,
   classifyRelayPermissionRequest,

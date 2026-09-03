@@ -55,6 +55,7 @@ export {
   exportSnapshot,
   getStaffingPrefs,
   listModelCapabilities,
+  enabledRegistryModelIdsForProvider,
   matchBenchmarkFamily,
   outcomeCorrection,
   rankCandidatesForTask,

@@ -135,6 +135,13 @@ export class ChatSessionWriter {
     return !wasAlreadyAttached;
   }
 
+  /** Copies live subscribers when an idle session starts its next run. */
+  copyConnectionsTo(target: ChatSessionWriter): void {
+    for (const connection of this.connections) {
+      target.updateWebSocket(connection);
+    }
+  }
+
   /**
    * Removes a socket from the fan-out set. Called when a client socket closes
    * so a run stops pushing events to a dead connection.

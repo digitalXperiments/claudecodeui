@@ -9,21 +9,10 @@ import {
   setModelEnabled,
   setStaffingPrefs,
 } from '@/modules/swarm/model-registry.service.js';
-import { previewAutoStaffRoster } from '@/modules/swarm/swarm-staffing.service.js';
-import { runGoalWorkshop, type GoalWorkshopMessage } from '@/modules/swarm/swarm-goal-workshop.service.js';
 import { swarmDb } from '@/modules/swarm/swarm.repository.js';
-import type {
-  SwarmAgentSpec,
-  SwarmAttachment,
-  SwarmRoleConfig,
-} from '@/modules/swarm/swarm.types.js';
 import { AppError, asyncHandler } from '@/shared/utils.js';
-import { CloudError } from '@/shared/run-events.js';
 
 const router = express.Router();
-
-/** Cap attachments per swarm (mirrors chat composer limit). */
-const MAX_SWARM_ATTACHMENTS = 10;
 
 function stringValue(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
@@ -33,62 +22,17 @@ function optionalString(value: unknown): string | undefined {
   return v || undefined;
 }
 
-function parseAttachments(body: Record<string, unknown>): SwarmAttachment[] | undefined {
-  // Accept either `attachments` or chat-style `images`.
-  const raw = Array.isArray(body.attachments)
-    ? body.attachments
-    : Array.isArray(body.images)
-      ? body.images
-      : null;
-  if (!raw) return undefined;
-
-  const out: SwarmAttachment[] = [];
-  for (const entry of raw.slice(0, MAX_SWARM_ATTACHMENTS)) {
-    if (typeof entry === 'string' && entry.trim()) {
-      out.push({ path: entry.trim() });
-      continue;
-    }
-    if (!entry || typeof entry !== 'object') continue;
-    const record = entry as Record<string, unknown>;
-    const path = typeof record.path === 'string' ? record.path.trim() : '';
-    if (!path) continue;
-    out.push({
-      path,
-      name: typeof record.name === 'string' ? record.name : undefined,
-      mimeType: typeof record.mimeType === 'string' ? record.mimeType : undefined,
-      size: typeof record.size === 'number' && Number.isFinite(record.size) ? record.size : undefined,
-    });
-  }
-  return out;
+/** Agent Swarm is retired; new work goes through Agent Relay. */
+function swarmRetired(): never {
+  throw new AppError(
+    'Agent Swarm is retired. Use Agent Relay for delegated work.',
+    { code: 'SWARM_RETIRED', statusCode: 410 },
+  );
 }
 
-function mapError(error: unknown): never {
-  if (error instanceof CloudError) {
-    const statusCode = error.message.includes('not found') ? 404 : 400;
-    throw new AppError(error.message, { code: error.code, statusCode });
-  }
-  throw error;
-}
-
-function parseAgents(body: Record<string, unknown>): SwarmAgentSpec[] | undefined {
-  if (Array.isArray(body.agents) && body.agents.length > 0) {
-    return body.agents as SwarmAgentSpec[];
-  }
-  if (Array.isArray(body.roles) && body.roles.length > 0) {
-    return (body.roles as SwarmRoleConfig[]).map((r) => ({
-      id: r.id,
-      kind: (r.kind || r.role || 'custom') as string,
-      label: r.label || String(r.kind || r.role || 'Agent'),
-      provider: r.provider,
-      model: r.model,
-      effort: r.effort,
-      permissionMode: r.permissionMode,
-      skills: r.skills,
-      focus: r.focus,
-    }));
-  }
-  return undefined;
-}
+const refuseSwarmMutation = asyncHandler(async () => {
+  swarmRetired();
+});
 
 router.get(
   '/swarm',
@@ -208,170 +152,11 @@ router.post(
   }),
 );
 
-// Preview the auto-staffed roster for a set of task kinds before launching.
-router.post(
-  '/swarm/auto-staff-preview',
-  asyncHandler(async (req, res) => {
-    const body = (req.body ?? {}) as Record<string, unknown>;
-    const kinds = Array.isArray(body.kinds)
-      ? body.kinds.filter(
-          (k): k is { kind: string; difficulty?: string } =>
-            Boolean(k) && typeof (k as Record<string, unknown>).kind === 'string',
-        )
-      : [];
-    const allowedProviders = Array.isArray(body.allowedProviders)
-      ? body.allowedProviders.filter((p): p is string => typeof p === 'string')
-      : undefined;
-    const seats = previewAutoStaffRoster({
-      kinds: kinds.map((entry) => ({
-        kind: entry.kind as never,
-        difficulty: (entry.difficulty ?? null) as never,
-      })),
-      allowedProviders,
-    });
-    res.json({ success: true, seats });
-  }),
-);
+router.post('/swarm/auto-staff-preview', refuseSwarmMutation);
 
-router.post(
-  '/swarm/draft-goal',
-  asyncHandler(async (req, res) => {
-    const controller = new AbortController();
-    const abortIfDisconnected = () => {
-      if (!res.writableEnded) controller.abort();
-    };
-    req.once('aborted', abortIfDisconnected);
-    res.once('close', abortIfDisconnected);
-    const body = (req.body ?? {}) as Record<string, unknown>;
-    const rawMessages = Array.isArray(body.messages) ? body.messages : [];
-    const messages: GoalWorkshopMessage[] = [];
-    for (const entry of rawMessages) {
-      if (!entry || typeof entry !== 'object') continue;
-      const row = entry as Record<string, unknown>;
-      const role = row.role === 'assistant' ? 'assistant' : row.role === 'user' ? 'user' : null;
-      const content = typeof row.content === 'string' ? row.content : '';
-      if (!role || !content.trim()) continue;
-      messages.push({ role, content: content.trim() });
-    }
-    try {
-      const result = await runGoalWorkshop({
-        projectId: stringValue(body.projectId),
-        provider: optionalString(body.provider),
-        model: optionalString(body.model) ?? null,
-        messages,
-        currentGoal: optionalString(body.currentGoal),
-        signal: controller.signal,
-      });
-      res.json({ success: true, ...result });
-    } finally {
-      req.off('aborted', abortIfDisconnected);
-      res.off('close', abortIfDisconnected);
-    }
-  }),
-);
+router.post('/swarm/draft-goal', refuseSwarmMutation);
 
-router.post(
-  '/swarm',
-  asyncHandler(async (req, res) => {
-    try {
-      const body = (req.body ?? {}) as Record<string, unknown>;
-      const projectId = stringValue(body.projectId);
-      const goal = stringValue(body.goal);
-      const agents = parseAgents(body);
-      const skills = Array.isArray(body.skills)
-        ? body.skills.filter((s): s is string => typeof s === 'string' && s.trim().length > 0)
-        : undefined;
-      const orchestrator =
-        body.orchestrator && typeof body.orchestrator === 'object'
-          ? (body.orchestrator as SwarmAgentSpec)
-          : undefined;
-
-      const swarm = swarmService.start({
-        projectId,
-        goal,
-        attachments: parseAttachments(body),
-        agents,
-        orchestrator,
-        roles: Array.isArray(body.roles) ? (body.roles as SwarmRoleConfig[]) : undefined,
-        skills,
-        requireApproval: body.requireApproval === true,
-        requirePlanApproval: body.requirePlanApproval === true,
-        // Orchestrator staffs worker seats from swarm-tagged agent profiles.
-        autoRoster:
-          body.autoRoster === true ? true : body.autoRoster === false ? false : undefined,
-        // Pre-PR stability gate defaults ON; only an explicit false opts out.
-        validateBeforePr: body.validateBeforePr === false ? false : undefined,
-        // Validation attempt budget (initial run + remediation re-runs).
-        validationMaxAttempts:
-          typeof body.validationMaxAttempts === 'number' && body.validationMaxAttempts > 0
-            ? body.validationMaxAttempts
-            : typeof body.validationMaxAttempts === 'string' && Number(body.validationMaxAttempts) > 0
-              ? Number(body.validationMaxAttempts)
-              : undefined,
-        // Red gate still publishes the PR + report unless explicitly opted out.
-        prOnRedValidation: body.prOnRedValidation === false ? false : undefined,
-        // Long-horizon unattended mode: raises step-attempt/replan-round
-        // ceilings by an order of magnitude; only a crash/silence ends a step.
-        // Long-horizon is the default; only an explicit false opts into short runs.
-        autonomous: body.autonomous === false ? false : undefined,
-        maxReplanRounds:
-          typeof body.maxReplanRounds === 'number' && body.maxReplanRounds > 0
-            ? body.maxReplanRounds
-            : typeof body.maxReplanRounds === 'string' && Number(body.maxReplanRounds) > 0
-              ? Number(body.maxReplanRounds)
-              : undefined,
-        maxSupervisorTicks:
-          typeof body.maxSupervisorTicks === 'number' && body.maxSupervisorTicks > 0
-            ? body.maxSupervisorTicks
-            : typeof body.maxSupervisorTicks === 'string' && Number(body.maxSupervisorTicks) > 0
-              ? Number(body.maxSupervisorTicks)
-              : undefined,
-        stepTimeoutMs:
-          typeof body.stepTimeoutMs === 'number' && body.stepTimeoutMs > 0
-            ? body.stepTimeoutMs
-            : typeof body.stepTimeoutMs === 'string' && Number(body.stepTimeoutMs) > 0
-              ? Number(body.stepTimeoutMs)
-              : undefined,
-        stallTimeoutMs:
-          typeof body.stallTimeoutMs === 'number' && body.stallTimeoutMs > 0
-            ? body.stallTimeoutMs
-            : typeof body.stallTimeoutMs === 'string' && Number(body.stallTimeoutMs) > 0
-              ? Number(body.stallTimeoutMs)
-              : undefined,
-        stepMaxAttempts:
-          typeof body.stepMaxAttempts === 'number' && body.stepMaxAttempts > 0
-            ? body.stepMaxAttempts
-            : typeof body.stepMaxAttempts === 'string' && Number(body.stepMaxAttempts) > 0
-              ? Number(body.stepMaxAttempts)
-              : undefined,
-        maxConcurrency:
-          typeof body.maxConcurrency === 'number' && body.maxConcurrency > 0
-            ? body.maxConcurrency
-            : typeof body.maxConcurrency === 'string' && Number(body.maxConcurrency) > 0
-              ? Number(body.maxConcurrency)
-              : undefined,
-        parallelWriters: body.parallelWriters === true,
-        // Dynamic engine defaults ON; only an explicit false opts out.
-        dynamicEngine: body.dynamicEngine === false ? false : undefined,
-        wallClockMs:
-          typeof body.wallClockMs === 'number' && body.wallClockMs > 0
-            ? body.wallClockMs
-            : typeof body.wallClockMs === 'string' && Number(body.wallClockMs) > 0
-              ? Number(body.wallClockMs)
-              : undefined,
-        provider: optionalString(body.provider) ?? null,
-        model: optionalString(body.model) ?? null,
-        effort: optionalString(body.effort) ?? null,
-        permissionMode: optionalString(body.permissionMode) ?? null,
-        idempotencyKey:
-          optionalString(req.header('Idempotency-Key')) ?? optionalString(body.idempotencyKey) ?? null,
-      });
-      res.status(201).json({ success: true, swarm });
-    } catch (error) {
-      mapError(error);
-    }
-  }),
-);
+router.post('/swarm', refuseSwarmMutation);
 
 router.get(
   '/swarm/:swarmId/artifacts',
@@ -462,189 +247,17 @@ router.get(
   }),
 );
 
-router.post(
-  '/swarm/:swarmId/fork',
-  asyncHandler(async (req, res) => {
-    const body = (req.body ?? {}) as Record<string, unknown>;
-    let forked;
-    try {
-      forked = swarmService.fork(stringValue(req.params.swarmId), {
-        fromStepId: optionalString(body.fromStepId) ?? null,
-      });
-    } catch (error) {
-      mapError(error);
-    }
-    res.json({ success: true, swarm: forked });
-  }),
-);
-
-router.post(
-  '/swarm/:swarmId/complete-member',
-  asyncHandler(async (req, res) => {
-    try {
-      const body = (req.body ?? {}) as Record<string, unknown>;
-      const memberId = stringValue(body.memberId);
-      const findings = stringValue(body.findingsSummary ?? body.findings);
-      if (!memberId || !findings)
-        throw new AppError('memberId and findingsSummary are required', {
-          code: 'SWARM_INVALID',
-          statusCode: 400,
-        });
-      const swarm = swarmService.completeMember(
-        stringValue(req.params.swarmId),
-        memberId,
-        findings,
-      );
-      res.json({ success: true, swarm });
-    } catch (error) {
-      mapError(error);
-    }
-  }),
-);
-
-router.post(
-  '/swarm/:swarmId/synthesize',
-  asyncHandler(async (req, res) => {
-    try {
-      const body = (req.body ?? {}) as Record<string, unknown>;
-      const swarm = await swarmService.synthesize(
-        stringValue(req.params.swarmId),
-        body.requireApproval === true ? true : undefined,
-      );
-      res.json({ success: true, swarm });
-    } catch (error) {
-      mapError(error);
-    }
-  }),
-);
-
-router.post(
-  '/swarm/:swarmId/approve',
-  asyncHandler(async (req, res) => {
-    try {
-      res.json({
-        success: true,
-        swarm: swarmService.approve(stringValue(req.params.swarmId)),
-      });
-    } catch (error) {
-      mapError(error);
-    }
-  }),
-);
-
-router.post(
-  '/swarm/:swarmId/reject',
-  asyncHandler(async (req, res) => {
-    try {
-      res.json({
-        success: true,
-        swarm: swarmService.reject(stringValue(req.params.swarmId)),
-      });
-    } catch (error) {
-      mapError(error);
-    }
-  }),
-);
-
-router.post(
-  '/swarm/:swarmId/approve-plan',
-  asyncHandler(async (req, res) => {
-    try {
-      res.json({
-        success: true,
-        swarm: swarmService.approvePlan(stringValue(req.params.swarmId)),
-      });
-    } catch (error) {
-      mapError(error);
-    }
-  }),
-);
-
-router.post(
-  '/swarm/:swarmId/reject-plan',
-  asyncHandler(async (req, res) => {
-    try {
-      res.json({
-        success: true,
-        swarm: swarmService.rejectPlan(stringValue(req.params.swarmId)),
-      });
-    } catch (error) {
-      mapError(error);
-    }
-  }),
-);
-
-router.post(
-  '/swarm/:swarmId/abort',
-  asyncHandler(async (req, res) => {
-    try {
-      res.json({
-        success: true,
-        swarm: await swarmService.abort(stringValue(req.params.swarmId)),
-      });
-    } catch (error) {
-      mapError(error);
-    }
-  }),
-);
-
-router.post(
-  '/swarm/:swarmId/retry-step',
-  asyncHandler(async (req, res) => {
-    try {
-      const body = (req.body ?? {}) as Record<string, unknown>;
-      const stepId = stringValue(body.stepId);
-      if (!stepId)
-        throw new AppError('stepId is required', { code: 'SWARM_INVALID', statusCode: 400 });
-      res.json({
-        success: true,
-        swarm: await swarmService.retryStep(stringValue(req.params.swarmId), stepId),
-      });
-    } catch (error) {
-      mapError(error);
-    }
-  }),
-);
-
-router.post(
-  '/swarm/:swarmId/resume',
-  asyncHandler(async (req, res) => {
-    try {
-      res.json({
-        success: true,
-        swarm: await swarmService.resumeFromFailure(stringValue(req.params.swarmId)),
-      });
-    } catch (error) {
-      mapError(error);
-    }
-  }),
-);
-
-router.post(
-  '/swarm/:swarmId/archive',
-  asyncHandler(async (req, res) => {
-    try {
-      const restore = (req.body as { restore?: boolean } | undefined)?.restore === true;
-      const swarm = restore
-        ? swarmService.unarchive(stringValue(req.params.swarmId))
-        : swarmService.archive(stringValue(req.params.swarmId));
-      res.json({ success: true, swarm });
-    } catch (error) {
-      mapError(error);
-    }
-  }),
-);
-
-router.delete(
-  '/swarm/:swarmId',
-  asyncHandler(async (req, res) => {
-    try {
-      swarmService.delete(stringValue(req.params.swarmId));
-      res.json({ success: true });
-    } catch (error) {
-      mapError(error);
-    }
-  }),
-);
+router.post('/swarm/:swarmId/fork', refuseSwarmMutation);
+router.post('/swarm/:swarmId/complete-member', refuseSwarmMutation);
+router.post('/swarm/:swarmId/synthesize', refuseSwarmMutation);
+router.post('/swarm/:swarmId/approve', refuseSwarmMutation);
+router.post('/swarm/:swarmId/reject', refuseSwarmMutation);
+router.post('/swarm/:swarmId/approve-plan', refuseSwarmMutation);
+router.post('/swarm/:swarmId/reject-plan', refuseSwarmMutation);
+router.post('/swarm/:swarmId/abort', refuseSwarmMutation);
+router.post('/swarm/:swarmId/retry-step', refuseSwarmMutation);
+router.post('/swarm/:swarmId/resume', refuseSwarmMutation);
+router.post('/swarm/:swarmId/archive', refuseSwarmMutation);
+router.delete('/swarm/:swarmId', refuseSwarmMutation);
 
 export default router;

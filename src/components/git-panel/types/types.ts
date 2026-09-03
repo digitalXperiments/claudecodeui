@@ -93,6 +93,7 @@ export type GitPanelController = {
   isPushing: boolean;
   isPublishing: boolean;
   isCreatingInitialCommit: boolean;
+  isInitializingGit: boolean;
   operationError: string | null;
   clearOperationError: () => void;
   refreshAll: () => void;
@@ -111,6 +112,7 @@ export type GitPanelController = {
   generateCommitMessage: (files: string[]) => Promise<string | null>;
   commitChanges: (message: string, files: string[]) => Promise<boolean>;
   createInitialCommit: () => Promise<boolean>;
+  initializeGitRepository: () => Promise<boolean>;
   openFile: (filePath: string) => Promise<void>;
 };
 

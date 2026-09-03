@@ -1,24 +1,20 @@
 # Agent Relay
 
-Agent Relay is CloudCLI's lightweight, lead-owned delegation path. A normal
-Claude, Codex, OpenCode, or other provider chat remains responsible for planning,
-coordination, judgment, and final verification. CloudCLI supplies a small MCP
-broker that starts provider workers and returns durable results to that chat.
+Agent Relay is CloudCLI's lead-owned delegation path. A provider chat plans,
+coordinates, and synthesizes. CloudCLI's MCP broker starts workers and returns
+durable results to that chat. The bundled `delegate-agent-work` skill tells the
+lead to stay an orchestrator: plan, dispatch, wait, unblock, and synthesize —
+never grep, edit, test, or implement in the lead session.
 
-Use Agent Relay as the primary interactive orchestration path where a capable
-lead splits bounded assignments, pipelines dependent stages, verifies findings
-adversarially, and reviews the answers. The bundled `delegate-agent-work` skill
-tells the lead to stay an orchestrator: plan, dispatch, wait, unblock, and
-synthesize — never grep, edit, test, or implement in the lead session. Native
-provider tools (Codex `exec` / `FileChanges`, Claude Read/Bash, and so on)
-cannot be stripped; the skill and MCP descriptions are the enforcement layer.
-Agent Swarm remains a compatibility fallback while Relay closes the remaining
-unattended-recovery and worktree-retention gates; new interactive workflows
-should prefer Relay.
+Claude workers host-disallow native `Task` / `Agent` (and related Task
+lifecycle tools) so nested fan-out cannot leave Relay ownership. Plan mode does
+not re-inject `Task` for `relayWorker` runs. Other native tools still exist;
+the skill is the remaining enforcement for lead-side behavior. Agent Swarm is
+retired. Interactive orchestration uses Agent Relay only.
 
 ## Enable it
 
-1. Open **Settings → Agent Relay**.
+1. Open **Agent Relay** from the left sidebar rail (or the command palette).
 2. Select the lead providers that should receive the MCP server and managed
    delegation skill.
 3. Select the providers allowed in the worker pool.
@@ -109,15 +105,24 @@ session, without turning the UI into another orchestrator.
 ## Session ownership
 
 A relay belongs to the chat that dispatched it. CloudCLI stamps the owning app
-session id into the provider run's environment as `CLOUDCLI_LEAD_SESSION_ID`;
-the MCP process inherits it and sends it on every call, so a lead can only read
-and steer its own workers. Codex forwards only the variables an MCP entry names,
-so the managed catalog entry declares it in `env_vars`.
+session id into the provider run's environment as `CLOUDCLI_LEAD_SESSION_ID`.
+The stdio MCP bridge sends it as `X-CloudCLI-Lead-Session-Id` on every HTTP
+call. The API uses that header only; body `sourceSessionId` is ignored so a
+shared installation bearer cannot impersonate another chat. Codex forwards only
+the variables an MCP entry names, so the managed catalog entry declares
+`CLOUDCLI_LEAD_SESSION_ID` in `env_vars`. Residual: the MCP token is still
+installation-wide, so a caller who also knows another lead's session id can
+put it on the header.
 
 The panel scopes to the current chat by default and offers an explicit
 project-wide operator view. Worker sessions are internal: their transcripts open
 by id from the panel or the Running rail, but they are excluded from project
 session lists so delegate prompts never appear as the user's own sessions.
+
+Archiving or deleting a lead session cancels that chat's queued, running, and
+approval-blocked workers. Session handoff rehomes in-flight jobs'
+`source_session_id` onto the new lead chat; finished jobs keep the original
+source for history.
 
 ## Permission envelope
 
@@ -153,14 +158,14 @@ Approval objects returned over MCP truncate long commands, reasons, and path
 lists. The durable REST/operator record remains complete, while repeated lead
 polls stay context-cheap.
 
-An unanswered request is denied when the approval budget (Settings → Approval
+An unanswered request is denied when the approval budget (Agent Relay → Approval
 wait) expires, so a worker resumes and reports the blocker instead of hanging
 until its job timeout. The effective approval wait is clamped to end at least
 30 seconds before the job timeout, so a parked worker always gets to report. A job that does time out keeps whatever partial findings
 it had produced, reported as a `blocked` result.
 
 The lead can set `provider`, `model`, and `effort` independently for every task
-in a batch. Settings → Agent Relay can allowlist worker models per provider.
+in a batch. Agent Relay settings can allowlist worker models per provider.
 `relay_capabilities` then returns only those models, and `relay_delegate`
 rejects anything outside the list. Omitting `model` uses that provider's
 reported catalog default when it is allowlisted (or unrestricted); otherwise
@@ -185,29 +190,50 @@ to commit on their feature branch so that explicit merge/squash integration is
 available; failed or interrupted workers may still leave an uncommitted diff
 for inspection.
 
+Auto-pick skips Cursor for `read_only` because Cursor has no host-enforceable
+plan seat. Explicit `isolated_write` on Cursor is allowed. Cursor headless
+`cursor-agent` does not emit permission events CloudCLI can broker, has no
+`--disallowedTools` / MCP-isolation flags, and still loads
+`~/.cursor/mcp.json` and `<cwd>/.cursor/mcp.json`. Tool deny lists and MCP
+grants for Cursor are advisory (env + prompt suffix) only.
+
 ## Boundaries
 
 - The lead should delegate only independent scopes; overlapping writers are
   intentionally not reconciled by Relay.
-- Delegates are explicitly prohibited from calling Relay again; coordination
-  remains one level deep and owned by the interactive lead. Relay also removes
-  native Claude/Cursor Task/Agent tools from worker runtimes, so this boundary
-  is host-enforced rather than prompt-only.
-- MCP tool access for workers is opt-in per task through existing catalog names.
-  Grok Relay workers use a separate MCP-clean managed home; explicitly granted
-  servers are attached to the ACP session instead of inherited from user config.
+- Delegates must not call Relay again. Coordination is one level deep and
+  owned by the interactive lead. Claude workers host-disallow native
+  `Task` / `Agent` / `TaskOutput` / `TaskStop` and `mcp__cloudcli-agent-relay*`.
+  Plan mode does not re-inject `Task` when `relayWorker` is set. Cursor has
+  no equivalent deny flag.
+- MCP grants are opt-in per task via catalog names, and only on providers
+  with `honorsMcpGrants` (`claude`, `grok`, `opencode`, `kilo`, `cline`,
+  `qwencode`). Codex workers get `mcp_servers: {}` (empty managed config), not
+  native MCP inherit and not profile/task grants. Grok Relay workers use a
+  separate managed home with local `mcp_servers` stripped from `config.toml`;
+  granted servers attach on ACP `session/new`. Managed-gateway wait and the
+  cloud-catalog hint are skipped for `relayWorker`. Residual: Grok CLI may
+  still attach a grok.com managed catalog later in the session.
 - A server restart preserves jobs that never started and safely schedules them
   again. Jobs interrupted after provider dispatch are marked failed rather than
   silently replayed, because replay could duplicate side effects.
 - Disabling Relay cancels queued, running, and approval-blocked work. Cancellation
   is persisted and returned immediately while slow provider abort cleanup runs
   in the background.
+- Terminal Relay jobs older than 14 days are purged on boot (approvals cascade;
+  isolated worktrees discarded).
 - Provider CLI authentication and availability are shown in Settings and by
   `relay_capabilities`; Relay does not provision provider credentials.
 
+## Open gaps
+
+- mweb has no Agent Relay UI.
+- Cursor is not a real read-only seat (`readOnlyPlanSeat` is false). Do not
+  send `read_only` to Cursor; auto-pick already excludes it for that mode.
+
 ## CLI and packaging
 
-`cloudcli agent-relay-mcp` runs the stdio MCP bridge. Settings normally install
+`cloudcli agent-relay-mcp` runs the stdio MCP bridge. Agent Relay settings normally install
 this command automatically, along with a loopback API URL and generated bearer
 token. The production server build copies the bundled skill assets beside the
 compiled service so npm, desktop, and local-server distributions share the same

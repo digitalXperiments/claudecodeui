@@ -1,6 +1,7 @@
 import type { WebSocket } from 'ws';
 
 import { projectsDb, sessionsDb } from '@/modules/database/index.js';
+import { providerCapabilitiesService } from '@/modules/providers/index.js';
 import { interruptsService } from '@/modules/interrupt-queue/index.js';
 import { recordNormalizedRunEvent, runService } from '@/modules/runs/index.js';
 import { workspaceService } from '@/modules/workspaces/index.js';
@@ -113,12 +114,29 @@ function readRequiredSessionId(data: AnyRecord): string | null {
   return sessionId.length > 0 ? sessionId : null;
 }
 
+export function resolveChatSessionPermissionMode(
+  provider: LLMProvider,
+  persistedMode: unknown,
+  requestedMode: unknown,
+): { mode: string; persistRequested: boolean } {
+  const capabilities = providerCapabilitiesService.getProviderCapabilities(provider);
+  const requested = typeof requestedMode === 'string' ? requestedMode.trim() : '';
+  if (requested && capabilities.permissionModes.includes(requested)) {
+    return { mode: requested, persistRequested: true };
+  }
+  const persisted = typeof persistedMode === 'string' ? persistedMode.trim() : '';
+  if (persisted && capabilities.permissionModes.includes(persisted)) {
+    return { mode: persisted, persistRequested: false };
+  }
+  return { mode: capabilities.defaultPermissionMode, persistRequested: false };
+}
+
 /**
  * Handles `chat.send`: resolves the session row (provider, project path, and
  * provider-native id all come from the database — never from the client),
  * registers the run, and dispatches to the provider runtime.
  */
-async function handleChatSend(
+export async function handleChatSend(
   ws: WebSocket,
   userId: string | number | null,
   data: AnyRecord,
@@ -191,6 +209,18 @@ async function handleChatSend(
   }
 
   const clientOptions = (data.options ?? {}) as AnyRecord;
+  const permissionResolution = resolveChatSessionPermissionMode(
+    provider,
+    session.permission_mode,
+    clientOptions.permissionMode,
+  );
+  if (permissionResolution.persistRequested && session.permission_mode !== permissionResolution.mode) {
+    sessionsDb.updateSessionRuntimePreferences(sessionId, { permissionMode: permissionResolution.mode });
+  }
+  const effectiveClientOptions: AnyRecord = {
+    ...clientOptions,
+    permissionMode: permissionResolution.mode,
+  };
   const command = typeof data.content === 'string' ? data.content : '';
   if (clientOptions.delegatedRequest === true) {
     if (command.length > MAX_DELEGATED_REQUEST_CHARS) {
@@ -238,10 +268,9 @@ async function handleChatSend(
         sourceRef: sessionId,
         appSessionId: sessionId,
         provider,
-        model: typeof clientOptions.model === 'string' ? clientOptions.model : null,
-        effort: typeof clientOptions.effort === 'string' ? clientOptions.effort : null,
-        permissionMode:
-          typeof clientOptions.permissionMode === 'string' ? clientOptions.permissionMode : null,
+        model: typeof effectiveClientOptions.model === 'string' ? effectiveClientOptions.model : null,
+        effort: typeof effectiveClientOptions.effort === 'string' ? effectiveClientOptions.effort : null,
+        permissionMode: permissionResolution.mode,
         title: command.trim().split(/\r?\n/, 1)[0]?.slice(0, 160) || 'Chat run',
         trigger: 'user',
       })
@@ -249,7 +278,7 @@ async function handleChatSend(
 
   // PRD §5.7: optional isolated worktree for interactive chat.
   let runtimeProjectPath = session.runtime_project_path ?? session.project_path;
-  const runtimeOptions: AnyRecord = { ...clientOptions };
+  const runtimeOptions: AnyRecord = { ...effectiveClientOptions };
   if (wantIsolatedWorkspace && canonicalRun && project?.project_id && session.project_path) {
     try {
       const workspace = await workspaceService.create({
@@ -419,8 +448,11 @@ export async function handleChatAbort(
 
   const abortFn = dependencies.abortFns[run.provider];
   let success = false;
-  if (abortFn && run.providerSessionId) {
-    success = Boolean(await abortFn(run.providerSessionId));
+  // First-turn abort: the provider-native id is often still unknown. Fall back
+  // to the app session id so runtimes that register under it can interrupt.
+  const abortTarget = run.providerSessionId || sessionId;
+  if (abortFn && abortTarget) {
+    success = Boolean(await abortFn(abortTarget));
   }
 
   chatRunRegistry.completeRun(sessionId, {
@@ -544,6 +576,48 @@ function handlePermissionResponse(data: AnyRecord, dependencies: ChatWebSocketDe
   });
 }
 
+/** Updates settings inherited by subsequent turns; WebSocket ordering avoids a toggle/send race. */
+export function handleChatSessionPreferences(ws: WebSocket, data: AnyRecord): void {
+  const sessionId = readRequiredSessionId(data);
+  if (!sessionId) {
+    sendProtocolError(ws, 'SESSION_ID_REQUIRED', 'chat.session-preferences requires a sessionId.');
+    return;
+  }
+  const session = sessionsDb.getSessionById(sessionId);
+  if (!session || session.is_internal) {
+    sendProtocolError(
+      ws,
+      'SESSION_NOT_INTERACTIVE',
+      `Session "${sessionId}" is not an interactive chat session.`,
+      sessionId,
+    );
+    return;
+  }
+  const preferences = data.preferences && typeof data.preferences === 'object'
+    ? data.preferences as AnyRecord
+    : {};
+  const requested = typeof preferences.permissionMode === 'string'
+    ? preferences.permissionMode.trim()
+    : '';
+  const capabilities = providerCapabilitiesService.getProviderCapabilities(session.provider as LLMProvider);
+  if (!requested || !capabilities.permissionModes.includes(requested)) {
+    sendProtocolError(
+      ws,
+      'INVALID_PERMISSION_MODE',
+      `Unsupported permission mode "${requested}" for ${session.provider}.`,
+      sessionId,
+    );
+    return;
+  }
+  sessionsDb.updateSessionRuntimePreferences(sessionId, { permissionMode: requested });
+  sendJson(ws, {
+    kind: 'chat_session_preferences_updated',
+    sessionId,
+    preferences: { permissionMode: requested },
+    timestamp: new Date().toISOString(),
+  });
+}
+
 /**
  * Handles authenticated chat websocket messages used by the main chat panel.
  *
@@ -551,6 +625,7 @@ function handlePermissionResponse(data: AnyRecord, dependencies: ChatWebSocketDe
  * - `chat.send`                { sessionId, content, options? }
  * - `chat.abort`               { sessionId }
  * - `chat.subscribe`           { sessions: [{ sessionId, lastSeq? }] }
+ * - `chat.session-preferences` { sessionId, preferences: { permissionMode } }
  * - `chat.permission-response` { requestId, allow, updatedInput?, message?, rememberEntry? }
  *
  * Outbound protocol (server to client): every frame is `kind`-based — either
@@ -590,6 +665,9 @@ export function handleChatConnection(
           return;
         case 'chat.permission-response':
           handlePermissionResponse(data, dependencies);
+          return;
+        case 'chat.session-preferences':
+          handleChatSessionPreferences(ws, data);
           return;
         case 'chat.ping':
           // Application-level liveness check: the browser WebSocket API has no

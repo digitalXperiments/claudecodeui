@@ -324,7 +324,7 @@ function McpRow({
                 <p>Shared Obsidian MCP for project memory. Configure it under Settings → Memory.</p>
               )}
               {item.kind === 'agent-relay' && (
-                <p>Managed Agent Relay broker. Enable and bind lead agents under Settings → Agent Relay.</p>
+                <p>Managed Agent Relay broker. Enable and bind lead agents from the Agent Relay rail panel.</p>
               )}
               {item.source === 'provider_cloud' && (
                 <p>Hosted by {item.cloudLabel || 'the provider account'}. It is only available with that agent.</p>

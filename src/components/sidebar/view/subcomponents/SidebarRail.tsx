@@ -12,10 +12,10 @@ import {
   Radar,
   Search,
   Settings,
-  Network,
   Sparkles,
   SquareKanban,
   Palette,
+  Waypoints,
 } from 'lucide-react';
 import type { TFunction } from 'i18next';
 
@@ -41,7 +41,7 @@ type SidebarRailProps = {
   onToggleCollapse: () => void;
   runningSessionsCount: number;
   onShowKanban?: () => void;
-  onShowAgentSwarm: () => void;
+  onShowAgentRelay: () => void;
   onShowStudio: () => void;
   studioActive?: boolean;
   onShowMissionControl: () => void;
@@ -78,7 +78,7 @@ function RailButton({
         type="button"
         onClick={onClick}
         className={cn(
-          'group relative flex h-10 w-10 items-center justify-center rounded-xl transition-colors',
+          'group relative flex h-11 w-11 touch-manipulation items-center justify-center rounded-xl transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
           active
             ? 'bg-primary/10 text-primary'
             : 'text-muted-foreground hover:bg-accent/80 hover:text-foreground',
@@ -109,7 +109,7 @@ export default function SidebarRail({
   onToggleCollapse,
   runningSessionsCount,
   onShowKanban,
-  onShowAgentSwarm,
+  onShowAgentRelay,
   onShowStudio,
   studioActive = false,
   onShowMissionControl,
@@ -188,10 +188,10 @@ export default function SidebarRail({
       ) : null}
 
       <RailButton
-        title={t('actions.agentSwarm', { defaultValue: 'Agent Swarm' })}
-        onClick={onShowAgentSwarm}
+        title={t('actions.agentRelay', { defaultValue: 'Agent Relay' })}
+        onClick={onShowAgentRelay}
       >
-        <Network className="h-[18px] w-[18px]" />
+        <Waypoints className="h-[18px] w-[18px]" />
       </RailButton>
 
       <RailButton
@@ -203,7 +203,7 @@ export default function SidebarRail({
       </RailButton>
 
       <RailButton
-        title={t('actions.missionControl', { defaultValue: 'Mission Control' })}
+        title={t('actions.missionControl', { defaultValue: 'Action Centre' })}
         onClick={onShowMissionControl}
         badge={missionControlPendingCount > 0 ? missionControlPendingCount : false}
       >

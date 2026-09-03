@@ -47,6 +47,24 @@ const pendingToolApprovals = new Map();
 // terminal `complete` (aborted: true) to the client, so the run loop must not
 // emit a second one when its generator winds down.
 const abortedSessionIds = new Set();
+
+function consumeAbortedFlag(...ids) {
+  let aborted = false;
+  for (const id of ids) {
+    if (id && abortedSessionIds.delete(id)) {
+      aborted = true;
+    }
+  }
+  return aborted;
+}
+
+function dropSessionKeys(...ids) {
+  for (const id of ids) {
+    if (id) {
+      removeSession(id);
+    }
+  }
+}
 // app session id -> provider session id (chat mid-run inject addressing).
 const appSessionAliases = new Map();
 // app session id -> SDKUserMessage[] buffered before provider id is known.
@@ -239,6 +257,24 @@ function matchesToolPermission(entry, toolName, input) {
   return false;
 }
 
+const PLAN_MODE_TOOLS = ['Read', 'Task', 'exit_plan_mode', 'TodoRead', 'TodoWrite', 'WebFetch', 'WebSearch'];
+
+/**
+ * Plan mode injects inspect tools so Claude can explore without writes.
+ * Relay scouts (and any run that already disallows Task) must not get Task
+ * re-injected — nested Task/Agent would fan out outside Relay ownership.
+ */
+function applyPlanModeAllowedTools(allowedTools, { relayWorker = false, disallowedTools = [] } = {}) {
+  const next = [...allowedTools];
+  const disallowed = new Set(disallowedTools);
+  const skipTask = Boolean(relayWorker) || disallowed.has('Task');
+  for (const tool of PLAN_MODE_TOOLS) {
+    if (tool === 'Task' && skipTask) continue;
+    if (!next.includes(tool)) next.push(tool);
+  }
+  return next;
+}
+
 function mapCliOptionsToSDK(options = {}) {
   const { sessionId, cwd, toolsSettings, permissionMode, effort, appSessionId, projectPath, relayWorker } = options;
 
@@ -284,12 +320,10 @@ function mapCliOptionsToSDK(options = {}) {
   let allowedTools = [...(settings.allowedTools || [])];
 
   if (permissionMode === 'plan') {
-    const planModeTools = ['Read', 'Task', 'exit_plan_mode', 'TodoRead', 'TodoWrite', 'WebFetch', 'WebSearch'];
-    for (const tool of planModeTools) {
-      if (!allowedTools.includes(tool)) {
-        allowedTools.push(tool);
-      }
-    }
+    allowedTools = applyPlanModeAllowedTools(allowedTools, {
+      relayWorker: Boolean(options.relayWorker),
+      disallowedTools: settings.disallowedTools || [],
+    });
   }
 
   sdkOptions.allowedTools = allowedTools;
@@ -908,9 +942,6 @@ async function queryClaudeSDK(command, options = {}, ws) {
         });
       };
 
-      const prevStreamTimeout = process.env.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT;
-      process.env.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT = '300000';
-
       let queryInstance;
       try {
         queryInstance = query({
@@ -937,12 +968,9 @@ async function queryClaudeSDK(command, options = {}, ws) {
         });
       }
 
-      if (prevStreamTimeout !== undefined) {
-        process.env.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT = prevStreamTimeout;
-      } else {
-        delete process.env.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT;
+      if (options.appSessionId) {
+        addSession(options.appSessionId, queryInstance, ws, injectExtras);
       }
-
       if (capturedSessionId) {
         addSession(capturedSessionId, queryInstance, ws, injectExtras);
         registerAppSessionAlias(options.appSessionId, capturedSessionId, channel);
@@ -998,7 +1026,10 @@ async function queryClaudeSDK(command, options = {}, ws) {
                 scheduleDrain();
                 return;
               }
-              if (capturedSessionId && abortedSessionIds.has(capturedSessionId)) {
+              if (
+                (capturedSessionId && abortedSessionIds.has(capturedSessionId))
+                || (options.appSessionId && abortedSessionIds.has(options.appSessionId))
+              ) {
                 return;
               }
               channel.end();
@@ -1009,11 +1040,9 @@ async function queryClaudeSDK(command, options = {}, ws) {
         }
       }
 
-      if (capturedSessionId) {
-        removeSession(capturedSessionId);
-      }
+      dropSessionKeys(capturedSessionId, options.appSessionId);
 
-      const wasAborted = capturedSessionId ? abortedSessionIds.delete(capturedSessionId) : false;
+      const wasAborted = consumeAbortedFlag(capturedSessionId, options.appSessionId, sessionId);
       if (!wasAborted) {
         ws.send(createCompleteMessage({ provider: 'claude', sessionId: capturedSessionId || sessionId || null, exitCode: 0 }));
       }
@@ -1058,9 +1087,6 @@ async function queryClaudeSDK(command, options = {}, ws) {
         cwd: options.cwd || null,
       });
 
-      const prevStreamTimeout = process.env.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT;
-      process.env.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT = '300000';
-
       let queryInstance;
       try {
         queryInstance = query({
@@ -1076,21 +1102,24 @@ async function queryClaudeSDK(command, options = {}, ws) {
         });
       }
 
-      if (prevStreamTimeout !== undefined) {
-        process.env.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT = prevStreamTimeout;
-      } else {
-        delete process.env.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT;
+      if (options.appSessionId) {
+        addSession(options.appSessionId, queryInstance, ws, {
+          appSessionId: options.appSessionId || null,
+        });
       }
-
       if (capturedSessionId) {
-        addSession(capturedSessionId, queryInstance, ws);
+        addSession(capturedSessionId, queryInstance, ws, {
+          appSessionId: options.appSessionId || null,
+        });
       }
 
       console.log('Starting async generator loop for session:', capturedSessionId || 'NEW');
       for await (const message of queryInstance) {
         if (message.session_id && !capturedSessionId) {
           capturedSessionId = message.session_id;
-          addSession(capturedSessionId, queryInstance, ws);
+          addSession(capturedSessionId, queryInstance, ws, {
+            appSessionId: options.appSessionId || null,
+          });
 
           if (ws.setSessionId && typeof ws.setSessionId === 'function') {
             ws.setSessionId(capturedSessionId);
@@ -1118,11 +1147,9 @@ async function queryClaudeSDK(command, options = {}, ws) {
         }
       }
 
-      if (capturedSessionId) {
-        removeSession(capturedSessionId);
-      }
+      dropSessionKeys(capturedSessionId, options.appSessionId);
 
-      const wasAborted = capturedSessionId ? abortedSessionIds.delete(capturedSessionId) : false;
+      const wasAborted = consumeAbortedFlag(capturedSessionId, options.appSessionId, sessionId);
       if (!wasAborted) {
         ws.send(createCompleteMessage({ provider: 'claude', sessionId: capturedSessionId || sessionId || null, exitCode: 0 }));
       }
@@ -1138,11 +1165,9 @@ async function queryClaudeSDK(command, options = {}, ws) {
   } catch (error) {
     console.error('SDK query error:', error);
 
-    if (capturedSessionId) {
-      removeSession(capturedSessionId);
-    }
+    dropSessionKeys(capturedSessionId, options.appSessionId);
 
-    const wasAborted = capturedSessionId ? abortedSessionIds.delete(capturedSessionId) : false;
+    const wasAborted = consumeAbortedFlag(capturedSessionId, options.appSessionId, sessionId);
     if (wasAborted) {
       return;
     }
@@ -1294,7 +1319,8 @@ async function handleCanUseTool(toolName, input, context, ctx) {
  * @returns {boolean} True if session was aborted, false if not found
  */
 async function abortClaudeSDKSession(sessionId) {
-  const session = getSession(sessionId);
+  const aliased = appSessionAliases.get(sessionId);
+  const session = getSession(sessionId) || (aliased ? getSession(aliased) : null);
 
   if (!session) {
     console.log(`Session ${sessionId} not found`);
@@ -1307,6 +1333,12 @@ async function abortClaudeSDKSession(sessionId) {
     // Mark before interrupting so the run loop knows not to emit its own
     // terminal complete (the abort handler sends the aborted one).
     abortedSessionIds.add(sessionId);
+    if (session.appSessionId) {
+      abortedSessionIds.add(session.appSessionId);
+    }
+    if (aliased) {
+      abortedSessionIds.add(aliased);
+    }
 
     if (session.channel) {
       session.channel.end();
@@ -1321,8 +1353,14 @@ async function abortClaudeSDKSession(sessionId) {
     // Update session status
     session.status = 'aborted';
 
-    // Clean up session
+    // Clean up session (app-id alias and provider-native id may both be keyed)
     removeSession(sessionId);
+    if (session.appSessionId) {
+      removeSession(session.appSessionId);
+    }
+    if (aliased) {
+      removeSession(aliased);
+    }
 
     return true;
   } catch (error) {
@@ -1470,5 +1508,6 @@ export {
   extractPermissionPaths,
   extractTokenBudget,
   createRequestId,
-  mapCliOptionsToSDK
+  mapCliOptionsToSDK,
+  applyPlanModeAllowedTools,
 };
