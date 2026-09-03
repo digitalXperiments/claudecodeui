@@ -95,6 +95,43 @@ function extractCodexTextContent(content: unknown): string {
     .join('\n');
 }
 
+function isNonterminalCodexToolStatus(status: unknown): boolean {
+  return status === 'in_progress'
+    || status === 'inProgress'
+    || status === 'running'
+    || status === 'pending';
+}
+
+function formatCodexToolResultContent(content: unknown): string {
+  if (typeof content === 'string') {
+    return content;
+  }
+  if (content === undefined || content === null) {
+    return '';
+  }
+
+  try {
+    return JSON.stringify(content) ?? String(content);
+  } catch {
+    return String(content);
+  }
+}
+
+function codexToolResult(
+  status: unknown,
+  content: unknown,
+  isError = false,
+): NormalizedMessage['toolResult'] | undefined {
+  if (isNonterminalCodexToolStatus(status)) {
+    return undefined;
+  }
+
+  return {
+    content: formatCodexToolResultContent(content),
+    isError: isError || status === 'failed' || status === 'error',
+  };
+}
+
 async function getCodexSessionMessages(
   sessionId: string,
   limit: number | null = null,
@@ -468,6 +505,11 @@ export class CodexSessionsProvider implements IProviderSessions {
             output: raw.output,
             exitCode: raw.exitCode,
             status: raw.status,
+            toolResult: codexToolResult(
+              raw.status,
+              raw.output,
+              typeof raw.exitCode === 'number' && raw.exitCode !== 0,
+            ),
           })];
         case 'file_change':
           return [createNormalizedMessage({
@@ -480,6 +522,7 @@ export class CodexSessionsProvider implements IProviderSessions {
             toolInput: raw.changes,
             toolId: baseId,
             status: raw.status,
+            toolResult: codexToolResult(raw.status, raw.changes),
           })];
         case 'mcp_tool_call':
           return [createNormalizedMessage({
@@ -495,6 +538,11 @@ export class CodexSessionsProvider implements IProviderSessions {
             result: raw.result,
             error: raw.error,
             status: raw.status,
+            toolResult: codexToolResult(
+              raw.status,
+              raw.error ?? raw.result,
+              raw.error !== undefined && raw.error !== null,
+            ),
           })];
         case 'web_search':
           return [createNormalizedMessage({
