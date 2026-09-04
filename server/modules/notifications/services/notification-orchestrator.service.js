@@ -22,6 +22,7 @@ const PROVIDER_LABELS = {
   kilo: 'Kilo Code',
   cline: 'Cline',
   qwencode: 'Qwen Code',
+  antigravity: 'Antigravity',
   system: 'System'
 };
 

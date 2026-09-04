@@ -57,6 +57,7 @@ const PROVIDER_NAMES: Record<SkillsProvider, string> = {
   qwencode: 'Qwen Code',
   pi: 'Pi',
   omp: 'Oh My Pi',
+  antigravity: 'Antigravity',
 };
 
 const PROVIDER_SKILL_PATHS: Record<Exclude<SkillsProvider, 'opencode'>, string> = {
@@ -70,6 +71,7 @@ const PROVIDER_SKILL_PATHS: Record<Exclude<SkillsProvider, 'opencode'>, string> 
   qwencode: '~/.qwen/skills/<skill-name>/SKILL.md',
   pi: '~/.pi/agent/skills/<skill-name>/SKILL.md',
   omp: '~/.omp/skills/<skill-name>/SKILL.md',
+  antigravity: '~/.gemini/skills/<skill-name>/SKILL.md',
 };
 
 const SCOPE_LABELS: Record<SkillsScope, string> = {

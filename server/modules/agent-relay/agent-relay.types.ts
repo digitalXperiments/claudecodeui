@@ -12,6 +12,7 @@ export const AGENT_RELAY_PROVIDERS: LLMProvider[] = [
   'qwencode',
   'pi',
   'omp',
+  'antigravity',
 ];
 
 export type AgentRelayMode = 'read_only' | 'isolated_write';

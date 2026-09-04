@@ -43,9 +43,26 @@ Current provider ids in this repo are:
 - `kimi`
 - `qwencode`
 - `pi`
+- `omp`
+- `antigravity`
 
 Those ids are mirrored in backend unions and frontend provider constants. If
 adding a new provider, update every place that hardcodes this list.
+
+`antigravity` is the only provider CloudCLI installs and authenticates itself.
+Its extra pieces live alongside the five standard facets:
+
+| File | Role |
+| --- | --- |
+| `antigravity-releases.ts` | Per-host download pins (URL + SHA-256 + byte size). A missing pin means "cannot install", never "install unverified". `CLOUDCLI_ANTIGRAVITY_MANIFEST` supplies operator pins. |
+| `antigravity-runtime.ts` | Managed layout under `~/.cloudcli/antigravity/<version>/`, plus binary resolution: explicit override wins (invalid = error, no PATH fallback), then managed, then PATH. `antigravityAcpArgs()` adds `--uid=` on Linux only. |
+| `antigravity-installer.ts` | Verified download → extract ACP executable + `localharness_external` → `.installed.json` marker, with progress events. Temp files under `tmp/cloudcli/antigravity/`. |
+| `antigravity-acp.ts` | Short-lived ACP children for health probes and the Google sign-in flow, scraping the consent URL from stdout **and** stderr. Never reuses a chat session's stdio. |
+
+Its runtime entry lives in `RUNTIME_CONFIGS` in `server/opencode-cli.js` and uses
+two escape hatches the other ACP entries do not: `resolveCommand` (an absolute
+managed path instead of a bare PATH command) and `setupTimeoutMs` (90s, because
+a cold start unpacks the local harness).
 
 ## Current File Layout
 

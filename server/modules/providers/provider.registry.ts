@@ -9,6 +9,7 @@ import { KimiProvider } from '@/modules/providers/list/kimi/kimi.provider.js';
 import { QwenCodeProvider } from '@/modules/providers/list/qwencode/qwencode.provider.js';
 import { PiProvider } from '@/modules/providers/list/pi/pi.provider.js';
 import { OmpProvider } from '@/modules/providers/list/omp/omp.provider.js';
+import { AntigravityProvider } from '@/modules/providers/list/antigravity/antigravity.provider.js';
 import type { IProvider } from '@/shared/interfaces.js';
 import type { LLMProvider } from '@/shared/types.js';
 import { AppError } from '@/shared/utils.js';
@@ -25,6 +26,8 @@ const providers: Record<LLMProvider, IProvider> = {
   qwencode: new QwenCodeProvider(),
   pi: new PiProvider(),
   omp: new OmpProvider(),
+  // Listed last so Antigravity appears after the established providers.
+  antigravity: new AntigravityProvider(),
 };
 
 /**

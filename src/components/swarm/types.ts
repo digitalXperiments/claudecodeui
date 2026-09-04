@@ -307,6 +307,7 @@ export const SWARM_PROVIDERS = [
   'kimi',
   'pi',
   'omp',
+  'antigravity',
 ] as const;
 
 export const SWARM_EFFORTS = ['default', 'low', 'medium', 'high', 'xhigh', 'max'] as const;

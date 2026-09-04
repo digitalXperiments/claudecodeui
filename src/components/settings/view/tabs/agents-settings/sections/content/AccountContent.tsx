@@ -5,6 +5,8 @@ import { Badge, Button } from '../../../../../../../shared/view/ui';
 import SessionProviderLogo from '../../../../../../llm-logo-provider/SessionProviderLogo';
 import type { AgentProvider, AuthStatus } from '../../../../../types/types';
 
+import AntigravityRuntimePanel from './AntigravityRuntimePanel';
+
 type AccountContentProps = {
   agent: AgentProvider;
   authStatus: AuthStatus;
@@ -119,6 +121,15 @@ const agentConfig: Record<AgentProvider, AgentVisualConfig> = {
     subtextClass: 'text-fuchsia-700 dark:text-fuchsia-300',
     buttonClass: 'bg-fuchsia-600 hover:bg-fuchsia-700 active:bg-fuchsia-800',
   },
+  antigravity: {
+    name: 'Antigravity',
+    description: "Google Antigravity via its official ACP agent (personal Google sign-in)",
+    bgClass: 'bg-indigo-50 dark:bg-indigo-900/20',
+    borderClass: 'border-indigo-200 dark:border-indigo-800',
+    textClass: 'text-indigo-900 dark:text-indigo-100',
+    subtextClass: 'text-indigo-700 dark:text-indigo-300',
+    buttonClass: 'bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800',
+  },
 };
 
 export default function AccountContent({ agent, authStatus, onLogin, onRefresh }: AccountContentProps) {
@@ -129,6 +140,10 @@ export default function AccountContent({ agent, authStatus, onLogin, onRefresh }
   // (older providers) — treat that as "unknown", not as a hard block.
   const isUninstalled = authStatus.installed === false;
   const canAttemptLogin = !isUninstalled;
+  // Antigravity's install and sign-in are CloudCLI's own flows (managed
+  // download + ACP `authenticate`), not a CLI `login` command, so the generic
+  // install hint and login button are replaced by its dedicated panel.
+  const isAntigravity = agent === 'antigravity';
 
   return (
     <div className="space-y-6">
@@ -200,7 +215,9 @@ export default function AccountContent({ agent, authStatus, onLogin, onRefresh }
             </div>
           </div>
 
-          {isUninstalled ? (
+          {isAntigravity ? (
+            <AntigravityRuntimePanel onStatusChange={onRefresh} />
+          ) : isUninstalled ? (
             <div className="border-t border-border/50 pt-4">
               <div className={`font-medium ${config.textClass}`}>
                 {t('agents.install.title', { defaultValue: `Install ${config.name}`, agent: config.name })}

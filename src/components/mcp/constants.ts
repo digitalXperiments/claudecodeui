@@ -12,6 +12,7 @@ export const MCP_PROVIDER_NAMES: Record<McpProvider, string> = {
   qwencode: 'Qwen Code',
   pi: 'Pi',
   omp: 'Oh My Pi',
+  antigravity: 'Antigravity',
 };
 
 export const MCP_SUPPORTED_SCOPES: Record<McpProvider, McpScope[]> = {
@@ -26,6 +27,8 @@ export const MCP_SUPPORTED_SCOPES: Record<McpProvider, McpScope[]> = {
   qwencode: ['user', 'project'],
   pi: [],
   omp: [],
+  // Antigravity exposes no CloudCLI-writable MCP config file.
+  antigravity: [],
 };
 
 export const MCP_SUPPORTED_TRANSPORTS: Record<McpProvider, McpTransport[]> = {
@@ -40,6 +43,7 @@ export const MCP_SUPPORTED_TRANSPORTS: Record<McpProvider, McpTransport[]> = {
   qwencode: ['stdio', 'http', 'sse'],
   pi: [],
   omp: [],
+  antigravity: [],
 };
 
 export const MCP_GLOBAL_SUPPORTED_SCOPES: McpScope[] = ['user', 'project'];
@@ -58,6 +62,7 @@ export const MCP_PROVIDER_BUTTON_CLASSES: Record<McpProvider, string> = {
   qwencode: 'bg-primary text-primary-foreground hover:bg-primary/90',
   pi: 'bg-primary text-primary-foreground hover:bg-primary/90',
   omp: 'bg-primary text-primary-foreground hover:bg-primary/90',
+  antigravity: 'bg-primary text-primary-foreground hover:bg-primary/90',
 };
 
 export const MCP_SUPPORTS_WORKING_DIRECTORY: Record<McpProvider, boolean> = {
@@ -72,6 +77,7 @@ export const MCP_SUPPORTS_WORKING_DIRECTORY: Record<McpProvider, boolean> = {
   qwencode: false,
   pi: false,
   omp: false,
+  antigravity: false,
 };
 
 export const DEFAULT_MCP_FORM: McpFormState = {

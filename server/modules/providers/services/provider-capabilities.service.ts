@@ -243,6 +243,26 @@ const PROVIDER_CAPABILITIES: Record<LLMProvider, ProviderCapabilities> = {
     // "thinking" column from `omp models`).
     supportsEffort: true,
   },
+  antigravity: {
+    provider: 'antigravity',
+    // Antigravity's ACP session modes are yolo / auto_edit / default.
+    // `bypassPermissions` maps to yolo and `acceptEdits` to auto_edit in
+    // opencode-cli.js. `plan` is deliberately absent: Antigravity has no
+    // read-only agent, so offering a plan mode would imply a guarantee the
+    // runtime cannot make.
+    permissionModes: ['default', 'acceptEdits', 'bypassPermissions'],
+    defaultPermissionMode: 'default',
+    supportsImages: true,
+    supportsFiles: true,
+    supportsAbort: true,
+    // Standard ACP session/request_permission relay.
+    supportsPermissionRequests: true,
+    // No usage is exposed on the ACP wire and no CloudCLI-readable store
+    // exists on disk, so per-turn token usage is unavailable.
+    supportsTokenUsage: false,
+    // No `effort` config option is advertised by the Antigravity ACP agent.
+    supportsEffort: false,
+  },
 };
 
 /**

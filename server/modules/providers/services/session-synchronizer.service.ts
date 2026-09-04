@@ -54,6 +54,9 @@ export const sessionSynchronizerService = {
       qwencode: 0,
       pi: 0,
       omp: 0,
+      // Antigravity has no on-disk transcript store, so its synchronizer is a
+      // no-op and this counter stays at 0 by design.
+      antigravity: 0,
     };
     const failures: string[] = [];
 

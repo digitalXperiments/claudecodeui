@@ -44,9 +44,14 @@ export const FALLBACK_DEFAULT_MODEL: Record<LLMProvider, string> = {
   // Mirrors OMP_FALLBACK_MODELS.DEFAULT in omp-models.provider.ts — Oh My Pi
   // must stay aligned so the initial picker state remains selectable.
   omp: OMP_FALLBACK_DEFAULT_MODEL,
+  // Deliberately empty: Antigravity's model list comes from the agent's own
+  // ACP session config, and inventing a Gemini model id here would put an
+  // unselectable option in the picker. An empty default leaves the agent on
+  // whatever model it defaults to.
+  antigravity: '',
 };
 
-const PROVIDERS: LLMProvider[] = ['claude', 'cursor', 'codex', 'opencode', 'kilo', 'cline', 'grok', 'kimi', 'qwencode', 'pi', 'omp'];
+const PROVIDERS: LLMProvider[] = ['claude', 'cursor', 'codex', 'opencode', 'kilo', 'cline', 'grok', 'kimi', 'qwencode', 'pi', 'omp', 'antigravity'];
 const CODEX_FAST_MODE_STORAGE_KEY = 'codex-fast-mode';
 
 const readStoredProvider = (): LLMProvider => {
@@ -87,6 +92,9 @@ const FALLBACK_PERMISSION_MODES: Record<LLMProvider, PermissionMode[]> = {
   qwencode: ['default', 'plan', 'auto', 'bypassPermissions'],
   pi: ['plan', 'bypassPermissions'],
   omp: ['plan', 'bypassPermissions'],
+  // No `plan`: Antigravity has no read-only agent (see
+  // resolveAntigravityPermissionPolicy).
+  antigravity: ['default', 'acceptEdits', 'bypassPermissions'],
 };
 
 /**
@@ -107,6 +115,7 @@ const FALLBACK_SUPPORTS_IMAGES: Record<LLMProvider, boolean> = {
   qwencode: true,
   pi: true,
   omp: true,
+  antigravity: true,
 };
 
 /** Fallback document-attachment support: every agent reads path-referenced files. */
@@ -122,6 +131,7 @@ const FALLBACK_SUPPORTS_FILES: Record<LLMProvider, boolean> = {
   qwencode: true,
   pi: true,
   omp: true,
+  antigravity: true,
 };
 
 type ProviderCapabilities = {
@@ -215,6 +225,9 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
   const [ompModel, setOmpModel] = useState<string>(() => {
     return localStorage.getItem('omp-model') || FALLBACK_DEFAULT_MODEL.omp;
   });
+  const [antigravityModel, setAntigravityModel] = useState<string>(() => {
+    return localStorage.getItem('antigravity-model') || FALLBACK_DEFAULT_MODEL.antigravity;
+  });
 
   /**
    * Overrides for the currently open conversation, loaded from the
@@ -298,6 +311,12 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     if (targetProvider === 'qwencode') {
       setQwenCodeModel(model);
       localStorage.setItem('qwencode-model', model);
+      return;
+    }
+
+    if (targetProvider === 'antigravity') {
+      setAntigravityModel(model);
+      localStorage.setItem('antigravity-model', model);
       return;
     }
 
@@ -551,7 +570,8 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     qwencode: qwencodeModel,
     pi: piModel,
     omp: ompModel,
-  }), [claudeModel, cursorModel, codexModel, opencodeModel, kiloModel, grokModel, kimiModel, qwencodeModel, piModel, ompModel]);
+    antigravity: antigravityModel,
+  }), [claudeModel, cursorModel, codexModel, opencodeModel, kiloModel, grokModel, kimiModel, qwencodeModel, piModel, ompModel, antigravityModel]);
 
   /** Effective model for the open conversation: its own recorded choice, or the provider default. */
   const currentProviderModel = useMemo(
@@ -669,6 +689,15 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
       if (localStorage.getItem('qwencode-model') !== next) localStorage.setItem('qwencode-model', next);
     }
   }, [providerModelCatalog.qwencode, qwencodeModel]);
+
+  useEffect(() => {
+    const antigravity = providerModelCatalog.antigravity;
+    if (antigravity) {
+      const next = pickStoredOrCurrent('antigravity-model', antigravityModel, antigravity);
+      if (next !== antigravityModel) setAntigravityModel(next);
+      if (localStorage.getItem('antigravity-model') !== next) localStorage.setItem('antigravity-model', next);
+    }
+  }, [providerModelCatalog.antigravity, antigravityModel]);
 
   useEffect(() => {
     const pi = providerModelCatalog.pi;
@@ -1048,6 +1077,8 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     setPiModel,
     ompModel,
     setOmpModel,
+    antigravityModel,
+    setAntigravityModel,
     permissionMode,
     setPermissionMode,
     pendingPermissionRequests,

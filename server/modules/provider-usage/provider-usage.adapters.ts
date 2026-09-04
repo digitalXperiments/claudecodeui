@@ -74,6 +74,7 @@ const PROVIDER_NAMES: Record<string, string> = {
   kimi: 'Kimi',
   qwencode: 'Qwen Code',
   pi: 'Pi',
+  antigravity: 'Antigravity',
 };
 
 /** macOS Security framework: the keychain item does not exist. */

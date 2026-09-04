@@ -236,6 +236,23 @@ export const PERMISSION_MODE_COPY: Record<
       technical: 'omp --approval-mode yolo',
     },
   },
+  antigravity: {
+    default: {
+      label: 'Default',
+      summary: 'Ask before Antigravity runs tools that require approval.',
+      technical: 'Antigravity ACP mode = default',
+    },
+    acceptEdits: {
+      label: 'Accept Edits',
+      summary: 'File edits are pre-approved; everything else still asks.',
+      technical: 'Antigravity ACP mode = auto_edit',
+    },
+    bypassPermissions: {
+      label: 'Bypass Permissions',
+      summary: 'Antigravity yolo mode — automatically approve all actions.',
+      technical: 'Antigravity ACP mode = yolo',
+    },
+  },
 };
 
 export function getPermissionModeCopy(

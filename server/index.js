@@ -84,10 +84,13 @@ import {
     spawnKilo,
     spawnCline,
     spawnQwenCode,
+    spawnAntigravity,
     abortOpenCodeSession,
     abortKiloSession,
     abortClineSession,
     abortQwenCodeSession,
+    abortAntigravitySession,
+    disposeAntigravitySessions,
     readKiloTokenUsage,
 } from './opencode-cli.js';
 import {
@@ -158,6 +161,12 @@ import {
     configureFailoverApprovalResolver,
     configureFailoverRuntimes,
 } from './modules/failover/index.js';
+import {
+    continuityRoutes,
+    configureContinuityRuntimes,
+    startContinuityScheduler,
+    stopContinuityScheduler,
+} from './modules/continuity/index.js';
 import stackRoutes from './modules/stack/stack.routes.js';
 import { workspaceService } from './modules/workspaces/workspace.service.js';
 import { runService } from './modules/runs/runs.service.js';
@@ -242,6 +251,7 @@ const providerSpawnFns = {
     kimi: spawnKimi,
     pi: spawnPi,
     omp: spawnOmp,
+    antigravity: spawnAntigravity,
 };
 
 const providerAbortFns = {
@@ -256,6 +266,7 @@ const providerAbortFns = {
     kimi: abortKimiSession,
     pi: abortPiSession,
     omp: abortOmpSession,
+    antigravity: abortAntigravitySession,
 };
 
 // Mid-run inject for Claude follow-ups only (queryClaudeSDK uses open stdin
@@ -274,6 +285,7 @@ initKanbanQueue({ concurrency: 3 });
 // Failover uses the same provider runtime map as chat, Kanban, and webhooks.
 configureFailoverRuntimes(providerSpawnFns);
 configureFailoverApprovalResolver();
+configureContinuityRuntimes(providerSpawnFns);
 
 // Mission Control reuses the same provider runtimes for produce/resolve runs.
 configureMissionControlRuntimes(providerSpawnFns);
@@ -475,6 +487,7 @@ app.use('/api', authenticateToken, swarmRoutes);
 app.use('/api/agent-relay', authenticateToken, agentRelayRoutes);
 app.use('/api/studio', authenticateToken, studioRoutes);
 app.use('/api', authenticateToken, failoverRoutes);
+app.use('/api', authenticateToken, continuityRoutes);
 app.use('/api', authenticateToken, stackRoutes);
 
 // Projects API Routes (protected)
@@ -2125,6 +2138,12 @@ async function startServer() {
         }
 
         try {
+            startContinuityScheduler();
+        } catch (error) {
+            console.error('[Continuity] scheduler start failed:', error.message);
+        }
+
+        try {
             startNotificationDigestScheduler();
             syncNotificationDigestSchedules();
         } catch (error) {
@@ -2204,6 +2223,11 @@ async function startServer() {
                 console.error('[Webhooks] Error stopping retry scheduler during shutdown:', err?.message || err);
             }
             try {
+                stopContinuityScheduler();
+            } catch (err) {
+                console.error('[Continuity] Error stopping scheduler during shutdown:', err?.message || err);
+            }
+            try {
                 stopNotificationDigestScheduler();
             } catch (err) {
                 console.error('[Notifications] Error stopping digest scheduler during shutdown:', err?.message || err);
@@ -2217,6 +2241,14 @@ async function startServer() {
                 await stopAllPlugins();
             } catch (err) {
                 console.error('[Plugins] Error stopping plugins during shutdown:', err?.message || err);
+            }
+            try {
+                // Antigravity ACP children hold a large resident harness; a
+                // leaked one survives the server and keeps the port's worth of
+                // memory allocated.
+                disposeAntigravitySessions();
+            } catch (err) {
+                console.error('[Antigravity] Error disposing ACP sessions during shutdown:', err?.message || err);
             }
             try {
                 await removeLocalServerMarker();

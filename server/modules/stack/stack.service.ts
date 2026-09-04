@@ -37,6 +37,9 @@ const PROVIDER_BINARIES: Record<string, string> = {
   qwencode: 'qwen',
   pi: 'pi',
   omp: 'omp',
+  // Antigravity is a managed binary, not a PATH command; the stack export
+  // records the ACP entry point's name so a reader knows what to look for.
+  antigravity: 'agy_acp_server',
 };
 
 function projectPathForId(projectId: string): string {

@@ -84,6 +84,8 @@ interface ChatMessagesPaneProps {
   setPiModel: (model: string) => void;
   ompModel: string;
   setOmpModel: (model: string) => void;
+  antigravityModel: string;
+  setAntigravityModel: (model: string) => void;
   providerModelCatalog: Partial<Record<LLMProvider, ProviderModelsDefinition>>;
   providerModelsLoading: boolean;
   providerModelsRefreshing?: boolean;
@@ -148,6 +150,8 @@ function ChatMessagesPane({
   setPiModel,
   ompModel,
   setOmpModel,
+  antigravityModel,
+  setAntigravityModel,
   providerModelCatalog,
   providerModelsLoading,
   providerModelsRefreshing,
@@ -278,6 +282,8 @@ function ChatMessagesPane({
           setPiModel={setPiModel}
           ompModel={ompModel}
           setOmpModel={setOmpModel}
+          antigravityModel={antigravityModel}
+          setAntigravityModel={setAntigravityModel}
           providerModelCatalog={providerModelCatalog}
           providerModelsLoading={providerModelsLoading}
           providerModelsRefreshing={providerModelsRefreshing}

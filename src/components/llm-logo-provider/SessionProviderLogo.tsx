@@ -12,6 +12,7 @@ import GrokLogo from './GrokLogo';
 import KimiLogo from './KimiLogo';
 import PiLogo from './PiLogo';
 import OmpLogo from './OmpLogo';
+import AntigravityLogo from './AntigravityLogo';
 
 function QwenCodeLogo({ className }: { className?: string }) {
   return <span className={`inline-flex items-center justify-center rounded bg-sky-500 px-0.5 text-[9px] font-bold text-white ${className ?? ''}`}>Q</span>;
@@ -64,6 +65,10 @@ export default function SessionProviderLogo({
 
   if (provider === 'qwencode') {
     return <QwenCodeLogo className={className} />;
+  }
+
+  if (provider === 'antigravity') {
+    return <AntigravityLogo className={className} />;
   }
 
   return <ClaudeLogo className={className} />;

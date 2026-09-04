@@ -1,6 +1,7 @@
 import { Info, X } from 'lucide-react';
 
 import StandaloneShell from '../../standalone-shell/view/StandaloneShell';
+import AntigravityRuntimePanel from '../../settings/view/tabs/agents-settings/sections/content/AntigravityRuntimePanel';
 import { DEFAULT_PROJECT_FOR_EMPTY_SHELL, IS_PLATFORM } from '../../../constants/config';
 import type { LLMProvider } from '../../../types/app';
 type ProviderLoginModalProps = {
@@ -93,6 +94,7 @@ const getProviderTitle = (provider: LLMProvider) => {
   if (provider === 'qwencode') return 'Qwen Code CLI Login';
   if (provider === 'pi') return 'Pi CLI Login';
   if (provider === 'omp') return 'Oh My Pi CLI Login';
+  if (provider === 'antigravity') return 'Antigravity Setup';
   return 'Claude CLI Login';
 };
 
@@ -145,7 +147,17 @@ export default function ProviderLoginModal({
         )}
 
         <div className="flex-1 overflow-hidden">
+          {provider === 'antigravity' ? (
+            // Antigravity has no login CLI to run in a terminal: it is a
+            // managed download plus an ACP `authenticate` round-trip, so the
+            // same setup panel Settings uses is rendered here instead of a
+            // shell that would have nothing useful to type into.
+            <div className="h-full overflow-y-auto p-4">
+              <AntigravityRuntimePanel onStatusChange={() => onComplete?.(0)} />
+            </div>
+          ) : (
             <StandaloneShell project={DEFAULT_PROJECT_FOR_EMPTY_SHELL} command={command} onComplete={handleComplete} minimal={true} />
+          )}
         </div>
       </div>
     </div>

@@ -12,7 +12,15 @@ import type { LLMProvider } from '../types/app';
  * server-side so the auth-health watchdog skips disabled providers.
  */
 
-export const ALL_AGENT_PROVIDERS: LLMProvider[] = ['claude', 'cursor', 'codex', 'opencode', 'kilo', 'cline', 'grok', 'kimi', 'qwencode', 'pi', 'omp'];
+export const ALL_AGENT_PROVIDERS: LLMProvider[] = ['claude', 'cursor', 'codex', 'opencode', 'kilo', 'cline', 'grok', 'kimi', 'qwencode', 'pi', 'omp', 'antigravity'];
+
+/**
+ * Providers that start switched OFF for a user who has never touched the
+ * toggles. Antigravity needs a large managed download and a Google sign-in
+ * before it can do anything, so surfacing it in the chat picker by default
+ * would offer an agent that cannot run.
+ */
+export const DEFAULT_DISABLED_AGENT_PROVIDERS: LLMProvider[] = ['antigravity'];
 
 const STORAGE_KEY = 'disabledAgents';
 const SYNC_EVENT = 'agent-visibility:sync';
@@ -32,23 +40,27 @@ const isLLMProvider = (value: unknown): value is LLMProvider => {
 
 const readDisabledAgents = (): LLMProvider[] => {
   if (typeof window === 'undefined') {
-    return [];
+    return [...DEFAULT_DISABLED_AGENT_PROVIDERS];
   }
 
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
+    // No stored list at all means the user has never touched the toggles, so
+    // the default-off providers apply. Once a list exists it is authoritative
+    // — re-applying the defaults would silently switch Antigravity back off
+    // every reload after the user enabled it.
     if (!raw) {
-      return [];
+      return [...DEFAULT_DISABLED_AGENT_PROVIDERS];
     }
 
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) {
-      return [];
+      return [...DEFAULT_DISABLED_AGENT_PROVIDERS];
     }
 
     return parsed.filter(isLLMProvider);
   } catch {
-    return [];
+    return [...DEFAULT_DISABLED_AGENT_PROVIDERS];
   }
 };
 

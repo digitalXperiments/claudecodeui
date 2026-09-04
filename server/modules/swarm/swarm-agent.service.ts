@@ -76,6 +76,7 @@ export const SWARM_PROVIDERS: LLMProvider[] = [
   'qwencode',
   'pi',
   'omp',
+  'antigravity',
 ];
 
 export function isSwarmProvider(value: unknown): value is LLMProvider {

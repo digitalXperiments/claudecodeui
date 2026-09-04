@@ -132,6 +132,7 @@ const READ_ONLY_PLAN_PROVIDERS = new Set<LLMProvider>([
   'qwencode',
   'pi',
   'omp',
+  'antigravity',
 ]);
 
 /**

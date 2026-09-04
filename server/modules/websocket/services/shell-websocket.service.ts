@@ -392,6 +392,13 @@ export function buildShellCommand(
     return initialCommand;
   }
 
+  if (provider === 'antigravity') {
+    // Antigravity ships an ACP server, not an interactive TUI: spawning it in a
+    // terminal would hand the user a JSON-RPC stdio pipe. Say so instead of
+    // falling through to the Claude default and launching the wrong agent.
+    return 'echo "Antigravity has no interactive terminal agent — it runs as an ACP server. Use the Chat tab."';
+  }
+
   if (provider === 'cursor') {
     // cursor-agent only exposes force-approve as `-f` (capabilities advertise
     // default | bypassPermissions).
@@ -1025,7 +1032,9 @@ export function handleShellConnection(
                         ? 'Pi'
                         : provider === 'omp'
                           ? 'Oh My Pi'
-                          : 'Claude';
+                          : provider === 'antigravity'
+                            ? 'Antigravity'
+                            : 'Claude';
           welcomeMsg = hasSession && resumeSessionId
             ? provider === 'grok'
               ? `\x1b[36mResuming ${providerName} session ${resumeSessionId} in: ${projectPath}\x1b[0m\r\n` +

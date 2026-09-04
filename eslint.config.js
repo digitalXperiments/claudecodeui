@@ -163,6 +163,7 @@ export default tseslint.config(
             "server/shared/frontmatter.ts",
             "server/shared/claude-cli-path.ts",
             "server/shared/acp-cli-path.ts",
+            "server/shared/acp-rpc.js",
             "server/shared/image-attachments.ts",
             "server/shared/provider-auth-failure.ts",
             "server/shared/grok-home.js",
@@ -172,6 +173,7 @@ export default tseslint.config(
             "server/shared/lead-session-env.js",
             "server/shared/run-events.ts",
             "server/shared/scratch.ts",
+            "server/shared/skill-transcript-filter.ts",
             "server/constants/config.js",
             "server/codex-app-server.js",
           ], // classify shared utility files so modules can depend on them explicitly

@@ -78,6 +78,9 @@ const ALL_MCP_PROVIDERS: LLMProvider[] = [
   'qwencode',
   'pi',
   'omp',
+  // Listed so bindings resolve for every provider id; Antigravity's MCP facet
+  // reports zero scopes, so a binding can be recorded but never projected.
+  'antigravity',
 ];
 
 const normalizeName = (name: string): string => {

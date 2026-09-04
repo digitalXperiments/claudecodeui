@@ -19,6 +19,11 @@ import {
 } from './shared/utils.js';
 import { resolveAcpCliCommand } from './shared/acp-cli-path.js';
 import { leadSessionEnv } from './shared/lead-session-env.js';
+import { ANTIGRAVITY_SETUP_TIMEOUT_MS } from './modules/providers/list/antigravity/antigravity-acp.js';
+import {
+  antigravityAcpArgs,
+  resolveAntigravityBinary,
+} from './modules/providers/list/antigravity/antigravity-runtime.js';
 
 // cross-spawn resolves .cmd shims/PATHEXT on Windows and delegates to
 // child_process.spawn everywhere else.
@@ -191,6 +196,24 @@ export function resolveQwenPermissionPolicy(permissionMode) {
   }
 }
 
+/**
+ * Antigravity's ACP session modes, per the official agent T3 Code drives:
+ * `yolo` (approve everything), `auto_edit` (edits pre-approved, everything else
+ * asks) and `default` (ask). It has no read-only agent, so `plan` keeps the
+ * `default` mode and relies on CloudCLI relaying every permission request —
+ * claiming a plan mode it does not have would let writes through in the mode
+ * users pick specifically to prevent them.
+ */
+export function resolveAntigravityPermissionPolicy(permissionMode) {
+  switch (permissionMode) {
+    case 'plan': return { mode: 'default', autoApprove: false, env: {} };
+    case 'auto':
+    case 'bypassPermissions': return { mode: 'yolo', autoApprove: true, env: {} };
+    case 'acceptEdits': return { mode: 'auto_edit', autoApprove: false, env: {} };
+    default: return { mode: 'default', autoApprove: false, env: {} };
+  }
+}
+
 const RUNTIME_CONFIGS = {
   opencode: {
     provider: 'opencode',
@@ -237,6 +260,38 @@ const RUNTIME_CONFIGS = {
     resolvePermissionPolicy: resolveQwenPermissionPolicy,
     installMessage: 'Qwen Code is not available in ACP mode. Install or update Qwen Code, then verify with `qwen --acp`.',
     installUrl: 'https://qwenlm.github.io/qwen-code-docs/en/users/quickstart/',
+    promptTimeoutMs: 15 * 60 * 1000,
+  },
+  antigravity: {
+    provider: 'antigravity',
+    // Unlike every other entry here, Antigravity has no bare command to look up
+    // on PATH: it is a managed binary under ~/.cloudcli/antigravity (or an
+    // explicit path the user set). `resolveCommand` returns that ABSOLUTE path,
+    // which makes resolveAcpCliCommand short-circuit, and throws rather than
+    // degrading to a PATH search when an explicit override is wrong.
+    command: 'agy_acp_server',
+    resolveCommand: () => {
+      const resolution = resolveAntigravityBinary();
+      if (!resolution.ok) {
+        const error = new Error(resolution.message);
+        error.code = resolution.code;
+        throw error;
+      }
+      return resolution.command;
+    },
+    label: 'Antigravity ACP',
+    // The ACP server IS the entry point — there is no `acp` subcommand and no
+    // `--cwd` flag; the working directory travels in session/new. Linux needs
+    // the caller's uid so the harness registry finds the per-user runtime.
+    acpArgs: () => antigravityAcpArgs(),
+    resolvePermissionPolicy: resolveAntigravityPermissionPolicy,
+    // Cold start unpacks the local harness, which can take far longer than the
+    // 30s the other runtimes need for initialize/session/new.
+    setupTimeoutMs: ANTIGRAVITY_SETUP_TIMEOUT_MS,
+    // Antigravity keeps no CloudCLI-readable token store.
+    databasePath: () => null,
+    installMessage: 'The Antigravity ACP runtime is not installed or not signed in. Open Settings › Agents › Antigravity, run Install, then Sign in with Google.',
+    installUrl: 'https://antigravity.google/',
     promptTimeoutMs: 15 * 60 * 1000,
   },
 };
@@ -395,8 +450,20 @@ function killChild(child) {
 async function createAcpSession(workingDir, resumeSessionId, permissionEnv, runtime, extraEnv = {}, mcpServers = []) {
   // Resolve the bare command (`opencode`, `kilo`) through PATH plus the
   // installer's `~/.<name>/bin` — a GUI-launched server never sources the
-  // shell profile that would put it on PATH.
-  const child = spawnFunction(resolveAcpCliCommand(runtime.command), runtime.acpArgs || ['acp', '--cwd', workingDir], {
+  // shell profile that would put it on PATH. A runtime with its own
+  // `resolveCommand` (Antigravity's managed binary) returns an absolute path
+  // instead, and may throw with an actionable install/override message.
+  const resolvedCommand = runtime.resolveCommand
+    ? runtime.resolveCommand()
+    : resolveAcpCliCommand(runtime.command);
+  // `acpArgs` may be a function when the arguments depend on the host (see the
+  // Antigravity entry's `--uid=` on Linux).
+  const resolvedArgs = typeof runtime.acpArgs === 'function'
+    ? runtime.acpArgs(workingDir)
+    : runtime.acpArgs || ['acp', '--cwd', workingDir];
+  // Slow-starting runtimes raise the setup bound; everything else keeps 30s.
+  const setupTimeoutMs = runtime.setupTimeoutMs ?? SETUP_TIMEOUT_MS;
+  const child = spawnFunction(resolvedCommand, resolvedArgs, {
     cwd: workingDir,
     stdio: ['pipe', 'pipe', 'pipe'],
     // `extraEnv` is deliberately kept out of `permissionEnvKey` below: it
@@ -423,7 +490,7 @@ async function createAcpSession(workingDir, resumeSessionId, permissionEnv, runt
       // Qwen's official ACP client advertises both filesystem capabilities.
       clientCapabilities: { fs: { readTextFile: true, writeTextFile: true } },
       clientInfo: { name: 'cloudcli', version: '1.0.0' },
-    }, SETUP_TIMEOUT_MS);
+    }, setupTimeoutMs);
 
     if (resumeSessionId) {
       try {
@@ -431,15 +498,15 @@ async function createAcpSession(workingDir, resumeSessionId, permissionEnv, runt
           sessionId: resumeSessionId,
           cwd: workingDir,
           mcpServers,
-        }, SETUP_TIMEOUT_MS);
+        }, setupTimeoutMs);
         sessionResult = { ...sessionResult, sessionId: sessionResult?.sessionId || resumeSessionId };
       } catch {
         // A session that predates this ACP runtime (or was pruned) can't be
         // loaded — start a fresh one rather than failing the whole message.
-        sessionResult = await rpc.request('session/new', { cwd: workingDir, mcpServers }, SETUP_TIMEOUT_MS);
+        sessionResult = await rpc.request('session/new', { cwd: workingDir, mcpServers }, setupTimeoutMs);
       }
     } else {
-      sessionResult = await rpc.request('session/new', { cwd: workingDir, mcpServers }, SETUP_TIMEOUT_MS);
+      sessionResult = await rpc.request('session/new', { cwd: workingDir, mcpServers }, setupTimeoutMs);
     }
   } catch (error) {
     // A setup call that timed out means the process is stuck, not merely slow.
@@ -604,7 +671,9 @@ function resolveSessionMode(handle, preferredMode) {
   if (!Array.isArray(options) || options.length === 0 || options.includes(preferredMode)) {
     return preferredMode;
   }
-  for (const fallback of ['build', 'code']) {
+  // `default` is last so it only catches runtimes (Antigravity) that name their
+  // ask-first mode that way; OpenCode/Kilo keep resolving to build/code.
+  for (const fallback of ['build', 'code', 'default']) {
     if (options.includes(fallback)) {
       return fallback;
     }
@@ -1018,7 +1087,11 @@ async function spawnAcpProvider(runtime, command, options = {}, ws) {
     // A retired model can also fail mid-prompt (ACP accepts the id, the upstream
     // call 410s), so the same rewrite applies to the turn's fatal error.
     const errorContent = !installed
-      ? `${runtime.provider === 'kilo' ? 'Kilo Code' : runtime.provider === 'cline' ? 'Cline' : 'OpenCode'} CLI is not installed. Install it from ${runtime.installUrl}`
+      ? (runtime.provider === 'antigravity'
+        // Antigravity is a managed binary, not a CLI the user can `npm i -g`;
+        // pointing at an install page instead of Settings sends them nowhere.
+        ? runtime.installMessage
+        : `${runtime.provider === 'kilo' ? 'Kilo Code' : runtime.provider === 'cline' ? 'Cline' : 'OpenCode'} CLI is not installed. Install it from ${runtime.installUrl}`)
       : (resolvedModel ? retiredModelMessage(resolvedModel, error, handle?.label || 'OpenCode') : null) ?? error.message;
 
     ws.send(createNormalizedMessage({ kind: 'error', content: errorContent, sessionId: finalSessionId, provider: runtime.provider }));
@@ -1068,6 +1141,10 @@ function spawnQwenCode(command, options = {}, ws) {
   return spawnAcpProvider(RUNTIME_CONFIGS.qwencode, command, options, ws);
 }
 
+function spawnAntigravity(command, options = {}, ws) {
+  return spawnAcpProvider(RUNTIME_CONFIGS.antigravity, command, options, ws);
+}
+
 function abortProviderSession(provider, sessionId) {
   const handle = acpSessions.get(sessionMapKey(provider, sessionId));
   if (handle && handle.promptInFlight) {
@@ -1094,6 +1171,10 @@ function abortQwenCodeSession(sessionId) {
   return abortProviderSession('qwencode', sessionId);
 }
 
+function abortAntigravitySession(sessionId) {
+  return abortProviderSession('antigravity', sessionId);
+}
+
 function isProviderSessionActive(provider, sessionId) {
   return acpSessions.has(sessionMapKey(provider, sessionId));
 }
@@ -1112,6 +1193,10 @@ function isClineSessionActive(sessionId) {
 
 function isQwenCodeSessionActive(sessionId) {
   return isProviderSessionActive('qwencode', sessionId);
+}
+
+function isAntigravitySessionActive(sessionId) {
+  return isProviderSessionActive('antigravity', sessionId);
 }
 
 function getActiveProviderSessions(provider) {
@@ -1136,8 +1221,16 @@ function getActiveQwenCodeSessions() {
   return getActiveProviderSessions('qwencode');
 }
 
+function getActiveAntigravitySessions() {
+  return getActiveProviderSessions('antigravity');
+}
+
 function disposeClineSessions() {
   disposeProviderSessions('cline');
+}
+
+function disposeAntigravitySessions() {
+  disposeProviderSessions('antigravity');
 }
 
 export {
@@ -1146,19 +1239,24 @@ export {
   spawnKilo,
   spawnCline,
   spawnQwenCode,
+  spawnAntigravity,
   abortOpenCodeSession,
   abortKiloSession,
   abortClineSession,
   abortQwenCodeSession,
+  abortAntigravitySession,
   isOpenCodeSessionActive,
   isKiloSessionActive,
   isClineSessionActive,
   isQwenCodeSessionActive,
+  isAntigravitySessionActive,
   getActiveOpenCodeSessions,
   getActiveKiloSessions,
   getActiveClineSessions,
   getActiveQwenCodeSessions,
+  getActiveAntigravitySessions,
   disposeOpenCodeSessions,
   disposeKiloSessions,
   disposeClineSessions,
+  disposeAntigravitySessions,
 };

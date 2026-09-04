@@ -94,6 +94,7 @@ const STUDIO_PROVIDERS: LLMProvider[] = [
   'qwencode',
   'pi',
   'omp',
+  'antigravity',
 ];
 
 function statusLabel(status: StudioPrototype['status']): string {

@@ -86,6 +86,8 @@ type ProviderSelectionEmptyStateProps = {
   setPiModel: (model: string) => void;
   ompModel: string;
   setOmpModel: (model: string) => void;
+  antigravityModel: string;
+  setAntigravityModel: (model: string) => void;
   providerModelCatalog: Partial<Record<LLMProvider, ProviderModelsDefinition>>;
   providerModelsLoading: boolean;
   /** True while a bypass-cache model catalog refresh is in flight. */
@@ -124,6 +126,7 @@ function getCurrentModel(
   q: string,
   pi: string,
   omp: string,
+  antigravity: string,
 ) {
   if (p === "claude") return c;
   if (p === "codex") return co;
@@ -135,6 +138,7 @@ function getCurrentModel(
   if (p === "qwencode") return q;
   if (p === "pi") return pi;
   if (p === "omp") return omp;
+  if (p === "antigravity") return antigravity;
   return cu;
 }
 
@@ -150,6 +154,7 @@ function getProviderDisplayName(p: LLMProvider) {
   if (p === "qwencode") return "Qwen Code";
   if (p === "pi") return "Pi";
   if (p === "omp") return "Oh My Pi";
+  if (p === "antigravity") return "Antigravity";
   return "Claude";
 }
 
@@ -180,6 +185,8 @@ export default function ProviderSelectionEmptyState({
   setPiModel,
   ompModel,
   setOmpModel,
+  antigravityModel,
+  setAntigravityModel,
   providerModelCatalog,
   providerModelsLoading,
   providerModelsRefreshing = false,
@@ -238,6 +245,7 @@ export default function ProviderSelectionEmptyState({
     qwencodeModel,
     piModel,
     ompModel,
+    antigravityModel,
   );
 
   const currentModelLabel = useMemo(() => {
@@ -274,6 +282,9 @@ export default function ProviderSelectionEmptyState({
       } else if (providerId === "omp") {
         setOmpModel(modelValue);
         localStorage.setItem("omp-model", modelValue);
+      } else if (providerId === "antigravity") {
+        setAntigravityModel(modelValue);
+        localStorage.setItem("antigravity-model", modelValue);
       } else if (providerId === "grok") {
         setGrokModel(modelValue);
         localStorage.setItem("grok-model", modelValue);
@@ -282,7 +293,7 @@ export default function ProviderSelectionEmptyState({
         localStorage.setItem("cursor-model", modelValue);
       }
     },
-    [setClaudeModel, setCursorModel, setCodexModel, setOpenCodeModel, setKiloModel, setKimiModel, setQwenCodeModel, setPiModel, setOmpModel, setGrokModel],
+    [setClaudeModel, setCursorModel, setCodexModel, setOpenCodeModel, setKiloModel, setKimiModel, setQwenCodeModel, setPiModel, setOmpModel, setAntigravityModel, setGrokModel],
   );
 
   const handleModelSelect = useCallback(
@@ -491,6 +502,11 @@ export default function ProviderSelectionEmptyState({
                 omp: t("providerSelection.readyPrompt.omp", {
                   model: ompModel,
                   defaultValue: "Ready with Oh My Pi {{model}}",
+                }),
+                // Antigravity's model list comes from the agent, so an
+                // uninstalled runtime has no model to name.
+                antigravity: t("providerSelection.readyPrompt.antigravity", {
+                  defaultValue: "Ready with Antigravity",
                 }),
               }[provider]
             }

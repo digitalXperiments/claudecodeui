@@ -27,6 +27,7 @@ const KNOWN_PROVIDERS: readonly LLMProvider[] = [
   'qwencode',
   'pi',
   'omp',
+  'antigravity',
 
 ];
 

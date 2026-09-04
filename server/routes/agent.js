@@ -9,7 +9,7 @@ import { userDb, apiKeysDb, githubTokensDb, projectsDb } from '../modules/databa
 import { queryClaudeSDK } from '../claude-sdk.js';
 import { spawnCursor } from '../cursor-cli.js';
 import { queryCodex } from '../openai-codex.js';
-import { spawnCline, spawnKilo, spawnOpenCode, spawnQwenCode } from '../opencode-cli.js';
+import { spawnAntigravity, spawnCline, spawnKilo, spawnOpenCode, spawnQwenCode } from '../opencode-cli.js';
 import { getPiSessionStats, spawnPi } from '../pi-cli.js';
 import { getOmpSessionStats, spawnOmp } from '../omp-cli.js';
 import { spawnKimi } from '../kimi-cli.js';
@@ -897,7 +897,7 @@ router.post('/', validateExternalApiKey, async (req, res) => {
     return res.status(400).json({ error: 'message is required' });
   }
 
-  if (!['claude', 'cursor', 'codex', 'opencode', 'kilo', 'cline', 'kimi', 'qwencode', 'pi', 'omp'].includes(provider)) {
+  if (!['claude', 'cursor', 'codex', 'opencode', 'kilo', 'cline', 'kimi', 'qwencode', 'pi', 'omp', 'antigravity'].includes(provider)) {
     return res.status(400).json({ error: 'provider must be a supported CloudCLI agent id' });
   }
 
@@ -1064,6 +1064,20 @@ router.post('/', validateExternalApiKey, async (req, res) => {
         cwd: finalProjectPath,
         sessionId: sessionId || null,
         model: model || qwenModels?.DEFAULT,
+        effort,
+        permissionMode: 'bypassPermissions',
+        unattended: true,
+      }, writer);
+    } else if (provider === 'antigravity') {
+      console.log('Starting Antigravity ACP session');
+
+      await spawnAntigravity(message.trim(), {
+        projectPath: finalProjectPath,
+        cwd: finalProjectPath,
+        sessionId: sessionId || null,
+        // No default is forced: the model catalog comes from the agent's own
+        // session config, so an unset model leaves it on its own default.
+        model: model || undefined,
         effort,
         permissionMode: 'bypassPermissions',
         unattended: true,

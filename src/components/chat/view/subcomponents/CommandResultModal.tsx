@@ -106,6 +106,7 @@ const PROVIDER_LABELS: Record<string, string> = {
   qwencode: 'Qwen Code',
   pi: 'Pi',
   omp: 'Oh My Pi',
+  antigravity: 'Antigravity',
 };
 
 /**

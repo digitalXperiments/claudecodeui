@@ -62,7 +62,7 @@ type MissionControlPanelProps = {
 
 type ModelOption = { value: string; label: string };
 
-const PROVIDERS = ['claude', 'grok', 'opencode', 'kilo', 'cline', 'codex', 'cursor', 'kimi', 'pi', 'omp'] as const;
+const PROVIDERS = ['claude', 'grok', 'opencode', 'kilo', 'cline', 'codex', 'cursor', 'kimi', 'pi', 'omp', 'antigravity'] as const;
 
 const SECTION_STARTERS: Array<{
   label: string;
@@ -1276,7 +1276,7 @@ export default function MissionControlPanel({
                         </p>
                         {actionable ? (
                           <p className="mt-2 text-[10px] text-muted-foreground">
-                            Review this draft, then use Send reply when it is ready.
+                            Review this draft. Add context below and use Redraft to rewrite it, or Send reply when it is ready.
                           </p>
                         ) : null}
                       </div>
@@ -1307,7 +1307,7 @@ export default function MissionControlPanel({
                           disabled={actingItemId === item.item_id}
                         />
                         <p className="mt-1.5 text-[10px] text-muted-foreground">
-                          Your guidance is used when you click Draft reply. Nothing is sent until you review it and click Send reply.
+                          Your guidance is used when you click {replyDraft ? 'Redraft' : 'Draft reply'}. Nothing is sent until you review it and click Send reply.
                         </p>
                       </div>
                     ) : null}
@@ -1432,7 +1432,9 @@ export default function MissionControlPanel({
                               </button>
                             ) : null}
                             {visibleActions.map((action) => {
-                              const semantics = getActionSemantics(action, item.title);
+                              const semantics = getActionSemantics(action, item.title, {
+                                hasDraft: Boolean(replyDraft),
+                              });
                               return (
                               <div key={action.id} className="flex min-w-0 flex-wrap items-center gap-1.5">
                                 <button
@@ -1453,7 +1455,7 @@ export default function MissionControlPanel({
                                     <X className="h-3 w-3" />
                                   ) : null}
                                   <span className="flex min-w-0 flex-col">
-                                    <span>{action.label}</span>
+                                    <span>{semantics.label}</span>
                                     <span className="text-[9px] font-normal opacity-75">{semantics.detail}</span>
                                   </span>
                                 </button>

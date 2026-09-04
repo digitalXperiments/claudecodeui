@@ -12,9 +12,9 @@ import {
   ListChecks,
   Mic,
   MonitorPlay,
-
   Palette,
   Puzzle,
+  Route,
   Server,
   ShieldCheck,
   UserCog,
@@ -46,6 +46,7 @@ export const SETTINGS_MAIN_TABS: SettingsMainTabMeta[] = [
     keywords: 'profiles model effort permissions kanban presets',
     icon: UserCog,
   },
+  { id: 'continuity', label: 'Continuity', keywords: 'continuity resume limits fallback handoff retry', icon: Route },
   {
     id: 'studio',
     label: 'Studio',
@@ -70,7 +71,7 @@ export const SETTINGS_MAIN_TABS: SettingsMainTabMeta[] = [
   { id: 'about', label: 'About', keywords: 'about version info', icon: Info },
 ];
 
-export const AGENT_PROVIDERS: AgentProvider[] = ['claude', 'cursor', 'codex', 'opencode', 'kilo', 'cline', 'grok', 'kimi', 'qwencode', 'pi', 'omp'];
+export const AGENT_PROVIDERS: AgentProvider[] = ['claude', 'cursor', 'codex', 'opencode', 'kilo', 'cline', 'grok', 'kimi', 'qwencode', 'pi', 'omp', 'antigravity'];
 export const AGENT_NAMES: Record<AgentProvider, string> = {
   claude: 'Claude',
   cursor: 'Cursor',
@@ -83,6 +84,7 @@ export const AGENT_NAMES: Record<AgentProvider, string> = {
   qwencode: 'Qwen Code',
   pi: 'Pi',
   omp: 'Oh My Pi',
+  antigravity: 'Antigravity',
 };
 export const AGENT_CATEGORIES: AgentCategory[] = ['account', 'permissions'];
 

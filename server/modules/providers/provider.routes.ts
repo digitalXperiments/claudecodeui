@@ -16,6 +16,30 @@ import {
 import { getDisabledProviderIds } from '@/modules/providers/services/session-synchronizer.service.js';
 import { sessionsService } from '@/modules/providers/services/sessions.service.js';
 import { projectsDb, sessionsDb } from '@/modules/database/index.js';
+import {
+  cancelAntigravityLogin,
+  getAntigravityLoginState,
+  startAntigravityLogin,
+  submitAntigravityReturnUrl,
+} from '@/modules/providers/list/antigravity/antigravity-acp.js';
+import {
+  installAntigravityRuntime,
+  uninstallAntigravityRuntime,
+} from '@/modules/providers/list/antigravity/antigravity-installer.js';
+import {
+  ANTIGRAVITY_AUTH_METHODS,
+  antigravityRuntimeVersion,
+  antigravityVersionDir,
+  isAntigravityRuntimeInstalled,
+  readAntigravityInstallMarker,
+  readAntigravityRuntimeConfig,
+  resolveAntigravityBinary,
+  writeAntigravityRuntimeConfig,
+} from '@/modules/providers/list/antigravity/antigravity-runtime.js';
+import {
+  antigravityPlatformKey,
+  resolveAntigravityArtifact,
+} from '@/modules/providers/list/antigravity/antigravity-releases.js';
 import type {
   LLMProvider,
   McpScope,
@@ -302,6 +326,7 @@ const parseProvider = (value: unknown): LLMProvider => {
     || normalized === 'qwencode'
     || normalized === 'pi'
     || normalized === 'omp'
+    || normalized === 'antigravity'
   ) {
     return normalized;
   }
@@ -1094,6 +1119,148 @@ router.get('/search/sessions', asyncHandler(async (req: Request, res: Response) 
     if (!closed) {
       res.end();
     }
+  }
+}));
+
+// ----------------- Antigravity runtime + Google sign-in -----------------
+//
+// Antigravity is the only provider CloudCLI installs itself, and the only one
+// whose sign-in runs through ACP `authenticate` rather than a CLI `login`
+// command. Those two things need endpoints no other provider has.
+
+/** Runtime state Settings renders: platform support, install status, override. */
+router.get('/antigravity/runtime', asyncHandler(async (_req: Request, res: Response) => {
+  const version = antigravityRuntimeVersion();
+  const platformKey = antigravityPlatformKey();
+  const resolution = resolveAntigravityBinary();
+  res.json(createApiSuccessResponse({
+    version,
+    platformKey,
+    supported: platformKey !== null,
+    installed: isAntigravityRuntimeInstalled(version),
+    // Whether CloudCLI has a verified download pin for this host. Without one
+    // the Install button must explain that rather than fail mid-download.
+    pinned: resolveAntigravityArtifact(platformKey) !== null,
+    installDir: antigravityVersionDir(version),
+    marker: readAntigravityInstallMarker(version),
+    binary: resolution.ok
+      ? { path: resolution.command, source: resolution.source, error: null }
+      : { path: null, source: null, error: resolution.message },
+    config: readAntigravityRuntimeConfig(),
+    authMethods: ANTIGRAVITY_AUTH_METHODS,
+  }));
+}));
+
+/** Persist the binary-path override and auth method chosen in Settings. */
+router.put('/antigravity/runtime/config', asyncHandler(async (req: Request, res: Response) => {
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const binaryPath = typeof body.binaryPath === 'string' ? body.binaryPath.trim() : '';
+  const requestedMethod = typeof body.authMethod === 'string' ? body.authMethod.trim() : '';
+  if (requestedMethod && !(ANTIGRAVITY_AUTH_METHODS as readonly string[]).includes(requestedMethod)) {
+    throw new AppError(`Unsupported Antigravity auth method "${requestedMethod}".`, {
+      code: 'INVALID_ANTIGRAVITY_AUTH_METHOD',
+      statusCode: 400,
+    });
+  }
+  const current = readAntigravityRuntimeConfig();
+  const next = {
+    binaryPath,
+    authMethod: requestedMethod || current.authMethod,
+  };
+  writeAntigravityRuntimeConfig(next);
+  // Report immediately whether the new override actually resolves, so a typo
+  // is caught in Settings rather than at the start of the next chat turn.
+  const resolution = resolveAntigravityBinary();
+  res.json(createApiSuccessResponse({
+    config: next,
+    binary: resolution.ok
+      ? { path: resolution.command, source: resolution.source, error: null }
+      : { path: null, source: null, error: resolution.message },
+  }));
+}));
+
+/**
+ * Install the managed runtime, streaming progress as SSE.
+ *
+ * The archive is large enough that a plain request would look hung, so this
+ * reuses the same SSE shape as `/search/sessions`: `progress` frames, then a
+ * terminal `done` or `error`.
+ */
+router.post('/antigravity/runtime/install', asyncHandler(async (req: Request, res: Response) => {
+  const force = req.body?.force === true;
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+
+  let closed = false;
+  req.on('close', () => {
+    closed = true;
+  });
+
+  try {
+    const result = await installAntigravityRuntime({
+      force,
+      onProgress: (progress) => {
+        if (closed) return;
+        res.write(`event: progress\ndata: ${JSON.stringify(progress)}\n\n`);
+      },
+    });
+    if (!closed) res.write(`event: done\ndata: ${JSON.stringify(result)}\n\n`);
+  } catch (error) {
+    const payload = {
+      error: error instanceof AppError ? error.message : `Antigravity install failed: ${(error as Error)?.message || String(error)}`,
+      code: error instanceof AppError ? error.code : 'ANTIGRAVITY_INSTALL_FAILED',
+    };
+    if (!closed) res.write(`event: error\ndata: ${JSON.stringify(payload)}\n\n`);
+  } finally {
+    if (!closed) res.end();
+  }
+}));
+
+router.delete('/antigravity/runtime', asyncHandler(async (_req: Request, res: Response) => {
+  await uninstallAntigravityRuntime();
+  res.json(createApiSuccessResponse({ removed: true, version: antigravityRuntimeVersion() }));
+}));
+
+/** Start ACP `authenticate` and return the Google consent URL to open/copy. */
+router.post('/antigravity/auth/login', asyncHandler(async (req: Request, res: Response) => {
+  const methodId = typeof req.body?.methodId === 'string' ? req.body.methodId.trim() : undefined;
+  const state = await startAntigravityLogin(process.env, methodId);
+  res.json(createApiSuccessResponse(state));
+}));
+
+router.get('/antigravity/auth/login', asyncHandler(async (_req: Request, res: Response) => {
+  res.json(createApiSuccessResponse(getAntigravityLoginState()));
+}));
+
+router.delete('/antigravity/auth/login', asyncHandler(async (_req: Request, res: Response) => {
+  cancelAntigravityLogin();
+  res.json(createApiSuccessResponse({ cancelled: true }));
+}));
+
+/**
+ * Finish sign-in from a browser on another machine.
+ *
+ * The consent flow redirects to a loopback URL the agent is listening on. When
+ * CloudCLI is remote, that redirect lands in the user's own browser, so they
+ * paste the `http://127.0.0.1/...` URL here and the server replays it locally.
+ */
+router.post('/antigravity/auth/callback', asyncHandler(async (req: Request, res: Response) => {
+  const returnUrl = typeof req.body?.returnUrl === 'string' ? req.body.returnUrl.trim() : '';
+  if (!returnUrl) {
+    throw new AppError('returnUrl is required.', { code: 'ANTIGRAVITY_RETURN_URL_REQUIRED', statusCode: 400 });
+  }
+  try {
+    const state = await submitAntigravityReturnUrl(returnUrl);
+    res.json(createApiSuccessResponse(state));
+  } catch (error) {
+    throw new AppError((error as Error)?.message || 'Could not complete Antigravity sign-in.', {
+      code: 'ANTIGRAVITY_CALLBACK_FAILED',
+      statusCode: 400,
+    });
   }
 }));
 

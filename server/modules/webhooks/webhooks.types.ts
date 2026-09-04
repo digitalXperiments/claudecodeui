@@ -12,6 +12,7 @@ export const WEBHOOK_PROVIDERS = [
   'qwencode',
   'pi',
   'omp',
+  'antigravity',
 
 ] as const satisfies readonly LLMProvider[];
 

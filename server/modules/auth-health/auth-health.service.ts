@@ -43,6 +43,9 @@ export const REAUTH_HINTS: Record<string, string> = {
   kimi: 'kimi login',
   qwencode: 'qwen',
   pi: 'pi (then /login)',
+  // Antigravity has no login CLI: sign-in runs through ACP `authenticate`,
+  // which CloudCLI drives from Settings.
+  antigravity: 'Settings › Agents › Antigravity › Sign in with Google',
 };
 
 export const AUTH_HEALTH_DEDUPE_PREFIX = 'auth-health:';

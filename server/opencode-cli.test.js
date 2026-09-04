@@ -7,12 +7,15 @@ import { makeScratchDir } from './shared/scratch.js';
 import { resolveToolApproval } from './claude-sdk.js';
 import { mcpCatalogService } from './modules/providers/services/mcp-catalog.service.js';
 import {
+  disposeAntigravitySessions,
   disposeKiloSessions,
   disposeOpenCodeSessions,
   getActiveOpenCodeSessions,
+  resolveAntigravityPermissionPolicy,
   resolveKiloPermissionPolicy,
   resolveOpenCodePermissionPolicy,
   resolveQwenPermissionPolicy,
+  spawnAntigravity,
   spawnQwenCode,
   spawnKilo,
   spawnOpenCode,
@@ -587,6 +590,62 @@ test('spawnQwenCode uses the official qwen --acp entry point and ACP model contr
 test('resolveQwenPermissionPolicy maps bypass to yolo and keeps plan interactive', () => {
   assert.equal(resolveQwenPermissionPolicy('bypassPermissions').mode, 'yolo');
   assert.equal(resolveQwenPermissionPolicy('plan').autoApprove, false);
+});
+
+test('resolveAntigravityPermissionPolicy maps onto yolo / auto_edit / default only', () => {
+  assert.deepEqual(resolveAntigravityPermissionPolicy('bypassPermissions'), { mode: 'yolo', autoApprove: true, env: {} });
+  assert.deepEqual(resolveAntigravityPermissionPolicy('auto'), { mode: 'yolo', autoApprove: true, env: {} });
+  assert.deepEqual(resolveAntigravityPermissionPolicy('acceptEdits'), { mode: 'auto_edit', autoApprove: false, env: {} });
+  assert.deepEqual(resolveAntigravityPermissionPolicy('default'), { mode: 'default', autoApprove: false, env: {} });
+  // Antigravity has no read-only agent, so `plan` must not claim one: it stays
+  // on the ask-everything mode rather than silently becoming a write mode.
+  assert.deepEqual(resolveAntigravityPermissionPolicy('plan'), { mode: 'default', autoApprove: false, env: {} });
+});
+
+test('spawnAntigravity runs the resolved binary with no acp subcommand', { concurrency: false }, async () => {
+  await withFakeAgent('antigravity-cli-acp-', async (tempRoot) => {
+    // The managed runtime is a binary path, not a PATH command — point the
+    // explicit override at the fake agent the way Settings would.
+    const binaryPath = path.join(tempRoot, 'agy_acp_server');
+    await writeFile(binaryPath, '#!/bin/sh\nnode "$(dirname "$0")/opencode.cjs" "$@"\n', 'utf8');
+    await chmod(binaryPath, 0o755);
+
+    const argsCapturePath = path.join(tempRoot, 'antigravity-capture.json');
+    const previousOverride = process.env.ANTIGRAVITY_ACP_PATH;
+    process.env.ANTIGRAVITY_ACP_PATH = binaryPath;
+    process.env.OPENCODE_ARGS_CAPTURE = argsCapturePath;
+    try {
+      const messages = [];
+      await spawnAntigravity('Hi', { cwd: tempRoot, permissionMode: 'bypassPermissions', unattended: true }, createWriter(messages));
+      const capture = JSON.parse(await readFile(argsCapturePath, 'utf8'));
+      // No `acp` subcommand and no `--cwd`: the ACP server IS the entry point.
+      assert.deepEqual(capture.args, []);
+      assert.ok(capture.configOptions.some((option) => option.configId === 'mode' && option.value === 'yolo'));
+      assert.equal(messages.find((message) => message.kind === 'complete')?.provider, 'antigravity');
+    } finally {
+      disposeAntigravitySessions();
+      if (previousOverride === undefined) delete process.env.ANTIGRAVITY_ACP_PATH;
+      else process.env.ANTIGRAVITY_ACP_PATH = previousOverride;
+    }
+  });
+});
+
+test('spawnAntigravity reports an invalid binary override instead of falling back to PATH', { concurrency: false }, async () => {
+  await withFakeAgent('antigravity-bad-override-', async (tempRoot) => {
+    const previousOverride = process.env.ANTIGRAVITY_ACP_PATH;
+    process.env.ANTIGRAVITY_ACP_PATH = path.join(tempRoot, 'does-not-exist');
+    try {
+      const messages = [];
+      await assert.rejects(
+        spawnAntigravity('Hi', { cwd: tempRoot, permissionMode: 'default', unattended: true }, createWriter(messages)),
+        /is not an executable file/,
+      );
+    } finally {
+      disposeAntigravitySessions();
+      if (previousOverride === undefined) delete process.env.ANTIGRAVITY_ACP_PATH;
+      else process.env.ANTIGRAVITY_ACP_PATH = previousOverride;
+    }
+  });
 });
 
 test('toOpenCodeAcpMcpServers converts stdio without a type tag and stamps the lead session', () => {

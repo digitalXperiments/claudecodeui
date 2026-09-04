@@ -25,6 +25,7 @@ import SkillWizardDialog from '../../skills/view/SkillWizardDialog';
 
 import ChatMessagesPane from './subcomponents/ChatMessagesPane';
 import ChatComposer from './subcomponents/ChatComposer';
+import ContinuityControl from './subcomponents/ContinuityControl';
 import CommandResultModal, { type SessionSwitchRequest } from './subcomponents/CommandResultModal';
 import LiveSpendMeter from './subcomponents/LiveSpendMeter';
 import ProviderUsageLegend from './subcomponents/ProviderUsageLegend';
@@ -124,6 +125,8 @@ function ChatInterface({
     setPiModel,
     ompModel,
     setOmpModel,
+    antigravityModel,
+    setAntigravityModel,
     permissionMode,
     pendingPermissionRequests,
     setPendingPermissionRequests,
@@ -826,6 +829,8 @@ function ChatInterface({
           setPiModel={setPiModel}
           ompModel={ompModel}
           setOmpModel={setOmpModel}
+          antigravityModel={antigravityModel}
+          setAntigravityModel={setAntigravityModel}
           providerModelCatalog={providerModelCatalog}
           providerModelsLoading={providerModelsLoading}
           providerModelsRefreshing={providerModelsRefreshing}
@@ -916,6 +921,13 @@ function ChatInterface({
           onToggleCommandMenu={guardWhenReadOnly(isReadOnlyWorkerSession, handleToggleCommandMenu)}
           onSaveAsSkill={guardWhenReadOnly(isReadOnlyWorkerSession, onSaveAsSkill)}
           saveAsSkillDisabled={saveAsSkillDisabled}
+          continuityControl={isReadOnlyWorkerSession ? null : (
+            <ContinuityControl
+              sessionId={selectedSession?.id || currentSessionId || null}
+              currentProvider={provider}
+              onNavigateToSession={onNavigateToSession}
+            />
+          )}
           studioMode={studioMode}
           hasInput={!isReadOnlyWorkerSession && Boolean(input.trim())}
           onClearInput={guardWhenReadOnly(isReadOnlyWorkerSession, handleClearInput)}
@@ -986,7 +998,9 @@ function ChatInterface({
                           ? t('messageTypes.pi', { defaultValue: 'Pi' })
                           : provider === 'omp'
                             ? t('messageTypes.omp', { defaultValue: 'Oh My Pi' })
-                            : t('messageTypes.claude'),
+                            : provider === 'antigravity'
+                              ? t('messageTypes.antigravity', { defaultValue: 'Antigravity' })
+                              : t('messageTypes.claude'),
           })}
           isTextareaExpanded={isTextareaExpanded}
           sendByCtrlEnter={sendByCtrlEnter}

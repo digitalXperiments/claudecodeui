@@ -271,6 +271,39 @@ export const api = {
     if (token) params.set('token', token);
     return `/api/providers/search/sessions?${params.toString()}`;
   },
+  // Antigravity is the only provider CloudCLI installs and signs in itself, so
+  // it has runtime + ACP-authenticate endpoints no other provider needs.
+  antigravity: {
+    runtime: () => authenticatedFetch('/api/providers/antigravity/runtime'),
+    saveConfig: (config) =>
+      authenticatedFetch('/api/providers/antigravity/runtime/config', {
+        method: 'PUT',
+        body: JSON.stringify(config),
+      }),
+    // Returns the raw Response so the caller can read the SSE progress stream;
+    // EventSource cannot issue a POST, so the body is consumed directly.
+    install: (force = false) =>
+      authenticatedFetch('/api/providers/antigravity/runtime/install', {
+        method: 'POST',
+        body: JSON.stringify({ force }),
+      }),
+    uninstall: () =>
+      authenticatedFetch('/api/providers/antigravity/runtime', { method: 'DELETE' }),
+    startLogin: (methodId) =>
+      authenticatedFetch('/api/providers/antigravity/auth/login', {
+        method: 'POST',
+        body: JSON.stringify(methodId ? { methodId } : {}),
+      }),
+    loginState: () => authenticatedFetch('/api/providers/antigravity/auth/login'),
+    cancelLogin: () =>
+      authenticatedFetch('/api/providers/antigravity/auth/login', { method: 'DELETE' }),
+    submitReturnUrl: (returnUrl) =>
+      authenticatedFetch('/api/providers/antigravity/auth/callback', {
+        method: 'POST',
+        body: JSON.stringify({ returnUrl }),
+      }),
+  },
+
   createProject: (projectData) =>
     authenticatedFetch('/api/projects/create-project', {
       method: 'POST',

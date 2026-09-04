@@ -42,6 +42,11 @@ export default function AgentsSettingsTab({
     if (selectedAgent === 'kimi') {
       return ['account', 'models'];
     }
+    // Antigravity's permission modes are ACP session modes with no user-editable
+    // allow/deny rules, so there is nothing for a Permissions pane to hold.
+    if (selectedAgent === 'antigravity') {
+      return ['account', 'models'];
+    }
     return ['account', 'models', 'permissions'];
   }, [selectedAgent]);
 
@@ -52,7 +57,7 @@ export default function AgentsSettingsTab({
   }, [visibleCategories, selectedCategory]);
 
   const visibleAgents = useMemo<AgentProvider[]>(() => {
-    return ['claude', 'cursor', 'codex', 'opencode', 'kilo', 'cline', 'grok', 'kimi', 'qwencode', 'pi', 'omp'];
+    return ['claude', 'cursor', 'codex', 'opencode', 'kilo', 'cline', 'grok', 'kimi', 'qwencode', 'pi', 'omp', 'antigravity'];
   }, []);
 
   const agentContextById = useMemo<Record<AgentProvider, AgentContext>>(() => {
@@ -115,6 +120,11 @@ export default function AgentsSettingsTab({
       onLogin: () => onProviderLogin('omp'),
       onRefresh: () => refresh('omp'),
     },
+    antigravity: {
+      authStatus: providerAuthStatus.antigravity,
+      onLogin: () => onProviderLogin('antigravity'),
+      onRefresh: () => refresh('antigravity'),
+    },
   };
   }, [
     onProviderLogin,
@@ -130,6 +140,7 @@ export default function AgentsSettingsTab({
     providerAuthStatus.qwencode,
     providerAuthStatus.pi,
     providerAuthStatus.omp,
+    providerAuthStatus.antigravity,
   ]);
 
   useEffect(() => {
