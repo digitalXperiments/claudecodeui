@@ -77,6 +77,24 @@ export const ANTIGRAVITY_RUNTIME_VERSION = '1.1.1';
  * for runtime 1.1.1. One entry per supported host; every field is required.
  * Leaving an entry out means "CloudCLI cannot install this host's runtime yet",
  * which is reported honestly instead of attempting an unverified download.
+ *
+ * Still empty deliberately. The 1.1.1 pins live in
+ * `https://raw.githubusercontent.com/pingdotgg/t3code/main` (Antigravity
+ * installer / ACP registry, PR 9509) and could not be fetched from the
+ * network-isolated environment that last touched this file. They are NOT
+ * reconstructible offline: a locally computed hash only proves the bytes we
+ * already have hash to themselves, so nothing is guessed here. Until someone
+ * copies the real `url`/`sha256`/`size` triples in, `installAntigravityRuntime`
+ * fails with `ANTIGRAVITY_RUNTIME_NOT_PINNED` and points at
+ * `CLOUDCLI_ANTIGRAVITY_MANIFEST`.
+ *
+ * When the pins land, two tests in
+ * `server/modules/providers/tests/antigravity-provider.test.ts` assume the
+ * built-in table is empty and must be updated with them: "ignores a malformed
+ * manifest override rather than throwing" (expects `darwin-arm64` → null) and
+ * "refuses to install at all when the host has no pin" (expects `linux-x64` →
+ * `ANTIGRAVITY_RUNTIME_NOT_PINNED`); both should switch to a host key that is
+ * genuinely unpinned.
  */
 export const ANTIGRAVITY_ARTIFACTS: Partial<Record<AntigravityPlatformKey, AntigravityArtifactPin>> = {
   // 'darwin-arm64': { url: '', sha256: '', size: 0 },

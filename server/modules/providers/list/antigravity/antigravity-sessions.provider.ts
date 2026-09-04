@@ -4,18 +4,26 @@ import { createNormalizedMessage, generateMessageId, readObjectRecord } from '@/
 
 export const ANTIGRAVITY_PROVIDER = 'antigravity' as const;
 
-/** ACP content blocks arrive either as a string or as `{ type, text }` parts. */
+/** One ACP content block: a bare string, `{ type, text }`, or `{ content: { text } }`. */
+const partText = (part: unknown): string => {
+  if (typeof part === 'string') return part;
+  const record = readObjectRecord(part);
+  if (typeof record?.text === 'string') return record.text;
+  const nested = readObjectRecord(record?.content);
+  return typeof nested?.text === 'string' ? nested.text : '';
+};
+
+/**
+ * ACP content arrives as a string, an array of blocks, or — for the chunk
+ * updates Antigravity emits — a single unwrapped block object. All three have
+ * to read, otherwise `{ content: { text: 'hello' } }` normalizes to an empty
+ * delta and the chunk is dropped from the stream.
+ */
 const textParts = (value: unknown): string => {
   if (typeof value === 'string') return value;
-  if (!Array.isArray(value)) return '';
+  if (!Array.isArray(value)) return partText(value);
   return value
-    .map((part) => {
-      if (typeof part === 'string') return part;
-      const record = readObjectRecord(part);
-      if (typeof record?.text === 'string') return record.text;
-      const nested = readObjectRecord(record?.content);
-      return typeof nested?.text === 'string' ? nested.text : '';
-    })
+    .map(partText)
     .filter(Boolean)
     .join('\n');
 };

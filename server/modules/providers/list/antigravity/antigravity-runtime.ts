@@ -288,11 +288,20 @@ export function antigravityUnsupportedPlatformMessage(
  * `acp --cwd <dir>` subcommand like OpenCode's, so the working directory is
  * carried by `session/new` instead. On Linux the registry requires the calling
  * uid so the harness can locate the per-user runtime directory.
+ *
+ * `uid` is taken as a rest parameter rather than a defaulted one on purpose: a
+ * JS default fires for an *explicitly* passed `undefined` too, which would make
+ * a caller saying "this host has no uid" silently pick up the current process's
+ * uid. Omitting the argument means "ask this process"; passing `undefined` means
+ * "there is no uid", and must emit no `--uid` flag.
  */
 export function antigravityAcpArgs(
   platform: NodeJS.Platform = process.platform,
-  uid: number | undefined = typeof process.getuid === 'function' ? process.getuid() : undefined,
+  ...uidArg: [uid?: number | undefined]
 ): string[] {
+  const uid = uidArg.length > 0
+    ? uidArg[0]
+    : (typeof process.getuid === 'function' ? process.getuid() : undefined);
   if (platform === 'linux' && typeof uid === 'number') {
     return [`--uid=${uid}`];
   }
