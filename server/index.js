@@ -10,6 +10,7 @@ import http from 'http';
 // shims/PATHEXT on Windows and delegates to the native spawn elsewhere.
 import spawn from 'cross-spawn';
 import express from 'express';
+import helmet from 'helmet';
 import cors from 'cors';
 import mime from 'mime-types';
 import Database from 'better-sqlite3';
@@ -122,6 +123,7 @@ import browserUseMcpRoutes from './modules/browser-use/browser-use-mcp.routes.js
 import sessionMailboxMcpRoutes from './modules/session-mailbox/session-mailbox-mcp.routes.js';
 import { configureSessionMailboxRuntimes, sessionMailboxService } from './modules/session-mailbox/session-mailbox.service.js';
 import kanbanRoutes from './modules/kanban/kanban.routes.js';
+import { browserCaptureRoutes } from './modules/browser-capture/index.js';
 import {
     configureKanbanRuntimes,
     initKanbanAutomation,
@@ -198,6 +200,7 @@ import {
     syncNotificationDigestSchedules,
 } from './modules/notifications/index.js';
 import { browserUseService } from './modules/browser-use/browser-use.service.js';
+import { configureBackupRuntime, stopBackupScheduler } from './modules/backups/index.js';
 import { startEnabledPluginServers, stopAllPlugins, getPluginPort } from './utils/plugin-process-manager.js';
 import { initializeDatabase, projectsDb, sessionsDb } from './modules/database/index.js';
 import { syncGrokShellSession } from './modules/providers/list/grok/grok-shell-sync.js';
@@ -235,6 +238,10 @@ const MAX_FILE_UPLOAD_COUNT = 20;
 console.log('SERVER_PORT from env:', process.env.SERVER_PORT);
 
 const app = express();
+
+// Security headers via Helmet
+app.use(helmet());
+
 const server = http.createServer(app);
 
 // Provider runtimes, shared between the chat websocket server and the kanban
@@ -544,6 +551,7 @@ app.use('/api/voice', authenticateToken, voiceRoutes);
 
 // Kanban orchestration API Routes (protected)
 app.use('/api/kanban', authenticateToken, kanbanRoutes);
+app.use('/api/browser-capture', authenticateToken, browserCaptureRoutes);
 
 // Mission Control — global + project produce/resolve queues
 app.use('/api/mission-control', authenticateToken, missionControlRoutes);
@@ -2052,6 +2060,7 @@ async function startServer() {
     try {
         // Initialize authentication database
         await initializeDatabase();
+        configureBackupRuntime(APP_ROOT);
 
         const interruptedRelayJobs = agentRelayService.recoverOnBoot();
         if (interruptedRelayJobs > 0) {
@@ -2231,6 +2240,11 @@ async function startServer() {
                 stopNotificationDigestScheduler();
             } catch (err) {
                 console.error('[Notifications] Error stopping digest scheduler during shutdown:', err?.message || err);
+            }
+            try {
+                stopBackupScheduler();
+            } catch (err) {
+                console.error('[Backups] Error stopping scheduler during shutdown:', err?.message || err);
             }
             try {
                 await browserUseService.stopAllSessions();

@@ -15,7 +15,6 @@ const PROVIDERS = [
   'qwencode',
   'pi',
   'omp',
-  'antigravity',
 ] as const;
 
 const PORTABLE_PREFERENCE_KEYS = new Set([
