@@ -115,13 +115,29 @@ function filterSectionDrafts(section: McSection, drafts: McDraftItem[]): McDraft
     : drafts;
 }
 
-/** Slack replies are created only by the explicit Draft reply action. */
+/**
+ * Slack items arrive review-ready: produce composes the first draft from the
+ * thread plus Obsidian context, and the user refines it with Redraft before
+ * sending. Keep a usable model draft (normalizing its timestamp), drop an
+ * empty one so the card does not render a blank draft box, and never accept
+ * operatorContext from the model — that field is the human's guidance channel.
+ */
 function prepareDraftForSection(section: McSection, draft: McDraftItem): McDraftItem {
   if (!isSlackSection(section)) return draft;
   const body = { ...draft.body };
-  delete body.draft;
-  delete body.draftedAt;
   delete body.operatorContext;
+
+  const replyDraft = typeof body.draft === 'string' ? body.draft.trim() : '';
+  if (!replyDraft) {
+    delete body.draft;
+    delete body.draftedAt;
+    return { ...draft, body };
+  }
+  body.draft = replyDraft;
+  const draftedAt = typeof body.draftedAt === 'string' ? Date.parse(body.draftedAt) : Number.NaN;
+  body.draftedAt = Number.isNaN(draftedAt)
+    ? new Date().toISOString()
+    : new Date(draftedAt).toISOString();
   return { ...draft, body };
 }
 

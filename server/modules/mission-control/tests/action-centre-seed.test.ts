@@ -11,6 +11,7 @@ import {
   buildSlackSectionInput,
   buildWorkGmailSectionInput,
   PERSONAL_GMAIL_SECTION_TITLE,
+  SLACK_PROMPT_VERSION,
   SLACK_SECTION_TITLE,
   WORK_GMAIL_SECTION_TITLE,
 } from '@/modules/mission-control/action-centre-seed.js';
@@ -154,20 +155,26 @@ test('send_reply is only ever invoked because the user clicked, and reuses body.
   }
 });
 
-test('Slack prompts defer drafting until the user provides context and clicks Draft reply', () => {
+test('Slack produce drafts a reply from Obsidian-backed context for messages needing one', () => {
   const produce = buildSlackSectionInput().produce_prompt ?? '';
   assert.match(produce, /authenticated Slack user/i);
   assert.match(produce, /both "directedToMe" and "needsMyReply" are true/i);
   assert.match(produce, /"directedToMe": boolean/);
   assert.match(produce, /"needsMyReply": boolean/);
-  assert.match(produce, /Do not compose a reply during produce/);
-  assert.doesNotMatch(produce, /Always include a non-empty "draft" and "draftedAt"/);
+  assert.match(produce, /Always include a non-empty "draft" and "draftedAt"/);
+  assert.doesNotMatch(produce, /Do not compose a reply during produce/);
   assert.match(produce, /daily Slack summaries/i);
   assert.match(produce, /other connected, read-only knowledge source/i);
+  // Drafting is local; only the explicit Send reply click reaches Slack.
+  assert.match(produce, /composing is not sending/i);
+});
 
+test('Slack draft_reply rewrites the existing draft and send reply uses it verbatim', () => {
   const resolve = buildSlackSectionInput().resolve_prompt ?? '';
   assert.match(resolve, /relevant Obsidian notes/i);
   assert.match(resolve, /body\.operatorContext/);
+  assert.match(resolve, /rewriting it, not adding a second one/i);
+  assert.match(resolve, /complete replacement reply/i);
   assert.match(resolve, /exact reviewed text in body\.draft/i);
   assert.match(resolve, /do not compose or send a replacement/i);
 });
@@ -359,7 +366,9 @@ test('renamed Slack Messages seed receives prompt/tool refreshes and keeps its t
     const refreshed = ensureSlackSection();
     assert.equal(refreshed.updated, true);
     assert.equal(refreshed.section?.title, 'Slack Messages');
-    assert.ok(refreshed.section?.produce_prompt.includes('Prompt version: 4'));
+    assert.ok(
+      refreshed.section?.produce_prompt.includes(`Prompt version: ${SLACK_PROMPT_VERSION}`),
+    );
     assert.deepEqual(refreshed.section?.produce_tools, ['claude.ai Slack', 'obsidian']);
     assert.deepEqual(refreshed.section?.resolve_tools, ['claude.ai Slack', 'obsidian']);
     assert.equal(missionControlDb.listSections().filter((s) => /slack/i.test(s.title)).length, 1);
