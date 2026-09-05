@@ -37,3 +37,21 @@ export type {
   StudioTokensPatch,
 } from '@/modules/studio/studio.types.js';
 export type { StudioSeatProfile } from '@/modules/studio/studio.profiles.js';
+export { studioUniversesService } from '@/modules/studio/studio-universes.service.js';
+export { STUDIO_UNIVERSE_FORMAT } from '@/modules/studio/studio-universes.types.js';
+export type {
+  ApplyUniverseVariantInput,
+  CreateStudioUniverseInput,
+  CreateUniverseApproachInput,
+  StartUniversePreviewInput,
+  StudioUniverse,
+  UniverseAppliedRecord,
+  UniverseDiffFile,
+  UniverseDiffResult,
+  UniversePreviewState,
+  UniversePreviewStatus,
+  UniverseStatus,
+  UniverseVariant,
+  UniverseVariantResult,
+  UniverseVariantStatus,
+} from '@/modules/studio/studio-universes.types.js';

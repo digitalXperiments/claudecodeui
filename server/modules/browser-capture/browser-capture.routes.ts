@@ -4,7 +4,7 @@ import { AppError, asyncHandler } from '@/shared/utils.js';
 import { projectsDb } from '@/modules/database/index.js';
 import { kanbanDb } from '@/modules/kanban/index.js';
 
-import { CaptureValidationError, buildCaptureDescription, storeCaptureScreenshot, validateBrowserCapture } from './browser-capture.service.js';
+import { CaptureValidationError, buildCaptureDescription, isCaptureBodyWithinLimit, storeCaptureScreenshot, validateBrowserCapture } from './browser-capture.service.js';
 
 const router = express.Router();
 
@@ -15,6 +15,11 @@ router.use((req, res, next) => {
 });
 
 router.post('/', asyncHandler(async (req, res) => {
+  // express.json has a shared, larger limit for other APIs; enforce this
+  // endpoint limit even when clients omit Content-Length (for example chunked requests).
+  if (!isCaptureBodyWithinLimit(req.body)) {
+    return res.status(413).json({ error: 'Capture payload exceeds 12 MB' });
+  }
   let capture;
   try { capture = validateBrowserCapture(req.body); } catch (error) {
     if (error instanceof CaptureValidationError) return res.status(error.statusCode).json({ error: error.message, code: error.code });

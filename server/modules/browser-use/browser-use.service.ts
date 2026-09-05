@@ -114,6 +114,8 @@ const consoleAttachedPages = new WeakSet<object>();
 const dialogHandlers = new Map<string, DialogAction>();
 const baseUserAgents = new Map<string, string>();
 const promptNotificationIds = new Map<string, string>();
+const humanInputQueues = new Map<string, Promise<void>>();
+const browserUseTestSessions = new Set<string>();
 let installPromise: Promise<{ success: boolean; message: string }> | null = null;
 let lastInstallMessage: string | null = null;
 let runtimeProbeCache: { value: RuntimeProbe; updatedAt: number } | null = null;
@@ -617,6 +619,7 @@ async function attachNetworkCaptureToPages(sessionId: string, pages: any[]): Pro
 }
 
 async function closeHandle(sessionId: string): Promise<void> {
+  humanInputQueues.delete(sessionId);
   const dialogAction = dialogHandlers.get(sessionId);
   if (dialogAction?.page?.off) {
     dialogAction.page.off('dialog', dialogAction.handler);
@@ -951,7 +954,7 @@ export const browserUseService = {
 
   async getAgentSession(sessionId: string) {
     const settings = readSettings();
-    if (!settings.enabled) {
+    if (!settings.enabled && !browserUseTestSessions.has(sessionId)) {
       throw new Error('Browser agent tools are disabled.');
     }
     const session = sessions.get(sessionId);
@@ -1132,6 +1135,9 @@ export const browserUseService = {
 
   async agentConsoleMessages(sessionId: string, input: { level?: BrowserConsoleLevel; clear?: boolean } = {}) {
     const session = await this.getAgentSession(sessionId);
+    if (input.clear === true) {
+      requireAgentControl(session);
+    }
     const buffer = getConsoleBuffer(session.id);
     const messages = buffer.read({ level: input.level, clear: input.clear === true });
     return {
@@ -1528,6 +1534,30 @@ export const browserUseService = {
     url?: string;
     secret?: boolean;
   }) {
+    const previous = humanInputQueues.get(sessionId) || Promise.resolve();
+    const run = previous.catch(() => undefined).then(() => this.performHumanInput(sessionId, input));
+    const settled = run.then(() => undefined, () => undefined);
+    humanInputQueues.set(sessionId, settled);
+    try {
+      return await run;
+    } finally {
+      if (humanInputQueues.get(sessionId) === settled) {
+        humanInputQueues.delete(sessionId);
+      }
+    }
+  },
+
+  async performHumanInput(sessionId: string, input: {
+    action: 'click' | 'type' | 'key' | 'scroll' | 'navigate';
+    x?: number;
+    y?: number;
+    text?: string;
+    key?: string;
+    deltaX?: number;
+    deltaY?: number;
+    url?: string;
+    secret?: boolean;
+  }) {
     const session = await this.getAgentSession(sessionId);
     if (session.controller !== 'human') {
       throw new Error('Take control of this browser session before sending human input.');
@@ -1690,6 +1720,7 @@ export const browserUseService = {
 
   async agentNetworkClear(sessionId: string) {
     const session = await this.getAgentSession(sessionId);
+    requireAgentControl(session);
     const capture = getNetworkCapture(session.id);
     return {
       sessionId: session.id,
@@ -1749,6 +1780,28 @@ export const browserUseService = {
         session.message = 'Browser session stopped during server shutdown.';
       }
     }));
+  },
+};
+
+// Kept deliberately small so service tests can exercise ownership and input
+// ordering without requiring a downloaded Chromium binary.
+export const browserUseTestHooks = {
+  installSession(session: BrowserUseSession, handle: RuntimeHandle) {
+    browserUseTestSessions.add(session.id);
+    sessions.set(session.id, session);
+    handles.set(session.id, handle);
+    networkCaptures.set(session.id, new NetworkCapture(session.id, { enabled: true }));
+    consoleBuffers.set(session.id, new BrowserConsoleBuffer(CONSOLE_MAX_MESSAGES));
+  },
+  clear() {
+    for (const sessionId of sessions.keys()) {
+      humanInputQueues.delete(sessionId);
+      handles.delete(sessionId);
+      networkCaptures.delete(sessionId);
+      consoleBuffers.delete(sessionId);
+      sessions.delete(sessionId);
+      browserUseTestSessions.delete(sessionId);
+    }
   },
 };
 

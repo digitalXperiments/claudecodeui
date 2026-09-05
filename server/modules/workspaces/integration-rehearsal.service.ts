@@ -4,7 +4,7 @@
  * and always remove the temporary branch/worktree/process.
  */
 
-import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, lstat, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 
@@ -81,6 +81,7 @@ function runArgv(
         cwd: options.cwd,
         stdio: ['ignore', 'pipe', 'pipe'],
         env: { ...process.env },
+        detached: process.platform !== 'win32',
         windowsHide: true,
       });
     } catch (error) {
@@ -101,18 +102,38 @@ function runArgv(
       settled = true;
       resolve(result);
     };
+    const terminate = (signal: NodeJS.Signals): void => {
+      // npm and other test runners can spawn descendants. On POSIX, kill the
+      // detached process group so a timed-out test cannot outlive rehearsal.
+      if (child.pid && process.platform !== 'win32') {
+        try {
+          process.kill(-child.pid, signal);
+          return;
+        } catch {
+          // Fall back to the direct child when the group no longer exists.
+        }
+      }
+      child.kill(signal);
+    };
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill('SIGTERM');
-      setTimeout(() => child.kill('SIGKILL'), 1000).unref();
+      terminate('SIGTERM');
+      setTimeout(() => terminate('SIGKILL'), 1000).unref();
     }, options.timeoutMs);
     timer.unref();
-    child.stdout?.on('data', (chunk) => {
-      stdout += String(chunk);
-    });
-    child.stderr?.on('data', (chunk) => {
-      stderr += String(chunk);
-    });
+    let capturedBytes = 0;
+    const append = (target: 'stdout' | 'stderr', chunk: unknown): void => {
+      const buffer = Buffer.from(String(chunk));
+      const remaining = MAX_OUTPUT - capturedBytes;
+      if (remaining <= 0) return;
+      const accepted = buffer.subarray(0, remaining).toString();
+      capturedBytes += Buffer.byteLength(accepted);
+      if (target === 'stdout') stdout += accepted;
+      else stderr += accepted;
+      if (buffer.byteLength > remaining) terminate('SIGTERM');
+    };
+    child.stdout?.on('data', (chunk) => append('stdout', chunk));
+    child.stderr?.on('data', (chunk) => append('stderr', chunk));
     child.on('error', (error) => {
       clearTimeout(timer);
       finish({ code: null, stdout, stderr: stderr || error.message, timedOut });
@@ -122,6 +143,39 @@ function runArgv(
       finish({ code, stdout, stderr, timedOut });
     });
   });
+}
+
+/** Ignore primary dirt copied into a worktree; reject edits made in that worktree. */
+async function filterOverlayOnlyDirt(
+  primaryPath: string,
+  workspacePath: string,
+  dirtyFiles: Array<{ path: string; status: string }>,
+): Promise<Array<{ path: string; status: string }>> {
+  const blocking: Array<{ path: string; status: string }> = [];
+  for (const file of dirtyFiles) {
+    if (file.status.includes('U') || file.status === 'AA' || file.status === 'DD') {
+      blocking.push(file);
+      continue;
+    }
+    try {
+      const [workspaceInfo, primaryInfo] = await Promise.all([
+        lstat(path.join(workspacePath, file.path)),
+        lstat(path.join(primaryPath, file.path)),
+      ]);
+      if (!workspaceInfo.isFile() || !primaryInfo.isFile()) {
+        blocking.push(file);
+        continue;
+      }
+      const [workspaceContent, primaryContent] = await Promise.all([
+        readFile(path.join(workspacePath, file.path)),
+        readFile(path.join(primaryPath, file.path)),
+      ]);
+      if (!workspaceContent.equals(primaryContent)) blocking.push(file);
+    } catch {
+      blocking.push(file);
+    }
+  }
+  return blocking;
 }
 
 async function loadShipTestCommand(projectPath: string): Promise<{ command: string; relativeCwd?: string }> {
@@ -248,7 +302,8 @@ export function createIntegrationRehearsalService(options: IntegrationRehearsalS
       }
       if (workspaceExists) {
         const live = await statusPorcelain(workspace.root_path);
-        if (live.dirtyFiles.length > 0) {
+        const blockingDirty = await filterOverlayOnlyDirt(primaryPath, workspace.root_path, live.dirtyFiles);
+        if (blockingDirty.length > 0) {
           throw new CloudError(
             'WORKSPACE_DIRTY_CONFLICT',
             `Workspace ${workspace.workspace_id} has uncommitted edits; rehearsal uses committed tips only`,

@@ -9,6 +9,10 @@ export const MAX_SCREENSHOT_BYTES = 8 * 1024 * 1024;
 export const MAX_TEXT_LENGTH = 20_000;
 export const MAX_EVENTS = 500;
 
+export function isCaptureBodyWithinLimit(input: unknown): boolean {
+  return Buffer.byteLength(JSON.stringify(input ?? {}), 'utf8') <= MAX_CAPTURE_BODY_BYTES;
+}
+
 type CaptureEvent = {
   type: 'click' | 'scroll' | 'input';
   at: number;

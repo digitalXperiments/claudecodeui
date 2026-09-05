@@ -47,8 +47,8 @@
     "build:server": "node scripts/build-server.mjs",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p server/tsconfig.json",
-    "test:server": "tsx --tsconfig server/tsconfig.json --test \"server/**/tests/**/*.test.ts\" \"server/**/*.test.js\"",
-    "test:client": "tsx --test \"src/components/studio/**/*.test.ts\" \"src/components/studio/**/*.test.tsx\" \"src/components/chat/**/*.test.ts\" \"src/components/chat/**/*.test.tsx\" \"src/components/settings/**/*.test.ts\" \"src/components/settings/**/*.test.tsx\" \"src/utils/**/*.test.ts\"",
+    "test:server": "tsx --tsconfig server/tsconfig.json --test \"server/**/tests/**/*.test.ts\" \"server/**/*.test.js\" \"extensions/**/*.test.js\"",
+    "test:client": "tsx --test \"src/components/studio/**/*.test.ts\" \"src/components/studio/**/*.test.tsx\" \"src/components/chat/**/*.test.ts\" \"src/components/chat/**/*.test.tsx\" \"src/components/settings/**/*.test.ts\" \"src/components/settings/**/*.test.tsx\" \"src/components/browser-use/**/*.test.ts\" \"src/utils/**/*.test.ts\"",
     "test": "npm run test:server && npm run test:client",
     "lint": "eslint src/ server/",
     "lint:fix": "eslint src/ server/ --fix",
@@ -175,8 +175,10 @@
     "express": "^4.18.2",
     "fuse.js": "^7.0.0",
     "gray-matter": "^4.0.3",
+    "helmet": "^8.3.0",
     "i18next": "^25.7.4",
     "i18next-browser-languagedetector": "^8.2.0",
+    "ignore": "^7.0.6",
     "jsonrepair": "^3.15.0",
     "jsonwebtoken": "^9.0.2",
     "jszip": "^3.10.1",
@@ -203,8 +205,7 @@
     "tailwind-merge": "^3.3.1",
     "web-push": "^3.6.7",
     "ws": "^8.14.2",
-    "yaml": "^2.8.2",
-    "ignore": "^7.0.6"
+    "yaml": "^2.8.2"
   },
   "devDependencies": {
     "@commitlint/cli": "^20.5.0",

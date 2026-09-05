@@ -66,7 +66,13 @@ import type {
  * legacy `<project>/.cloudcli/worktrees/` root, which stays allowed for reads.
  */
 const WORKTREES_DIRNAME = '.worktrees';
-const GIT_EXCLUDE_ENTRY = `${WORKTREES_DIRNAME}/`;
+/**
+ * Private-exclude entries. `.worktrees/` keeps agent worktrees out of git; the
+ * cross-process lock leases under `.cloudcli/locks/` are runtime artifacts that
+ * live inside the project root and would otherwise surface as repository dirt
+ * to anything that reads `git status` (applyToPrimary, rehearsal preflight).
+ */
+const GIT_EXCLUDE_ENTRIES = [`${WORKTREES_DIRNAME}/`, '.cloudcli/locks/'];
 const WORKSPACE_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
 const WORKTREES_MARKER = `${path.sep}${WORKTREES_DIRNAME}${path.sep}`;
 const LEGACY_WORKTREES_MARKER = `${path.sep}.cloudcli${path.sep}worktrees${path.sep}`;
@@ -499,14 +505,14 @@ export function createWorkspaceService(options: WorkspaceServiceOptions = {}): W
       } catch {
         // No private exclude file yet — create one below.
       }
-      const covered = existing
-        .split('\n')
-        .map((line) => line.trim())
-        .some((line) => line === GIT_EXCLUDE_ENTRY || line === WORKTREES_DIRNAME);
-      if (covered) {
+      const present = new Set(existing.split('\n').map((line) => line.trim()));
+      const missing = GIT_EXCLUDE_ENTRIES.filter(
+        (entry) => !present.has(entry) && !present.has(entry.replace(/\/$/, '')),
+      );
+      if (missing.length === 0) {
         return;
       }
-      const block = `# CloudCLI agent workspaces\n${GIT_EXCLUDE_ENTRY}\n`;
+      const block = `# CloudCLI agent workspaces\n${missing.join('\n')}\n`;
       await mkdir(path.dirname(gitignorePath), { recursive: true });
       await writeFile(
         gitignorePath,

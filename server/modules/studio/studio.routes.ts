@@ -1,10 +1,15 @@
 import express from 'express';
 
+import studioUniversesRoutes from '@/modules/studio/studio-universes.routes.js';
 import { buildIdeatePrompt, studioService } from '@/modules/studio/studio.service.js';
 import type { StudioSelectedElement, StudioTokensPatch } from '@/modules/studio/studio.types.js';
 import { AppError, asyncHandler } from '@/shared/utils.js';
 
 const router = express.Router();
+
+// Parallel Universes: real repository execution/preview, independent of the
+// HTML prototype flow below.
+router.use('/:projectId/universes', studioUniversesRoutes);
 
 router.get(
   '/settings',

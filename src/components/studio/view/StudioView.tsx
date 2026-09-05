@@ -16,6 +16,7 @@ import {
   PanelRight,
   Plus,
   RefreshCw,
+  Rocket,
   Send,
   Sparkles,
   Smartphone,
@@ -40,6 +41,7 @@ import type {
   StudioSelectedElement,
   StudioTokensPatch,
 } from '../types';
+import StudioUniversesPanel from '../universes/StudioUniversesPanel';
 
 import StudioArtifacts from './StudioArtifacts';
 import StudioHistoryTimeline from './StudioHistoryTimeline';
@@ -76,6 +78,7 @@ type StudioChatSession = ProjectSession & {
 
 type ResizeTarget = 'controls' | 'chat';
 type InspectorTab = 'library' | 'history' | 'tokens' | 'artifacts';
+type StudioMode = 'prototypes' | 'universes';
 
 function clampWidth(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
@@ -139,6 +142,7 @@ export default function StudioView({
   externalMessageUpdate,
   newSessionTrigger,
 }: StudioViewProps) {
+  const [mode, setMode] = useState<StudioMode>('prototypes');
   const [projectId, setProjectId] = useState(selectedProject?.projectId ?? projects[0]?.projectId ?? '');
   const [items, setItems] = useState<StudioPrototype[]>([]);
   const [active, setActive] = useState<StudioPrototypeDetail | null>(null);
@@ -503,16 +507,41 @@ export default function StudioView({
               <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
             </span>
           </label>
-          <Button size="sm" variant="ghost" onClick={() => setControlsOpen((open) => !open)} title="Toggle prototypes panel" aria-label="Toggle prototypes panel">
-            <PanelLeft className="h-4 w-4" />
-          </Button>
-          <Button size="sm" variant="ghost" onClick={() => setChatOpen((open) => !open)} title="Toggle agent chat" aria-label="Toggle agent chat">
-            <PanelRight className="h-4 w-4" />
-            <span className="hidden md:inline">Agent chat</span>
-          </Button>
+          <div className="mr-1 hidden items-center gap-0.5 rounded-lg border border-border bg-background p-0.5 sm:flex">
+            <button
+              type="button"
+              className={`rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${mode === 'prototypes' ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:text-foreground'}`}
+              onClick={() => setMode('prototypes')}
+            >
+              Prototypes
+            </button>
+            <button
+              type="button"
+              className={`inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${mode === 'universes' ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:text-foreground'}`}
+              onClick={() => setMode('universes')}
+            >
+              <Rocket className="h-3 w-3" /> Universes
+            </button>
+          </div>
+          {mode === 'prototypes' ? (
+            <>
+              <Button size="sm" variant="ghost" onClick={() => setControlsOpen((open) => !open)} title="Toggle prototypes panel" aria-label="Toggle prototypes panel">
+                <PanelLeft className="h-4 w-4" />
+              </Button>
+              <Button size="sm" variant="ghost" onClick={() => setChatOpen((open) => !open)} title="Toggle agent chat" aria-label="Toggle agent chat">
+                <PanelRight className="h-4 w-4" />
+                <span className="hidden md:inline">Agent chat</span>
+              </Button>
+            </>
+          ) : null}
         </div>
       </header>
 
+      {mode === 'universes' ? (
+        <div className="min-h-0 flex-1">
+          <StudioUniversesPanel project={project ?? null} isVisible={isVisible} />
+        </div>
+      ) : (
       <div
         className="grid min-h-0 flex-1 grid-cols-1 xl:[grid-template-columns:var(--studio-grid)]"
         style={{ '--studio-grid': gridTemplateColumns } as CSSProperties}
@@ -772,14 +801,15 @@ export default function StudioView({
           </>
         ) : null}
       </div>
+      )}
 
-      {active && !chatOpen ? (
+      {mode === 'prototypes' && active && !chatOpen ? (
         <div className="fixed bottom-4 right-4 z-20">
           <Button size="sm" onClick={() => setChatOpen(true)}><Send className="mr-1.5 h-3.5 w-3.5" />Chat to iterate</Button>
         </div>
       ) : null}
 
-      {active && chatOpen ? (
+      {mode === 'prototypes' && active && chatOpen ? (
         <div className="pointer-events-none fixed bottom-4 left-1/2 z-20 hidden -translate-x-1/2 items-center gap-2 rounded-full border border-border bg-card/95 px-3 py-1.5 text-[10px] text-muted-foreground shadow-lg 2xl:flex">
           <Maximize2 className="h-3 w-3" /> Preview updates automatically after each agent edit
         </div>

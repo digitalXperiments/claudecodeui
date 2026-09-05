@@ -7,3 +7,11 @@ export function newStudioVersionId(): string {
 export function newStudioVariantId(): string {
   return `var_${ulid()}`;
 }
+
+export function newStudioUniverseId(): string {
+  return `uni_${ulid()}`;
+}
+
+export function newStudioUniverseVariantId(): string {
+  return `uv_${ulid()}`;
+}

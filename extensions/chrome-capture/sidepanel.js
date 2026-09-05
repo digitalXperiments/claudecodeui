@@ -4,7 +4,18 @@ const $ = (id) => document.getElementById(id);
 const state = { screenshotDataUrl: '', element: undefined, reproduction: undefined };
 function message(text, error = false) { $('status').textContent = text; $('status').className = error ? 'error' : ''; }
 async function settings() { return chrome.storage.local.get(['server', 'token']); }
-async function tab() { const [active] = await chrome.tabs.query({ active: true, currentWindow: true }); if (!active?.id) throw new Error('No active tab'); return active; }
+async function tab() {
+  const tracked = await chrome.runtime.sendMessage({ type: 'getActiveCaptureTab' });
+  if (tracked?.tabId != null) {
+    try {
+      const active = await chrome.tabs.get(tracked.tabId);
+      if (active?.id != null) return active;
+    } catch { /* the tracked tab may have been closed between calls */ }
+  }
+  const [active] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  if (!active?.id) throw new Error('No active tab');
+  return active;
+}
 async function page(func, args = []) { const current = await tab(); const result = await chrome.scripting.executeScript({ target: { tabId: current.id }, func, args }); return result[0]?.result; }
 async function request(path, options = {}) { const config = await settings(); if (!config.server || !config.token) throw new Error('Save a server URL and bearer token first'); const response = await fetch(`${config.server.replace(/\/$/, '')}${path}`, { ...options, headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${config.token}`, ...(options.headers || {}) } }); const data = await response.json().catch(() => ({})); if (!response.ok) throw new Error(data.error || `Server returned ${response.status}`); return data; }
 async function loadProjects() { const data = await request('/api/projects?skipSynchronization=1'); const projects = Array.isArray(data) ? data : (data.projects || []); $('project').innerHTML = '<option value="">Choose project</option>'; projects.filter((p) => !p.isArchived).forEach((project) => { const option = document.createElement('option'); option.value = project.project_id || project.id; option.textContent = project.custom_project_name || project.name || project.project_path || option.value; $('project').append(option); }); message(`${projects.length} projects loaded`); }
