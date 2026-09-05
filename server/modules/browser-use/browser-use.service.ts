@@ -71,10 +71,11 @@ type BrowserUseSession = {
   cursor: {
     x: number;
     y: number;
-    actor: 'agent';
+    actor: 'agent' | 'human';
   } | null;
   workspacePath: string;
   networkRecording: boolean;
+  controller: 'agent' | 'human';
 };
 
 type PublicBrowserUseSession = Omit<BrowserUseSession, 'ownerId'>;
@@ -560,6 +561,12 @@ function publicSessionWithoutScreenshot(session: BrowserUseSession): PublicBrows
   return { ...publicSession(session), screenshotDataUrl: null };
 }
 
+function requireAgentControl(session: BrowserUseSession): void {
+  if (session.controller === 'human') {
+    throw new Error('Browser session is under human control. Return control to the agent before continuing.');
+  }
+}
+
 function serializeEvaluateResult(value: unknown, maxBytes: number): {
   json: string;
   truncated: boolean;
@@ -870,6 +877,7 @@ export const browserUseService = {
       cursor: null,
       workspacePath: sessionWorkspacePath,
       networkRecording: options?.recordNetwork ?? NETWORK_RECORDING_DEFAULT,
+      controller: 'agent',
     };
 
     const activeOwnerSessions = ownerSessions(AGENT_OWNER_ID).filter((item) => item.status === 'ready');
@@ -961,6 +969,7 @@ export const browserUseService = {
     if (!session || session.ownerId !== AGENT_OWNER_ID) {
       throw new Error('Browser session not found.');
     }
+    requireAgentControl(session);
 
     if (session.status !== 'ready') {
       throw new Error(session.message || 'Browser session is not available.');
@@ -1017,6 +1026,7 @@ export const browserUseService = {
 
   async agentClick(sessionId: string, input: { selector?: string; text?: string; x?: number; y?: number }) {
     const session = await this.getAgentSession(sessionId);
+    requireAgentControl(session);
     const handle = handles.get(sessionId);
     if (!handle?.page) {
       throw new Error('Browser runtime handle is not available.');
@@ -1041,6 +1051,7 @@ export const browserUseService = {
 
   async agentType(sessionId: string, input: { selector?: string; text: string; submit?: boolean }) {
     const session = await this.getAgentSession(sessionId);
+    requireAgentControl(session);
     const handle = handles.get(sessionId);
     if (!handle?.page) {
       throw new Error('Browser runtime handle is not available.');
@@ -1065,6 +1076,7 @@ export const browserUseService = {
 
   async agentTypeSecret(sessionId: string, input: { selector?: string; secretHandle: string; submit?: boolean }) {
     const session = await this.getAgentSession(sessionId);
+    requireAgentControl(session);
     const handle = handles.get(sessionId);
     if (!handle?.page) {
       throw new Error('Browser runtime handle is not available.');
@@ -1099,6 +1111,7 @@ export const browserUseService = {
 
   async agentEvaluate(sessionId: string, input: { expression: string; maxBytes?: number }) {
     const session = await this.getAgentSession(sessionId);
+    requireAgentControl(session);
     const handle = handles.get(sessionId);
     if (!handle?.page) {
       throw new Error('Browser runtime handle is not available.');
@@ -1132,6 +1145,7 @@ export const browserUseService = {
 
   async agentFillForm(sessionId: string, fields: Array<{ selector: string; value: string }>) {
     const session = await this.getAgentSession(sessionId);
+    requireAgentControl(session);
     const handle = handles.get(sessionId);
     if (!handle?.page) {
       throw new Error('Browser runtime handle is not available.');
@@ -1151,6 +1165,7 @@ export const browserUseService = {
 
   async agentPressKey(sessionId: string, key: string) {
     const session = await this.getAgentSession(sessionId);
+    requireAgentControl(session);
     const handle = handles.get(sessionId);
     if (!handle?.page) {
       throw new Error('Browser runtime handle is not available.');
@@ -1163,6 +1178,7 @@ export const browserUseService = {
 
   async agentSelectOption(sessionId: string, selector: string, values: string[]) {
     const session = await this.getAgentSession(sessionId);
+    requireAgentControl(session);
     const handle = handles.get(sessionId);
     if (!handle?.page) {
       throw new Error('Browser runtime handle is not available.');
@@ -1197,6 +1213,7 @@ export const browserUseService = {
 
   async agentTabs(sessionId: string, input: { action?: 'list' | 'new' | 'select' | 'close'; index?: number; url?: string }) {
     const session = await this.getAgentSession(sessionId);
+    if (input.action && input.action !== 'list') requireAgentControl(session);
     const handle = handles.get(sessionId);
     if (!handle?.context || !handle?.page) {
       throw new Error('Browser runtime handle is not available.');
@@ -1243,6 +1260,7 @@ export const browserUseService = {
 
   async agentNavigateHistory(sessionId: string, action: 'back' | 'forward' | 'reload') {
     const session = await this.getAgentSession(sessionId);
+    requireAgentControl(session);
     const handle = handles.get(sessionId);
     if (!handle?.page) {
       throw new Error('Browser runtime handle is not available.');
@@ -1270,6 +1288,7 @@ export const browserUseService = {
 
   async agentHandleDialog(sessionId: string, input: { action: 'accept' | 'dismiss'; promptText?: string }) {
     const session = await this.getAgentSession(sessionId);
+    requireAgentControl(session);
     const handle = handles.get(sessionId);
     if (!handle?.page || typeof handle.page.on !== 'function') {
       throw new Error('Browser runtime handle is not available.');
@@ -1310,6 +1329,7 @@ export const browserUseService = {
 
   async agentSetViewport(sessionId: string, input: { width: number; height: number }) {
     const session = await this.getAgentSession(sessionId);
+    requireAgentControl(session);
     const handle = handles.get(sessionId);
     if (!handle?.page || !handle.context) {
       throw new Error('Browser runtime handle is not available.');
@@ -1334,6 +1354,7 @@ export const browserUseService = {
 
   async agentEmulateDevice(sessionId: string, presetName: DevicePresetName) {
     const session = await this.getAgentSession(sessionId);
+    requireAgentControl(session);
     const handle = handles.get(sessionId);
     const preset = DEVICE_PRESETS[presetName];
     if (!preset) {
@@ -1397,6 +1418,7 @@ export const browserUseService = {
     timeoutMs?: number;
   }) {
     const session = await this.getAgentSession(sessionId);
+    requireAgentControl(session);
     const handle = handles.get(sessionId);
     if (!handle?.page) {
       throw new Error('Browser runtime handle is not available.');
@@ -1444,6 +1466,7 @@ export const browserUseService = {
 
   async agentUploadFile(sessionId: string, input: { selector: string; filePath: string }) {
     const session = await this.getAgentSession(sessionId);
+    requireAgentControl(session);
     const handle = handles.get(sessionId);
     if (!handle?.page) {
       throw new Error('Browser runtime handle is not available.');
@@ -1471,6 +1494,78 @@ export const browserUseService = {
       fileName: path.basename(filePath),
       sizeBytes: stat.size,
     };
+  },
+
+  async takeHumanControl(sessionId: string) {
+    const session = await this.getAgentSession(sessionId);
+    if (session.controller === 'human') {
+      return publicSession(session);
+    }
+    session.controller = 'human';
+    session.lastAction = 'human_control_acquired';
+    session.message = 'Human control is active. Agent browser actions are paused.';
+    session.updatedAt = new Date().toISOString();
+    return publicSession(session);
+  },
+
+  async returnAgentControl(sessionId: string) {
+    const session = await this.getAgentSession(sessionId);
+    session.controller = 'agent';
+    session.lastAction = 'human_control_released';
+    session.message = 'Agent control is active.';
+    session.updatedAt = new Date().toISOString();
+    return publicSession(session);
+  },
+
+  async humanInput(sessionId: string, input: {
+    action: 'click' | 'type' | 'key' | 'scroll' | 'navigate';
+    x?: number;
+    y?: number;
+    text?: string;
+    key?: string;
+    deltaX?: number;
+    deltaY?: number;
+    url?: string;
+    secret?: boolean;
+  }) {
+    const session = await this.getAgentSession(sessionId);
+    if (session.controller !== 'human') {
+      throw new Error('Take control of this browser session before sending human input.');
+    }
+    const handle = handles.get(sessionId);
+    if (!handle?.page) throw new Error('Browser runtime handle is not available.');
+    const page = handle.page;
+    if (input.action === 'click') {
+      if (!Number.isFinite(input.x) || !Number.isFinite(input.y)) throw new Error('click x and y are required.');
+      const viewport = session.viewport || page.viewportSize?.();
+      if (!viewport || input.x! < 0 || input.y! < 0 || input.x! > viewport.width || input.y! > viewport.height) {
+        throw new Error('click coordinates are outside the browser viewport.');
+      }
+      await page.mouse.click(input.x!, input.y!);
+      session.cursor = { x: input.x!, y: input.y!, actor: 'human' };
+    } else if (input.action === 'type') {
+      if (typeof input.text !== 'string' || input.text.length > 20_000) throw new Error('text must be a string of at most 20,000 characters.');
+      await page.keyboard.insertText(input.text);
+    } else if (input.action === 'key') {
+      if (typeof input.key !== 'string' || !input.key.trim() || input.key.length > 100) throw new Error('key is required.');
+      await page.keyboard.press(input.key);
+    } else if (input.action === 'scroll') {
+      if (!Number.isFinite(input.deltaX) || !Number.isFinite(input.deltaY) || Math.abs(input.deltaX!) > 10_000 || Math.abs(input.deltaY!) > 10_000) {
+        throw new Error('scroll deltas must be finite and within bounds.');
+      }
+      await page.mouse.wheel(input.deltaX!, input.deltaY!);
+    } else if (input.action === 'navigate') {
+      await page.goto(normalizeUrl(input.url || ''), { waitUntil: 'domcontentloaded', timeout: 30_000 });
+      session.cursor = null;
+    }
+    session.lastAction = `human_${input.action}`;
+    session.updatedAt = new Date().toISOString();
+    // Secret prompt answers are deliberately never captured into the session screenshot.
+    if (input.secret || input.action === 'type') {
+      return { session: publicSessionWithoutScreenshot(session), screenshotSuppressed: true };
+    }
+    await captureSession(session, page);
+    return { session: publicSession(session), screenshotSuppressed: false };
   },
 
   async agentAskHuman(input: CreateBrowserHumanPromptInput) {
@@ -1605,6 +1700,7 @@ export const browserUseService = {
 
   async agentNetworkThrottle(sessionId: string, preset: 'offline' | 'slow-3g' | 'fast-3g' | 'none') {
     const session = await this.getAgentSession(sessionId);
+    requireAgentControl(session);
     return {
       sessionId: session.id,
       ...(await getNetworkCapture(session.id).throttle(preset)),

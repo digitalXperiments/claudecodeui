@@ -101,6 +101,39 @@ router.get('/sessions', async (_req, res) => {
   }
 });
 
+router.post('/sessions/:sessionId/control', async (req, res) => {
+  try {
+    const sessionId = readParam(req.params.sessionId);
+    const body = req.body && typeof req.body === 'object' ? req.body as Record<string, unknown> : {};
+    if (body.action === 'take') {
+      res.json({ success: true, data: { session: await browserUseService.takeHumanControl(sessionId) } });
+      return;
+    }
+    if (body.action === 'return') {
+      res.json({ success: true, data: { session: await browserUseService.returnAgentControl(sessionId) } });
+      return;
+    }
+    const action = body.action;
+    if (action !== 'click' && action !== 'type' && action !== 'key' && action !== 'scroll' && action !== 'navigate') {
+      throw new Error('action must be take, return, click, type, key, scroll, or navigate.');
+    }
+    const result = await browserUseService.humanInput(sessionId, {
+      action: action as 'click' | 'type' | 'key' | 'scroll' | 'navigate',
+      x: typeof body.x === 'number' ? body.x : undefined,
+      y: typeof body.y === 'number' ? body.y : undefined,
+      text: typeof body.text === 'string' ? body.text : undefined,
+      key: typeof body.key === 'string' ? body.key : undefined,
+      deltaX: typeof body.deltaX === 'number' ? body.deltaX : undefined,
+      deltaY: typeof body.deltaY === 'number' ? body.deltaY : undefined,
+      url: typeof body.url === 'string' ? body.url : undefined,
+      secret: body.secret === true,
+    });
+    res.json({ success: true, data: result });
+  } catch (error) {
+    res.status(400).json({ success: false, error: error instanceof Error ? error.message : 'Browser control failed.' });
+  }
+});
+
 router.post('/sessions/:sessionId/stop', async (req, res) => {
   try {
     const result = await browserUseService.stopSession(readParam(req.params.sessionId));

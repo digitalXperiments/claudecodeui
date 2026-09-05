@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Bot,
   Clock3,
@@ -50,8 +50,9 @@ type BrowserUseSession = {
   cursor: {
     x: number;
     y: number;
-    actor: 'agent';
+    actor: 'agent' | 'human';
   } | null;
+  controller: 'agent' | 'human';
 };
 
 type BrowserHumanPrompt = {
@@ -136,6 +137,18 @@ const PROMPTS = [
   'Open <url> with Browser, interact with the page, and summarize what changed after each step.',
 ];
 
+export function viewportPointFromClient(clientX: number, clientY: number, rect: DOMRect, viewport: { width: number; height: number }) {
+  const scale = Math.min(rect.width / viewport.width, rect.height / viewport.height);
+  const renderedWidth = viewport.width * scale;
+  const renderedHeight = viewport.height * scale;
+  const offsetX = (rect.width - renderedWidth) / 2;
+  const offsetY = (rect.height - renderedHeight) / 2;
+  const x = (clientX - rect.left - offsetX) / scale;
+  const y = (clientY - rect.top - offsetY) / scale;
+  if (x < 0 || y < 0 || x > viewport.width || y > viewport.height) return null;
+  return { x, y };
+}
+
 export default function BrowserUsePanel({ isVisible, onShowSettings }: BrowserUsePanelProps) {
   const [status, setStatus] = useState<BrowserUseStatus | null>(null);
   const [sessions, setSessions] = useState<BrowserUseSession[]>([]);
@@ -148,6 +161,7 @@ export default function BrowserUsePanel({ isVisible, onShowSettings }: BrowserUs
   const [pendingPrompts, setPendingPrompts] = useState<BrowserHumanPrompt[]>([]);
   const [promptAnswers, setPromptAnswers] = useState<Record<string, string>>({});
   const [promptBusyId, setPromptBusyId] = useState<string | null>(null);
+  const surfaceRef = useRef<HTMLDivElement>(null);
 
   const selectedSession = useMemo(
     () => sessions.find((session) => session.id === selectedSessionId) || sessions[0] || null,
@@ -255,6 +269,25 @@ export default function BrowserUsePanel({ isVisible, onShowSettings }: BrowserUs
       setPromptBusyId(null);
     }
   }, []);
+
+  const sendHumanInput = useCallback(async (body: Record<string, unknown>) => {
+    if (!selectedSession || selectedSession.controller !== 'human') return;
+    try {
+      const response = await authenticatedFetch(`/api/browser-use/sessions/${selectedSession.id}/control`, {
+        method: 'POST', body: JSON.stringify(body),
+      });
+      await readJson(response);
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Human browser input failed');
+    }
+  }, [refresh, selectedSession]);
+
+  const takeOrReturnControl = useCallback(async () => {
+    if (!selectedSession) return;
+    const action = selectedSession.controller === 'human' ? 'return' : 'take';
+    await sendHumanInput({ action });
+  }, [selectedSession, sendHumanInput]);
 
   const stopSession = () => runAction(async () => {
     if (!selectedSession) return;
@@ -370,7 +403,35 @@ export default function BrowserUsePanel({ isVisible, onShowSettings }: BrowserUs
   );
 
   const renderBrowserSurface = (fullscreen = false) => (
-    <div className={cn('flex flex-1 items-center justify-center bg-neutral-950', fullscreen ? 'min-h-[80vh]' : 'min-h-[420px]')}>
+    <div
+      ref={surfaceRef}
+      tabIndex={selectedSession?.controller === 'human' ? 0 : -1}
+      onKeyDown={(event) => {
+        if (selectedSession?.controller !== 'human') return;
+        event.preventDefault();
+        // Printable keys use insertText and suppress the screenshot so a
+        // password or token typed during takeover is never persisted.
+        if (event.key.length === 1 && !event.metaKey && !event.ctrlKey && !event.altKey) {
+          void sendHumanInput({ action: 'type', text: event.key, secret: true });
+        } else {
+          void sendHumanInput({ action: 'key', key: event.key });
+        }
+      }}
+      onWheel={(event) => {
+        if (selectedSession?.controller !== 'human') return;
+        event.preventDefault();
+        void sendHumanInput({ action: 'scroll', deltaX: event.deltaX, deltaY: event.deltaY });
+      }}
+      onClick={(event) => {
+        if (selectedSession?.controller !== 'human' || !selectedSession.viewport || !event.currentTarget.contains(event.target as Node)) return;
+        const image = event.currentTarget.querySelector('img');
+        if (!image) return;
+        const point = viewportPointFromClient(event.clientX, event.clientY, image.getBoundingClientRect(), selectedSession.viewport);
+        if (point) void sendHumanInput({ action: 'click', ...point });
+      }}
+      onMouseDown={() => { if (selectedSession?.controller === 'human') surfaceRef.current?.focus(); }}
+      className={cn('flex flex-1 items-center justify-center bg-neutral-950 outline-none', fullscreen ? 'min-h-[80vh]' : 'min-h-[420px]')}
+    >
       {selectedSession?.screenshotDataUrl ? (
         <div className="relative inline-block max-h-full">
           <img
@@ -546,7 +607,7 @@ export default function BrowserUsePanel({ isVisible, onShowSettings }: BrowserUs
           ) : (
             <div className="min-h-0 flex-1 overflow-auto bg-muted/20 p-4">
               <div className="mx-auto flex min-h-[500px] max-w-7xl flex-col overflow-hidden rounded-md border border-border bg-background shadow-sm">
-                <div className="flex flex-wrap items-center gap-2 border-b border-border/60 px-3 py-2">
+          <div className="flex flex-wrap items-center gap-2 border-b border-border/60 px-3 py-2">
                   <Badge variant="outline" className={selectedSession ? cn('text-[10px]', getStatusTone(selectedSession.status)) : 'text-[10px]'}>
                     {selectedSession?.status || 'empty'}
                   </Badge>
@@ -562,6 +623,9 @@ export default function BrowserUsePanel({ isVisible, onShowSettings }: BrowserUs
                   <div className="hidden text-xs text-muted-foreground md:block">
                     {formatAction(selectedSession?.lastAction || null)}
                   </div>
+                  <Button variant={selectedSession?.controller === 'human' ? 'default' : 'outline'} size="sm" onClick={() => void takeOrReturnControl()} disabled={isBusy || selectedSession?.status !== 'ready'}>
+                    {selectedSession?.controller === 'human' ? 'Return to agent' : 'Take control'}
+                  </Button>
                   <Button variant="ghost" size="sm" className="h-8 w-8 p-0" onClick={() => setIsFullscreen(true)} disabled={!selectedSession?.screenshotDataUrl} title="Full screen" aria-label="Full screen">
                     <Expand className="h-4 w-4" />
                   </Button>
