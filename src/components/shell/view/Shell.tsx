@@ -307,7 +307,7 @@ export default function Shell({
       : readyDescription;
 
   return (
-    <div className="flex h-full w-full flex-col bg-gray-900">
+    <div className="flex h-full w-full flex-col bg-background text-foreground">
       <ShellHeader
         isConnected={isConnected}
         isInitialized={isInitialized}
@@ -348,7 +348,7 @@ export default function Shell({
 
         {cliPromptOptions && isConnected && (
           <div
-            className="absolute inset-x-0 bottom-0 z-10 border-t border-gray-700/80 bg-gray-800/95 px-3 py-2 backdrop-blur-sm md:hidden"
+            className="absolute inset-x-0 bottom-0 z-10 border-t border-border bg-background/95 px-3 py-2 backdrop-blur-sm md:hidden"
             onMouseDown={(e) => e.preventDefault()}
           >
             <div className="flex flex-wrap items-center gap-2">
@@ -372,7 +372,7 @@ export default function Shell({
                   sendInput('\x1b');
                   setCliPromptOptions(null);
                 }}
-                className="rounded bg-gray-700 px-3 py-1.5 text-xs font-medium text-gray-200 transition-colors hover:bg-gray-600"
+                className="rounded border border-border bg-muted px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-accent"
               >
                 Esc
               </button>

@@ -6,12 +6,14 @@ import { WebLinksAddon } from '@xterm/addon-web-links';
 import { WebglAddon } from '@xterm/addon-webgl';
 import { Terminal } from '@xterm/xterm';
 
+import { useTheme } from '../../../contexts/ThemeContext';
 import type { Project } from '../../../types/app';
 import { copyTextToClipboard } from '../../../utils/clipboard';
 import {
   TERMINAL_INIT_DELAY_MS,
   TERMINAL_OPTIONS,
   TERMINAL_RESIZE_DELAY_MS,
+  getTerminalTheme,
 } from '../constants/constants';
 import {
   installMobileTerminalSelection,
@@ -84,15 +86,24 @@ export function useShellTerminal({
   isRestarting,
   closeSocket,
 }: UseShellTerminalOptions): UseShellTerminalResult {
+  const { isDarkMode } = useTheme();
   const [isInitialized, setIsInitialized] = useState(false);
   const resizeTimeoutRef = useRef<number | null>(null);
   const mobileSelectionRef = useRef<MobileTerminalSelectionManager | null>(null);
+  const isDarkModeRef = useRef(isDarkMode);
   const selectedProjectKey = selectedProject?.fullPath || selectedProject?.path || '';
   const hasSelectedProject = Boolean(selectedProject);
 
   useEffect(() => {
     ensureXtermFocusStyles();
   }, []);
+
+  useEffect(() => {
+    isDarkModeRef.current = isDarkMode;
+    if (terminalRef.current) {
+      terminalRef.current.options.theme = getTerminalTheme(isDarkMode);
+    }
+  }, [isDarkMode, terminalRef]);
 
   const clearTerminalScreen = useCallback(() => {
     if (!terminalRef.current) {
@@ -124,7 +135,10 @@ export function useShellTerminal({
       return;
     }
 
-    const nextTerminal = new Terminal(TERMINAL_OPTIONS);
+    const nextTerminal = new Terminal({
+      ...TERMINAL_OPTIONS,
+      theme: getTerminalTheme(isDarkModeRef.current),
+    });
     terminalRef.current = nextTerminal;
 
     const nextFitAddon = new FitAddon();
