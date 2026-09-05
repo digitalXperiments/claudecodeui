@@ -42,3 +42,20 @@ export type { SkillTestResult } from './services/skill-test.service.js';
 export { initializeSessionsWatcher } from './services/sessions-watcher.service.js';
 export { closeSessionsWatcher } from './services/sessions-watcher.service.js';
 export { refreshSessionsWatcher } from './services/sessions-watcher.service.js';
+
+export {
+  antigravityConversationsDir,
+  antigravityTitleFromPrompt,
+  listAntigravityConversations,
+  readAntigravityConversation,
+} from './list/antigravity/antigravity-conversation-store.js';
+export type { AntigravityConversationSummary } from './list/antigravity/antigravity-conversation-store.js';
+export { AntigravitySessionSynchronizer } from './list/antigravity/antigravity-session-synchronizer.provider.js';
+export {
+  parseAgyUsagePayload,
+  readAgyJsonEnvelope,
+  readAgyUsageGroups,
+  resolveAgyCliCommand,
+  runAgyUsageCommand,
+} from './list/antigravity/antigravity-cli-usage.js';
+export type { AgyUsageBucket, AgyUsageGroup } from './list/antigravity/antigravity-cli-usage.js';

@@ -1,10 +1,9 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 
 import {
   ensureExitPlanModeToolInput,
@@ -13,6 +12,7 @@ import {
   readPlanMarkdownFromDir,
   resolveGrokHistoryPath,
 } from '@/modules/providers/list/grok/grok-sessions.provider.js';
+import { SKILL_BODY_REDACTION } from '@/shared/skill-transcript-filter.js';
 
 // Grok runs over the Agent Client Protocol (`grok agent stdio`), which streams
 // `session/update` notifications discriminated by `sessionUpdate`. These tests
@@ -234,6 +234,63 @@ test('fetchHistory reads assistant turns stored as type=message', async () => {
     assert.equal(result.messages[0]?.role, 'user');
     assert.equal(result.messages[1]?.role, 'assistant');
     assert.equal(result.messages[1]?.content, 'From the TUI');
+  } finally {
+    if (previousGrokHome === undefined) {
+      delete process.env.GROK_HOME;
+    } else {
+      process.env.GROK_HOME = previousGrokHome;
+    }
+    await rm(tempDirectory, { recursive: true, force: true });
+  }
+});
+
+test('fetchHistory redacts SKILL.md tool results and hides synthetic system reminders', async () => {
+  const previousGrokHome = process.env.GROK_HOME;
+  const tempRoot = path.join(process.cwd(), 'tmp', 'cloudcli');
+  await mkdir(tempRoot, { recursive: true });
+  const tempDirectory = await mkdtemp(path.join(tempRoot, 'grok-skill-history-'));
+  const projectPath = path.join(tempDirectory, 'project');
+  const sessionId = 'grok-skill-turn';
+  process.env.GROK_HOME = tempDirectory;
+
+  try {
+    const sessionDir = path.join(tempDirectory, 'sessions', encodeURIComponent(projectPath), sessionId);
+    await mkdir(sessionDir, { recursive: true });
+    const skillBody = '---\nname: project-memory\n---\nNever show these instructions.';
+    await writeFile(
+      path.join(sessionDir, 'chat_history.jsonl'),
+      [
+        {
+          type: 'user',
+          synthetic_reason: 'system_reminder',
+          content: [{ type: 'text', text: '<system-reminder>The following skills are available</system-reminder>' }],
+        },
+        {
+          type: 'assistant',
+          tool_calls: [{
+            id: 'read-skill-1',
+            name: 'read_file',
+            arguments: JSON.stringify({ target_file: '/workspace/.agents/skills/project-memory/SKILL.md' }),
+          }],
+        },
+        {
+          type: 'tool_result',
+          tool_call_id: 'read-skill-1',
+          content: skillBody,
+        },
+      ].map((entry) => JSON.stringify(entry)).join('\n') + '\n',
+    );
+
+    const result = await provider.fetchHistory(sessionId, {
+      projectPath,
+      providerSessionId: sessionId,
+    });
+
+    assert.equal(result.total, 1);
+    assert.equal(result.messages[0]?.kind, 'tool_use');
+    assert.equal(result.messages[0]?.toolResult?.content, SKILL_BODY_REDACTION);
+    assert.equal(JSON.stringify(result.messages).includes(skillBody), false);
+    assert.equal(JSON.stringify(result.messages).includes('The following skills are available'), false);
   } finally {
     if (previousGrokHome === undefined) {
       delete process.env.GROK_HOME;

@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import test, { mock } from 'node:test';
 
@@ -11,6 +10,7 @@ import { sessionHandoffService } from '@/modules/providers/services/session-hand
 import { sessionSummarizerService } from '@/modules/providers/services/session-summarizer.service.js';
 import { sessionsService } from '@/modules/providers/services/sessions.service.js';
 import type { FetchHistoryResult, NormalizedMessage } from '@/shared/types.js';
+import { makeScratchDir } from '@/shared/scratch.js';
 
 // The real summarizer shells out to the Claude Agent SDK; every summary-mode
 // test below mocks it explicitly so tests stay hermetic (no network calls)
@@ -20,7 +20,7 @@ async function withIsolatedDatabase(
   runTest: (context: { projectPath: string }) => void | Promise<void>,
 ): Promise<void> {
   const previousDatabasePath = process.env.DATABASE_PATH;
-  const tempDirectory = await mkdtemp(path.join(tmpdir(), 'session-handoff-'));
+  const tempDirectory = await makeScratchDir('session-handoff-');
   const databasePath = path.join(tempDirectory, 'auth.db');
   const projectPath = path.join(tempDirectory, 'project');
   await mkdir(projectPath, { recursive: true });
@@ -28,10 +28,19 @@ async function withIsolatedDatabase(
   closeConnection();
   process.env.DATABASE_PATH = databasePath;
   await initializeDatabase();
+  // Scratch paths are normally collapsed back to their owning logical project.
+  // These tests need an isolated writable project root, so keep this fixture's
+  // path literal while exercising the handoff service.
+  const pathResolverMock = mock.method(
+    projectsDb,
+    'resolveProjectPathForRuntimePath',
+    (runtimePath: string) => runtimePath,
+  );
 
   try {
     await runTest({ projectPath });
   } finally {
+    pathResolverMock.mock.restore();
     closeConnection();
     if (previousDatabasePath === undefined) {
       delete process.env.DATABASE_PATH;
@@ -154,7 +163,7 @@ test('buildHandoffDocument summary mode truncates the goal and long turns', () =
   assert.equal(document.includes('t'.repeat(1201)), false);
 });
 
-test('buildHandoffDocument full mode includes every text message', () => {
+test('buildHandoffDocument full mode includes complete text and tool events', () => {
   const messages: NormalizedMessage[] = [textMessage('user', 'the original goal')];
   for (let turn = 1; turn <= 10; turn += 1) {
     messages.push(textMessage('user', `turn-${turn} user`));
@@ -168,8 +177,16 @@ test('buildHandoffDocument full mode includes every text message', () => {
   assert.equal(document.includes('## Goal'), false);
   assert.match(document, /turn-1 user/);
   assert.match(document, /turn-10 assistant/);
-  assert.match(document, new RegExp(`LONG ${'x'.repeat(3995)}…`));
-  assert.equal(document.includes('x'.repeat(4000)), false);
+  assert.match(document, new RegExp(`LONG ${'x'.repeat(5000)}`));
+
+  const withTools = sessionHandoffService.buildHandoffDocument(buildDocumentInput([
+    textMessage('user', 'inspect the repository'),
+    toolUseMessage('Bash'),
+    toolResultMessage('complete command output'),
+  ], 'full'));
+  assert.match(withTools, /### Tool call: Bash/);
+  assert.match(withTools, /### Tool result/);
+  assert.match(withTools, /complete command output/);
 });
 
 test('createHandoffSession summary mode falls back to the mechanical summary when the LLM summarizer is unavailable', async () => {
@@ -494,6 +511,10 @@ test('createHandoffSession with includeGitState/includeKanbanState degrades grac
   // The isolated temp project is not a git repo and has no kanban board, so
   // both capture helpers resolve null and the document omits the sections.
   await withIsolatedDatabase(async ({ projectPath }) => {
+    // The scratch root lives inside this repository. An empty .git boundary
+    // prevents Git from walking up and treating the parent checkout as this
+    // isolated fixture's repository.
+    await writeFile(path.join(projectPath, '.git'), 'gitdir: missing-git-directory\n', 'utf8');
     sessionsDb.createAppSession('source-session-id', 'claude', projectPath);
 
     const historyResult: FetchHistoryResult = {

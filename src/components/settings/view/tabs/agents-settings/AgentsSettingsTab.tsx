@@ -25,6 +25,10 @@ export default function AgentsSettingsTab({
   onCodexPermissionModeChange,
   kiloPermissionMode,
   onKiloPermissionModeChange,
+  opencodePermissionMode,
+  onOpenCodePermissionModeChange,
+  antigravityPermissionMode,
+  onAntigravityPermissionModeChange,
   piPermissionMode,
   ompPermissionMode,
   onPiPermissionModeChange,
@@ -40,11 +44,6 @@ export default function AgentsSettingsTab({
     // (catalog + explicit fan-out). Agent settings keep account + permissions.
     // Kimi has no fine-grained allow/deny rule mechanism.
     if (selectedAgent === 'kimi') {
-      return ['account', 'models'];
-    }
-    // Antigravity's permission modes are ACP session modes with no user-editable
-    // allow/deny rules, so there is nothing for a Permissions pane to hold.
-    if (selectedAgent === 'antigravity') {
       return ['account', 'models'];
     }
     return ['account', 'models', 'permissions'];
@@ -205,6 +204,10 @@ export default function AgentsSettingsTab({
           onCodexPermissionModeChange={onCodexPermissionModeChange}
           kiloPermissionMode={kiloPermissionMode}
           onKiloPermissionModeChange={onKiloPermissionModeChange}
+          opencodePermissionMode={opencodePermissionMode}
+          onOpenCodePermissionModeChange={onOpenCodePermissionModeChange}
+          antigravityPermissionMode={antigravityPermissionMode}
+          onAntigravityPermissionModeChange={onAntigravityPermissionModeChange}
           piPermissionMode={piPermissionMode}
           ompPermissionMode={ompPermissionMode}
           onPiPermissionModeChange={onPiPermissionModeChange}

@@ -6,6 +6,7 @@ import readline from 'node:readline';
 import type { IProviderSessions } from '@/shared/interfaces.js';
 import type { AnyRecord, FetchHistoryOptions, FetchHistoryResult, NormalizedMessage } from '@/shared/types.js';
 import { parseImagesInputTag } from '@/shared/image-attachments.js';
+import { filterSkillBodyEvents } from '@/shared/skill-transcript-filter.js';
 import {
   createNormalizedMessage,
   generateMessageId,
@@ -485,7 +486,8 @@ export class GrokSessionsProvider implements IProviderSessions {
     try {
       const historyPath = resolveGrokHistoryPath(projectPath, providerSessionId, jsonlPath);
       const allNormalized = await this.readGrokHistoryFile(historyPath, sessionId);
-      const renderableMessages = allNormalized.filter((msg) => msg.kind !== 'tool_result');
+      const renderableMessages = filterSkillBodyEvents(allNormalized)
+        .filter((msg) => msg.kind !== 'tool_result');
       const total = renderableMessages.length;
       const { page, hasMore } = sliceTailPage(renderableMessages, limit, offset);
 

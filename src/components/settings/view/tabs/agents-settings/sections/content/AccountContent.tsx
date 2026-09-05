@@ -216,7 +216,7 @@ export default function AccountContent({ agent, authStatus, onLogin, onRefresh }
           </div>
 
           {isAntigravity ? (
-            <AntigravityRuntimePanel onStatusChange={onRefresh} />
+            <AntigravityRuntimePanel onStatusChange={onRefresh} authenticated={authStatus.authenticated} />
           ) : isUninstalled ? (
             <div className="border-t border-border/50 pt-4">
               <div className={`font-medium ${config.textClass}`}>

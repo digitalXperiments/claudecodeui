@@ -27,7 +27,7 @@ const DOT_COLOR: Record<AgentProvider, string> = {
   pi: 'bg-violet-500',
   omp: 'bg-fuchsia-500',
   codex: 'bg-foreground/60',
-  antigravity: 'bg-indigo-500',
+  antigravity: 'bg-gradient-to-tr from-[#1BA1E3] via-[#5B52FF] to-[#D96570]',
 };
 
 export default function AgentListItem({

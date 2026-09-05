@@ -187,6 +187,19 @@ anthropic/claude-sonnet-5
     }
   }
 }
+openrouter/google/gemini-3.7-flash
+{
+  "id": "google/gemini-3.7-flash",
+  "providerID": "openrouter",
+  "name": "Gemini 3.7 Flash",
+  "variants": {
+    "medium": {
+      "reasoning": {
+        "effort": "medium"
+      }
+    }
+  }
+}
 google/model-alpha
 {
   "id": "model-alpha",
@@ -217,6 +230,16 @@ google/model-alpha
         values: [
           { value: 'low' },
           { value: 'max' },
+        ],
+      },
+    },
+    {
+      value: 'openrouter/google/gemini-3.7-flash',
+      label: 'OpenRouter · Gemini 3.7 Flash',
+      description: 'openrouter - openrouter/google/gemini-3.7-flash',
+      effort: {
+        values: [
+          { value: 'medium' },
         ],
       },
     },

@@ -1,5 +1,7 @@
 import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
 
@@ -9,6 +11,14 @@ function resolveCodexLauncher() {
   const configuredPath = process.env.CODEX_CLI_PATH?.trim();
   if (configuredPath) {
     return { command: configuredPath, args: [] };
+  }
+
+  // A user-installed Codex in ~/.local/bin is almost always newer than the
+  // optional `@openai/codex` package pinned beside CloudCLI, and newer CLIs
+  // are the ones that know about preview models. Prefer it when present.
+  const userCodexPath = path.join(os.homedir(), '.local', 'bin', 'codex');
+  if (existsSync(userCodexPath)) {
+    return { command: userCodexPath, args: [] };
   }
 
   try {

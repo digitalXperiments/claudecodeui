@@ -252,19 +252,38 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
     }
   };
 
+  const isFallbackCatalog = (provider: LLMProvider, models: ProviderModelsDefinition): boolean => {
+    if (provider === 'opencode' && models.OPTIONS.length <= 8) {
+      const fallbackValues = new Set([
+        'anthropic/claude-sonnet-4-5',
+        'anthropic/claude-opus-4-1',
+        'anthropic/claude-haiku-4-5',
+        'openai/gpt-5.1',
+        'openai/gpt-5.1-codex',
+        'openai/gpt-5.4-mini',
+      ]);
+      return models.OPTIONS.every((opt) => fallbackValues.has(opt.value) || opt.value.startsWith('openrouter/google/gemini-3.'));
+    }
+    return false;
+  };
+
   const setCacheEntry = async (
     provider: LLMProvider,
     models: ProviderModelsDefinition,
+    ttlMs: number = PROVIDER_MODELS_CACHE_TTL_MS,
+    persist: boolean = true,
   ): Promise<ProviderModelsCacheEntry> => {
     const currentTime = now();
     const entry: ProviderModelsCacheEntry = {
       updatedAt: currentTime,
-      expiresAt: currentTime + PROVIDER_MODELS_CACHE_TTL_MS,
+      expiresAt: currentTime + ttlMs,
       models,
     };
 
     memoryCache.set(provider, entry);
-    await persistCache();
+    if (persist) {
+      await persistCache();
+    }
     return entry;
   };
 
@@ -273,7 +292,9 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
   ): Promise<ProviderModelsResult> => {
     const request = resolveProvider(provider).models.getSupportedModels({ bypassCache: true })
       .then(async (models) => {
-        const entry = await setCacheEntry(provider, models);
+        const fallback = isFallbackCatalog(provider, models);
+        const ttlMs = fallback ? 30_000 : PROVIDER_MODELS_CACHE_TTL_MS;
+        const entry = await setCacheEntry(provider, models, ttlMs, !fallback);
         return {
           models,
           cache: toProviderModelsCacheInfo(entry, 'fresh'),

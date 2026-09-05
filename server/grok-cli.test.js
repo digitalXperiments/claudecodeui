@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  createTurnStallWatchdog,
   describeGrokPermissionDenial,
   emitGrokPromptCompletion,
   resolveGrokPromptCompletion,
@@ -89,3 +90,73 @@ test('unanswered unattended Grok permission produces an actionable timeout cause
   );
 });
 
+
+test('a completely silent Grok turn is flagged as stalled, and ACP traffic resets the clock', (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let stalls = 0;
+  const watchdog = createTurnStallWatchdog({
+    timeoutMs: 60_000,
+    onStall: () => {
+      stalls += 1;
+    },
+  });
+
+  // Not armed until the prompt is actually on the wire.
+  t.mock.timers.tick(120_000);
+  assert.equal(stalls, 0);
+
+  watchdog.arm();
+  t.mock.timers.tick(59_000);
+  assert.equal(stalls, 0);
+
+  // A session/update proves the child is alive: full window again.
+  watchdog.touch();
+  t.mock.timers.tick(59_000);
+  assert.equal(stalls, 0);
+
+  t.mock.timers.tick(2_000);
+  assert.equal(stalls, 1);
+  assert.equal(watchdog.stalled, true);
+
+  // Fires exactly once, even if the wedged child never exits.
+  t.mock.timers.tick(600_000);
+  assert.equal(stalls, 1);
+});
+
+test('a Grok turn waiting on a permission decision is silent by design, not stalled', (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let stalls = 0;
+  const watchdog = createTurnStallWatchdog({
+    timeoutMs: 60_000,
+    onStall: () => {
+      stalls += 1;
+    },
+  });
+
+  watchdog.arm();
+  watchdog.hold();
+  t.mock.timers.tick(24 * 60 * 60_000);
+  assert.equal(stalls, 0, 'a turn parked on a human decision must never be torn down');
+
+  watchdog.release();
+  t.mock.timers.tick(59_000);
+  assert.equal(stalls, 0);
+  t.mock.timers.tick(2_000);
+  assert.equal(stalls, 1);
+});
+
+test('a disposed Grok turn watchdog never fires after the turn ends', (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let stalls = 0;
+  const watchdog = createTurnStallWatchdog({
+    timeoutMs: 60_000,
+    onStall: () => {
+      stalls += 1;
+    },
+  });
+
+  watchdog.arm();
+  watchdog.dispose();
+  t.mock.timers.tick(600_000);
+  assert.equal(stalls, 0);
+});

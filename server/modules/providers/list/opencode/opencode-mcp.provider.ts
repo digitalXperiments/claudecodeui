@@ -1,4 +1,4 @@
-import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { access, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -106,13 +106,35 @@ const readOpenCodeConfig = async (filePath: string): Promise<Record<string, unkn
   }
 };
 
+const writeLocks = new Map<string, Promise<void>>();
+
+const withWriteLock = async <T>(filePath: string, fn: () => Promise<T>): Promise<T> => {
+  const currentLock = writeLocks.get(filePath) ?? Promise.resolve();
+  let release: () => void = () => {};
+  const nextLock = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  writeLocks.set(filePath, nextLock);
+  try {
+    await currentLock;
+    return await fn();
+  } finally {
+    release();
+    if (writeLocks.get(filePath) === nextLock) {
+      writeLocks.delete(filePath);
+    }
+  }
+};
+
 const writeOpenCodeConfig = async (filePath: string, data: Record<string, unknown>): Promise<void> => {
   await mkdir(path.dirname(filePath), { recursive: true });
   // OpenCode accepts JSONC on read, but writing comments back into a config
   // file makes downstream tooling that expects JSON (including CloudCLI's
   // inventory and common editors) fail. Normalize the file after a managed
   // update while preserving all non-MCP keys.
-  await writeFile(filePath, `${JSON.stringify(data, null, 2)}\n`, 'utf8');
+  const tempPath = `${filePath}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`;
+  await writeFile(tempPath, `${JSON.stringify(data, null, 2)}\n`, 'utf8');
+  await rename(tempPath, filePath);
 };
 
 const resolveOpenCodeConfigPath = async (
@@ -174,9 +196,11 @@ export class OpenCodeMcpProvider extends McpProvider {
       this.getConfigDirectory(),
       this.configFileName,
     );
-    const config = await readOpenCodeConfig(filePath);
-    config.mcp = servers;
-    await writeOpenCodeConfig(filePath, config);
+    await withWriteLock(filePath, async () => {
+      const config = await readOpenCodeConfig(filePath);
+      config.mcp = servers;
+      await writeOpenCodeConfig(filePath, config);
+    });
   }
 
   protected buildServerConfig(input: UpsertProviderMcpServerInput): Record<string, unknown> {

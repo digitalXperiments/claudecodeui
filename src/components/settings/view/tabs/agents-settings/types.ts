@@ -5,8 +5,10 @@ import type {
   ClaudePermissionsState,
   CursorPermissionsState,
   GrokPermissionsState,
+  AntigravityPermissionMode,
   CodexPermissionMode,
   KiloPermissionMode,
+  OpenCodePermissionMode,
   PiPermissionMode,
   OmpPermissionMode,
   SettingsProject,
@@ -35,6 +37,10 @@ export type AgentsSettingsTabProps = {
   onCodexPermissionModeChange: (value: CodexPermissionMode) => void;
   kiloPermissionMode: KiloPermissionMode;
   onKiloPermissionModeChange: (value: KiloPermissionMode) => void;
+  opencodePermissionMode: OpenCodePermissionMode;
+  onOpenCodePermissionModeChange: (value: OpenCodePermissionMode) => void;
+  antigravityPermissionMode: AntigravityPermissionMode;
+  onAntigravityPermissionModeChange: (value: AntigravityPermissionMode) => void;
   piPermissionMode: PiPermissionMode;
   ompPermissionMode: OmpPermissionMode;
   onPiPermissionModeChange: (value: PiPermissionMode) => void;
@@ -71,6 +77,10 @@ export type AgentCategoryContentSectionProps = {
   onCodexPermissionModeChange: (value: CodexPermissionMode) => void;
   kiloPermissionMode: KiloPermissionMode;
   onKiloPermissionModeChange: (value: KiloPermissionMode) => void;
+  opencodePermissionMode: OpenCodePermissionMode;
+  onOpenCodePermissionModeChange: (value: OpenCodePermissionMode) => void;
+  antigravityPermissionMode: AntigravityPermissionMode;
+  onAntigravityPermissionModeChange: (value: AntigravityPermissionMode) => void;
   piPermissionMode: PiPermissionMode;
   ompPermissionMode: OmpPermissionMode;
   onPiPermissionModeChange: (value: PiPermissionMode) => void;

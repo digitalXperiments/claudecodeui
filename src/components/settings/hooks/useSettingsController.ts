@@ -13,9 +13,12 @@ import {
   DEFAULT_CURSOR_PERMISSIONS,
   DEFAULT_GROK_PERMISSIONS,
 } from '../constants/constants';
+import { normalizeSettingsMainTab } from '../utils/settingsNavigation';
 import type {
   AgentProvider,
+  AntigravityPermissionMode,
   KiloPermissionMode,
+  OpenCodePermissionMode,
   PiPermissionMode,
   OmpPermissionMode,
   ClaudePermissionsState,
@@ -76,45 +79,6 @@ type NotificationPreferencesResponse = {
 
 type ActiveLoginProvider = AgentProvider | '';
 
-const KNOWN_MAIN_TABS: SettingsMainTab[] = [
-  'agents',
-  'agent-profiles',
-  'studio',
-  'evals',
-  'mcp',
-  'skills',
-  'memory',
-  'appearance',
-  'git',
-  'api',
-  'secrets',
-  'voice',
-  'tasks',
-  'browser',
-  'notifications',
-  'plugins',
-  'webhooks',
-  'security',
-  'about',
-];
-
-const normalizeMainTab = (tab: string): SettingsMainTab => {
-  // Keep backwards compatibility with older callers that still pass "tools".
-  if (tab === 'tools') {
-    return 'agents';
-  }
-  // Former Global skills tab is merged into Skills.
-  if (tab === 'global-skills') {
-    return 'skills';
-  }
-  // Model profiles / Agent Relay live on the Agent Relay sidebar page now.
-  if (tab === 'model-registry' || tab === 'agent-relay') {
-    return 'agents';
-  }
-
-  return KNOWN_MAIN_TABS.includes(tab as SettingsMainTab) ? (tab as SettingsMainTab) : 'agents';
-};
-
 const parseJson = <T>(value: string | null, fallback: T): T => {
   if (!value) {
     return fallback;
@@ -142,6 +106,22 @@ const toKiloPermissionMode = (value: unknown): KiloPermissionMode => {
     || value === 'bypassPermissions'
     || value === 'plan'
   ) {
+    return value;
+  }
+
+  return 'default';
+};
+
+const toOpenCodePermissionMode = (value: unknown): OpenCodePermissionMode => {
+  if (value === 'acceptEdits' || value === 'auto' || value === 'plan') {
+    return value;
+  }
+
+  return 'default';
+};
+
+const toAntigravityPermissionMode = (value: unknown): AntigravityPermissionMode => {
+  if (value === 'acceptEdits' || value === 'bypassPermissions') {
     return value;
   }
 
@@ -264,7 +244,7 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
   const { isDarkMode, toggleDarkMode } = useTheme() as ThemeContextValue;
   const closeTimerRef = useRef<number | null>(null);
 
-  const [activeTab, setActiveTab] = useState<SettingsMainTab>(() => normalizeMainTab(initialTab));
+  const [activeTab, setActiveTab] = useState<SettingsMainTab>(() => normalizeSettingsMainTab(initialTab));
   const [saveStatus, setSaveStatus] = useState<'success' | 'error' | null>(null);
   const [projectSortOrder, setProjectSortOrder] = useState<ProjectSortOrder>('name');
   const [codeEditorSettings, setCodeEditorSettings] = useState<CodeEditorSettingsState>(() => (
@@ -285,6 +265,8 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
   ));
   const [codexPermissionMode, setCodexPermissionMode] = useState<CodexPermissionMode>('default');
   const [kiloPermissionMode, setKiloPermissionMode] = useState<KiloPermissionMode>('default');
+  const [opencodePermissionMode, setOpenCodePermissionMode] = useState<OpenCodePermissionMode>('default');
+  const [antigravityPermissionMode, setAntigravityPermissionMode] = useState<AntigravityPermissionMode>('default');
   const [piPermissionMode, setPiPermissionMode] = useState<PiPermissionMode>('bypassPermissions');
   const [ompPermissionMode, setOmpPermissionMode] = useState<OmpPermissionMode>('bypassPermissions');
 
@@ -351,6 +333,14 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
         toOmpPermissionMode(readProviderPermissionModePreference('omp', 'bypassPermissions')),
       );
 
+      setOpenCodePermissionMode(
+        toOpenCodePermissionMode(readProviderPermissionModePreference('opencode', 'default')),
+      );
+
+      setAntigravityPermissionMode(
+        toAntigravityPermissionMode(readProviderPermissionModePreference('antigravity', 'default')),
+      );
+
       try {
         const notificationResponse = await authenticatedFetch('/api/settings/notification-preferences');
         if (notificationResponse.ok) {
@@ -377,6 +367,8 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
       setKiloPermissionMode('default');
       setPiPermissionMode('bypassPermissions');
       setOmpPermissionMode('bypassPermissions');
+      setOpenCodePermissionMode('default');
+      setAntigravityPermissionMode('default');
       setProjectSortOrder('name');
     }
   }, []);
@@ -463,6 +455,11 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
       }));
       writeProviderPermissionModePreference('omp', ompPermissionMode);
 
+      // OpenCode and Antigravity only ever had the canonical composer key, so
+      // there is no legacy blob to keep in sync for them.
+      writeProviderPermissionModePreference('opencode', opencodePermissionMode);
+      writeProviderPermissionModePreference('antigravity', antigravityPermissionMode);
+
       const notificationResponse = await authenticatedFetch('/api/settings/notification-preferences', {
         method: 'PUT',
         body: JSON.stringify(notificationPreferences),
@@ -482,6 +479,8 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
     claudePermissions.skipPermissions,
     codexPermissionMode,
     kiloPermissionMode,
+    opencodePermissionMode,
+    antigravityPermissionMode,
     piPermissionMode,
     ompPermissionMode,
     cursorPermissions.allowedCommands,
@@ -506,7 +505,7 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
       return;
     }
 
-    setActiveTab(normalizeMainTab(initialTab));
+    setActiveTab(normalizeSettingsMainTab(initialTab));
     void loadSettings();
     void refreshProviderAuthStatuses();
   }, [initialTab, isOpen, loadSettings, refreshProviderAuthStatuses]);
@@ -599,6 +598,10 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
     setCodexPermissionMode,
     kiloPermissionMode,
     setKiloPermissionMode,
+    opencodePermissionMode,
+    setOpenCodePermissionMode,
+    antigravityPermissionMode,
+    setAntigravityPermissionMode,
     piPermissionMode,
     setPiPermissionMode,
     ompPermissionMode,

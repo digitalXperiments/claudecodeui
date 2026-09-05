@@ -4,6 +4,7 @@ import { promises as fsPromises } from 'node:fs';
 
 import chokidar, { type FSWatcher } from 'chokidar';
 
+import { antigravityConversationsDir } from '@/modules/providers/list/antigravity/antigravity-conversation-store.js';
 import { grokSessionsRoot } from '@/modules/providers/list/grok/grok-sessions.provider.js';
 import { ompSessionsRoot } from '@/modules/providers/list/omp/omp-paths.js';
 import {
@@ -62,6 +63,10 @@ const PROVIDER_WATCH_PATHS: Array<{ provider: LLMProvider; rootPath: string }> =
     provider: 'grok',
     rootPath: grokSessionsRoot(),
   },
+  {
+    provider: 'antigravity',
+    rootPath: antigravityConversationsDir(),
+  },
 ];
 
 const WATCHER_IGNORED_PATTERNS = [
@@ -114,6 +119,14 @@ export function isWatcherTargetFile(provider: LLMProvider, filePath: string): bo
 
   if (provider === 'grok') {
     return path.basename(filePath) === 'summary.json' || path.basename(filePath) === 'chat_history.jsonl';
+  }
+
+  // The conversation database is the session; its `.meta` sidecar carries the
+  // cwd the row is filed under. The `-wal`/`-shm` siblings churn on every write
+  // and would re-index on each one, so they are deliberately not targets — the
+  // `.db` mtime moves at checkpoint time, which is soon enough.
+  if (provider === 'antigravity') {
+    return filePath.endsWith('.db') || filePath.endsWith('.meta');
   }
 
   return filePath.endsWith('.jsonl');

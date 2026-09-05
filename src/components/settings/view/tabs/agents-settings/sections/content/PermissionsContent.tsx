@@ -2,7 +2,12 @@ import { useState } from 'react';
 import { AlertTriangle, Plus, Shield, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Button, Input } from '../../../../../../../shared/view/ui';
-import type { CodexPermissionMode, KiloPermissionMode } from '../../../../../types/types';
+import type {
+  AntigravityPermissionMode,
+  CodexPermissionMode,
+  KiloPermissionMode,
+  OpenCodePermissionMode,
+} from '../../../../../types/types';
 
 const COMMON_CLAUDE_TOOLS = [
   'Bash(git log:*)',
@@ -968,6 +973,275 @@ function KiloPermissions({
   );
 }
 
+type OpenCodePermissionsProps = {
+  agent: 'opencode';
+  permissionMode: OpenCodePermissionMode;
+  onPermissionModeChange: (value: OpenCodePermissionMode) => void;
+};
+
+function OpenCodePermissions({
+  permissionMode,
+  onPermissionModeChange,
+}: Omit<OpenCodePermissionsProps, 'agent'>) {
+  const { t } = useTranslation('settings');
+
+  // Mode semantics mirror resolveOpenCodePermissionPolicy in
+  // server/opencode-cli.js and the opencode copy in
+  // chat/constants/permissionModeCopy.ts — keep in sync.
+  const modes: Array<{
+    value: OpenCodePermissionMode;
+    activeClass: string;
+    radioClass: string;
+    titleClass: string;
+    descriptionClass: string;
+    title: string;
+    description: string;
+    technical: string;
+  }> = [
+    {
+      value: 'default',
+      activeClass: 'border-border bg-accent',
+      radioClass: 'text-green-600',
+      titleClass: 'text-foreground',
+      descriptionClass: 'text-muted-foreground',
+      title: t('permissions.opencode.modes.default.title', { defaultValue: 'Default' }),
+      description: t('permissions.opencode.modes.default.description', {
+        defaultValue: 'Prompt for edits, shell commands, web fetches, and access outside the workspace.',
+      }),
+      technical: 'OpenCode ACP mode = build + OPENCODE_PERMISSION ask',
+    },
+    {
+      value: 'acceptEdits',
+      activeClass: 'border-green-400 bg-green-50 dark:border-green-600 dark:bg-green-900/20',
+      radioClass: 'text-green-600',
+      titleClass: 'text-green-900 dark:text-green-100',
+      descriptionClass: 'text-green-700 dark:text-green-300',
+      title: t('permissions.opencode.modes.acceptEdits.title', { defaultValue: 'Accept Edits' }),
+      description: t('permissions.opencode.modes.acceptEdits.description', {
+        defaultValue: 'Auto-allow file edits; shell, web fetch, and outside-workspace access still prompt.',
+      }),
+      technical: 'OPENCODE_PERMISSION={"edit":"allow", …:"ask"}',
+    },
+    {
+      value: 'auto',
+      activeClass: 'border-blue-400 bg-blue-50 dark:border-blue-600 dark:bg-blue-900/20',
+      radioClass: 'text-blue-600',
+      titleClass: 'text-blue-900 dark:text-blue-100',
+      descriptionClass: 'text-blue-700 dark:text-blue-300',
+      title: t('permissions.opencode.modes.auto.title', { defaultValue: 'Auto' }),
+      description: t('permissions.opencode.modes.auto.description', {
+        defaultValue: 'Approve permission prompts automatically. Your own OpenCode deny rules still block.',
+      }),
+      technical: 'OpenCode ACP mode = build, approvals answered automatically',
+    },
+    {
+      value: 'plan',
+      activeClass: 'border-violet-400 bg-violet-50 dark:border-violet-600 dark:bg-violet-900/20',
+      radioClass: 'text-violet-600',
+      titleClass: 'text-violet-900 dark:text-violet-100',
+      descriptionClass: 'text-violet-700 dark:text-violet-300',
+      title: t('permissions.opencode.modes.plan.title', { defaultValue: 'Plan' }),
+      description: t('permissions.opencode.modes.plan.description', {
+        defaultValue: 'OpenCode’s read-only plan agent; anything it needs is still asked for.',
+      }),
+      technical: 'OpenCode ACP mode = plan + OPENCODE_PERMISSION ask',
+    },
+  ];
+
+  return (
+    <div className="space-y-6">
+      <div className="space-y-4">
+        <div className="flex items-center gap-3">
+          <Shield className="h-5 w-5 text-green-500" />
+          <h3 className="text-lg font-medium text-foreground">
+            {t('permissions.opencode.permissionMode', { defaultValue: 'Permission Mode' })}
+          </h3>
+        </div>
+        <p className="text-sm text-muted-foreground">
+          {t('permissions.opencode.description', {
+            defaultValue: 'Controls how OpenCode handles file edits, shell commands, and access outside the workspace.',
+          })}
+        </p>
+
+        {modes.map((mode) => (
+          <div
+            key={mode.value}
+            className={`cursor-pointer rounded-lg border p-4 transition-all ${
+              permissionMode === mode.value
+                ? mode.activeClass
+                : 'border-border bg-card/50 active:border-border active:bg-accent/50'
+            }`}
+            onClick={() => onPermissionModeChange(mode.value)}
+          >
+            <label className="flex cursor-pointer items-start gap-3">
+              <input
+                type="radio"
+                name="opencodePermissionMode"
+                checked={permissionMode === mode.value}
+                onChange={() => onPermissionModeChange(mode.value)}
+                className={`mt-1 h-4 w-4 ${mode.radioClass}`}
+              />
+              <div>
+                <div className={`font-medium ${mode.titleClass}`}>{mode.title}</div>
+                <div className={`text-sm ${mode.descriptionClass}`}>
+                  {mode.description}
+                </div>
+              </div>
+            </label>
+          </div>
+        ))}
+
+        <details className="text-sm">
+          <summary className="cursor-pointer text-muted-foreground hover:text-foreground">
+            {t('permissions.opencode.technicalDetails', { defaultValue: 'Technical details' })}
+          </summary>
+          <div className="mt-2 space-y-2 rounded-lg bg-muted/50 p-3 text-xs text-muted-foreground">
+            {modes.map((mode) => (
+              <p key={mode.value}><strong>{mode.title}:</strong> {mode.technical}</p>
+            ))}
+            <p className="text-xs opacity-75">
+              {t('permissions.opencode.overrideNote', {
+                defaultValue: 'You can override this per session using the mode button in the chat interface.',
+              })}
+            </p>
+          </div>
+        </details>
+      </div>
+    </div>
+  );
+}
+
+type AntigravityPermissionsProps = {
+  agent: 'antigravity';
+  permissionMode: AntigravityPermissionMode;
+  onPermissionModeChange: (value: AntigravityPermissionMode) => void;
+};
+
+function AntigravityPermissions({
+  permissionMode,
+  onPermissionModeChange,
+}: Omit<AntigravityPermissionsProps, 'agent'>) {
+  const { t } = useTranslation('settings');
+
+  // Antigravity's ACP session modes are default / auto_edit / yolo — see the
+  // antigravity entry in provider-capabilities.service.ts and the antigravity
+  // copy in chat/constants/permissionModeCopy.ts.
+  const modes: Array<{
+    value: AntigravityPermissionMode;
+    activeClass: string;
+    radioClass: string;
+    titleClass: string;
+    descriptionClass: string;
+    title: string;
+    description: string;
+    technical: string;
+    warning?: boolean;
+  }> = [
+    {
+      value: 'default',
+      activeClass: 'border-border bg-accent',
+      radioClass: 'text-green-600',
+      titleClass: 'text-foreground',
+      descriptionClass: 'text-muted-foreground',
+      title: t('permissions.antigravity.modes.default.title', { defaultValue: 'Default' }),
+      description: t('permissions.antigravity.modes.default.description', {
+        defaultValue: 'Ask before Antigravity runs tools that require approval.',
+      }),
+      technical: 'Antigravity ACP mode = default',
+    },
+    {
+      value: 'acceptEdits',
+      activeClass: 'border-green-400 bg-green-50 dark:border-green-600 dark:bg-green-900/20',
+      radioClass: 'text-green-600',
+      titleClass: 'text-green-900 dark:text-green-100',
+      descriptionClass: 'text-green-700 dark:text-green-300',
+      title: t('permissions.antigravity.modes.acceptEdits.title', { defaultValue: 'Accept Edits' }),
+      description: t('permissions.antigravity.modes.acceptEdits.description', {
+        defaultValue: 'File edits are pre-approved; everything else still asks.',
+      }),
+      technical: 'Antigravity ACP mode = auto_edit',
+    },
+    {
+      value: 'bypassPermissions',
+      activeClass: 'border-orange-400 bg-orange-50 dark:border-orange-600 dark:bg-orange-900/20',
+      radioClass: 'text-orange-600',
+      titleClass: 'text-orange-900 dark:text-orange-100',
+      descriptionClass: 'text-orange-700 dark:text-orange-300',
+      title: t('permissions.antigravity.modes.bypassPermissions.title', { defaultValue: 'Bypass Permissions' }),
+      description: t('permissions.antigravity.modes.bypassPermissions.description', {
+        defaultValue: 'Antigravity yolo mode — automatically approve all actions.',
+      }),
+      technical: 'Antigravity ACP mode = yolo',
+      warning: true,
+    },
+  ];
+
+  return (
+    <div className="space-y-6">
+      <div className="space-y-4">
+        <div className="flex items-center gap-3">
+          <Shield className="h-5 w-5 text-green-500" />
+          <h3 className="text-lg font-medium text-foreground">
+            {t('permissions.antigravity.permissionMode', { defaultValue: 'Permission Mode' })}
+          </h3>
+        </div>
+        <p className="text-sm text-muted-foreground">
+          {t('permissions.antigravity.description', {
+            defaultValue: 'Controls which Antigravity tool calls are approved automatically and which are relayed to you.',
+          })}
+        </p>
+
+        {modes.map((mode) => (
+          <div
+            key={mode.value}
+            className={`cursor-pointer rounded-lg border p-4 transition-all ${
+              permissionMode === mode.value
+                ? mode.activeClass
+                : 'border-border bg-card/50 active:border-border active:bg-accent/50'
+            }`}
+            onClick={() => onPermissionModeChange(mode.value)}
+          >
+            <label className="flex cursor-pointer items-start gap-3">
+              <input
+                type="radio"
+                name="antigravityPermissionMode"
+                checked={permissionMode === mode.value}
+                onChange={() => onPermissionModeChange(mode.value)}
+                className={`mt-1 h-4 w-4 ${mode.radioClass}`}
+              />
+              <div>
+                <div className={`flex items-center gap-2 font-medium ${mode.titleClass}`}>
+                  {mode.title}
+                  {mode.warning ? <AlertTriangle className="h-4 w-4" /> : null}
+                </div>
+                <div className={`text-sm ${mode.descriptionClass}`}>
+                  {mode.description}
+                </div>
+              </div>
+            </label>
+          </div>
+        ))}
+
+        <details className="text-sm">
+          <summary className="cursor-pointer text-muted-foreground hover:text-foreground">
+            {t('permissions.antigravity.technicalDetails', { defaultValue: 'Technical details' })}
+          </summary>
+          <div className="mt-2 space-y-2 rounded-lg bg-muted/50 p-3 text-xs text-muted-foreground">
+            {modes.map((mode) => (
+              <p key={mode.value}><strong>{mode.title}:</strong> {mode.technical}</p>
+            ))}
+            <p className="text-xs opacity-75">
+              {t('permissions.antigravity.overrideNote', {
+                defaultValue: 'You can override this per session using the mode button in the chat interface.',
+              })}
+            </p>
+          </div>
+        </details>
+      </div>
+    </div>
+  );
+}
+
 type PiPermissionsProps = {
   agent: 'pi';
   permissionMode: import('../../../../../types/types').PiPermissionMode;
@@ -1158,6 +1432,8 @@ type PermissionsContentProps =
   | GrokPermissionsProps
   | CodexPermissionsProps
   | KiloPermissionsProps
+  | OpenCodePermissionsProps
+  | AntigravityPermissionsProps
   | PiPermissionsProps
   | OmpPermissionsProps;
 
@@ -1176,6 +1452,14 @@ export default function PermissionsContent(props: PermissionsContentProps) {
 
   if (props.agent === 'kilo') {
     return <KiloPermissions {...props} />;
+  }
+
+  if (props.agent === 'opencode') {
+    return <OpenCodePermissions {...props} />;
+  }
+
+  if (props.agent === 'antigravity') {
+    return <AntigravityPermissions {...props} />;
   }
 
   if (props.agent === 'pi') {

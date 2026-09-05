@@ -1,9 +1,11 @@
 import fsSync from 'node:fs';
+import fs from 'node:fs/promises';
+import path from 'node:path';
 
 import crossSpawn from 'cross-spawn';
 import Database from 'better-sqlite3';
 
-import { appendImagesInputTag } from './shared/image-attachments.js';
+import { buildAcpPromptBlocks } from './shared/image-attachments.js';
 import { createRequestId, extractPermissionPaths, resolveApprovalTimeoutMs, waitForToolApproval } from './claude-sdk.js';
 import { sessionsService } from './modules/providers/services/sessions.service.js';
 import { providerAuthService } from './modules/providers/services/provider-auth.service.js';
@@ -20,6 +22,11 @@ import {
 import { resolveAcpCliCommand } from './shared/acp-cli-path.js';
 import { leadSessionEnv } from './shared/lead-session-env.js';
 import { ANTIGRAVITY_SETUP_TIMEOUT_MS } from './modules/providers/list/antigravity/antigravity-acp.js';
+import { buildAntigravityLaunchEnv } from './modules/providers/list/antigravity/antigravity-auth-support.js';
+import {
+  ANTIGRAVITY_ANNOUNCED_PATH_KEY,
+  antigravityAnnouncedToolPath,
+} from './modules/providers/list/antigravity/antigravity-sessions.provider.js';
 import {
   antigravityAcpArgs,
   resolveAntigravityBinary,
@@ -103,7 +110,7 @@ async function resolveOpenCodeAcpMcpServers(runtime, options = {}) {
   // tools. Kilo/Cline/Qwen share this runtime; only attach the OpenCode
   // catalog to OpenCode chats so those other providers keep their own
   // native-config path.
-  if (!options.relayWorker && runtime.provider === 'opencode') {
+  if (!options.relayWorker && (runtime.provider === 'opencode' || runtime.provider === 'antigravity')) {
     try {
       const enabled = await mcpCatalogService.listEnabledNames('opencode');
       for (const name of enabled) names.add(name);
@@ -293,6 +300,21 @@ const RUNTIME_CONFIGS = {
     installMessage: 'The Antigravity ACP runtime is not installed or not signed in. Open Settings › Agents › Antigravity, run Install, then Sign in with Google.',
     installUrl: 'https://antigravity.google/',
     promptTimeoutMs: 15 * 60 * 1000,
+    promptPreamble: [
+      '<workspace_boundary>',
+      'Your view_file, list_dir and grep_search tools are hard-scoped to this workspace:',
+      'the session working directory plus your own skills directories. Reading any path',
+      'outside it (for example ~/.codex, ~/.claude, or another checkout) fails with',
+      '"Access to path ... is denied. It is outside the allowed workspace directories".',
+      'That sandbox is fixed in your runtime — it cannot be widened, and retrying the same',
+      'read will not help. Use your shell tool (cat, ls, grep) for those paths instead;',
+      'it is not scoped this way.',
+      '</workspace_boundary>',
+    ].join('\n'),
+    extraEnv: () => {
+      const resolution = resolveAntigravityBinary();
+      return buildAntigravityLaunchEnv(process.env, resolution.ok ? resolution.command : undefined);
+    },
   },
 };
 
@@ -431,11 +453,27 @@ export function readKiloTokenUsage(sessionId) {
 /** Kill a child that ignored SIGTERM rather than leave it running invisibly. */
 function killChild(child) {
   try {
-    child.kill('SIGTERM');
+    if (child.pid && process.platform !== 'win32') {
+      try {
+        process.kill(-child.pid, 'SIGTERM');
+      } catch {
+        child.kill('SIGTERM');
+      }
+    } else {
+      child.kill('SIGTERM');
+    }
     const timer = setTimeout(() => {
       if (child.exitCode === null && child.signalCode === null) {
         try {
-          child.kill('SIGKILL');
+          if (child.pid && process.platform !== 'win32') {
+            try {
+              process.kill(-child.pid, 'SIGKILL');
+            } catch {
+              child.kill('SIGKILL');
+            }
+          } else {
+            child.kill('SIGKILL');
+          }
         } catch {
           // Already gone.
         }
@@ -465,11 +503,17 @@ async function createAcpSession(workingDir, resumeSessionId, permissionEnv, runt
   const setupTimeoutMs = runtime.setupTimeoutMs ?? SETUP_TIMEOUT_MS;
   const child = spawnFunction(resolvedCommand, resolvedArgs, {
     cwd: workingDir,
+    detached: process.platform !== 'win32',
     stdio: ['pipe', 'pipe', 'pipe'],
     // `extraEnv` is deliberately kept out of `permissionEnvKey` below: it
     // carries the owning chat session, which must not invalidate the cached
     // ACP session the way a permission-mode change does.
-    env: { ...process.env, ...permissionEnv, ...extraEnv },
+    env: {
+      ...process.env,
+      ...(typeof runtime.extraEnv === 'function' ? runtime.extraEnv() : runtime.extraEnv || {}),
+      ...permissionEnv,
+      ...extraEnv,
+    },
   });
 
   const rpc = createAcpJsonRpcClient(child, { label: runtime.label });
@@ -484,8 +528,9 @@ async function createAcpSession(workingDir, resumeSessionId, permissionEnv, runt
   child.stderr.on('data', collectSetupStderr);
 
   let sessionResult;
+  let initializeResult = null;
   try {
-    await rpc.request('initialize', {
+    initializeResult = await rpc.request('initialize', {
       protocolVersion: 1,
       // Qwen's official ACP client advertises both filesystem capabilities.
       clientCapabilities: { fs: { readTextFile: true, writeTextFile: true } },
@@ -548,6 +593,10 @@ async function createAcpSession(workingDir, resumeSessionId, permissionEnv, runt
     idleTimer: null,
     promptInFlight: false,
     aborted: false,
+    // Whether the agent takes inline base64 image blocks in `session/prompt`.
+    // Antigravity does; OpenCode/Kilo/Qwen advertise nothing and keep the
+    // `<images_input>` path references they already understand.
+    supportsPromptImages: initializeResult?.agentCapabilities?.promptCapabilities?.image === true,
     runtime,
   };
 }
@@ -681,6 +730,68 @@ function resolveSessionMode(handle, preferredMode) {
   return options[0];
 }
 
+/**
+ * ACP client-side filesystem methods (`fs/read_text_file`, `fs/write_text_file`).
+ *
+ * These are the flip side of the `clientCapabilities.fs` we advertise at
+ * `initialize`: an agent that sees them may run its file tools *through the
+ * client* instead of touching disk itself. Antigravity does exactly that —
+ * `client_view_file` / `client_edit_file` issue `fs/read_text_file` and
+ * `fs/write_text_file` — and an unanswered agent request is not an error the
+ * agent recovers from: the tool call stays pending and takes the whole
+ * `session/prompt` down with it at the turn timeout (observed as
+ * "session/prompt timed out after 900000ms" with every file tool showing a
+ * failed result).
+ *
+ * Paths are used as the agent gave them. That is deliberate: the agent's own
+ * shell tool already has full filesystem reach under the session's permission
+ * mode, so jailing only the fs methods would break legitimate reads (a config
+ * under ~/.cloudcli, a file in a sibling worktree) without adding any
+ * containment the shell tool does not already bypass.
+ */
+const ACP_FS_METHODS = new Set(['fs/read_text_file', 'fs/write_text_file']);
+
+/** `line` is 1-based and `limit` counts lines, per the ACP fs schema. */
+export function sliceTextByLines(text, line, limit) {
+  if (typeof line !== 'number' && typeof limit !== 'number') return text;
+  const lines = text.split('\n');
+  const start = typeof line === 'number' ? Math.max(0, line - 1) : 0;
+  const end = typeof limit === 'number' ? start + Math.max(0, limit) : lines.length;
+  return lines.slice(start, end).join('\n');
+}
+
+export async function handleAcpFsRequest(rpc, message, workingDir, options = {}) {
+  const params = message.params || {};
+  const requested = params.path;
+  if (typeof requested !== 'string' || !requested) {
+    rpc.respondError(message.id, 'fs request is missing a "path"', -32602);
+    return;
+  }
+  // Relative paths are not in the schema, but resolving them against the
+  // session cwd is strictly better than an ENOENT the agent cannot explain.
+  const target = path.isAbsolute(requested) ? requested : path.resolve(workingDir || process.cwd(), requested);
+
+  try {
+    if (message.method === 'fs/read_text_file') {
+      const text = await fs.readFile(target, 'utf8');
+      rpc.respond(message.id, { content: sliceTextByLines(text, params.line, params.limit) });
+      return;
+    }
+
+    if (options.permissionMode === 'plan') {
+      rpc.respondError(message.id, 'Permission denied: file writes are not permitted in plan mode', -32603);
+      return;
+    }
+    const content = typeof params.content === 'string' ? params.content : '';
+    await fs.mkdir(path.dirname(target), { recursive: true });
+    await fs.writeFile(target, content, 'utf8');
+    // The ACP schema types the write result as null, not an empty object.
+    rpc.respond(message.id, null);
+  } catch (error) {
+    rpc.respondError(message.id, error?.message || String(error));
+  }
+}
+
 async function spawnAcpProvider(runtime, command, options = {}, ws) {
   const {
     sessionId,
@@ -712,7 +823,7 @@ async function spawnAcpProvider(runtime, command, options = {}, ws) {
   // Plan is the provider's read-only agent. Unattended explorers still asked
   // on every bash call (`bash: ask`); auto-approve those asks so inspect
   // commands run, while the plan agent itself still refuses writes.
-  if (unattended && permissionMode === 'plan') {
+  if (unattended && permissionMode === 'plan' && runtime.provider !== 'antigravity') {
     policy.autoApprove = true;
   }
   const resolvedModel = await providerModelsService.resolveResumeModel(runtime.provider, sessionId, model);
@@ -831,12 +942,21 @@ async function spawnAcpProvider(runtime, command, options = {}, ws) {
   // toolCallId -> a tool_use message was already emitted, so the repeated
   // in-progress updates don't produce duplicate chat entries.
   const toolCallsStarted = new Set();
+  // toolCallId -> the path the call announced. Antigravity reports a later
+  // call's sandbox denial under an earlier call's id, so its normalizer needs
+  // the announced path to tell a real failure from a misattributed one.
+  const toolPaths = new Map();
   let sawAssistantText = false;
 
   // Named (not inline) so a respawned child after a mid-prompt crash can be
   // re-subscribed with the same handler; it closes over the `handle` binding,
   // so reassigning `handle` retargets respond()/session filtering too.
   const onAcpMessage = async (message, isRequest) => {
+    if (isRequest && ACP_FS_METHODS.has(message.method)) {
+      await handleAcpFsRequest(handle.rpc, message, workingDir, { permissionMode, policy });
+      return;
+    }
+
     if (isRequest && message.method === 'session/request_permission') {
       const toolCall = message.params?.toolCall || {};
       const offered = message.params?.options || [];
@@ -930,6 +1050,11 @@ async function spawnAcpProvider(runtime, command, options = {}, ws) {
       toolNames.set(update.toolCallId, update.title);
     }
 
+    if (update.sessionUpdate === 'tool_call' && update.toolCallId) {
+      const announced = antigravityAnnouncedToolPath(update);
+      if (announced) toolPaths.set(update.toolCallId, announced);
+    }
+
     if (
       update.sessionUpdate === 'agent_message_chunk'
       && typeof update.content?.text === 'string'
@@ -948,9 +1073,13 @@ async function spawnAcpProvider(runtime, command, options = {}, ws) {
       toolCallsStarted.add(update.toolCallId);
     }
 
-    const enriched = update.toolCallId && toolNames.has(update.toolCallId)
-      ? { ...update, toolName: toolNames.get(update.toolCallId) }
-      : update;
+    let enriched = update;
+    if (update.toolCallId && toolNames.has(update.toolCallId)) {
+      enriched = { ...enriched, toolName: toolNames.get(update.toolCallId) };
+    }
+    if (update.toolCallId && toolPaths.has(update.toolCallId)) {
+      enriched = { ...enriched, [ANTIGRAVITY_ANNOUNCED_PATH_KEY]: toolPaths.get(update.toolCallId) };
+    }
 
     for (const normalized of sessionsService.normalizeMessage(runtime.provider, enriched, finalSessionId)) {
       ws.send(normalized);
@@ -961,13 +1090,35 @@ async function spawnAcpProvider(runtime, command, options = {}, ws) {
   try {
     // Image attachments ride along as an <images_input> path list appended to
     // the prompt; the session history reader strips the tag back out.
-    const promptText = command && command.trim() ? appendImagesInputTag(command, images) : '';
+    // Attachments ride along as inline image blocks when the agent advertised
+    // `promptCapabilities.image`, and as an <images_input> path list otherwise;
+    // the session history reader strips that tag back out.
+    const promptBlocks = command && command.trim()
+      ? await buildAcpPromptBlocks(command, images, workingDir, { supportsImage: handle.supportsPromptImages })
+      : [{ type: 'text', text: '' }];
+    let promptText = promptBlocks[0].text;
+    // Sandbox briefing, once per ACP child. Antigravity hard-scopes its
+    // `view_file` to cwd + GEMINI_HOME + skills dirs inside its own binary
+    // (`make_safe_view_file`), with no config knob to widen it, so an agent
+    // that does not know the boundary burns a failed turn on every read
+    // outside the workspace before falling back to its (unscoped) shell tool.
+    // Telling it up front costs one paragraph on the first prompt.
+    if (promptText && runtime.promptPreamble && !handle.sentPromptPreamble) {
+      handle.sentPromptPreamble = true;
+      promptText = `${runtime.promptPreamble}\n\n${promptText}`;
+    }
+    promptBlocks[0] = { type: 'text', text: promptText };
+    // `runtime.promptTimeoutMs` is an INACTIVITY budget, not a wall clock one
+    // (see `request`'s `idle` option in shared/acp-rpc.js). A long-horizon turn
+    // that keeps streaming tool calls for hours is healthy and must not be
+    // killed at the 15-minute mark; only a turn that has gone completely silent
+    // is wedged.
     const sendPrompt = (text, timeoutMs) => {
       handle.promptInFlight = true;
       return handle.rpc.request('session/prompt', {
         sessionId: handle.providerSessionId,
-        prompt: [{ type: 'text', text }],
-      }, timeoutMs);
+        prompt: [{ type: 'text', text }, ...promptBlocks.slice(1)],
+      }, timeoutMs, { idle: true });
     };
     let result;
     try {
@@ -1075,7 +1226,7 @@ async function spawnAcpProvider(runtime, command, options = {}, ws) {
     // no longer be trusted to settle. Do not cache that process for a later
     // message; Kilo has had releases where session/prompt remained pending
     // indefinitely while initialize/session/new still worked.
-    if (/timed out|timeout/i.test(error?.message || '')) {
+    if (/timed out|timeout|produced no output/i.test(error?.message || '')) {
       const key = capturedSessionId ? sessionMapKey(runtime.provider, capturedSessionId) : processKey;
       if (acpSessions.get(key) === handle) {
         acpSessions.delete(key);

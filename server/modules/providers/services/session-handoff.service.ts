@@ -87,7 +87,6 @@ Stay concise. The human will stay in the original thread and decide.`;
 
 const GOAL_MAX_CHARS = 1500;
 const RECENT_MESSAGE_MAX_CHARS = 1200;
-const FULL_MESSAGE_MAX_CHARS = 4000;
 const RECENT_MESSAGE_COUNT = 15;
 // Keeps the git/kanban handoff sections compact enough to be a useful prompt
 // primer instead of a transcript dump.
@@ -191,20 +190,62 @@ const buildFullDocument = (input: BuildHandoffDocumentInput): string => {
   const lines = buildHeader(input);
   lines.push('## Full transcript', '');
 
-  const transcript = input.messages.filter((message) =>
-    isDocumentTextMessage(message, { skipCompactSummary: false }));
-
-  if (transcript.length === 0) {
-    lines.push('_(no text messages)_');
-  } else {
-    for (const message of transcript) {
-      lines.push(`- **${roleLabel(message)}:** ${truncate(message.content as string, FULL_MESSAGE_MAX_CHARS)}`);
+  let rendered = 0;
+  for (const message of input.messages) {
+    if (isDocumentTextMessage(message, { skipCompactSummary: false })) {
+      lines.push(`### ${roleLabel(message)}`, '', message.content as string, '');
+      if (Array.isArray(message.images) && message.images.length > 0) {
+        lines.push('Attachments:', '```json', safeJson(message.images), '```', '');
+      }
+      rendered += 1;
+      continue;
+    }
+    if (message.kind === 'thinking' && typeof message.content === 'string' && message.content.trim()) {
+      lines.push('### Assistant reasoning', '', message.content, '');
+      rendered += 1;
+      continue;
+    }
+    if (message.kind === 'tool_use') {
+      lines.push(
+        `### Tool call: ${message.toolName || 'unknown'}`,
+        '',
+        '```json',
+        safeJson(message.toolInput ?? message.input ?? null),
+        '```',
+        '',
+      );
+      rendered += 1;
+      continue;
+    }
+    if (message.kind === 'tool_result') {
+      const content = message.toolResult?.content ?? message.content ?? '';
+      lines.push(
+        `### Tool result${message.isError || message.toolResult?.isError ? ' (error)' : ''}`,
+        '',
+        typeof content === 'string' ? content : safeJson(content),
+        '',
+      );
+      rendered += 1;
+      continue;
+    }
+    if (message.kind === 'error' && typeof message.content === 'string' && message.content.trim()) {
+      lines.push('### Provider error', '', message.content, '');
+      rendered += 1;
     }
   }
 
-  lines.push('');
+  if (rendered === 0) lines.push('_(no transcript messages)_', '');
+
   return lines.join('\n') + buildHandoffContextSections(input.gitState, input.kanbanState);
 };
+
+function safeJson(value: unknown): string {
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
 
 /**
  * Runs a short-lived child process and resolves with its trimmed stdout, or
@@ -540,7 +581,7 @@ const buildMergeDocument = (input: {
       lines.push('_(no text messages)_');
     } else {
       for (const message of textMessages) {
-        lines.push(`- **${roleLabel(message)}:** ${truncate(message.content as string, FULL_MESSAGE_MAX_CHARS)}`);
+        lines.push(`### ${roleLabel(message)}`, '', message.content as string, '');
       }
     }
 

@@ -197,6 +197,86 @@ const acpSessions = new Map();
 
 const IDLE_TIMEOUT_MS = 30 * 60 * 1000;
 
+// `session/prompt` is deliberately unbounded - a long agentic turn is
+// legitimate - but a turn that produces NO ACP traffic at all is not slow, it
+// is dead: the child is wedged, `inFlightPrompt` defers idle cleanup forever
+// (see shouldDeferGrokIdleCleanup), and the session sits "running" in the chat
+// bar for hours with no output and no way to stop it. Any ACP message resets
+// this clock; a pending client-side decision (permission / plan / question)
+// holds it off entirely, because a turn waiting on a human is legitimately
+// silent.
+const TURN_STALL_TIMEOUT_MS = Math.max(
+  60_000,
+  Number(process.env.CLOUDCLI_GROK_TURN_STALL_MINUTES || 30) * 60 * 1000,
+);
+
+/**
+ * Watchdog for one Grok turn. Armed when the prompt is sent, reset by every
+ * ACP message, suspended while a client decision is outstanding, and fires
+ * `onStall` once when the turn has been completely silent for `timeoutMs`.
+ *
+ * @param {{ timeoutMs: number, onStall: () => void }} options
+ */
+function createTurnStallWatchdog({ timeoutMs, onStall }) {
+  let timer = null;
+  let holds = 0;
+  let armed = false;
+  let disposed = false;
+  let fired = false;
+
+  const clear = () => {
+    if (timer) {
+      clearTimeout(timer);
+      timer = null;
+    }
+  };
+
+  const schedule = () => {
+    clear();
+    if (disposed || fired || !armed || holds > 0 || !timeoutMs) {
+      return;
+    }
+    timer = setTimeout(() => {
+      timer = null;
+      if (disposed || fired || holds > 0) {
+        return;
+      }
+      fired = true;
+      onStall();
+    }, timeoutMs);
+    timer.unref?.();
+  };
+
+  return {
+    /** Start (or restart) the clock - called once the prompt is on the wire. */
+    arm() {
+      armed = true;
+      schedule();
+    },
+    /** Any ACP traffic for this turn means the child is still alive. */
+    touch() {
+      schedule();
+    },
+    /** Suspend while waiting on a human/broker decision. */
+    hold() {
+      holds += 1;
+      clear();
+    },
+    release() {
+      holds = Math.max(0, holds - 1);
+      schedule();
+    },
+    dispose() {
+      disposed = true;
+      clear();
+    },
+    /** Test/diagnostic view of the watchdog state. */
+    get stalled() {
+      return fired;
+    },
+  };
+}
+
 // Grok ACP attaches config.toml MCP servers asynchronously and signals
 // readiness with `_x.ai/mcp_initialized`. grok.com managed connectors (team
 // MCPs such as Leong Associates) only attach on `session/new` — not on
@@ -491,6 +571,22 @@ function createJsonRpcClient(child) {
       pending.clear();
     },
   };
+}
+
+/**
+ * `waitForToolApproval` with the turn watchdog suspended for the whole wait: a
+ * turn parked on a permission / plan / question decision is idle by design,
+ * not wedged, and must never be torn down for being quiet.
+ *
+ * @param {ReturnType<typeof createTurnStallWatchdog>} watchdog
+ */
+async function waitForToolApprovalPaused(watchdog, requestId, options) {
+  watchdog.hold();
+  try {
+    return await waitForToolApproval(requestId, options);
+  } finally {
+    watchdog.release();
+  }
 }
 
 async function createAcpSession(workingDir, resumeSessionId, spawnArgs, envOverrides = {}, mcpServers = [], sessionOptions = {}) {
@@ -897,7 +993,46 @@ async function spawnGrok(command, options = {}, ws) {
   // than the misleading generic "provider exited" fallback.
   let lastPermissionDenial = null;
 
+  // Set when the turn watchdog tears down a silent, wedged child. It replaces
+  // the resulting low-level rejection ("ACP connection closed") with an
+  // actionable reason on the run.
+  /** @type {string | null} */
+  let stallError = null;
+
+  const stallWatchdog = createTurnStallWatchdog({
+    timeoutMs: TURN_STALL_TIMEOUT_MS,
+    onStall: () => {
+      const minutes = Math.round(TURN_STALL_TIMEOUT_MS / 60000);
+      stallError = `Grok stopped responding: no agent activity for ${minutes} minutes. `
+        + 'CloudCLI cancelled the turn and shut down the wedged agent process; the '
+        + 'next message starts a fresh one. Raise CLOUDCLI_GROK_TURN_STALL_MINUTES '
+        + 'if this turn was genuinely working in silence.';
+      console.error(
+        `[grok-cli] session=${finalSessionId} turn stalled: no ACP activity for ${minutes}m - tearing down child`,
+      );
+      // Ask nicely first; a wedged child may never answer the cancel, so tear
+      // it down too. rpc.close() rejects the pending session/prompt, which is
+      // what finally makes the run terminal instead of leaving the chat bar
+      // spinning forever.
+      try {
+        handle.rpc.notify('session/cancel', { sessionId: handle.grokSessionId });
+      } catch {
+        // Child already gone.
+      }
+      handle.inFlightPrompt = false;
+      const key = capturedSessionId || processKey;
+      if (acpSessions.get(key) === handle) {
+        acpSessions.delete(key);
+      }
+      closeHandle(handle);
+    },
+  });
+
   const unsubscribe = handle.rpc.onMessage(async (message, isRequest) => {
+    // Any frame at all - notification, update, or agent request - proves the
+    // child is still working, so the stall clock restarts.
+    stallWatchdog.touch();
+
     // Grok's ask_user_question tool does NOT use session/request_permission.
     // It sends a blocking extension request `_x.ai/ask_user_question` that the
     // client must answer with { outcome, answers? }. Verified live (0.2.106):
@@ -941,7 +1076,7 @@ async function spawnGrok(command, options = {}, ws) {
       }));
 
       const questionWaitMs = resolveApprovalTimeoutMs({ unattended, approvalTimeoutMs });
-      const decision = await waitForToolApproval(requestId, {
+      const decision = await waitForToolApprovalPaused(stallWatchdog, requestId, {
         // Interactive chat waits indefinitely; unattended gets the bounded window.
         timeoutMs: unattended ? questionWaitMs : 0,
         metadata: {
@@ -1014,7 +1149,7 @@ async function spawnGrok(command, options = {}, ws) {
       }));
 
       const planWaitMs = resolveApprovalTimeoutMs({ unattended, approvalTimeoutMs });
-      const decision = await waitForToolApproval(requestId, {
+      const decision = await waitForToolApprovalPaused(stallWatchdog, requestId, {
         timeoutMs: unattended ? planWaitMs : 0,
         metadata: {
           _sessionId: finalSessionId,
@@ -1085,7 +1220,7 @@ async function spawnGrok(command, options = {}, ws) {
       // hangs until the 30-minute idle cleanup if nobody does. Expiry falls
       // through to the reject option below — same deny as before, just later.
       const approvalWaitMs = resolveApprovalTimeoutMs({ unattended, approvalTimeoutMs });
-      const decision = await waitForToolApproval(requestId, {
+      const decision = await waitForToolApprovalPaused(stallWatchdog, requestId, {
         timeoutMs: approvalWaitMs,
         metadata: {
           _sessionId: finalSessionId,
@@ -1175,11 +1310,14 @@ async function spawnGrok(command, options = {}, ws) {
     }
     handle.inFlightPrompt = true;
     handle.aborted = false;
-    const result = await handle.rpc.request('session/prompt', {
+    const promptRequest = handle.rpc.request('session/prompt', {
       sessionId: handle.grokSessionId,
       prompt: [{ type: 'text', text: promptText }],
     });
+    stallWatchdog.arm();
+    const result = await promptRequest;
     handle.inFlightPrompt = false;
+    stallWatchdog.dispose();
     scheduleIdleCleanup(handle, capturedSessionId || processKey);
 
     const completion = emitGrokPromptCompletion(ws, {
@@ -1236,12 +1374,44 @@ async function spawnGrok(command, options = {}, ws) {
     }
   } catch (error) {
     handle.inFlightPrompt = false;
-    scheduleIdleCleanup(handle, capturedSessionId || processKey);
+    stallWatchdog.dispose();
+    // A stalled turn already killed this child and dropped it from the process
+    // map; re-arming idle cleanup on it would only kill it a second time.
+    if (!stallError) {
+      scheduleIdleCleanup(handle, capturedSessionId || processKey);
+    }
+
+    // An explicitly aborted turn is not a failure. Its pending session/prompt
+    // rejects whenever the child is finally torn down - which, for a wedged
+    // child, is only when the NEXT send recreates it. Reporting that rejection
+    // dropped a stale "ACP connection closed" error bubble into the chat of
+    // the message the user had just sent.
+    if (handle.aborted && !stallError) {
+      emitGrokPromptCompletion(ws, {
+        sessionId: finalSessionId,
+        explicitlyAborted: true,
+        stopReason: 'cancelled',
+        permissionDenial: lastPermissionDenial,
+      });
+      try {
+        await notifyRunStopped({
+          userId: ws?.userId || null,
+          provider: 'grok',
+          sessionId: finalSessionId,
+          sessionName: sessionSummary,
+          stopReason: 'cancelled',
+        });
+      } catch (notifyError) {
+        console.error('Grok abort notification failed (non-fatal):', notifyError);
+      }
+      return;
+    }
 
     const installed = await providerAuthService.isProviderInstalled('grok');
-    const errorContent = !installed
-      ? 'Grok CLI is not installed. Please install it from https://x.ai'
-      : error.message;
+    const errorContent = stallError
+      || (!installed
+        ? 'Grok CLI is not installed. Please install it from https://x.ai'
+        : error.message);
 
     ws.send(createNormalizedMessage({ kind: 'error', content: errorContent, sessionId: finalSessionId, provider: 'grok' }));
     ws.send(createCompleteMessage({ provider: 'grok', sessionId: finalSessionId, exitCode: 1 }));
@@ -1251,13 +1421,14 @@ async function spawnGrok(command, options = {}, ws) {
         provider: 'grok',
         sessionId: finalSessionId,
         sessionName: sessionSummary,
-        error,
+        error: stallError ? new Error(stallError) : error,
       });
     } catch (notifyError) {
       console.error('Grok notifyRunFailed failed (non-fatal):', notifyError);
     }
-    throw error;
+    throw stallError ? new Error(stallError) : error;
   } finally {
+    stallWatchdog.dispose();
     unsubscribe();
   }
 }
@@ -1290,4 +1461,5 @@ export {
   emitGrokPromptCompletion,
   shouldDeferGrokIdleCleanup,
   grokRelayWorkerSkipsManagedGateway,
+  createTurnStallWatchdog,
 };

@@ -14,7 +14,9 @@ import {
   resolveAntigravityPermissionPolicy,
   resolveKiloPermissionPolicy,
   resolveOpenCodePermissionPolicy,
+  handleAcpFsRequest,
   resolveQwenPermissionPolicy,
+  sliceTextByLines,
   spawnAntigravity,
   spawnQwenCode,
   spawnKilo,
@@ -767,4 +769,103 @@ test('Kilo ACP sessions do not auto-attach the OpenCode catalog', { concurrency:
     const capture = JSON.parse(await readFile(argsCapturePath, 'utf8'));
     assert.deepEqual(capture.mcpServers, []);
   });
+});
+
+test('ACP fs/read_text_file answers the agent instead of leaving its tool pending', { concurrency: false }, async () => {
+  // Antigravity's client_view_file / client_edit_file run through these; an
+  // unanswered request hangs the tool and then the whole session/prompt.
+  const tempRoot = await makeScratchDir('acp-fs-read-');
+  try {
+    const target = path.join(tempRoot, 'sample.txt');
+    await writeFile(target, 'one\ntwo\nthree\n', 'utf8');
+
+    const sent = [];
+    const rpc = {
+      respond: (id, result) => sent.push({ id, result }),
+      respondError: (id, message) => sent.push({ id, error: message }),
+    };
+
+    await handleAcpFsRequest(rpc, { id: 1, method: 'fs/read_text_file', params: { path: target } }, tempRoot);
+    assert.deepEqual(sent.at(-1), { id: 1, result: { content: 'one\ntwo\nthree\n' } });
+
+    // `line` is 1-based and `limit` counts lines.
+    await handleAcpFsRequest(
+      rpc,
+      { id: 2, method: 'fs/read_text_file', params: { path: target, line: 2, limit: 1 } },
+      tempRoot,
+    );
+    assert.deepEqual(sent.at(-1), { id: 2, result: { content: 'two' } });
+
+    // A relative path resolves against the session cwd rather than failing.
+    await handleAcpFsRequest(rpc, { id: 3, method: 'fs/read_text_file', params: { path: 'sample.txt' } }, tempRoot);
+    assert.equal(sent.at(-1).result.content, 'one\ntwo\nthree\n');
+
+    // A missing file must come back as an ERROR, never as silence.
+    await handleAcpFsRequest(
+      rpc,
+      { id: 4, method: 'fs/read_text_file', params: { path: path.join(tempRoot, 'nope.txt') } },
+      tempRoot,
+    );
+    assert.match(sent.at(-1).error, /ENOENT/);
+
+    // Same for a malformed request.
+    await handleAcpFsRequest(rpc, { id: 5, method: 'fs/read_text_file', params: {} }, tempRoot);
+    assert.match(sent.at(-1).error, /missing a "path"/);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('ACP fs/write_text_file writes the file and replies null', { concurrency: false }, async () => {
+  const tempRoot = await makeScratchDir('acp-fs-write-');
+  try {
+    const sent = [];
+    const rpc = {
+      respond: (id, result) => sent.push({ id, result }),
+      respondError: (id, message) => sent.push({ id, error: message }),
+    };
+
+    // A write into a directory the agent has not created yet must still land.
+    const target = path.join(tempRoot, 'nested', 'out.txt');
+    await handleAcpFsRequest(
+      rpc,
+      { id: 1, method: 'fs/write_text_file', params: { path: target, content: 'hello' } },
+      tempRoot,
+    );
+
+    assert.deepEqual(sent.at(-1), { id: 1, result: null });
+    assert.equal(await readFile(target, 'utf8'), 'hello');
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('ACP fs/write_text_file rejects writes in plan mode', { concurrency: false }, async () => {
+  const tempRoot = await makeScratchDir('acp-fs-plan-');
+  try {
+    const sent = [];
+    const rpc = {
+      respond: (id, result) => sent.push({ id, result }),
+      respondError: (id, message) => sent.push({ id, error: message }),
+    };
+
+    const target = path.join(tempRoot, 'refused.txt');
+    await handleAcpFsRequest(
+      rpc,
+      { id: 2, method: 'fs/write_text_file', params: { path: target, content: 'should not write' } },
+      tempRoot,
+      { permissionMode: 'plan' },
+    );
+
+    assert.match(sent.at(-1).error, /plan mode/i);
+    await assert.rejects(readFile(target, 'utf8'));
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('sliceTextByLines returns the whole text when no window is asked for', () => {
+  assert.equal(sliceTextByLines('a\nb', undefined, undefined), 'a\nb');
+  assert.equal(sliceTextByLines('a\nb\nc', 2, undefined), 'b\nc');
+  assert.equal(sliceTextByLines('a\nb\nc', undefined, 2), 'a\nb');
 });

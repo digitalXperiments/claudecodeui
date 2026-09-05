@@ -19,8 +19,34 @@ import {
   writeProviderSessionActiveModelChange,
 } from '@/shared/utils.js';
 
+/**
+ * Models CloudCLI knows Codex can run but which may be missing from
+ * `~/.codex/models_cache.json` — a preview slug is only written to the cache
+ * once the installed CLI has itself seen it, so a stale cache would otherwise
+ * hide the model from the picker entirely.
+ */
+const KNOWN_CODEX_MODELS: ProviderModelOption[] = [
+  {
+    value: 'gpt-6-astra',
+    label: 'GPT-6 Astra',
+    description: 'OpenAI’s frontier multimodal reasoning model.',
+    supportsFastMode: true,
+    effort: {
+      default: 'medium',
+      values: [
+        { value: 'low', description: 'Fast responses with lighter reasoning' },
+        { value: 'medium', description: 'Balances speed and reasoning depth for everyday tasks' },
+        { value: 'high', description: 'Greater reasoning depth for complex problems' },
+        { value: 'xhigh', description: 'Extra high reasoning depth for complex problems' },
+        { value: 'max', description: 'Maximum reasoning depth for the hardest problems' },
+      ],
+    },
+  },
+];
+
 export const CODEX_FALLBACK_MODELS: ProviderModelsDefinition = {
   OPTIONS: [
+    ...KNOWN_CODEX_MODELS,
     {
       value: 'gpt-5.5',
       label: 'gpt-5.5',
@@ -135,6 +161,17 @@ export const buildCodexModelsDefinition = (models: CodexCachedModel[]): Provider
 
   if (options.length === 0) {
     return CODEX_FALLBACK_MODELS;
+  }
+
+  // Append (never prepend — DEFAULT is the highest-priority cached model) any
+  // known model the cache has not caught up with yet.
+  for (const knownModel of KNOWN_CODEX_MODELS) {
+    if (seenValues.has(knownModel.value)) {
+      continue;
+    }
+
+    seenValues.add(knownModel.value);
+    options.push(knownModel);
   }
 
   return {

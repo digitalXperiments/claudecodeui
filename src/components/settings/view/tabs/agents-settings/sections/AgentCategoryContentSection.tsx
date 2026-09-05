@@ -18,6 +18,10 @@ export default function AgentCategoryContentSection({
   onCodexPermissionModeChange,
   kiloPermissionMode,
   onKiloPermissionModeChange,
+  opencodePermissionMode,
+  onOpenCodePermissionModeChange,
+  antigravityPermissionMode,
+  onAntigravityPermissionModeChange,
   piPermissionMode,
   ompPermissionMode,
   onPiPermissionModeChange,
@@ -87,6 +91,22 @@ export default function AgentCategoryContentSection({
           agent="kilo"
           permissionMode={kiloPermissionMode}
           onPermissionModeChange={onKiloPermissionModeChange}
+        />
+      )}
+
+      {selectedCategory === 'permissions' && selectedAgent === 'opencode' && (
+        <PermissionsContent
+          agent="opencode"
+          permissionMode={opencodePermissionMode}
+          onPermissionModeChange={onOpenCodePermissionModeChange}
+        />
+      )}
+
+      {selectedCategory === 'permissions' && selectedAgent === 'antigravity' && (
+        <PermissionsContent
+          agent="antigravity"
+          permissionMode={antigravityPermissionMode}
+          onPermissionModeChange={onAntigravityPermissionModeChange}
         />
       )}
 

@@ -331,7 +331,9 @@ const descriptionForOpenCodeModelId = (id: string): string => {
 
 const readOpenCodeVariantEffort = (key: string, value: unknown): string | null => {
   const variant = readObjectRecord(value);
-  return readOptionalString(variant?.reasoningEffort)
+  const reasoning = readObjectRecord(variant?.reasoning);
+  return readOptionalString(reasoning?.effort)
+    ?? readOptionalString(variant?.reasoningEffort)
     ?? readOptionalString(variant?.effort)
     ?? key;
 };
