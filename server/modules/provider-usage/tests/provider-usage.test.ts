@@ -1213,3 +1213,67 @@ test('auth-change bypasses a cached authenticated=false Claude status', async ()
     resetProviderUsageCache();
   }
 });
+
+test('Claude adapter lifts a 401 gate once a different credential is available', async () => {
+  resetClaudeLiveGate();
+  let token = 'stale-token';
+  const seen: string[] = [];
+  const adapter = createClaudeUsageAdapter({
+    readCredentialCandidates: async () => [
+      { source: 'keychain:user', accessToken: token, refreshToken: null, expiresAtMs: null },
+    ],
+    readCachedUsage: async () => null,
+    fetchImpl: async (_url, init) => {
+      seen.push(String((init?.headers as Record<string, string>).Authorization));
+      if (token === 'stale-token') {
+        return new Response('', { status: 401 });
+      }
+      return jsonResponse({ five_hour: { utilization: 12, resets_at: '2026-09-05T16:00:00.000Z' } });
+    },
+  });
+
+  try {
+    await adapter({ authStatus: authStatus('claude', true) }).catch(() => undefined);
+    assert.equal(seen.length, 1);
+
+    // Same rejected token: still gated, no second call burned on a known-bad token.
+    await adapter({ authStatus: authStatus('claude', true) }).catch(() => undefined);
+    assert.equal(seen.length, 1);
+
+    // Re-authentication swaps the token, so the gate must not hold it back.
+    token = 'fresh-token';
+    const result = await adapter({ authStatus: authStatus('claude', true) });
+    assert.equal(seen.length, 2);
+    assert.equal(result.status, 'ok');
+  } finally {
+    resetClaudeLiveGate();
+  }
+});
+
+test('Claude adapter keeps a 429 gate even when the credential changes', async () => {
+  resetClaudeLiveGate();
+  let token = 'first-token';
+  let fetchCalls = 0;
+  const adapter = createClaudeUsageAdapter({
+    readCredentialCandidates: async () => [
+      { source: 'keychain:user', accessToken: token, refreshToken: null, expiresAtMs: null },
+    ],
+    readCachedUsage: async () => null,
+    fetchImpl: async () => {
+      fetchCalls += 1;
+      return new Response('', { status: 429, headers: { 'retry-after': '1800' } });
+    },
+  });
+
+  try {
+    await adapter({ authStatus: authStatus('claude', true) }).catch(() => undefined);
+    assert.equal(fetchCalls, 1);
+
+    // Rate limits are account-wide, so a fresh token must not shortcut the wait.
+    token = 'second-token';
+    await adapter({ authStatus: authStatus('claude', true) }).catch(() => undefined);
+    assert.equal(fetchCalls, 1);
+  } finally {
+    resetClaudeLiveGate();
+  }
+});

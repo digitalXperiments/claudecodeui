@@ -3,7 +3,7 @@ import type { ProviderAuthStatus } from '@/shared/types.js';
 
 import {
   ANTIGRAVITY_SETUP_TIMEOUT_MS,
-  probeAntigravityAcp,
+  probeAntigravitySignIn,
 } from './antigravity-acp.js';
 import {
   antigravityRuntimeVersion,
@@ -22,17 +22,55 @@ import { antigravityPlatformKey } from './antigravity-releases.js';
  *    override, or PATH)?
  *  - `authenticated` — has the user completed personal-Google sign-in?
  *
- * The authoritative signal for the second is ACP itself: `initialize` advertises
- * `authMethods` while the agent still needs credentials and stops advertising
- * them once it is signed in. That avoids guessing at a credential file path
- * whose location we have not verified.
+ * The authoritative signal for the second is ACP `authenticate` on a fresh
+ * child (see `probeAntigravitySignIn`). `initialize`'s `authMethods` is NOT a
+ * signal: Antigravity 1.1.1 lists all four methods whether or not a token is
+ * stored, which is what once kept Settings on "not signed in" forever after a
+ * successful Google round-trip.
  *
  * Everything here is reported as data. An unsupported host, a missing runtime,
  * a bad override and "signed out" are all normal states with their own message
  * — none of them throw, per the providers module contract.
  */
+const AUTHENTICATED_CACHE_TTL_MS = 30_000;
+const UNAUTHENTICATED_CACHE_TTL_MS = 3_000;
+
+let cachedStatus: { at: number; value: ProviderAuthStatus } | null = null;
+let inFlightStatus: Promise<ProviderAuthStatus> | null = null;
+
+export function resetAntigravityAuthCacheForTests(): void {
+  cachedStatus = null;
+  inFlightStatus = null;
+}
+
 export class AntigravityProviderAuth implements IProviderAuth {
   async getStatus(): Promise<ProviderAuthStatus> {
+    const now = Date.now();
+    if (cachedStatus) {
+      const ttl = cachedStatus.value.authenticated ? AUTHENTICATED_CACHE_TTL_MS : UNAUTHENTICATED_CACHE_TTL_MS;
+      if (now - cachedStatus.at < ttl) {
+        return cachedStatus.value;
+      }
+    }
+
+    if (inFlightStatus) {
+      return inFlightStatus;
+    }
+
+    inFlightStatus = this.detectStatus().finally(() => {
+      inFlightStatus = null;
+    });
+
+    return inFlightStatus;
+  }
+
+  private async detectStatus(): Promise<ProviderAuthStatus> {
+    const status = await this.computeStatus();
+    cachedStatus = { at: Date.now(), value: status };
+    return status;
+  }
+
+  private async computeStatus(): Promise<ProviderAuthStatus> {
     const env = process.env;
 
     // Intel Macs (and other hosts Google does not build for) stay listed with
@@ -75,7 +113,12 @@ export class AntigravityProviderAuth implements IProviderAuth {
       };
     }
 
-    const authenticated = probe.authMethods.length === 0;
+    const authenticated = probe.authenticated;
+    const error = authenticated
+      ? undefined
+      : probe.reason === 'rpc-error' || probe.reason === 'timeout'
+        ? `Antigravity could not verify its Google sign-in: ${probe.error ?? probe.reason}. Try Sign in with Google again.`
+        : 'Antigravity is not signed in. Use Sign in with Google in Settings.';
     return {
       installed: true,
       provider: 'antigravity',
@@ -84,7 +127,7 @@ export class AntigravityProviderAuth implements IProviderAuth {
       // be invention; report the method that is in force instead.
       email: authenticated ? 'Signed in with Google' : null,
       method: authenticated ? config.authMethod : null,
-      error: authenticated ? undefined : 'Antigravity is not signed in. Use Sign in with Google in Settings.',
+      error,
     };
   }
 
@@ -93,12 +136,15 @@ export class AntigravityProviderAuth implements IProviderAuth {
     return isAntigravityRuntimeInstalled(antigravityRuntimeVersion());
   }
 
-  private async probe(): Promise<{ reachable: boolean; authMethods: { id: string; name?: string }[]; error?: string }> {
+  private async probe(): Promise<
+    | { reachable: true; authenticated: boolean; reason: string; error: string | null }
+    | { reachable: false; authenticated: false; reason: 'unreachable'; error?: string }
+  > {
     try {
-      const result = await probeAntigravityAcp();
-      return { reachable: true, authMethods: result.authMethods };
+      const result = await probeAntigravitySignIn();
+      return { reachable: true, authenticated: result.authenticated, reason: result.reason, error: result.error };
     } catch (error) {
-      return { reachable: false, authMethods: [], error: (error as Error)?.message || String(error) };
+      return { reachable: false, authenticated: false, reason: 'unreachable', error: (error as Error)?.message || String(error) };
     }
   }
 }

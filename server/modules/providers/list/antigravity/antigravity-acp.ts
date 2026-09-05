@@ -20,12 +20,21 @@ import crossSpawn from 'cross-spawn';
 import { createAcpJsonRpcClient } from '@/shared/acp-rpc.js';
 
 import {
+  antigravityTokenFileExists,
+  buildAntigravityLaunchEnv,
+  extractOauthUrl,
+  isLoopbackReturnUrl,
+  parseAntigravityAuthorizationUrl,
+} from './antigravity-auth-support.js';
+import {
   ANTIGRAVITY_DEFAULT_AUTH_METHOD,
   antigravityAcpArgs,
   readAntigravityRuntimeConfig,
   resolveAntigravityBinary,
   type AntigravityBinaryResolution,
 } from './antigravity-runtime.js';
+
+export { extractOauthUrl, isLoopbackReturnUrl } from './antigravity-auth-support.js';
 
 /**
  * Antigravity's first `initialize` can pay a cold-start cost (the harness
@@ -41,39 +50,6 @@ export const ANTIGRAVITY_LOGIN_TIMEOUT_MS = 5 * 60 * 1000;
 export const ANTIGRAVITY_LABEL = 'Antigravity ACP';
 
 type AcpRpcClient = ReturnType<typeof createAcpJsonRpcClient>;
-
-/**
- * Pull the first OAuth consent URL out of a chunk of agent output.
- *
- * Matches Google's accounts/oauth endpoints as well as the loopback URL some
- * builds echo, and stops at the first character that cannot belong to a URL so
- * a trailing period or ANSI reset never becomes part of the link.
- */
-export function extractOauthUrl(text: string): string | null {
-  if (typeof text !== 'string' || !text) return null;
-  // Strip ANSI colour codes so a trailing reset cannot join the URL.
-  const clean = text.replace(/\[[0-9;]*[A-Za-z]/g, '');
-  const matches = clean.match(/https?:\/\/[^\s"'<>)\]]+/g);
-  if (!matches) return null;
-  const isConsentUrl = (url: string) =>
-    /accounts\.google\.com|oauth2?|antigravity|signin|auth/i.test(url);
-  const candidate = matches.find(isConsentUrl) ?? null;
-  if (!candidate) return null;
-  return candidate.replace(/[.,;:]+$/, '');
-}
-
-/** Loopback hosts a pasted OAuth return URL is allowed to target. */
-const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
-
-export function isLoopbackReturnUrl(value: string): boolean {
-  try {
-    const url = new URL(value);
-    if (url.protocol !== 'http:' && url.protocol !== 'https:') return false;
-    return LOOPBACK_HOSTS.has(url.hostname);
-  } catch {
-    return false;
-  }
-}
 
 export type AntigravityAcpChild = {
   child: ChildProcessWithoutNullStreams;
@@ -103,9 +79,10 @@ export function spawnAntigravityAcpChild(
     throw error;
   }
 
+  const launchEnv = buildAntigravityLaunchEnv(env, resolution.command);
   const child = crossSpawn(resolution.command, antigravityAcpArgs(), {
     stdio: ['pipe', 'pipe', 'pipe'],
-    env: { ...env, ...extraEnv },
+    env: { ...launchEnv, ...extraEnv },
   }) as ChildProcessWithoutNullStreams;
 
   const rpc = createAcpJsonRpcClient(child, { label: ANTIGRAVITY_LABEL });
@@ -117,9 +94,13 @@ export function spawnAntigravityAcpChild(
   const absorb = (chunk: Buffer | string) => {
     const text = chunk.toString();
     output = `${output}${text}`.slice(-16_000);
-    if (oauthUrl) return;
     const found = extractOauthUrl(text) ?? extractOauthUrl(output);
     if (!found) return;
+    // Prefer a later real OAuth URL over the first Google link the agent printed.
+    if (oauthUrl && oauthUrl === found) return;
+    if (oauthUrl && /\/o\/oauth2\/|client_id=/i.test(oauthUrl) && !/\/o\/oauth2\/|client_id=/i.test(found)) {
+      return;
+    }
     oauthUrl = found;
     for (const waiter of urlWaiters) waiter(found);
     urlWaiters.clear();
@@ -197,9 +178,17 @@ const readAuthMethods = (raw: unknown): { id: string; name?: string }[] => {
     .filter((entry): entry is { id: string; name?: string } => entry !== null);
 };
 
-/** Run `initialize` against a fresh child and tear it down. */
+/**
+ * Run `initialize` against a fresh child and tear it down.
+ *
+ * NOTE: `authMethods` here is the agent's *catalogue* of sign-in options, not
+ * its auth state. Antigravity 1.1.1 advertises all four methods on every
+ * initialize, signed in or not. Use `probeAntigravitySignIn` to learn whether
+ * credentials actually work.
+ */
 export async function probeAntigravityAcp(
   env: NodeJS.ProcessEnv = process.env,
+  timeoutMs: number = ANTIGRAVITY_SETUP_TIMEOUT_MS,
 ): Promise<AntigravityInitializeResult> {
   const session = spawnAntigravityAcpChild(env);
   try {
@@ -207,7 +196,7 @@ export async function probeAntigravityAcp(
       protocolVersion: 1,
       clientCapabilities: { fs: { readTextFile: true, writeTextFile: true } },
       clientInfo: { name: 'cloudcli', version: '1.0.0' },
-    }, ANTIGRAVITY_SETUP_TIMEOUT_MS) as Record<string, unknown> | null;
+    }, timeoutMs) as Record<string, unknown> | null;
 
     const capabilities = raw && typeof raw.agentCapabilities === 'object' && raw.agentCapabilities
       ? raw.agentCapabilities as Record<string, unknown>
@@ -215,6 +204,92 @@ export async function probeAntigravityAcp(
 
     return { authMethods: readAuthMethods(raw), agentCapabilities: capabilities, raw };
   } finally {
+    session.dispose();
+  }
+}
+
+export type AntigravitySignInProbe = {
+  authenticated: boolean;
+  /**
+   * - `authenticated`: `authenticate` resolved without asking for a browser.
+   * - `consent-required`: the agent printed a consent URL — no usable token.
+   * - `no-token`: nothing persisted in the private profile; skipped the RPC so
+   *   the agent never opens a loopback listener nobody will answer.
+   * - `rpc-error` / `timeout`: the agent did not settle either way.
+   */
+  reason: 'authenticated' | 'consent-required' | 'no-token' | 'rpc-error' | 'timeout';
+  error: string | null;
+  initialize: AntigravityInitializeResult;
+};
+
+/** How long a token-backed `authenticate` may take (it refreshes the access token). */
+export const ANTIGRAVITY_SIGNIN_PROBE_TIMEOUT_MS = 30_000;
+
+/**
+ * The authoritative "is Antigravity signed in?" check, mirroring how T3 Code
+ * starts every session: `initialize`, then `authenticate`. With a persisted
+ * token that RPC refreshes silently and resolves `{}` in a few seconds. Without
+ * one the agent prints a Google consent URL within milliseconds and blocks on
+ * a loopback listener — which is exactly the signal that sign-in is required.
+ *
+ * Throws only when the binary cannot be resolved or `initialize` fails, so the
+ * caller can keep reporting "not installed / unreachable" separately.
+ */
+export async function probeAntigravitySignIn(
+  env: NodeJS.ProcessEnv = process.env,
+  methodId?: string,
+  timeoutMs: number = ANTIGRAVITY_SIGNIN_PROBE_TIMEOUT_MS,
+): Promise<AntigravitySignInProbe> {
+  const resolvedMethod = methodId?.trim()
+    || readAntigravityRuntimeConfig(env).authMethod
+    || ANTIGRAVITY_DEFAULT_AUTH_METHOD;
+
+  const session = spawnAntigravityAcpChild(env);
+  try {
+    const raw = await session.rpc.request('initialize', {
+      protocolVersion: 1,
+      clientCapabilities: { fs: { readTextFile: true, writeTextFile: true } },
+      clientInfo: { name: 'cloudcli', version: '1.0.0' },
+    }, ANTIGRAVITY_SETUP_TIMEOUT_MS) as Record<string, unknown> | null;
+    const capabilities = raw && typeof raw.agentCapabilities === 'object' && raw.agentCapabilities
+      ? raw.agentCapabilities as Record<string, unknown>
+      : null;
+    const initialize: AntigravityInitializeResult = { authMethods: readAuthMethods(raw), agentCapabilities: capabilities, raw };
+
+    if (!antigravityTokenFileExists(env)) {
+      return { authenticated: false, reason: 'no-token', error: null, initialize };
+    }
+
+    const outcome = await new Promise<AntigravitySignInProbe>((resolve) => {
+      let done = false;
+      const finish = (result: Omit<AntigravitySignInProbe, 'initialize'>) => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        resolve({ ...result, initialize });
+      };
+      const timer = setTimeout(() => {
+        finish({ authenticated: false, reason: 'timeout', error: `Antigravity did not finish authenticate within ${timeoutMs / 1000}s.` });
+      }, timeoutMs);
+      timer.unref?.();
+
+      // A consent URL means the stored token is missing or unusable. It can
+      // arrive before the RPC would ever settle, so watch for it in parallel.
+      void session.waitForOauthUrl(timeoutMs).then((url) => {
+        if (url) finish({ authenticated: false, reason: 'consent-required', error: null });
+      });
+
+      session.rpc
+        .request('authenticate', { methodId: resolvedMethod })
+        .then(() => finish({ authenticated: true, reason: 'authenticated', error: null }))
+        .catch((error: unknown) => {
+          finish({ authenticated: false, reason: 'rpc-error', error: (error as Error)?.message || String(error) });
+        });
+    });
+    return outcome;
+  } finally {
+    // Disposing also closes any loopback listener a consent-required
+    // authenticate opened, so probes never leave half-started sign-ins around.
     session.dispose();
   }
 }
@@ -232,15 +307,58 @@ type LoginSession = {
   state: AntigravityLoginState;
   settled: Promise<void>;
   timer: NodeJS.Timeout;
+  confirmTimer: NodeJS.Timeout | null;
 };
 
 let activeLogin: LoginSession | null = null;
+/** Survives child teardown so Settings can still poll a terminal outcome. */
+let lastLoginSnapshot: (AntigravityLoginState & { output: string }) | null = null;
+
+const SIGNIN_CONFIRM_INTERVAL_MS = 3_000;
+
+const snapshotLogin = (session: LoginSession): (AntigravityLoginState & { output: string }) => ({
+  ...session.state,
+  output: session.session.readOutput(),
+});
 
 const disposeActiveLogin = () => {
   if (!activeLogin) return;
+  lastLoginSnapshot = snapshotLogin(activeLogin);
   clearTimeout(activeLogin.timer);
+  if (activeLogin.confirmTimer) clearInterval(activeLogin.confirmTimer);
   activeLogin.session.dispose();
   activeLogin = null;
+};
+
+const markLoginFailed = (error: string) => {
+  if (!activeLogin || activeLogin.state.status !== 'pending') return;
+  activeLogin.state.status = 'failed';
+  activeLogin.state.error = error;
+  disposeActiveLogin();
+};
+
+const markLoginSucceeded = () => {
+  if (!activeLogin || activeLogin.state.status !== 'pending') return;
+  activeLogin.state.status = 'succeeded';
+  activeLogin.state.error = null;
+  // Hide a stale consent URL once credentials actually persist.
+  activeLogin.state.url = null;
+  disposeActiveLogin();
+};
+
+/**
+ * Sign-in is confirmed only when a fresh child can `authenticate` from the
+ * persisted token. The login child's own `authenticate` RPC is not trusted:
+ * it has returned before credentials landed, and `initialize`'s authMethods
+ * list never changes, so neither can tell us the token works.
+ */
+const confirmPersistedSignIn = async (env: NodeJS.ProcessEnv = process.env): Promise<boolean> => {
+  // Cheap gate: with forced file storage there is nothing to confirm until the
+  // agent has written its token, and probing before then would spawn a child
+  // every few seconds during the browser round-trip.
+  if (!antigravityTokenFileExists(env)) return false;
+  const probe = await probeAntigravitySignIn(env, activeLogin?.state.methodId);
+  return probe.authenticated;
 };
 
 /**
@@ -282,37 +400,67 @@ export async function startAntigravityLogin(
 
   // No timeout: this request is the browser round-trip. The watchdog below
   // bounds it instead, so a user who abandons the flow does not leak a child.
+  // Do NOT treat RPC resolve as signed-in — confirm with a fresh probe.
   const settled = session.rpc
     .request('authenticate', { methodId: resolvedMethod })
-    .then(() => {
-      state.status = 'succeeded';
+    .then(async () => {
+      try {
+        if (await confirmPersistedSignIn(env)) {
+          markLoginSucceeded();
+        }
+      } catch {
+        // Probe failure while the login child is still up is not terminal;
+        // the confirm interval retries until timeout.
+      }
     })
     .catch((error: unknown) => {
-      state.status = 'failed';
-      state.error = (error as Error)?.message || String(error);
+      markLoginFailed((error as Error)?.message || String(error));
     });
 
   const timer = setTimeout(() => {
-    if (state.status === 'pending') {
-      state.status = 'failed';
-      state.error = 'Google sign-in timed out. Start the sign-in again.';
-    }
-    disposeActiveLogin();
+    markLoginFailed('Google sign-in timed out. Start the sign-in again.');
   }, ANTIGRAVITY_LOGIN_TIMEOUT_MS);
   timer.unref?.();
 
-  activeLogin = { session, state, settled, timer };
+  let confirmInFlight = false;
+  const confirmTimer = setInterval(() => {
+    if (confirmInFlight) return;
+    confirmInFlight = true;
+    void (async () => {
+      if (!activeLogin || activeLogin.state.status !== 'pending') return;
+      try {
+        if (await confirmPersistedSignIn(env)) markLoginSucceeded();
+      } catch {
+        // Keep waiting; the login child may still be writing credentials.
+      } finally {
+        confirmInFlight = false;
+      }
+    })();
+  }, SIGNIN_CONFIRM_INTERVAL_MS);
+  confirmTimer.unref?.();
+
+  activeLogin = { session, state, settled, timer, confirmTimer };
+  lastLoginSnapshot = null;
 
   // Give the agent a short window to print its consent URL. Returning without
   // one is not fatal — the UI shows the captured output so the user can copy
   // the link manually.
   state.url = await session.waitForOauthUrl(20_000);
-  return { ...state };
+  if (state.status === 'pending' && !state.url) {
+    try {
+      if (await confirmPersistedSignIn(env)) {
+        markLoginSucceeded();
+      }
+    } catch {
+      // Still pending; Settings keeps polling.
+    }
+  }
+  return getAntigravityLoginState() ?? { ...state, output: session.readOutput() };
 }
 
 export function getAntigravityLoginState(): (AntigravityLoginState & { output: string }) | null {
-  if (!activeLogin) return null;
-  return { ...activeLogin.state, output: activeLogin.session.readOutput() };
+  if (activeLogin) return snapshotLogin(activeLogin);
+  return lastLoginSnapshot ? { ...lastLoginSnapshot } : null;
 }
 
 export function cancelAntigravityLogin(): void {
@@ -331,33 +479,81 @@ export function cancelAntigravityLogin(): void {
  */
 export async function submitAntigravityReturnUrl(returnUrl: string): Promise<AntigravityLoginState> {
   if (!activeLogin) {
+    // A browser on this same machine may already have finished the flow and
+    // torn the login down; do not tell the user to start over if so.
+    if (lastLoginSnapshot?.status === 'succeeded') return { ...lastLoginSnapshot };
     throw new Error('No Antigravity sign-in is in progress. Start Sign in with Google first.');
   }
   if (!isLoopbackReturnUrl(returnUrl)) {
     throw new Error('The return URL must be the local http://127.0.0.1 address the browser was redirected to.');
   }
 
+  // Only the callback the *current* consent URL asked for may be replayed;
+  // otherwise this endpoint could poke arbitrary loopback ports.
+  const pending = activeLogin.state.url ? parseAntigravityAuthorizationUrl(activeLogin.state.url) : null;
+  if (pending) {
+    let callback: URL;
+    try {
+      callback = new URL(returnUrl);
+    } catch {
+      throw new Error('Paste the complete redirect URL from the Google sign-in page.');
+    }
+    const expected = new URL(pending.redirectUri);
+    if (callback.origin !== expected.origin || callback.pathname !== expected.pathname) {
+      throw new Error('This redirect URL does not belong to the current sign-in. Copy the full http://127.0.0.1:PORT/?state=…&code=… address.');
+    }
+    const states = callback.searchParams.getAll('state');
+    if (states.length !== 1 || states[0] !== pending.state) {
+      throw new Error('This redirect URL does not belong to the current sign-in (state mismatch). Start Sign in with Google again.');
+    }
+  }
+
+  const env = process.env;
+  let fetchError: string | null = null;
   const response = await fetch(returnUrl, { redirect: 'manual' }).catch((error: unknown) => {
-    throw new Error(`Could not reach the local sign-in listener: ${(error as Error)?.message || String(error)}`);
+    fetchError = (error as Error)?.message || String(error);
+    return null;
   });
+
+  if (!response) {
+    // The listener is one-shot. If a browser on this host already hit it, the
+    // agent has consumed the code and closed the port — so check whether the
+    // token actually landed before calling this a failure.
+    try {
+      if (await confirmPersistedSignIn(env)) {
+        markLoginSucceeded();
+        return getAntigravityLoginState() ?? lastLoginSnapshot!;
+      }
+    } catch {
+      // Fall through to the listener error.
+    }
+    throw new Error(
+      `Could not reach the local sign-in listener: ${fetchError}. `
+      + 'If the browser on this machine already showed the Google confirmation page, click refresh on Connection Status; '
+      + 'otherwise start Sign in with Google again and paste the new redirect URL.',
+    );
+  }
   // The listener answers with its own confirmation page; a non-2xx/3xx status
   // means the code was rejected and the agent is still waiting.
   if (response.status >= 400) {
     throw new Error(`The local sign-in listener rejected the return URL (HTTP ${response.status}).`);
   }
 
-  // `authenticate` resolves shortly after the listener consumes the code.
-  await Promise.race([
-    activeLogin.settled,
-    new Promise((resolve) => {
-      const timer = setTimeout(resolve, 15_000);
+  // Credentials are written after the listener consumes the code. Wait for a
+  // fresh probe to confirm they persist — not for the authenticate RPC alone.
+  const deadline = Date.now() + 45_000;
+  while (activeLogin && activeLogin.state.status === 'pending' && Date.now() < deadline) {
+    try {
+      if (await confirmPersistedSignIn(env)) markLoginSucceeded();
+    } catch {
+      // Retry until the deadline.
+    }
+    if (!activeLogin || activeLogin.state.status !== 'pending') break;
+    await new Promise((resolve) => {
+      const timer = setTimeout(resolve, 500);
       timer.unref?.();
-    }),
-  ]);
-
-  const state = { ...activeLogin.state };
-  if (state.status !== 'pending') {
-    disposeActiveLogin();
+    });
   }
-  return state;
+
+  return getAntigravityLoginState() ?? activeLogin?.state ?? lastLoginSnapshot!;
 }

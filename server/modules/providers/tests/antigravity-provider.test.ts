@@ -1,15 +1,26 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
 import { chmod, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, it } from 'node:test';
 
+import type { NormalizedMessage } from '@/shared/types.js';
 import { makeScratchDir } from '@/shared/scratch.js';
+import { antigravityTitleFromPrompt } from '@/modules/providers/list/antigravity/antigravity-conversation-store.js';
 import {
   extractOauthUrl,
   isLoopbackReturnUrl,
+  probeAntigravityAcp,
+  probeAntigravitySignIn,
 } from '@/modules/providers/list/antigravity/antigravity-acp.js';
+import {
+  ANTIGRAVITY_AUTH_BROWSER_MARKER,
+  ANTIGRAVITY_AUTH_STDOUT_PREFIX,
+  buildAntigravityLaunchEnv,
+  parseAntigravityAuthorizationUrl,
+} from '@/modules/providers/list/antigravity/antigravity-auth-support.js';
 import {
   installAntigravityRuntime,
   sha256File,
@@ -28,8 +39,14 @@ import {
   isUsableArtifactPin,
   resolveAntigravityArtifact,
 } from '@/modules/providers/list/antigravity/antigravity-releases.js';
-import { AntigravitySessionsProvider } from '@/modules/providers/list/antigravity/antigravity-sessions.provider.js';
+import {
+  ANTIGRAVITY_ANNOUNCED_PATH_KEY,
+  AntigravitySessionsProvider,
+  antigravityAnnouncedToolPath,
+  isMisattributedDenial,
+} from '@/modules/providers/list/antigravity/antigravity-sessions.provider.js';
 import { AntigravitySkillsProvider } from '@/modules/providers/list/antigravity/antigravity-skills.provider.js';
+import { AntigravityProviderAuth, resetAntigravityAuthCacheForTests } from '@/modules/providers/list/antigravity/antigravity-auth.provider.js';
 
 const VERSION = '1.1.1';
 
@@ -418,19 +435,59 @@ describe('Antigravity runtime paths and spawn args', () => {
 });
 
 describe('Antigravity OAuth URL capture', () => {
-  it('scrapes the consent URL out of noisy agent output', () => {
+  const consentUrl = 'https://accounts.google.com/o/oauth2/v2/auth?client_id=x&response_type=code&state=abc&redirect_uri=http%3A%2F%2F127.0.0.1%3A12345%2F&scope=y';
+
+  it('scrapes the official ACP prefix and rejects marketing pages', () => {
     assert.equal(
-      extractOauthUrl('Visit https://accounts.google.com/o/oauth2/v2/auth?client_id=x&scope=y to continue.'),
-      'https://accounts.google.com/o/oauth2/v2/auth?client_id=x&scope=y',
+      extractOauthUrl(`${ANTIGRAVITY_AUTH_STDOUT_PREFIX}${consentUrl}`),
+      consentUrl,
     );
-    // Trailing punctuation and ANSI colour resets must not join the link.
     assert.equal(
-      extractOauthUrl('[36mhttps://accounts.google.com/signin/oauth?code=1[0m.'),
-      'https://accounts.google.com/signin/oauth?code=1',
+      extractOauthUrl(`${ANTIGRAVITY_AUTH_BROWSER_MARKER}${JSON.stringify(consentUrl)}\n`),
+      consentUrl,
     );
+    assert.ok(parseAntigravityAuthorizationUrl(consentUrl));
     // A non-consent URL in a log line is not a sign-in link.
     assert.equal(extractOauthUrl('see https://example.com/docs for details'), null);
     assert.equal(extractOauthUrl(''), null);
+    assert.equal(
+      extractOauthUrl('https://accounts.google.com/AccountChooser?Email=x@gmail.com&continue=https%3A%2F%2Fone.google.com%2Fai'),
+      null,
+    );
+    assert.equal(extractOauthUrl('Open https://antigravity.google/g1-upgrade to continue'), null);
+    assert.equal(
+      extractOauthUrl(
+        `See https://antigravity.google/g1-upgrade\n${ANTIGRAVITY_AUTH_STDOUT_PREFIX}${consentUrl}`,
+      ),
+      consentUrl,
+    );
+    // Incomplete oauth URLs (no loopback redirect_uri) must not count as consent.
+    assert.equal(
+      extractOauthUrl('Visit https://accounts.google.com/o/oauth2/v2/auth?client_id=x&scope=y to continue.'),
+      null,
+    );
+  });
+
+  it('forces a private GEMINI_HOME and strips host Google API keys', async () => {
+    const root = await makeScratchDir('antigravity-profile-');
+    try {
+      const env = {
+        CLOUDCLI_ANTIGRAVITY_DIR: root,
+        GEMINI_API_KEY: 'secret-gemini',
+        GOOGLE_API_KEY: 'secret-google',
+        PATH: '/usr/bin',
+        HOME: process.env.HOME,
+      } as NodeJS.ProcessEnv;
+      const launch = buildAntigravityLaunchEnv(env);
+      assert.equal(launch.GEMINI_API_KEY, undefined);
+      assert.equal(launch.GOOGLE_API_KEY, undefined);
+      assert.equal(launch.AGY_ACP_FORCE_FILE_STORAGE, '1');
+      assert.match(launch.GEMINI_HOME ?? '', /profile$/);
+      assert.match(launch.BROWSER ?? '', /CLOUDCLI_ANTIGRAVITY_AUTH_URL|execPath|-e/);
+      assert.equal(fs.existsSync(path.join(launch.GEMINI_HOME ?? '', 'antigravity-acp', 'settings.json')), true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it('accepts only loopback return URLs for the pasted callback', () => {
@@ -441,6 +498,97 @@ describe('Antigravity OAuth URL capture', () => {
     assert.equal(isLoopbackReturnUrl('https://evil.example/?code=abc'), false);
     assert.equal(isLoopbackReturnUrl('file:///etc/passwd'), false);
     assert.equal(isLoopbackReturnUrl('not a url'), false);
+  });
+});
+
+/**
+ * A stand-in for agy_acp_server that behaves like 1.1.1 does: `initialize`
+ * always lists every auth method, and `authenticate` either resolves `{}`
+ * (token file present) or prints the consent URL and blocks (no token).
+ */
+async function writeFakeAcpServer(root: string): Promise<string> {
+  const script = path.join(root, 'fake-agy.mjs');
+  await writeFile(script, `
+import fs from 'node:fs';
+import path from 'node:path';
+import readline from 'node:readline';
+const tokenPath = path.join(process.env.GEMINI_HOME, 'antigravity-acp', 'acp_token.json');
+const rl = readline.createInterface({ input: process.stdin });
+rl.on('line', (line) => {
+  let msg; try { msg = JSON.parse(line); } catch { return; }
+  if (msg.method === 'initialize') {
+    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: {
+      protocolVersion: 1,
+      agentCapabilities: { auth: { logout: {} } },
+      authMethods: [
+        { id: 'oauth-personal', name: 'Log in with Google' },
+        { id: 'oauth-business' }, { id: 'gemini-api-key' }, { id: 'agent-platform' },
+      ],
+    } }) + '\\n');
+  } else if (msg.method === 'authenticate') {
+    if (fs.existsSync(tokenPath)) {
+      process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: {} }) + '\\n');
+    } else {
+      process.stderr.write('Open the following link to authenticate the ACP server: https://accounts.google.com/o/oauth2/v2/auth?response_type=code&client_id=x&redirect_uri=http%3A%2F%2F127.0.0.1%3A49695%2F&scope=y&state=abc\\n');
+    }
+  }
+});
+`, 'utf8');
+  const wrapper = path.join(root, 'agy_acp_server');
+  await writeFile(wrapper, `#!/bin/sh\nexec "${process.execPath}" "${script}" "$@"\n`, 'utf8');
+  await chmod(wrapper, 0o755);
+  return wrapper;
+}
+
+describe('Antigravity sign-in probe', () => {
+  it('does not trust authMethods and only reports signed in when authenticate succeeds', async () => {
+    const root = await makeScratchDir('antigravity-signin-');
+    try {
+      const binary = await writeFakeAcpServer(root);
+      const env = {
+        ...process.env,
+        ANTIGRAVITY_ACP_PATH: binary,
+        CLOUDCLI_ANTIGRAVITY_DIR: path.join(root, 'runtime'),
+      } as NodeJS.ProcessEnv;
+
+      // 1.1.1 lists every method regardless of state, so this alone is meaningless.
+      const initialize = await probeAntigravityAcp(env, 10_000);
+      assert.equal(initialize.authMethods.length, 4);
+
+      // No token on disk: skipped authenticate, not signed in.
+      const before = await probeAntigravitySignIn(env, 'oauth-personal', 10_000);
+      assert.equal(before.authenticated, false);
+      assert.equal(before.reason, 'no-token');
+
+      // A token that the agent rejects surfaces as a consent request.
+      const tokenPath = path.join(root, 'runtime', 'profile', 'antigravity-acp', 'acp_token.json');
+      await mkdir(path.dirname(tokenPath), { recursive: true });
+      await writeFile(tokenPath, '{"refresh_token":"x"}', 'utf8');
+      const fakeScript = path.join(root, 'fake-agy.mjs');
+      const original = await readFile(fakeScript, 'utf8');
+      await writeFile(fakeScript, original.replace('fs.existsSync(tokenPath)', 'false'), 'utf8');
+      const rejected = await probeAntigravitySignIn(env, 'oauth-personal', 10_000);
+      assert.equal(rejected.authenticated, false);
+      assert.equal(rejected.reason, 'consent-required');
+
+      // A working token: authenticate resolves, signed in.
+      await writeFile(fakeScript, original, 'utf8');
+      const after = await probeAntigravitySignIn(env, 'oauth-personal', 10_000);
+      assert.equal(after.authenticated, true);
+      assert.equal(after.reason, 'authenticated');
+      assert.equal(after.initialize.authMethods.length, 4);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('caches getStatus() result to avoid repeated child process spawns', async () => {
+    resetAntigravityAuthCacheForTests();
+    const auth = new AntigravityProviderAuth();
+    const status1 = await auth.getStatus();
+    const status2 = await auth.getStatus();
+    assert.equal(status1, status2);
+    resetAntigravityAuthCacheForTests();
   });
 });
 
@@ -463,6 +611,22 @@ describe('Antigravity models', () => {
     assert.deepEqual(catalog.OPTIONS.map((option) => option.value), ['model-a', 'model-b']);
     assert.equal(catalog.OPTIONS[1].description, 'the current one');
     assert.equal(catalog.DEFAULT, 'model-b');
+
+    // 1.1.1 reports the selected model as `currentValue`, not `value`; missing
+    // that would default the picker to whatever option happens to be first.
+    const current = parseAntigravityModelCatalog({
+      configOptions: [
+        {
+          id: 'model',
+          currentValue: 'gemini-3.7-flash-high',
+          options: [
+            { value: 'gemini-3.8-flash-high', name: 'Gemini 3.8 Flash (High)' },
+            { value: 'gemini-3.7-flash-high', name: 'Gemini 3.7 Flash (High)' },
+          ],
+        },
+      ],
+    });
+    assert.equal(current.DEFAULT, 'gemini-3.7-flash-high');
 
     // No model option (or no session) must yield an empty catalog, never a
     // guessed Gemini model list.
@@ -515,10 +679,140 @@ describe('Antigravity sessions', () => {
     assert.equal(result?.isError, true);
     assert.deepEqual(provider.normalizeMessage({ sessionUpdate: 'unknown_thing' }, 's1'), []);
 
-    // Antigravity keeps no CloudCLI-readable transcript store, and it has no
-    // rewind capability — history is an honest empty page.
+    // `session/load` is addressed with a cwd; without one there is nothing to
+    // replay, so the reader returns an honest empty page instead of guessing.
     assert.deepEqual(await provider.fetchHistory('s1'), {
       messages: [], total: 0, hasMore: false, offset: 0, limit: null,
     });
+  });
+
+  it('reads Antigravity\'s object-shaped tool output instead of blanking the result', () => {
+    const provider = new AntigravitySessionsProvider();
+    // The shell tool sends an object, not a string; reading only the string
+    // case rendered every completed tool call as an empty (red) result.
+    const shell = provider.normalizeMessage({
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 't1',
+      status: 'completed',
+      rawOutput: { commandLine: 'ls', exitCode: 0, combinedOutput: 'a\nb\n', formatted_output: 'a\nb\n' },
+    }, 's1')[0];
+    assert.equal(shell?.content, 'a\nb\n');
+    assert.equal(shell?.isError, false);
+
+    // Anything without a known text field still has to say something.
+    const opaque = provider.normalizeMessage({
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 't2',
+      status: 'completed',
+      rawOutput: { unexpected: 42 },
+    }, 's1')[0];
+    assert.match(String(opaque?.content), /"unexpected": 42/);
+  });
+
+  it('detaches a denial that names a path its tool call never asked for', () => {
+    const provider = new AntigravitySessionsProvider();
+    // Antigravity 1.1.1 reports a LATER call's sandbox denial under an EARLIER
+    // call's toolCallId (reproduced against a bare ACP client). Attaching it
+    // verbatim paints an innocent call red with someone else's error, which is
+    // what turned a handful of real denials into a transcript full of failures.
+    const misattributed = provider.normalizeMessage({
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 't1',
+      status: 'failed',
+      [ANTIGRAVITY_ANNOUNCED_PATH_KEY]: '/repo/package.json',
+      rawOutput: 'Access to path "/home/me/.codex/config.toml" is denied. It is outside the allowed workspace directories: [/repo]',
+    }, 's1')[0];
+    // Still an error the user must see — just not pinned to the wrong call.
+    assert.equal(misattributed?.isError, true);
+    assert.equal(misattributed?.toolId, '');
+
+    // A denial about the call's OWN path stays attached to it.
+    const genuine = provider.normalizeMessage({
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 't2',
+      status: 'failed',
+      [ANTIGRAVITY_ANNOUNCED_PATH_KEY]: '/home/me/.codex/config.toml',
+      rawOutput: 'Access to path "/home/me/.codex/config.toml" is denied. It is outside the allowed workspace directories: [/repo]',
+    }, 's1')[0];
+    assert.equal(genuine?.toolId, 't2');
+
+    // A failure that is not a sandbox denial is never second-guessed.
+    const other = provider.normalizeMessage({
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 't3',
+      status: 'failed',
+      [ANTIGRAVITY_ANNOUNCED_PATH_KEY]: '/repo/package.json',
+      rawOutput: 'Failure in MCP tool execution: Provide between 1 and 20 relay tasks.',
+    }, 's1')[0];
+    assert.equal(other?.toolId, 't3');
+  });
+
+  it('reads the announced path from ACP locations or either argument casing', () => {
+    assert.equal(
+      antigravityAnnouncedToolPath({ locations: [{ path: '/repo/a.ts' }], rawInput: '{"AbsolutePath":"/other"}' }),
+      '/repo/a.ts',
+    );
+    // Builtin-tool arguments arrive as a JSON *string*, MCP-tool ones as an object.
+    assert.equal(antigravityAnnouncedToolPath({ rawInput: '{"AbsolutePath":"/repo/a.ts"}' }), '/repo/a.ts');
+    assert.equal(antigravityAnnouncedToolPath({ rawInput: { absolute_path: '/repo/a.ts' } }), '/repo/a.ts');
+    assert.equal(antigravityAnnouncedToolPath({ rawInput: 'not json' }), '');
+    assert.equal(antigravityAnnouncedToolPath(null), '');
+
+    // A workspace-relative announcement still matches its absolute denial.
+    assert.equal(isMisattributedDenial('package.json', '/repo/package.json'), false);
+    assert.equal(isMisattributedDenial('package.json', '/repo/other.json'), true);
+    assert.equal(isMisattributedDenial('', '/repo/a'), false);
+  });
+
+  it('keeps CloudCLI prompt plumbing out of titles and replayed user turns', () => {
+    // Antigravity concatenates every text block of a session/prompt into ONE
+    // stored user message, so a separate content block does not keep the
+    // sandbox briefing out of the transcript — it has to be stripped on read.
+    assert.equal(
+      antigravityTitleFromPrompt('<workspace_boundary>Your view_file is scoped…</workspace_boundary>\n\nFix the toggle UI'),
+      'Fix the toggle UI',
+    );
+    assert.equal(
+      antigravityTitleFromPrompt('Fix the toggle UI\n\n<images_input>\n1. /a/b.png\n</images_input>'),
+      'Fix the toggle UI',
+    );
+
+    const provider = new AntigravitySessionsProvider();
+    const messages = (provider as unknown as {
+      normalizeHistoryUpdates: (updates: Record<string, unknown>[], sessionId: string) => NormalizedMessage[];
+    }).normalizeHistoryUpdates([
+      { sessionUpdate: 'user_message_chunk', content: { text: '<workspace_boundary>note</workspace_boundary> ' } },
+      { sessionUpdate: 'user_message_chunk', content: { text: 'Fix the toggle UI' } },
+    ], 's1');
+    assert.equal(messages.length, 1);
+    assert.equal(messages[0]?.content, 'Fix the toggle UI');
+  });
+
+  it('collapses a replayed chunk stream into whole messages', () => {
+    const provider = new AntigravitySessionsProvider();
+    // `session/load` replays chunk-granular updates; emitting them verbatim
+    // would render one paragraph as many single-word bubbles.
+    const messages = (provider as unknown as {
+      normalizeHistoryUpdates: (updates: Record<string, unknown>[], sessionId: string) => NormalizedMessage[];
+    }).normalizeHistoryUpdates([
+      { sessionUpdate: 'user_message_chunk', content: { text: 'hi ' } },
+      { sessionUpdate: 'user_message_chunk', content: { text: 'there' } },
+      { sessionUpdate: 'agent_thought_chunk', content: { text: 'hmm' } },
+      { sessionUpdate: 'agent_message_chunk', content: { text: 'one ' } },
+      { sessionUpdate: 'agent_message_chunk', content: { text: 'two' } },
+      { sessionUpdate: 'tool_call', toolCallId: 't1', title: 'bash', rawInput: { command: 'ls' } },
+      { sessionUpdate: 'agent_message_chunk', content: { text: 'after' } },
+    ], 's1');
+
+    assert.deepEqual(
+      messages.map((message) => [message.kind, message.role ?? null, message.content ?? null]),
+      [
+        ['text', 'user', 'hi there'],
+        ['thinking', null, 'hmm'],
+        ['text', 'assistant', 'one two'],
+        ['tool_use', null, null],
+        ['text', 'assistant', 'after'],
+      ],
+    );
   });
 });

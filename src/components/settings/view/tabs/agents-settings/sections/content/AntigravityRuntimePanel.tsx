@@ -62,7 +62,13 @@ const describeProgress = (progress: InstallProgress): string => {
   return progress.message;
 };
 
-export default function AntigravityRuntimePanel({ onStatusChange }: { onStatusChange?: () => void }) {
+export default function AntigravityRuntimePanel({
+  onStatusChange,
+  authenticated = false,
+}: {
+  onStatusChange?: () => void;
+  authenticated?: boolean;
+}) {
   const [runtime, setRuntime] = useState<RuntimeState | null>(null);
   const [loading, setLoading] = useState(true);
   const [installing, setInstalling] = useState(false);
@@ -301,7 +307,7 @@ export default function AntigravityRuntimePanel({ onStatusChange }: { onStatusCh
       )}
 
       <div className="flex flex-wrap items-center gap-2">
-        <Button type="button" onClick={() => void install(false)} disabled={installing || !runtime.supported}>
+        <Button type="button" onClick={() => void install(false)} disabled={installing || !runtime.supported || !runtime.pinned}>
           {installing ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Download className="mr-2 h-4 w-4" />}
           {runtime.installed ? 'Repair install' : 'Install'}
         </Button>
@@ -328,12 +334,23 @@ export default function AntigravityRuntimePanel({ onStatusChange }: { onStatusCh
           Gemini API key, so nothing here can put you on metered API billing.
         </p>
         <div className="flex flex-wrap items-center gap-2">
-          <Button type="button" onClick={() => void startSignIn()} disabled={signingIn || !runtime.installed}>
+          <Button
+            type="button"
+            onClick={() => void startSignIn()}
+            disabled={signingIn || (!runtime.installed && !runtime.binary.path)}
+          >
             {signingIn ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ExternalLink className="mr-2 h-4 w-4" />}
             Sign in with Google
           </Button>
           {login?.status === 'pending' && <span className="text-sm text-muted-foreground">Waiting for the browser…</span>}
-          {login?.status === 'succeeded' && <span className="text-sm text-green-700 dark:text-green-400">Signed in.</span>}
+          {authenticated && (
+            <span className="text-sm text-green-700 dark:text-green-400">Signed in.</span>
+          )}
+          {login?.status === 'succeeded' && !authenticated && (
+            <span className="text-sm text-amber-800 dark:text-amber-200">
+              Sign-in completed, but Connection Status has not refreshed yet. Click the refresh icon above; if it still shows disconnected, run Sign in with Google again.
+            </span>
+          )}
         </div>
 
         {login?.url && (
@@ -357,7 +374,7 @@ export default function AntigravityRuntimePanel({ onStatusChange }: { onStatusCh
           </div>
         )}
 
-        {login?.status === 'pending' && (
+        {(login?.status === 'pending' || Boolean(login?.url)) && (
           <div className="space-y-2 rounded-md border border-border/60 p-3">
             <div className="font-medium text-foreground">Finishing on a remote CloudCLI</div>
             <p className="text-sm text-muted-foreground">

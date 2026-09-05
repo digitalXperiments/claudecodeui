@@ -9,6 +9,7 @@ export {
 } from './provider-usage.service.js';
 export {
   TransientCredentialError,
+  createAntigravityUsageAdapter,
   createClaudeUsageAdapter,
   createCodexUsageAdapter,
   createKimiUsageAdapter,

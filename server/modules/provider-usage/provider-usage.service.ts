@@ -7,6 +7,7 @@ import {
 import type { ProviderAuthStatus } from '@/shared/types.js';
 
 import {
+  createAntigravityUsageAdapter,
   createClaudeUsageAdapter,
   createCodexUsageAdapter,
   createKimiUsageAdapter,
@@ -36,6 +37,9 @@ const adapters: Record<string, ProviderUsageAdapter> = {
   codex: createCodexUsageAdapter(),
   grok: grokUsageAdapter,
   kimi: createKimiUsageAdapter(),
+  // Consumption, not quota — Antigravity publishes no quota to an ACP client.
+  // See createAntigravityUsageAdapter for why.
+  antigravity: createAntigravityUsageAdapter(),
 };
 
 /** Exported for adapter tests and future provider modules. */

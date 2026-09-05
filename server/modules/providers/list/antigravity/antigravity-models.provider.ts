@@ -37,7 +37,9 @@ const EMPTY_CATALOG: ProviderModelsDefinition = { OPTIONS: [], DEFAULT: '' };
 type ConfigOption = {
   id?: unknown;
   configId?: unknown;
+  /** 1.1.1 reports the selected model as `currentValue`; `value` is kept for older builds. */
   value?: unknown;
+  currentValue?: unknown;
   options?: unknown;
 };
 
@@ -65,7 +67,7 @@ export function parseAntigravityModelCatalog(sessionResult: unknown): ProviderMo
   }
 
   if (options.length === 0) return EMPTY_CATALOG;
-  const current = readOptionalString(modelOption.value);
+  const current = readOptionalString(modelOption.currentValue) ?? readOptionalString(modelOption.value);
   return {
     OPTIONS: options,
     DEFAULT: current && options.some((option) => option.value === current) ? current : options[0].value,

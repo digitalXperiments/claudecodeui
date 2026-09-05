@@ -6,6 +6,7 @@ import readline from 'node:readline';
 import spawn from 'cross-spawn';
 
 import type { ProviderAuthStatus } from '@/shared/types.js';
+import type { AgyUsageBucket, AgyUsageGroup } from '@/modules/providers/index.js';
 
 import { createCodexAppServer } from '../../codex-app-server.js';
 
@@ -706,6 +707,25 @@ const readClaudeExpiryMs = (record: AnyRecord): number | null => {
 };
 
 /**
+ * A long-lived `CLAUDE_CODE_OAUTH_TOKEN` from the environment, else from
+ * `~/.claude/settings.json`'s `env` block — the same two places
+ * `ClaudeProviderAuth.checkCredentials` consults, in the same order.
+ *
+ * This is the only Claude credential that does not rot: it carries no
+ * `expiresAt`, so it survives contexts that cannot reach the login keychain
+ * (SSH, a launchd-started server) where the per-account keychain items and
+ * `~/.claude/.credentials.json` drift out of date independently of each other.
+ */
+const readClaudeLongLivedToken = async (): Promise<string | null> => {
+  const fromEnv = readString(process.env.CLAUDE_CODE_OAUTH_TOKEN)?.trim();
+  if (fromEnv) {
+    return fromEnv;
+  }
+  const settings = await readJsonObject(path.join(os.homedir(), '.claude', 'settings.json'));
+  return readString(asRecord(settings?.env)?.CLAUDE_CODE_OAUTH_TOKEN)?.trim() || null;
+};
+
+/**
  * Claude Code keeps one keychain item per account (e.g. the OS username,
  * legacy `unknown`) and `security` without `-a` only returns the first match,
  * which can be an expired login. Collect every store and pick below.
@@ -761,6 +781,20 @@ const readClaudeCredentialCandidates = async (): Promise<ClaudeCredentialCandida
     throw isTransientCredentialError(error)
       ? error
       : new TransientCredentialError('Claude credential file read failed', { cause: error });
+  }
+
+  // Added last on purpose: it has no `expiresAt`, and the picker sorts unknown
+  // expiry behind every dated credential. A live keychain login therefore still
+  // wins, and this only carries the call when the dated stores have all expired.
+  const longLivedToken = await readClaudeLongLivedToken();
+  if (longLivedToken && !seenTokens.has(longLivedToken)) {
+    seenTokens.add(longLivedToken);
+    candidates.push({
+      source: 'oauth-token',
+      accessToken: longLivedToken,
+      refreshToken: null,
+      expiresAtMs: null,
+    });
   }
 
   if (candidates.length === 0 && firstTransientError) {
@@ -988,15 +1022,28 @@ const CLAUDE_REJECTED_GATE_SECONDS = 30 * 60;
  * Module-scoped on purpose: it must survive the service's 5-minute snapshot
  * cache and also throttle `?fresh=1` manual refreshes, which bypass that TTL.
  */
-const claudeLiveGate: { notBeforeMs: number; reason: string | null } = {
+const claudeLiveGate: {
+  notBeforeMs: number;
+  reason: string | null;
+  /**
+   * The access token the server rejected, set only for 401/403. Re-authenticating
+   * produces a different token, and holding the old token's gate against it would
+   * keep the widget stale for up to 30 minutes after the user has already fixed
+   * the login. A 429 leaves this null: rate limits are account-wide, so a fresh
+   * token must not shortcut the wait.
+   */
+  rejectedToken: string | null;
+} = {
   notBeforeMs: 0,
   reason: null,
+  rejectedToken: null,
 };
 
 /** Exported for tests. */
 export const resetClaudeLiveGate = (): void => {
   claudeLiveGate.notBeforeMs = 0;
   claudeLiveGate.reason = null;
+  claudeLiveGate.rejectedToken = null;
 };
 
 const readHttpErrorStatus = (error: unknown): number | null => (
@@ -1092,6 +1139,15 @@ export function createClaudeUsageAdapter(options: AdapterOptions = {}): Provider
         ?? unavailable(CLAUDE_EXPIRED_LOGIN_CAUSE);
     }
 
+    // A gate raised by a rejected token does not apply to a credential we have
+    // not tried yet — that is the user having re-authenticated since.
+    if (
+      claudeLiveGate.rejectedToken
+      && claudeLiveGate.rejectedToken !== credential.accessToken
+    ) {
+      resetClaudeLiveGate();
+    }
+
     if (nowMs < claudeLiveGate.notBeforeMs) {
       const cause = claudeGateRetryCause(claudeLiveGate.notBeforeMs, nowMs);
       return await readClaudeFallback(readCachedUsage, cause) ?? unavailable(`Claude ${cause}`);
@@ -1120,6 +1176,7 @@ export function createClaudeUsageAdapter(options: AdapterOptions = {}): Provider
         claudeLiveGate.reason = status === 429
           ? 'rate-limited (HTTP 429)'
           : `rejected (HTTP ${status})`;
+        claudeLiveGate.rejectedToken = status === 429 ? null : credential.accessToken;
         const cause = claudeGateRetryCause(claudeLiveGate.notBeforeMs, Date.now());
         const gatedFallback = await readClaudeFallback(readCachedUsage, cause);
         if (gatedFallback) return gatedFallback;
@@ -1341,6 +1398,80 @@ export function createGrokUsageAdapter(options: GrokAdapterOptions = {}): Provid
 }
 
 export const grokUsageAdapter: ProviderUsageAdapter = createGrokUsageAdapter();
+
+/**
+ * Live quota windows for Antigravity, read from the `agy` CLI.
+ *
+ * The ACP runtime CloudCLI drives for chat publishes no quota to a client —
+ * its `retrieveUserQuota[Summary]` endpoints answer `403 SUBSCRIPTION_REQUIRED`
+ * for personal Google accounts. The `agy` CLI is a separate binary that does
+ * expose one, via a `/usage` slash command that resolves locally without
+ * running a model turn, so polling it is free. See `antigravity-cli-usage.ts`
+ * for the payload shape and the credential-store caveat.
+ *
+ * Google publishes a remaining *fraction* per bucket, never an absolute cap,
+ * because quota is consumed proportionally to token cost rather than counted in
+ * requests. These windows are therefore percent-unit with a nominal limit of
+ * 100, which is what the fraction actually means — not a request count dressed
+ * up as one.
+ */
+export const createAntigravityUsageAdapter = (
+  options: { readUsageGroups?: () => Promise<AgyUsageGroup[]> } = {},
+): ProviderUsageAdapter => (
+  async () => {
+    const groups = options.readUsageGroups
+      ? await options.readUsageGroups()
+      : await (await import('@/modules/providers/index.js')).readAgyUsageGroups();
+
+    const windows: UsageWindow[] = [];
+    for (const group of groups) {
+      // Position short session windows (5h limit) ahead of weekly limits,
+      // matching Claude and Codex so the primary view tracks the current session.
+      const sortedBuckets = [...group.buckets].sort((a, b) => {
+        const isSession = (bucket: AgyUsageBucket) => bucket.window === '5h' || bucket.id.endsWith('-5h');
+        if (isSession(a) && !isSession(b)) return -1;
+        if (!isSession(a) && isSession(b)) return 1;
+        return 0;
+      });
+
+      for (const bucket of sortedBuckets) {
+        const fraction = bucket.remainingFraction;
+        const remaining = fraction === null ? null : Math.round(fraction * 100);
+        windows.push({
+          id: bucket.id,
+          // Two groups publish identically-named buckets ("Weekly Limit
+          // Remaining"), so the group has to be in the label to tell them apart.
+          label: `${group.name} · ${bucket.name.replace(/ Limit Remaining$/, '')}`,
+          used: remaining === null ? null : 100 - remaining,
+          limit: fraction === null ? null : 100,
+          remaining,
+          remainingRatio: fraction,
+          resetsAt: bucket.resetTime,
+          unit: 'percent',
+        });
+      }
+    }
+
+    if (windows.length === 0) {
+      return unavailable('Antigravity reported no usage windows');
+    }
+
+    // Default to the first session window (gemini-5h) so the collapsed row
+    // displays current session usage tracking.
+    const primaryWindowId = windows.find((window) => window.id === 'gemini-5h')?.id
+      ?? windows.find((window) => window.id.endsWith('-5h'))?.id
+      ?? windows[0]?.id
+      ?? null;
+
+    return {
+      planName: null,
+      primaryWindowId,
+      windows,
+      status: 'ok',
+      error: null,
+    };
+  }
+);
 
 /** Providers without a real quota adapter still appear as signed-in/N/A rows. */
 export const unavailableUsageAdapter = (providerId: string): ProviderUsageAdapter => (
