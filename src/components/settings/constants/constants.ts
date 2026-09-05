@@ -19,6 +19,7 @@ import {
   ShieldCheck,
   UserCog,
   Webhook,
+  Archive,
 } from 'lucide-react';
 
 import type {
@@ -67,6 +68,7 @@ export const SETTINGS_MAIN_TABS: SettingsMainTabMeta[] = [
   { id: 'browser', label: 'Browser', keywords: 'browser playwright chromium automation', icon: MonitorPlay },
   { id: 'plugins', label: 'Plugins', keywords: 'plugins extensions integrations', icon: Puzzle },
   { id: 'notifications', label: 'Notifications', keywords: 'notifications alerts push', icon: Bell },
+  { id: 'backups', label: 'Backups', keywords: 'backup restore database codebase cron schedule archive', icon: Archive },
   { id: 'security', label: 'Security', keywords: 'security 2fa totp password', icon: ShieldCheck },
   { id: 'about', label: 'About', keywords: 'about version info', icon: Info },
 ];

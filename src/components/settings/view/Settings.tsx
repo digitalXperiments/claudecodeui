@@ -24,6 +24,9 @@ import TasksSettingsTab from '../view/tabs/tasks-settings/TasksSettingsTab';
 import PluginSettingsTab from '../../plugins/view/PluginSettingsTab';
 import SecuritySettingsTab from '../view/tabs/security-settings/SecuritySettingsTab';
 import AboutTab from '../view/tabs/AboutTab';
+import ContinuitySettingsTab from '../view/tabs/ContinuitySettingsTab';
+import BackupsSettingsTab from '../view/tabs/BackupsSettingsTab';
+import ErrorBoundary from '../../main-content/view/ErrorBoundary';
 import { useSettingsController } from '../hooks/useSettingsController';
 import { useWebPush } from '../../../hooks/useWebPush';
 import type { SettingsProps } from '../types/types';
@@ -98,6 +101,10 @@ function Settings({ isOpen, onClose, projects = [], initialTab = 'agents' }: Set
     setCodexPermissionMode,
     kiloPermissionMode,
     setKiloPermissionMode,
+    opencodePermissionMode,
+    setOpenCodePermissionMode,
+    antigravityPermissionMode,
+    setAntigravityPermissionMode,
     piPermissionMode,
     ompPermissionMode,
     setPiPermissionMode,
@@ -239,6 +246,10 @@ function Settings({ isOpen, onClose, projects = [], initialTab = 'agents' }: Set
 
           {/* Content */}
           <main className="min-w-0 flex-1 overflow-y-auto overflow-x-hidden bg-background">
+            {/* One tab that throws while rendering must not unmount the whole
+                app. Keyed by `activeTab` so switching tabs clears a previous
+                tab's error instead of stranding the fallback. */}
+            <ErrorBoundary showDetails resetKeys={[activeTab]}>
             <div key={activeTab} className="settings-content-enter min-w-0 space-y-6 overflow-x-hidden p-4 pb-safe-area-inset-bottom sm:p-5 md:space-y-8 lg:p-8">
               {activeTab === 'appearance' && (
                 <AppearanceSettingsTab
@@ -279,6 +290,10 @@ function Settings({ isOpen, onClose, projects = [], initialTab = 'agents' }: Set
                   onCodexPermissionModeChange={setCodexPermissionMode}
                   kiloPermissionMode={kiloPermissionMode}
                   onKiloPermissionModeChange={setKiloPermissionMode}
+                  opencodePermissionMode={opencodePermissionMode}
+                  onOpenCodePermissionModeChange={setOpenCodePermissionMode}
+                  antigravityPermissionMode={antigravityPermissionMode}
+                  onAntigravityPermissionModeChange={setAntigravityPermissionMode}
                   piPermissionMode={piPermissionMode}
                   ompPermissionMode={ompPermissionMode}
                   onPiPermissionModeChange={setPiPermissionMode}
@@ -288,6 +303,8 @@ function Settings({ isOpen, onClose, projects = [], initialTab = 'agents' }: Set
               )}
 
               {activeTab === 'agent-profiles' && <AgentProfilesSettingsTab />}
+
+              {activeTab === 'continuity' && <ContinuitySettingsTab />}
 
               {activeTab === 'studio' && <StudioSettingsTab />}
 
@@ -319,6 +336,8 @@ function Settings({ isOpen, onClose, projects = [], initialTab = 'agents' }: Set
                 />
               )}
 
+              {activeTab === 'backups' && <BackupsSettingsTab />}
+
               {activeTab === 'api' && <CredentialsSettingsTab />}
 
               {activeTab === 'secrets' && <SecretsSettingsTab />}
@@ -333,6 +352,7 @@ function Settings({ isOpen, onClose, projects = [], initialTab = 'agents' }: Set
 
               {activeTab === 'about' && <AboutTab />}
             </div>
+            </ErrorBoundary>
           </main>
         </div>
       </div>

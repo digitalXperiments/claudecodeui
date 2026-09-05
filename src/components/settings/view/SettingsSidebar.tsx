@@ -16,12 +16,13 @@ import {
   MonitorPlay,
   Palette,
   Puzzle,
+  Route,
   Search,
   Server,
   ShieldCheck,
   UserCog,
-
   Webhook,
+  Archive,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
@@ -54,6 +55,7 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { id: 'agents', labelKey: 'mainTabs.agents', fallbackLabel: 'Agents', keywords: 'providers login models permissions', icon: Bot },
       { id: 'agent-profiles', labelKey: 'mainTabs.agentProfiles', fallbackLabel: 'Agent profiles', keywords: 'presets roles swarm', icon: UserCog },
+      { id: 'continuity', labelKey: 'mainTabs.continuity', fallbackLabel: 'Continuity', keywords: 'resume limits fallback handoff retry', icon: Route },
       { id: 'studio', labelKey: 'mainTabs.studio', fallbackLabel: 'Studio', keywords: 'design prototype', icon: Palette },
       { id: 'evals', labelKey: 'mainTabs.evals', fallbackLabel: 'Eval Center', keywords: 'tests evaluation quality', icon: FlaskConical },
     ],
@@ -84,6 +86,7 @@ const NAV_GROUPS: NavGroup[] = [
       { id: 'webhooks', labelKey: 'mainTabs.webhooks', fallbackLabel: 'Webhooks', keywords: 'hooks ingest automation', icon: Webhook },
       { id: 'plugins', labelKey: 'mainTabs.plugins', fallbackLabel: 'Plugins', keywords: 'extensions apps', icon: Puzzle },
       { id: 'notifications', labelKey: 'mainTabs.notifications', fallbackLabel: 'Notifications', keywords: 'alerts push desktop', icon: Bell },
+      { id: 'backups', labelKey: 'mainTabs.backups', fallbackLabel: 'Backups', keywords: 'backup restore database codebase cron schedule archive', icon: Archive },
       ...(!IS_PLATFORM
         ? [{ id: 'security', labelKey: 'mainTabs.security', fallbackLabel: 'Security', keywords: '2fa totp password', icon: ShieldCheck } as NavItem]
         : []),
