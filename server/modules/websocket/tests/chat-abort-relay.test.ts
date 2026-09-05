@@ -123,3 +123,57 @@ test('aborting a first run with no provider session id still reaches the abort f
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test('stopping a session with no registered run cancels the provider and clears the spinner', async () => {
+  const previousDatabasePath = process.env.DATABASE_PATH;
+  const root = await makeScratchDir('chat-abort-ghost-');
+  closeConnection();
+  process.env.DATABASE_PATH = `${root}/auth.db`;
+  await initializeDatabase();
+
+  const connection = new FakeConnection();
+  const sessionId = 'ghost-run-session';
+  sessionsDb.createAppSession(sessionId, 'grok', '/workspace/demo');
+  sessionsDb.assignProviderSessionId(sessionId, 'grok-native-ghost');
+
+  // No chatRunRegistry.startRun: this is the post-restart state where the
+  // in-memory run is gone but the chat bar is still showing the session busy.
+  const abortTargets: string[] = [];
+  const cancelledSessions: string[] = [];
+  const dependencies = {
+    abortFns: {
+      grok: (target: string) => {
+        abortTargets.push(target);
+        return true;
+      },
+    },
+    cancelRelayJobsForSession: async (target: string) => {
+      cancelledSessions.push(target);
+    },
+  } as unknown as ChatWebSocketDependencies;
+
+  try {
+    await handleChatAbort(
+      connection as unknown as WebSocket,
+      { sessionId },
+      dependencies,
+    );
+
+    // Addressed with the provider-native id the runtime keys its process map by.
+    assert.deepEqual(abortTargets, ['grok-native-ghost']);
+    assert.deepEqual(cancelledSessions, [sessionId]);
+    assert.equal(
+      connection.frames.some((frame) => frame.kind === 'protocol_error'),
+      false,
+      'Stop must not report "has no active run" back to the user',
+    );
+    assert.equal(connection.frames.at(-1)?.kind, 'complete');
+    assert.equal(connection.frames.at(-1)?.aborted, true);
+  } finally {
+    chatRunRegistry.clearAll();
+    closeConnection();
+    if (previousDatabasePath === undefined) delete process.env.DATABASE_PATH;
+    else process.env.DATABASE_PATH = previousDatabasePath;
+    await rm(root, { recursive: true, force: true });
+  }
+});

@@ -1,6 +1,7 @@
 import type { WebSocket } from 'ws';
 
 import { projectsDb, sessionsDb } from '@/modules/database/index.js';
+import { continuityService } from '@/modules/continuity/index.js';
 import { providerCapabilitiesService } from '@/modules/providers/index.js';
 import { interruptsService } from '@/modules/interrupt-queue/index.js';
 import { recordNormalizedRunEvent, runService } from '@/modules/runs/index.js';
@@ -18,7 +19,7 @@ import type {
   AuthenticatedWebSocketRequest,
   LLMProvider,
 } from '@/shared/types.js';
-import { parseIncomingJsonObject } from '@/shared/utils.js';
+import { createCompleteMessage, parseIncomingJsonObject } from '@/shared/utils.js';
 
 // Re-exported so existing tests (and callers) keep importing it from here.
 export { filterImagesToUploadStore };
@@ -302,8 +303,17 @@ export async function handleChatSend(
   }
 
   const recordCanonicalEvent = canonicalRun
-    ? (message: import('@/shared/types.js').NormalizedMessage) => {
+      ? (message: import('@/shared/types.js').NormalizedMessage) => {
         recordNormalizedRunEvent(canonicalRun.run_id, message, 'chat');
+        // Limit signals may arrive as ordinary provider text (Claude can even
+        // follow one with exit code 0), so observe every normalized event
+        // instead of relying on the terminal exit status alone.
+        void continuityService.observeRunEvent(canonicalRun.run_id, message).catch((error) => {
+          console.error('[Continuity] failed to observe chat event', {
+            runId: canonicalRun.run_id,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
         if (message.kind === 'permission_request') {
           interruptsService.create({
             projectId: project?.project_id ?? null,
@@ -430,7 +440,35 @@ export async function handleChatAbort(
 
   const run = chatRunRegistry.getRun(sessionId);
   if (!run || run.status !== 'running') {
-    sendProtocolError(ws, 'NO_ACTIVE_RUN', `Session "${sessionId}" has no active run.`, sessionId);
+    // No live run in the registry, yet the chat bar can still be showing this
+    // session as busy: the registry is in-memory, so a server restart drops it
+    // while the provider child (and its pending turn) survives, and the
+    // client's spinner only clears on a terminal frame. Answering with
+    // NO_ACTIVE_RUN left the user with a red "has no active run" bubble and a
+    // session Stop could never clear. Instead ask the runtime to cancel
+    // whatever it still holds for this session, then send the terminal
+    // `complete` the client is waiting for. Stop is idempotent.
+    const staleProvider = (session.provider || 'claude') as LLMProvider;
+    const staleAbortFn = dependencies.abortFns[staleProvider];
+    const staleTarget = session.provider_session_id || sessionId;
+    if (staleAbortFn) {
+      try {
+        await staleAbortFn(staleTarget);
+      } catch (error) {
+        console.error('[Chat] Stop on a session with no registered run failed:', error);
+      }
+    }
+    try {
+      await dependencies.cancelRelayJobsForSession?.(sessionId);
+    } catch (error) {
+      console.error('[Chat] Failed to cancel Agent Relay workers for stopped lead:', error);
+    }
+    sendJson(ws, createCompleteMessage({
+      provider: staleProvider,
+      sessionId,
+      exitCode: 1,
+      aborted: true,
+    }));
     return;
   }
 
