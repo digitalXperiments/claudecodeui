@@ -8,8 +8,31 @@ import {
 } from '../modules/database/index.js';
 import { getPublicKey } from '../services/vapid-keys.js';
 import { createNotificationEvent, notifyUserIfEnabled } from '../services/notification-orchestrator.js';
+import { getBackupConfig, getBackupHistory, runBackup, updateBackupConfig } from '../modules/backups/index.js';
 
 const router = express.Router();
+
+// Backup manager
+router.get('/backups', (_req, res) => {
+  res.json({ config: getBackupConfig(), history: getBackupHistory() });
+});
+
+router.put('/backups', (req, res) => {
+  try {
+    res.json({ config: updateBackupConfig(req.body || {}) });
+  } catch (error) {
+    res.status(400).json({ error: error instanceof Error ? error.message : 'Invalid backup settings' });
+  }
+});
+
+router.post('/backups/run', async (_req, res) => {
+  try {
+    res.json({ result: await runBackup('manual') });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Backup failed';
+    res.status(message.includes('already running') ? 409 : 500).json({ error: message });
+  }
+});
 
 // ===============================
 // API Keys Management
