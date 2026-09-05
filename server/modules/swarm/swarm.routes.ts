@@ -91,6 +91,15 @@ router.patch(
   '/model-registry/models',
   asyncHandler(async (req, res) => {
     const body = (req.body ?? {}) as Record<string, unknown>;
+    if (Array.isArray(body.models)) {
+      for (const item of body.models) {
+        if (item && typeof item === 'object' && typeof item.provider === 'string' && typeof item.modelId === 'string') {
+          setModelEnabled(item.provider.trim(), item.modelId.trim(), item.enabled !== false);
+        }
+      }
+      res.json({ success: true, capabilities: listModelCapabilities(), stale: registryIsStale() });
+      return;
+    }
     const provider = typeof body.provider === 'string' ? body.provider.trim() : '';
     const modelId = typeof body.modelId === 'string' ? body.modelId.trim() : '';
     if (!provider || !modelId) {

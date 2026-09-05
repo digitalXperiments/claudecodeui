@@ -65,6 +65,13 @@ fs.cpSync(
   { recursive: true },
 );
 
+// Copy model benchmarks snapshot so compiled runtime has access to model capability profiles
+const snapshotSrc = path.join(root, 'server', 'modules', 'swarm', 'model-benchmarks.snapshot.json');
+if (fs.existsSync(snapshotSrc)) {
+  fs.mkdirSync(path.join(staging, 'server', 'modules', 'swarm'), { recursive: true });
+  fs.cpSync(snapshotSrc, path.join(staging, 'server', 'modules', 'swarm', 'model-benchmarks.snapshot.json'));
+}
+
 rm(previous);
 if (fs.existsSync(dest)) {
   fs.renameSync(dest, previous);

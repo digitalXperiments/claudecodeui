@@ -184,17 +184,55 @@ type BenchmarkFamily = {
   asOf: string;
 };
 
+const CORE_FALLBACK_FAMILIES: BenchmarkFamily[] = [
+  { family: "claude-opus-5", match: ["claude-opus-5"], coding: 0.95, agentic: 0.96, longContext: 0.94, speed: 0.65, confidence: 0.65, officialContextWindow: 1000000, asOf: "2026-08-25" },
+  { family: "claude-opus-4.6", match: ["claude-opus-4.6", "claude-4.6-opus"], coding: 0.93, agentic: 0.94, longContext: 0.90, speed: 0.70, confidence: 0.65, officialContextWindow: 200000, asOf: "2026-08-25" },
+  { family: "claude-fable-5", match: ["claude-fable-5"], coding: 0.91, agentic: 0.92, longContext: 0.90, speed: 0.70, confidence: 0.60, officialContextWindow: 1000000, asOf: "2026-08-25" },
+  { family: "claude-sonnet-5", match: ["claude-sonnet-5"], coding: 0.94, agentic: 0.94, longContext: 0.92, speed: 0.82, confidence: 0.65, officialContextWindow: 200000, asOf: "2026-08-25" },
+  { family: "claude-sonnet-4.6", match: ["claude-sonnet-4.6", "claude-4.6-sonnet"], coding: 0.92, agentic: 0.93, longContext: 0.90, speed: 0.84, confidence: 0.65, officialContextWindow: 200000, asOf: "2026-08-25" },
+  { family: "claude-4-sonnet-class", match: ["claude-sonnet", "claude-4-sonnet", "sonnet"], coding: 0.88, agentic: 0.89, longContext: 0.86, speed: 0.85, confidence: 0.60, officialContextWindow: 200000, asOf: "2026-08-25" },
+  { family: "claude-haiku-4-class", match: ["claude-haiku", "claude-3-haiku", "haiku"], coding: 0.74, agentic: 0.75, longContext: 0.74, speed: 0.96, confidence: 0.60, officialContextWindow: 200000, asOf: "2026-08-25" },
+  { family: "gpt-5.6-sol", match: ["gpt-5.6-sol", "5.6-sol"], coding: 0.95, agentic: 0.94, longContext: 0.90, speed: 0.72, confidence: 0.65, officialContextWindow: 256000, asOf: "2026-08-25" },
+  { family: "gpt-5.6-terra", match: ["gpt-5.6-terra", "5.6-terra"], coding: 0.90, agentic: 0.90, longContext: 0.88, speed: 0.82, confidence: 0.65, officialContextWindow: 256000, asOf: "2026-08-25" },
+  { family: "gpt-5.6-luna", match: ["gpt-5.6-luna", "5.6-luna"], coding: 0.82, agentic: 0.82, longContext: 0.82, speed: 0.95, confidence: 0.60, officialContextWindow: 256000, asOf: "2026-08-25" },
+  { family: "gemini-3.1-pro-class", match: ["gemini-3.1-pro", "gemini-pro-agent"], coding: 0.93, agentic: 0.94, longContext: 0.98, speed: 0.78, confidence: 0.65, officialContextWindow: 2000000, asOf: "2026-08-25" },
+  { family: "gemini-flash-class", match: ["gemini-flash", "flash"], coding: 0.85, agentic: 0.86, longContext: 0.94, speed: 0.95, confidence: 0.60, officialContextWindow: 1000000, asOf: "2026-08-25" },
+  { family: "deepseek-v4-pro", match: ["deepseek-v4-pro"], coding: 0.95, agentic: 0.93, longContext: 0.89, speed: 0.72, confidence: 0.65, officialContextWindow: 128000, asOf: "2026-08-25" },
+  { family: "deepseek-v4-flash", match: ["deepseek-v4-flash"], coding: 0.89, agentic: 0.87, longContext: 0.86, speed: 0.95, confidence: 0.65, officialContextWindow: 128000, asOf: "2026-08-25" },
+  { family: "deepseek-v3-class", match: ["deepseek-v3", "deepseek-chat", "deepseek"], coding: 0.88, agentic: 0.86, longContext: 0.85, speed: 0.88, confidence: 0.60, officialContextWindow: 128000, asOf: "2026-08-25" },
+  { family: "deepseek-r1-class", match: ["deepseek-r1", "deepseek-reasoner"], coding: 0.95, agentic: 0.91, longContext: 0.88, speed: 0.62, confidence: 0.65, officialContextWindow: 128000, asOf: "2026-08-25" },
+  { family: "glm-5.1", match: ["glm-5.1"], coding: 0.90, agentic: 0.89, longContext: 0.86, speed: 0.80, confidence: 0.65, officialContextWindow: 128000, asOf: "2026-08-25" },
+  { family: "qwen3-coder-class", match: ["qwen3-coder", "qwen-3-coder", "qwq", "qwen-coder"], coding: 0.93, agentic: 0.90, longContext: 0.87, speed: 0.88, confidence: 0.65, officialContextWindow: 128000, asOf: "2026-08-25" },
+  { family: "kimi-k2-class", match: ["kimi-k2", "kimi", "moonshot"], coding: 0.88, agentic: 0.87, longContext: 0.94, speed: 0.82, confidence: 0.60, officialContextWindow: 2000000, asOf: "2026-08-25" },
+  { family: "grok-4.6", match: ["grok-4.6"], coding: 0.93, agentic: 0.93, longContext: 0.89, speed: 0.80, confidence: 0.65, officialContextWindow: 128000, asOf: "2026-08-25" },
+  { family: "grok-4-class", match: ["grok-4", "grok"], coding: 0.89, agentic: 0.89, longContext: 0.87, speed: 0.84, confidence: 0.60, officialContextWindow: 128000, asOf: "2026-08-25" },
+];
+
 let snapshotCache: BenchmarkFamily[] | null = null;
 
 function loadSnapshot(): BenchmarkFamily[] {
-  if (snapshotCache) return snapshotCache;
-  try {
-    const raw = fsSync.readFileSync(path.join(__dirname, 'model-benchmarks.snapshot.json'), 'utf8');
-    const parsed = JSON.parse(raw) as { families?: BenchmarkFamily[] };
-    snapshotCache = Array.isArray(parsed.families) ? parsed.families : [];
-  } catch {
-    snapshotCache = [];
+  if (snapshotCache && snapshotCache.length > 0) return snapshotCache;
+  const candidatePaths = [
+    path.join(__dirname, "model-benchmarks.snapshot.json"),
+    path.resolve(__dirname, "../../../server/modules/swarm/model-benchmarks.snapshot.json"),
+    path.resolve(process.cwd(), "server/modules/swarm/model-benchmarks.snapshot.json"),
+    path.resolve(process.cwd(), "dist-server/server/modules/swarm/model-benchmarks.snapshot.json"),
+  ];
+  for (const candidate of candidatePaths) {
+    try {
+      if (fsSync.existsSync(candidate)) {
+        const raw = fsSync.readFileSync(candidate, "utf8");
+        const parsed = JSON.parse(raw) as { families?: BenchmarkFamily[] };
+        if (Array.isArray(parsed.families) && parsed.families.length > 0) {
+          snapshotCache = parsed.families;
+          return snapshotCache;
+        }
+      }
+    } catch {
+      // try next candidate
+    }
   }
+  snapshotCache = CORE_FALLBACK_FAMILIES;
   return snapshotCache;
 }
 
@@ -214,12 +252,18 @@ function versionOf(id: string): number[] {
  */
 export function matchBenchmarkFamily(modelId: string): BenchmarkFamily | null {
   const id = modelId.toLowerCase();
+  const cleanId = normalizeCatalogModelId(modelId);
   const families = loadSnapshot();
   let best: { family: BenchmarkFamily; fragLen: number; dist: number } | null = null;
   for (const family of families) {
     for (const fragment of family.match) {
-      if (!id.includes(fragment)) continue;
-      const dist = versionDistance(id, fragment, family);
+      const matchesRaw = id.includes(fragment);
+      const matchesClean = cleanId.includes(fragment);
+      if (!matchesRaw && !matchesClean) continue;
+      const dist = Math.min(
+        matchesRaw ? versionDistance(id, fragment, family) : 99,
+        matchesClean ? versionDistance(cleanId, fragment, family) : 99,
+      );
       const candidate = { family, fragLen: fragment.length, dist };
       const better =
         !best ||
@@ -253,6 +297,104 @@ function confidenceFor(family: BenchmarkFamily | null, hasPricing: boolean): num
   }
   return Math.min(0.95, 0.55 + 0.4 * decay);
 }
+
+export function normalizeCatalogModelId(modelId: string): string {
+  return modelId
+    .toLowerCase()
+    .replace(/^(?:openrouter\/~?|anthropic\/|google\/|meta-llama\/|cursor\/|cline\/|xai\/|stepfun\/|z-ai\/|sao10k\/)/i, "")
+    .trim();
+}
+
+export function inferHeuristicCapability(
+  modelId: string,
+  provider: string,
+  contextWindow: number | null,
+  inputCost: number | null,
+  outputCost: number | null,
+): {
+  coding: number;
+  agentic: number;
+  longContext: number;
+  speed: number;
+  confidence: number;
+  officialContextWindow: number;
+} {
+  const id = normalizeCatalogModelId(modelId);
+
+  // 1. Determine official context window
+  let officialContextWindow = contextWindow ?? 128_000;
+  if (contextWindow == null) {
+    if (id.includes("[1m]") || id.includes("1m") || id.includes("1000k") || id.includes("gemini") || id.includes("kimi")) {
+      officialContextWindow = 1_000_000;
+    } else if (id.includes("claude") || id.includes("opus") || id.includes("sonnet")) {
+      officialContextWindow = 200_000;
+    } else if (id.includes("gpt-5") || id.includes("sol") || id.includes("terra")) {
+      officialContextWindow = 256_000;
+    } else {
+      officialContextWindow = 128_000;
+    }
+  }
+
+  // 2. Identify capability tier from naming conventions
+  const isReasoning = /\b(?:r1|reason|reasoner|reasoning|thinking|thought|o1|o3|o4|qwq)\b/i.test(id);
+  const isFrontier = /\b(?:opus|sol|max|pro|plus|large|ultra|405b|70b)\b/i.test(id);
+  const isMidTier = /\b(?:sonnet|terra|medium|32b|33b|27b|14b|coder|code)\b/i.test(id);
+  const isLightweight = /\b(?:mini|flash|luna|haiku|lite|micro|small|edge|8b|7b|3b|1b|nano)\b/i.test(id);
+
+  let coding = 0.82;
+  let agentic = 0.82;
+  let longContext = 0.82;
+  let speed = 0.85;
+
+  if (isReasoning) {
+    coding = 0.94;
+    agentic = 0.91;
+    longContext = 0.88;
+    speed = 0.62;
+  } else if (isFrontier) {
+    coding = 0.90;
+    agentic = 0.90;
+    longContext = 0.88;
+    speed = 0.78;
+  } else if (isLightweight) {
+    coding = 0.75;
+    agentic = 0.76;
+    longContext = 0.78;
+    speed = 0.95;
+  } else if (isMidTier) {
+    coding = 0.86;
+    agentic = 0.85;
+    longContext = 0.85;
+    speed = 0.85;
+  }
+
+  // Context size correlates with long-context capability
+  if (officialContextWindow >= 1_000_000) {
+    longContext = Math.max(longContext, 0.95);
+  } else if (officialContextWindow >= 200_000) {
+    longContext = Math.max(longContext, 0.88);
+  }
+
+  // Pricing correlation
+  if (outputCost != null && outputCost > 10) {
+    coding = Math.min(0.96, coding + 0.03);
+    agentic = Math.min(0.96, agentic + 0.03);
+  } else if (outputCost != null && outputCost < 0.5) {
+    speed = Math.min(0.98, speed + 0.04);
+  }
+
+  const confidence = outputCost != null ? 0.55 : 0.50;
+
+  return {
+    coding,
+    agentic,
+    longContext,
+    speed,
+    confidence,
+    officialContextWindow,
+  };
+}
+
 
 // ———————————————————————————————————————————————————————— live outcome correction (L3)
 
@@ -413,13 +555,16 @@ export async function refreshModelRegistry(options: { providers?: string[] } = {
             : typeof record.max_context_window === 'number'
               ? record.max_context_window
               : null;
+        const inputCost = pickCost(record, ['input_cost_per_mtok', 'inputCost', 'pricing_input']);
+        const outputCost = pickCost(record, ['output_cost_per_mtok', 'outputCost', 'pricing_output']);
+        const heuristic = !family
+          ? inferHeuristicCapability(modelId, provider, contextWindow, inputCost, outputCost)
+          : null;
         const officialContextWindow =
           typeof record.officialContextWindow === 'number'
             ? record.officialContextWindow
-            : family?.officialContextWindow ?? null;
-        const inputCost = pickCost(record, ['input_cost_per_mtok', 'inputCost', 'pricing_input']);
-        const outputCost = pickCost(record, ['output_cost_per_mtok', 'outputCost', 'pricing_output']);
-        const assessmentKind = family ? family.assessmentKind ?? 'heuristic' : 'catalog-only';
+            : family?.officialContextWindow ?? heuristic?.officialContextWindow ?? (contextWindow ?? 128_000);
+        const assessmentKind = family ? (family.assessmentKind ?? 'heuristic') : 'heuristic';
         const capability: ModelCapability = {
           modelId,
           provider,
@@ -429,12 +574,12 @@ export async function refreshModelRegistry(options: { providers?: string[] } = {
           officialContextWindow,
           inputCostPerMtok: inputCost,
           outputCostPerMtok: outputCost,
-          codingScore: family?.coding ?? 0,
-          agenticScore: family?.agentic ?? 0,
-          longContextScore: family?.longContext ?? 0,
-          speedScore: family?.speed ?? null,
-          confidence: confidenceFor(family, inputCost != null),
-          sources: family ? ['provider-catalog', `${assessmentKind}-snapshot`] : ['provider-catalog'],
+          codingScore: family?.coding ?? heuristic?.coding ?? 0.80,
+          agenticScore: family?.agentic ?? heuristic?.agentic ?? 0.80,
+          longContextScore: family?.longContext ?? heuristic?.longContext ?? 0.80,
+          speedScore: family?.speed ?? heuristic?.speed ?? 0.85,
+          confidence: family ? confidenceFor(family, inputCost != null) : (heuristic?.confidence ?? 0.50),
+          sources: family ? ['provider-catalog', `${assessmentKind}-snapshot`] : ['provider-catalog', 'heuristic-assessment'],
           aliases,
           assessmentKind,
           fetchedAt: nowIso,
@@ -484,7 +629,7 @@ function upsert(capability: ModelCapability): void {
          aliases_json=excluded.aliases_json,
          assessment_kind=excluded.assessment_kind,
          fetched_at=excluded.fetched_at,
-         enabled=excluded.enabled,
+         enabled=COALESCE(model_capabilities.enabled, excluded.enabled),
          available=1`
     )
     .run(
