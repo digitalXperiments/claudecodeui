@@ -10,6 +10,7 @@
 import express from 'express';
 
 import { projectsDb } from '@/modules/database/index.js';
+import { integrationRehearsalService } from '@/modules/workspaces/integration-rehearsal.service.js';
 import { workspaceService } from '@/modules/workspaces/workspace.service.js';
 import {
   MERGE_STRATEGIES,
@@ -128,6 +129,44 @@ router.get(
           .filter(Boolean)
       : undefined;
     res.json({ success: true, workspaces: workspaceService.list(projectId, { status }) });
+  }),
+);
+
+router.post(
+  '/projects/:projectId/workspaces/integration-rehearsal',
+  asyncHandler(async (req, res) => {
+    const projectId = readPathParam(req.params.projectId);
+    requireProjectPath(projectId);
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const workspaceIds = Array.isArray(body.workspaceIds)
+      ? body.workspaceIds.filter((value): value is string => typeof value === 'string')
+      : [];
+    const baseSha = readOptionalString(body.baseSha);
+    if (!baseSha) {
+      throw new AppError('baseSha is required', {
+        code: 'WORKSPACE_INVALID_BASE',
+        statusCode: 400,
+      });
+    }
+    try {
+      const result = await integrationRehearsalService.run({
+        projectId,
+        workspaceIds,
+        baseSha,
+      });
+      res.json({ success: true, result });
+    } catch (error) {
+      mapWorkspaceError(error);
+    }
+  }),
+);
+
+router.get(
+  '/projects/:projectId/workspaces/integration-rehearsal',
+  asyncHandler(async (req, res) => {
+    const projectId = readPathParam(req.params.projectId);
+    requireProjectPath(projectId);
+    res.json({ success: true, result: integrationRehearsalService.last(projectId) });
   }),
 );
 

@@ -1,6 +1,14 @@
 import { authenticatedFetch } from '../../../utils/api';
 
-import type { AgentWorkspace, WorkspaceCiStatus, WorkspaceDiff, WorkspaceLiveStatus, WorkspacePullRequest, WorkspaceTestReport } from '../types';
+import type {
+  AgentWorkspace,
+  IntegrationRehearsalResult,
+  WorkspaceCiStatus,
+  WorkspaceDiff,
+  WorkspaceLiveStatus,
+  WorkspacePullRequest,
+  WorkspaceTestReport,
+} from '../types';
 
 async function readResponse<T>(response: Response): Promise<T> {
   const payload = (await response.json().catch(() => null)) as
@@ -76,5 +84,25 @@ export const workspaceApi = {
   async shipFixCi(runId: string, failureSummary: string) {
     const response = await authenticatedFetch(`/api/runs/${encodeURIComponent(runId)}/ship/fix-ci`, { method: 'POST', body: JSON.stringify({ failureSummary }) });
     return readResponse<{ run: unknown }>(response);
+  },
+
+  async runIntegrationRehearsal(
+    projectId: string,
+    input: { workspaceIds: string[]; baseSha: string },
+  ): Promise<IntegrationRehearsalResult> {
+    const response = await authenticatedFetch(
+      `/api/projects/${encodeURIComponent(projectId)}/workspaces/integration-rehearsal`,
+      { method: 'POST', body: JSON.stringify(input) },
+    );
+    const payload = await readResponse<{ result: IntegrationRehearsalResult }>(response);
+    return payload.result;
+  },
+
+  async lastIntegrationRehearsal(projectId: string): Promise<IntegrationRehearsalResult | null> {
+    const response = await authenticatedFetch(
+      `/api/projects/${encodeURIComponent(projectId)}/workspaces/integration-rehearsal`,
+    );
+    const payload = await readResponse<{ result: IntegrationRehearsalResult | null }>(response);
+    return payload.result ?? null;
   },
 };

@@ -4,6 +4,7 @@ import { Button } from '../../../shared/view/ui';
 import type { Project } from '../../../types/app';
 
 import { useWorkspaces } from '../hooks/useWorkspaces';
+import IntegrationRehearsalPanel from './IntegrationRehearsalPanel';
 import ShipStepper from './ShipStepper';
 
 type WorkspacesViewProps = { selectedProject: Project | null };
@@ -135,6 +136,17 @@ export default function WorkspacesView({ selectedProject }: WorkspacesViewProps)
                   )}
                 </div>
               )}
+
+              <IntegrationRehearsalPanel
+                workspaces={state.workspaces}
+                selectedIds={state.rehearsalIds}
+                baseSha={state.rehearsalBaseSha}
+                result={state.rehearsalResult}
+                isRehearsing={state.isRehearsing}
+                onToggle={state.toggleRehearsalId}
+                onBaseShaChange={state.setRehearsalBaseSha}
+                onRun={() => void state.runRehearsal()}
+              />
 
               <ShipStepper
                 workspace={state.selected}

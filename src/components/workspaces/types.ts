@@ -62,6 +62,43 @@ export type WorkspacePullRequest = {
   warnings: string[];
 };
 
+export type IntegrationRehearsalWorkspaceInput = {
+  workspace_id: string;
+  feature_branch: string;
+  head_sha: string;
+  status: string;
+};
+
+export type IntegrationRehearsalTestReport = {
+  command: string;
+  cwd: string;
+  passed: boolean;
+  exit_code: number | null;
+  timed_out: boolean;
+  stdout: string;
+  stderr: string;
+  duration_ms: number;
+  started_at: string;
+  finished_at: string;
+};
+
+export type IntegrationRehearsalResult = {
+  rehearsal_id: string;
+  project_id: string;
+  outcome: 'success' | 'merge_conflict' | 'test_failed' | 'timeout' | 'invalid_input';
+  message: string;
+  inputs: IntegrationRehearsalWorkspaceInput[];
+  base_sha: string;
+  merge_conflicts: string[];
+  test: IntegrationRehearsalTestReport | null;
+  warnings: string[];
+  cleaned_up: boolean;
+  rehearsal_branch: string;
+  rehearsal_path: string | null;
+  started_at: string;
+  finished_at: string;
+};
+
 export type WorkspaceCiStatus = {
   provider: 'github' | 'gitlab' | 'none';
   pull_request_url: string | null;

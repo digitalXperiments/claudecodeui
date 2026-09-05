@@ -1,7 +1,15 @@
 import { useCallback, useEffect, useState } from 'react';
 
 import { workspaceApi } from '../api/workspaceApi';
-import type { AgentWorkspace, WorkspaceCiStatus, WorkspaceDiff, WorkspaceLiveStatus, WorkspacePullRequest, WorkspaceTestReport } from '../types';
+import type {
+  AgentWorkspace,
+  IntegrationRehearsalResult,
+  WorkspaceCiStatus,
+  WorkspaceDiff,
+  WorkspaceLiveStatus,
+  WorkspacePullRequest,
+  WorkspaceTestReport,
+} from '../types';
 
 export function useWorkspaces(projectId: string | null) {
   const [workspaces, setWorkspaces] = useState<AgentWorkspace[]>([]);
@@ -14,6 +22,10 @@ export function useWorkspaces(projectId: string | null) {
   const [pullRequest, setPullRequest] = useState<WorkspacePullRequest | null>(null);
   const [ciStatus, setCiStatus] = useState<WorkspaceCiStatus | null>(null);
   const [isShipping, setIsShipping] = useState(false);
+  const [rehearsalIds, setRehearsalIds] = useState<string[]>([]);
+  const [rehearsalBaseSha, setRehearsalBaseSha] = useState('');
+  const [rehearsalResult, setRehearsalResult] = useState<IntegrationRehearsalResult | null>(null);
+  const [isRehearsing, setIsRehearsing] = useState(false);
 
   const refresh = useCallback(async () => {
     if (!projectId) {
@@ -121,5 +133,31 @@ export function useWorkspaces(projectId: string | null) {
       if (!selected?.run_id) throw new Error('This workspace is not linked to a run.');
       await workspaceApi.shipFixCi(selected.run_id, failureSummary);
     }),
+    rehearsalIds,
+    rehearsalBaseSha,
+    rehearsalResult,
+    isRehearsing,
+    setRehearsalBaseSha,
+    toggleRehearsalId: (workspaceId: string) => {
+      setRehearsalIds((current) =>
+        current.includes(workspaceId) ? current.filter((id) => id !== workspaceId) : [...current, workspaceId],
+      );
+    },
+    runRehearsal: async () => {
+      if (!projectId) return;
+      setIsRehearsing(true);
+      setError(null);
+      try {
+        const result = await workspaceApi.runIntegrationRehearsal(projectId, {
+          workspaceIds: rehearsalIds,
+          baseSha: rehearsalBaseSha.trim(),
+        });
+        setRehearsalResult(result);
+      } catch (requestError) {
+        setError(requestError instanceof Error ? requestError.message : 'Integration rehearsal failed');
+      } finally {
+        setIsRehearsing(false);
+      }
+    },
   };
 }
