@@ -9,8 +9,9 @@ import type {
   Provider,
 } from '../../types/types';
 import { formatUsageLimitText } from '../../utils/chatFormatting';
+import { providerMessageTypeLabel } from '../../utils/providerLabels';
 import type { Project } from '../../../../types/app';
-import { ToolRenderer, shouldHideToolResult } from '../../tools';
+import { ToolRenderer, shouldHideToolResult, usesIntegratedToolResult } from '../../tools';
 import { Reasoning, ReasoningTrigger, ReasoningContent } from '../../../../shared/view/ui';
 
 import ChatMessageImages from './ChatMessageImages';
@@ -24,6 +25,7 @@ type DiffLine = {
   content: string;
   lineNum: number;
 };
+
 
 type MessageComponentProps = {
   message: ChatMessage;
@@ -205,23 +207,7 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
                   ? t('messageTypes.error')
                   : message.type === 'tool'
                     ? t('messageTypes.tool')
-                    : (provider === 'cursor'
-                        ? t('messageTypes.cursor')
-                        : provider === 'codex'
-                          ? t('messageTypes.codex')
-                          : provider === 'opencode'
-                              ? t('messageTypes.opencode', { defaultValue: 'OpenCode' })
-                              : provider === 'kilo'
-                                ? t('messageTypes.kilo', { defaultValue: 'Kilo Code' })
-                              : provider === 'grok'
-                                ? t('messageTypes.grok', { defaultValue: 'Grok Build' })
-                                : provider === 'kimi'
-                                  ? t('messageTypes.kimi', { defaultValue: 'Kimi' })
-                                  : provider === 'pi'
-                                    ? t('messageTypes.pi', { defaultValue: 'Pi' })
-                                    : provider === 'omp'
-                                      ? t('messageTypes.omp', { defaultValue: 'Oh My Pi' })
-                                      : t('messageTypes.claude'))}
+                    : providerMessageTypeLabel(t, String(provider))}
               </div>
             </div>
           )}
@@ -238,10 +224,10 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
                   </div>
                 </div>
 
-                {message.toolInput && (
+                {(message.toolInput || (message.toolResult && usesIntegratedToolResult(message.toolName || 'UnknownTool'))) && (
                   <ToolRenderer
                     toolName={message.toolName || 'UnknownTool'}
-                    toolInput={message.toolInput}
+                    toolInput={message.toolInput ?? ''}
                     toolResult={message.toolResult}
                     toolId={message.toolId}
                     mode="input"
@@ -255,8 +241,8 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
                   />
                 )}
 
-                {/* Tool Result Section — Bash renders its output inside the command row above. */}
-                {message.toolResult && message.toolName !== 'Bash' && !shouldHideToolResult(message.toolName || 'UnknownTool', message.toolResult) && (
+                {/* Integrated shell/generic rows render their output in the input row above. */}
+                {message.toolResult && !usesIntegratedToolResult(message.toolName || 'UnknownTool') && !shouldHideToolResult(message.toolName || 'UnknownTool', message.toolResult) && (
                   message.toolResult.isError ? (
                     // Error results - red error box with content
                     <div

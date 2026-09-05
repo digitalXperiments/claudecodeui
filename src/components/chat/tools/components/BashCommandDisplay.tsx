@@ -1,8 +1,9 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useId, useRef, useState } from 'react';
 import { ChevronRight, Copy, Check } from 'lucide-react';
 
 import { cn } from '../../../../lib/utils';
 import { copyTextToClipboard } from '../../../../utils/clipboard';
+
 import { ToolStatusBadge } from './ToolStatusBadge';
 import type { ToolStatus } from './ToolStatusBadge';
 
@@ -35,13 +36,14 @@ export const BashCommandDisplay: React.FC<BashCommandDisplayProps> = ({
   const hasOutput = trimmedOutput.length > 0;
   const outputLineCount = hasOutput ? trimmedOutput.split('\n').length : 0;
   const isRunning = status === 'running';
-  const [open, setOpen] = useState(false);
+  const outputId = useId();
+  const [open, setOpen] = useState(() => hasOutput && (defaultOpen || isError));
   const [copied, setCopied] = useState(false);
 
   // Output (and errors) often arrive after this component first mounts, so apply
   // the auto-open intent once when there is finally something to show. After that
   // the user is in control of the toggle.
-  const autoAppliedRef = useRef(false);
+  const autoAppliedRef = useRef(hasOutput && (defaultOpen || isError));
   useEffect(() => {
     if (!autoAppliedRef.current && hasOutput && (defaultOpen || isError)) {
       autoAppliedRef.current = true;
@@ -72,55 +74,57 @@ export const BashCommandDisplay: React.FC<BashCommandDisplayProps> = ({
         open && 'bg-muted/50 shadow-sm',
       )}
     >
-      {/* Command header — clickable when there is output to expand */}
-      <div
-        role={hasOutput ? 'button' : undefined}
-        tabIndex={hasOutput ? 0 : undefined}
-        aria-expanded={hasOutput ? open : undefined}
-        onClick={toggle}
-        onKeyDown={(event) => {
-          if (hasOutput && (event.key === 'Enter' || event.key === ' ')) {
-            event.preventDefault();
-            toggle();
-          }
-        }}
-        className={cn(
-          'flex items-center gap-2 px-2.5 py-1.5 outline-none',
-          hasOutput && 'cursor-pointer focus-visible:ring-1 focus-visible:ring-ring',
-        )}
-      >
-        <ChevronRight
+      <div className="flex items-center px-1 py-1">
+        {/* A native button supplies keyboard disclosure semantics. Copy remains
+            a sibling control instead of being nested inside a role=button. */}
+        <button
+          type="button"
+          aria-expanded={hasOutput ? open : undefined}
+          aria-controls={hasOutput ? outputId : undefined}
+          disabled={!hasOutput}
+          onClick={toggle}
           className={cn(
-            'h-3.5 w-3.5 flex-shrink-0 text-muted-foreground transition-transform duration-200',
-            open && 'rotate-90',
-            !hasOutput && 'opacity-0',
-          )}
-        />
-        <span className="flex-shrink-0 select-none font-mono text-xs font-semibold text-emerald-500 dark:text-emerald-400">
-          $
-        </span>
-        <code
-          className={cn(
-            'min-w-0 flex-1 font-mono text-xs text-foreground',
-            open ? 'whitespace-pre-wrap break-all' : 'truncate',
+            'flex min-w-0 flex-1 items-center gap-2 rounded px-1.5 py-0.5 text-left outline-none',
+            hasOutput && 'cursor-pointer focus-visible:ring-1 focus-visible:ring-ring',
           )}
         >
-          {command}
-        </code>
-
-        {isRunning && (
-          <span className="h-2.5 w-2.5 flex-shrink-0 animate-spin rounded-full border-[1.5px] border-muted-foreground/30 border-t-emerald-400" />
-        )}
-        {status && status !== 'running' && <ToolStatusBadge status={status} className="flex-shrink-0" />}
-        {!open && hasOutput && !isRunning && (
-          <span className="flex-shrink-0 text-[10px] tabular-nums text-muted-foreground transition-opacity group-hover/cmd:opacity-0">
-            {outputLineCount} {outputLineCount === 1 ? 'line' : 'lines'}
+          <ChevronRight
+            className={cn(
+              'h-3.5 w-3.5 flex-shrink-0 text-muted-foreground transition-transform duration-200',
+              open && 'rotate-90',
+              !hasOutput && 'opacity-0',
+            )}
+            aria-hidden
+          />
+          <span className="flex-shrink-0 select-none font-mono text-xs font-semibold text-emerald-500 dark:text-emerald-400">
+            $
           </span>
-        )}
+          <code
+            className={cn(
+              'min-w-0 flex-1 font-mono text-xs text-foreground',
+              open ? 'whitespace-pre-wrap break-all' : 'truncate',
+            )}
+          >
+            {command}
+          </code>
+
+          {isRunning && (
+            <span
+              className="h-2.5 w-2.5 flex-shrink-0 animate-spin rounded-full border-[1.5px] border-muted-foreground/30 border-t-emerald-400"
+              aria-label="Running"
+            />
+          )}
+          {status && status !== 'running' && <ToolStatusBadge status={status} className="flex-shrink-0" />}
+          {!open && hasOutput && !isRunning && (
+            <span className="flex-shrink-0 text-[10px] tabular-nums text-muted-foreground transition-opacity group-hover/cmd:opacity-0">
+              {outputLineCount} {outputLineCount === 1 ? 'line' : 'lines'}
+            </span>
+          )}
+        </button>
 
         <button
+          type="button"
           onClick={handleCopy}
-          onKeyDown={(event) => event.stopPropagation()}
           className="flex-shrink-0 rounded p-0.5 text-muted-foreground/60 opacity-0 transition-all hover:bg-foreground/10 hover:text-foreground focus:opacity-100 group-hover/cmd:opacity-100"
           title="Copy command"
           aria-label="Copy command"
@@ -136,8 +140,13 @@ export const BashCommandDisplay: React.FC<BashCommandDisplayProps> = ({
       )}
 
       {/* Expanded output */}
-      {open && hasOutput && (
-        <div className="settings-content-enter border-t border-border/50 bg-background/50">
+      {hasOutput && (
+        <div
+          id={outputId}
+          hidden={!open}
+          aria-hidden={!open}
+          className="settings-content-enter border-t border-border/50 bg-background/50"
+        >
           {description && (
             <div className="px-3 pt-2 text-[11px] italic text-muted-foreground/70">{description}</div>
           )}

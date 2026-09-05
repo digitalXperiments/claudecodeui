@@ -1,4 +1,5 @@
 import type { ChatMessage } from '../types/types';
+import { isShellToolName } from '../tools/toolPresentation';
 
 export const TOOL_GROUP_THRESHOLD = 2;
 
@@ -16,7 +17,17 @@ export function isToolGroupItem(item: MessageListItem): item is ToolGroupItem {
 }
 
 function isGroupableToolMessage(message: ChatMessage): message is ChatMessage & { toolName: string } {
-  return Boolean(message.isToolUse && message.toolName && !message.isSubagentContainer);
+  return Boolean(
+    message.isToolUse
+    && message.toolName
+    && !message.isSubagentContainer
+    && message.toolResult
+    && !message.toolResult.isError,
+  );
+}
+
+function getToolGroupKey(toolName: string): string {
+  return isShellToolName(toolName) ? 'shell' : toolName;
 }
 
 // Messages that render nothing (e.g. reasoning hidden when showThinking is off)
@@ -43,6 +54,7 @@ export function groupConsecutiveTools(
     }
 
     const run: ChatMessage[] = [message];
+    const groupKey = getToolGroupKey(message.toolName);
     let nextIndex = index + 1;
 
     while (nextIndex < messages.length) {
@@ -54,7 +66,7 @@ export function groupConsecutiveTools(
         continue;
       }
 
-      if (isGroupableToolMessage(candidate) && candidate.toolName === message.toolName) {
+      if (isGroupableToolMessage(candidate) && getToolGroupKey(candidate.toolName) === groupKey) {
         run.push(candidate);
         nextIndex += 1;
         continue;
@@ -66,7 +78,7 @@ export function groupConsecutiveTools(
     if (run.length >= TOOL_GROUP_THRESHOLD) {
       items.push({
         _isGroup: true,
-        toolName: message.toolName,
+        toolName: groupKey === 'shell' ? 'Bash' : message.toolName,
         messages: run,
         timestamp: message.timestamp,
       });

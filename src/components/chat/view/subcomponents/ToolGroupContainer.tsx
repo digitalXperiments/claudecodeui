@@ -4,7 +4,7 @@ import { ChevronRight } from 'lucide-react';
 import type { ChatMessage, ClaudePermissionSuggestion, PermissionGrantResult, Provider } from '../../types/types';
 import type { Project } from '../../../../types/app';
 import type { ToolGroupItem } from '../../utils/toolGrouping';
-import { getToolConfig } from '../../tools';
+import { getSafeToolPreview, getToolConfig, getToolPresentationKind } from '../../tools';
 
 import MessageComponent from './MessageComponent';
 
@@ -41,7 +41,13 @@ function parseToolInput(toolInput: unknown): unknown {
 }
 
 function getToolInputPreview(message: ChatMessage): string {
-  const config = getToolConfig(message.toolName || 'UnknownTool').input;
+  const toolName = message.toolName || 'UnknownTool';
+  const presentationKind = getToolPresentationKind(toolName);
+  if (presentationKind === 'shell' || presentationKind === 'generic') {
+    return getSafeToolPreview(toolName, message.toolInput);
+  }
+
+  const config = getToolConfig(toolName).input;
   const parsedInput = parseToolInput(message.toolInput);
   const title = typeof config.title === 'function' ? config.title(parsedInput) : config.title;
   const value = config.getValue?.(parsedInput);

@@ -23,6 +23,14 @@ export function createAcpJsonRpcClient(child, { label = 'ACP' } = {}) {
   let nextId = 1;
   let closed = false;
   let closeError = null;
+  /**
+   * Requests whose bound is an INACTIVITY budget rather than a wall-clock one
+   * (see `request`'s `idle` option). Every line the agent writes rearms them.
+   */
+  const idleWaiters = new Set();
+  const rearmIdleTimers = () => {
+    for (const waiter of idleWaiters) waiter.rearm();
+  };
 
   // A spawn/runtime failure (ENOENT if the binary isn't on PATH, or a mid-turn
   // crash) must reject every in-flight request rather than leave callers
@@ -48,6 +56,9 @@ export function createAcpJsonRpcClient(child, { label = 'ACP' } = {}) {
       throw closeError || new Error(`${label} connection is closed`);
     }
     child.stdin.write(`${JSON.stringify(payload)}\n`);
+    // Answering an agent request (a permission decision, an fs read) is also
+    // progress: it means the turn was waiting on US, not wedged.
+    rearmIdleTimers();
   };
 
   const dispatch = (handler, message, isRequest) => {
@@ -65,6 +76,11 @@ export function createAcpJsonRpcClient(child, { label = 'ACP' } = {}) {
     if (!trimmed) {
       return;
     }
+    // Any traffic at all — a stream chunk, a tool call, a permission request —
+    // proves the agent is still working, so idle-bounded requests get a fresh
+    // budget. This is what lets one `session/prompt` run for hours as long as
+    // it keeps producing output.
+    rearmIdleTimers();
 
     let message;
     try {
@@ -103,13 +119,24 @@ export function createAcpJsonRpcClient(child, { label = 'ACP' } = {}) {
      * round-trip) and must not be killed for being slow. Only the setup calls
      * — initialize / session/new / session/load / session/set_config_option —
      * have no reason to hang, so only those pass a bound.
+     *
+     * `options.idle` turns `timeoutMs` from a wall-clock deadline into an
+     * INACTIVITY budget: the timer restarts on every line the agent writes.
+     * That distinction is what makes long-horizon turns work. A wall-clock
+     * bound kills a healthy multi-hour turn purely for being long (the
+     * "session/prompt timed out after 900000ms" failure), while an idle bound
+     * still catches the case the bound exists for — an agent that has silently
+     * wedged and will never settle.
      */
-    request(method, params, timeoutMs) {
+    request(method, params, timeoutMs, options = {}) {
       const id = nextId++;
+      const idle = Boolean(options.idle) && Boolean(timeoutMs);
       return new Promise((resolve, reject) => {
         let timer = null;
+        let waiter = null;
         const settle = (fn, value) => {
           if (timer) clearTimeout(timer);
+          if (waiter) idleWaiters.delete(waiter);
           pending.delete(id);
           fn(value);
         };
@@ -118,16 +145,32 @@ export function createAcpJsonRpcClient(child, { label = 'ACP' } = {}) {
           reject: (error) => settle(reject, error),
         });
         if (timeoutMs) {
-          timer = setTimeout(() => {
+          const fire = () => {
+            if (waiter) idleWaiters.delete(waiter);
             if (pending.delete(id)) {
-              reject(new Error(`${label} request "${method}" timed out after ${timeoutMs}ms`));
+              reject(new Error(idle
+                ? `${label} request "${method}" produced no output for ${timeoutMs}ms`
+                : `${label} request "${method}" timed out after ${timeoutMs}ms`));
             }
-          }, timeoutMs);
+          };
+          // Deliberately not unref'd: a pending request's deadline has to be
+          // able to hold the process up long enough to reject its caller.
+          timer = setTimeout(fire, timeoutMs);
+          if (idle) {
+            waiter = {
+              rearm: () => {
+                if (timer) clearTimeout(timer);
+                timer = setTimeout(fire, timeoutMs);
+              },
+            };
+            idleWaiters.add(waiter);
+          }
         }
         try {
           write({ jsonrpc: '2.0', id, method, params });
         } catch (error) {
           pending.delete(id);
+          if (waiter) idleWaiters.delete(waiter);
           if (timer) clearTimeout(timer);
           reject(error);
         }
@@ -149,6 +192,22 @@ export function createAcpJsonRpcClient(child, { label = 'ACP' } = {}) {
         return false;
       }
     },
+    /**
+     * Answer an agent request with a JSON-RPC error.
+     *
+     * An agent request MUST be answered either way: leaving it unanswered
+     * hangs the agent's tool call, and with it the whole `session/prompt`,
+     * until the turn's timeout fires. `-32603` (internal error) is the right
+     * generic code for "we tried and the operation failed".
+     */
+    respondError(id, message, code = -32603) {
+      try {
+        write({ jsonrpc: '2.0', id, error: { code, message: String(message) } });
+        return true;
+      } catch {
+        return false;
+      }
+    },
     onMessage(handler) {
       messageHandlers.add(handler);
       return () => messageHandlers.delete(handler);
@@ -158,6 +217,7 @@ export function createAcpJsonRpcClient(child, { label = 'ACP' } = {}) {
         closed = true;
         closeError = new Error(`${label} connection closed`);
       }
+      idleWaiters.clear();
       rl.close();
       pending.forEach((waiter) => waiter.reject(closeError));
       pending.clear();

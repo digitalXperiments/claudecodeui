@@ -4,10 +4,16 @@ import type { Project } from '../../../types/app';
 import type { SubagentChildTool } from '../types/types';
 
 import { getToolConfig } from './configs/toolConfigs';
-import { OneLineDisplay, BashCommandDisplay, CollapsibleDisplay, ToolDiffViewer, MarkdownContent, FileListContent, TodoListContent, TaskListContent, TextContent, QuestionAnswerContent, SubagentContainer } from './components';
+import { OneLineDisplay, BashCommandDisplay, GenericToolDisplay, CollapsibleDisplay, ToolDiffViewer, MarkdownContent, FileListContent, TodoListContent, TaskListContent, TextContent, QuestionAnswerContent, SubagentContainer } from './components';
 import { PlanDisplay } from './components/PlanDisplay';
 import { ToolStatusBadge } from './components/ToolStatusBadge';
 import type { ToolStatus } from './components/ToolStatusBadge';
+import {
+  extractShellCommand,
+  formatToolDetail,
+  getSafeToolPreview,
+  getToolPresentationKind,
+} from './toolPresentation';
 
 type DiffLine = {
   type: string;
@@ -84,7 +90,8 @@ export const ToolRenderer: React.FC<ToolRendererProps> = memo(({
   isSubagentContainer,
   subagentState
 }) => {
-  const config = getToolConfig(toolName);
+  const presentationKind = getToolPresentationKind(toolName);
+  const config = getToolConfig(presentationKind === 'shell' ? 'Bash' : toolName);
   const displayConfig: any = mode === 'input' ? config.input : config.result;
 
   const parsedData = useMemo(() => {
@@ -121,27 +128,37 @@ export const ToolRenderer: React.FC<ToolRendererProps> = memo(({
     );
   }
 
+  // Unknown/provider-specific tools own their result in the input row. This
+  // avoids the old pair of separate "Parameters" and "Details" disclosures.
+  if (presentationKind === 'generic') {
+    if (mode === 'result') return null;
+
+    return (
+      <GenericToolDisplay
+        toolName={toolName}
+        preview={getSafeToolPreview(toolName, toolInput)}
+        parameters={formatToolDetail(toolInput)}
+        result={formatToolDetail(toolResult?.content)}
+        hasResult={toolResult !== null && toolResult !== undefined}
+        status={toolStatus || 'completed'}
+      />
+    );
+  }
+
   if (!displayConfig) return null;
 
   // Bash renders as a Codex-style command row: the command on a single line with
   // a chevron that expands to show the output inline. The combined view lives on
   // the input render; the separate result section is suppressed in MessageComponent.
-  if (toolName === 'Bash' && mode === 'input') {
-    const command = typeof parsedData === 'object' && parsedData !== null && 'command' in parsedData
-      ? String(parsedData.command || '')
-      : typeof toolInput === 'string'
-        ? toolInput
-        : typeof rawToolInput === 'string'
-          ? rawToolInput
-          : '';
+  if (presentationKind === 'shell' && mode === 'input') {
+    const command = extractShellCommand(parsedData)
+      || extractShellCommand(toolInput)
+      || rawToolInput
+      || '';
     const description = typeof parsedData === 'object' && parsedData !== null && 'description' in parsedData
       ? String(parsedData.description || '')
       : undefined;
-    const output = typeof toolResult?.content === 'string'
-      ? toolResult.content
-      : toolResult?.content != null
-        ? String(toolResult.content)
-        : '';
+    const output = formatToolDetail(toolResult?.content);
     return (
       <BashCommandDisplay
         command={command}
