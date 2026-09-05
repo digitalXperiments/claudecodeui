@@ -37,6 +37,7 @@ const PROVIDER_META: { id: LLMProvider; name: string }[] = [
   { id: "qwencode", name: "Qwen" },
   { id: "pi", name: "Pi" },
   { id: "omp", name: "Oh My Pi" },
+  { id: "antigravity", name: "Antigravity" },
 ];
 
 const MOD_KEY =

@@ -21,6 +21,7 @@ import {
 
 export type ProviderUsageLegendUiState = {
   collapsed: boolean;
+  expandedProviders: string[];
   expandedProvider: string | null;
 };
 
@@ -29,6 +30,9 @@ export type ProviderUsageLegendUi = {
   subscribe: (listener: (state: ProviderUsageLegendUiState) => void) => () => void;
   toggleCollapsed: () => ProviderUsageLegendUiState;
   toggleProvider: (providerId: string) => ProviderUsageLegendUiState;
+  toggleExpandAll: (allProviderIds?: string[]) => ProviderUsageLegendUiState;
+  expandAll: (providerIds?: string[]) => ProviderUsageLegendUiState;
+  collapseAll: () => ProviderUsageLegendUiState;
   syncCollapsedFromStorage: () => ProviderUsageLegendUiState;
   activate: (key: string, action?: () => void) => boolean;
 };
@@ -40,12 +44,15 @@ export const isProviderUsageLegendActivateKey = (key: string): boolean => (
 export function createProviderUsageLegendUi(options: {
   readCollapsed?: () => boolean;
   writeCollapsed?: (collapsed: boolean) => void;
+  initialExpandedProviders?: string[];
 } = {}): ProviderUsageLegendUi {
   const readCollapsed = options.readCollapsed ?? readProviderUsageLegendCollapsed;
   const writeCollapsed = options.writeCollapsed ?? writeProviderUsageLegendCollapsed;
+  const initialExpandedProviders = options.initialExpandedProviders ?? [];
   let state: ProviderUsageLegendUiState = {
     collapsed: readCollapsed(),
-    expandedProvider: 'claude',
+    expandedProviders: initialExpandedProviders,
+    expandedProvider: initialExpandedProviders[0] ?? null,
   };
   const listeners = new Set<(next: ProviderUsageLegendUiState) => void>();
 
@@ -75,9 +82,56 @@ export function createProviderUsageLegendUi(options: {
       if (wasCollapsed) {
         writeCollapsed(false);
       }
+      let nextExpanded: string[];
+      if (wasCollapsed) {
+        nextExpanded = state.expandedProviders.includes(providerId)
+          ? state.expandedProviders
+          : [...state.expandedProviders, providerId];
+      } else {
+        const isExpanded = state.expandedProviders.includes(providerId);
+        nextExpanded = isExpanded
+          ? state.expandedProviders.filter((id) => id !== providerId)
+          : [...state.expandedProviders, providerId];
+      }
       return commit({
         collapsed: false,
-        expandedProvider: wasCollapsed || state.expandedProvider !== providerId ? providerId : null,
+        expandedProviders: nextExpanded,
+        expandedProvider: nextExpanded.includes(providerId)
+          ? providerId
+          : (nextExpanded[0] ?? null),
+      });
+    },
+    toggleExpandAll: (allProviderIds = []) => {
+      const wasCollapsed = state.collapsed;
+      if (wasCollapsed) {
+        writeCollapsed(false);
+      }
+      const isAllExpanded = allProviderIds.length > 0 &&
+        allProviderIds.every((id) => state.expandedProviders.includes(id));
+      const nextExpanded = isAllExpanded ? [] : Array.from(new Set(allProviderIds));
+      return commit({
+        collapsed: false,
+        expandedProviders: nextExpanded,
+        expandedProvider: nextExpanded[0] ?? null,
+      });
+    },
+    expandAll: (providerIds = []) => {
+      const wasCollapsed = state.collapsed;
+      if (wasCollapsed) {
+        writeCollapsed(false);
+      }
+      const uniqueIds = Array.from(new Set(providerIds));
+      return commit({
+        collapsed: false,
+        expandedProviders: uniqueIds,
+        expandedProvider: uniqueIds[0] ?? null,
+      });
+    },
+    collapseAll: () => {
+      return commit({
+        ...state,
+        expandedProviders: [],
+        expandedProvider: null,
       });
     },
     syncCollapsedFromStorage: () => commit({
@@ -175,9 +229,6 @@ function ProviderUsageRow({
         <span className={`text-[11px] font-medium ${colors.text}`}>
           {ratio !== null ? `${Math.round(ratio * 100)}%` : 'N/A'}
         </span>
-        {expanded
-          ? <ChevronUp className="h-3.5 w-3.5 text-muted-foreground" aria-hidden />
-          : <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" aria-hidden />}
       </button>
 
       {!expanded && <div className="space-y-1 px-1 pb-1">
@@ -275,11 +326,15 @@ export type ProviderUsageLegendContentProps = {
   refreshNotice?: string | null;
   refreshing?: boolean;
   collapsed: boolean;
-  expandedProvider: string | null;
+  expandedProvider?: string | null;
+  expandedProviders?: string[];
   now?: number;
   onRefresh?: () => void;
   onToggleCollapsed?: () => void;
   onToggleProvider?: (providerId: string) => void;
+  onToggleExpandAll?: () => void;
+  onExpandAll?: () => void;
+  onCollapseAll?: () => void;
 };
 
 export function ProviderUsageLegendContent({
@@ -289,14 +344,58 @@ export function ProviderUsageLegendContent({
   refreshing = false,
   collapsed,
   expandedProvider,
+  expandedProviders,
   now = Date.now(),
   onRefresh,
   onToggleCollapsed,
   onToggleProvider,
+  onToggleExpandAll,
+  onExpandAll,
+  onCollapseAll,
 }: ProviderUsageLegendContentProps) {
   const { t } = useTranslation('chat');
   const providers = data?.providers.filter((provider) => provider.signedIn) ?? [];
   if (providers.length === 0) return null;
+
+  const isExpanded = (providerId: string): boolean => {
+    if (expandedProviders !== undefined) {
+      return expandedProviders.includes(providerId);
+    }
+    if (expandedProvider !== undefined && expandedProvider !== null) {
+      return expandedProvider === providerId;
+    }
+    return false;
+  };
+
+  const allExpanded = providers.length > 0 && providers.every((p) => isExpanded(p.providerId));
+
+  const handleToggleExpandAll = () => {
+    if (onToggleExpandAll) {
+      onToggleExpandAll();
+      return;
+    }
+    if (allExpanded) {
+      if (onCollapseAll) {
+        onCollapseAll();
+      } else {
+        providers.forEach((p) => {
+          if (isExpanded(p.providerId)) {
+            onToggleProvider?.(p.providerId);
+          }
+        });
+      }
+    } else {
+      if (onExpandAll) {
+        onExpandAll();
+      } else {
+        providers.forEach((p) => {
+          if (!isExpanded(p.providerId)) {
+            onToggleProvider?.(p.providerId);
+          }
+        });
+      }
+    }
+  };
 
   const updatedLabel = refreshNotice || `Updated ${formatRelativeUpdated(data?.fetchedAt ?? null, now)}`;
   if (collapsed) {
@@ -324,9 +423,26 @@ export function ProviderUsageLegendContent({
       className="chat-provider-usage-card fixed bottom-4 right-4 z-30 flex max-h-[min(36rem,calc(100vh-2rem))] w-[min(22rem,calc(100vw-2rem))] flex-col overflow-hidden rounded-2xl border border-border/70 bg-card/95 shadow-2xl backdrop-blur"
     >
       <div className="flex items-center gap-1.5 border-b border-border/60 px-3 py-2.5">
-          <span className="min-w-0 flex-1 text-xs font-semibold uppercase tracking-wide text-foreground">
-            {t('providerUsage.title', { defaultValue: 'Usage' })}
-          </span>
+        <span className="min-w-0 flex-1 text-xs font-semibold uppercase tracking-wide text-foreground">
+          {t('providerUsage.title', { defaultValue: 'Usage' })}
+        </span>
+        <button
+          type="button"
+          onClick={handleToggleExpandAll}
+          title={allExpanded
+            ? t('providerUsage.collapseAll', { defaultValue: 'Collapse all details' })
+            : t('providerUsage.expandAll', { defaultValue: 'Expand all details' })}
+          aria-label={allExpanded
+            ? t('providerUsage.collapseAll', { defaultValue: 'Collapse all details' })
+            : t('providerUsage.expandAll', { defaultValue: 'Expand all details' })}
+          aria-expanded={allExpanded}
+          data-testid="provider-usage-expand-all"
+          className="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          {allExpanded
+            ? <ChevronUp className="h-3.5 w-3.5" aria-hidden />
+            : <ChevronDown className="h-3.5 w-3.5" aria-hidden />}
+        </button>
         <button
           type="button"
           onClick={onRefresh}
@@ -359,7 +475,7 @@ export function ProviderUsageLegendContent({
           <ProviderUsageRow
             key={provider.providerId}
             provider={provider}
-            expanded={expandedProvider === provider.providerId}
+            expanded={isExpanded(provider.providerId)}
             now={now}
             onToggle={() => onToggleProvider?.(provider.providerId)}
           />

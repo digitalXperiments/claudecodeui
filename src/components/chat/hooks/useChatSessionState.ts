@@ -965,6 +965,48 @@ export function useChatSessionState({
     return () => container.removeEventListener('scroll', handleScroll);
   }, [handleScroll]);
 
+  /**
+   * Pull further pages while the transcript is too short to scroll.
+   *
+   * `handleScroll` is the only thing that fetches older pages, and it only runs
+   * on a real scroll event — which a pane with no overflow never produces. One
+   * page of messages usually overflows, but not always: consecutive tool calls
+   * collapse into a single grouped row, so a whole 20-message page can render
+   * as two lines. The transcript then sits at "Showing 20 of 452 messages —
+   * scroll up to load more" with no way to scroll and no way to load, which
+   * reads as history that loaded a little and then stopped.
+   *
+   * Each pass loads exactly one more page and re-runs when the resulting
+   * messages land, so it stops as soon as the pane overflows (or the server
+   * says there is nothing left).
+   */
+  useEffect(() => {
+    if (isLoadingSessionMessages || isLoadingMoreMessages || isLoadingAllMessages) return;
+    if (!hasMoreMessages || allMessagesLoaded || allMessagesLoadedRef.current) return;
+    if (isLoadingMoreRef.current || pendingScrollRestoreRef.current) return;
+
+    const container = scrollContainerRef.current;
+    if (!container) return;
+
+    // Measure after paint: mid-render the rows for the page that just landed
+    // may not have been laid out yet, and an unlaid-out pane always looks
+    // unscrollable.
+    const frame = requestAnimationFrame(() => {
+      const current = scrollContainerRef.current;
+      if (!current || current.scrollHeight > current.clientHeight) return;
+      void loadOlderMessages(current);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [
+    allMessagesLoaded,
+    chatMessages.length,
+    hasMoreMessages,
+    isLoadingAllMessages,
+    isLoadingMoreMessages,
+    isLoadingSessionMessages,
+    loadOlderMessages,
+  ]);
+
   // "Load all" overlay visibility is driven by scroll-to-top in handleScroll;
   // timers are cleared on session change via the reset effect above.
 

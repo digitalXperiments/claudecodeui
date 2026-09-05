@@ -89,14 +89,13 @@ function IsolatedWorkspaceToggle() {
         onClick={toggle}
         aria-pressed={enabled}
         aria-label={t('input.isolatedWorkspace', { defaultValue: 'Toggle isolated workspace' })}
-        className={`flex h-8 shrink-0 items-center gap-1.5 rounded-lg border px-2 text-xs font-medium transition-all duration-200 sm:px-2.5 ${
+        className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${
           enabled
             ? 'border-sky-300/70 bg-sky-50 text-sky-700 hover:bg-sky-100 dark:border-sky-500/40 dark:bg-sky-900/20 dark:text-sky-300'
             : 'border-border/60 bg-muted/40 text-muted-foreground hover:bg-muted'
         }`}
       >
         <GitFork className="h-3.5 w-3.5 shrink-0" />
-        <span className="hidden sm:inline">Isolate</span>
       </button>
     </Tooltip>
   );
@@ -155,6 +154,8 @@ interface ChatComposerProps {
   onToggleCommandMenu: () => void;
   /** Opens the skill wizard seeded with this conversation's transcript. */
   onSaveAsSkill?: () => void;
+  /** Session-scoped provider-limit recovery control. */
+  continuityControl?: ReactNode;
   /** Disabled when the active session has no text messages to distill. */
   saveAsSkillDisabled?: boolean;
   hasInput: boolean;
@@ -227,6 +228,7 @@ export default function ChatComposer({
   slashCommandsCount,
   onToggleCommandMenu,
   onSaveAsSkill,
+  continuityControl,
   saveAsSkillDisabled = false,
   hasInput,
   onClearInput,
@@ -619,6 +621,7 @@ export default function ChatComposer({
               const modeLabel = modeCopy.label
                 || PERMISSION_MODE_LABELS[permissionMode as PermissionMode]
                 || String(permissionMode);
+              const compactModeLabel = permissionMode === 'bypassPermissions' ? 'Bypass' : modeLabel;
               const clickHint = t('input.clickToChangeMode');
               const tooltipContent = (
                 <div className="max-w-64 space-y-1 text-left">
@@ -670,7 +673,7 @@ export default function ChatComposer({
                       />
                       {/* Compact mode name on mobile (was icon-only / invisible) */}
                       <span className="max-w-[4.5rem] truncate whitespace-nowrap sm:max-w-none">
-                        {modeLabel}
+                        {compactModeLabel}
                       </span>
                     </div>
                   </button>
@@ -705,8 +708,7 @@ export default function ChatComposer({
                   aria-label={`Select ${effortControlLabel.toLowerCase()}`}
                   title={`Select ${effortControlLabel.toLowerCase()}`}
                 >
-                  <Gauge className="h-3.5 w-3.5 shrink-0 text-muted-foreground sm:hidden" />
-                  <span className="hidden text-[11px] text-muted-foreground sm:inline">{effortControlLabel}</span>
+                  <Gauge className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                   <span className="max-w-12 truncate capitalize sm:max-w-20">{selectedEffortLabel}</span>
                   <ChevronDown className={`h-3 w-3 shrink-0 text-muted-foreground transition-transform ${isEffortDropdownOpen ? 'rotate-180' : ''}`} />
                 </button>
@@ -778,7 +780,7 @@ export default function ChatComposer({
                   aria-pressed={fastMode}
                   aria-label={t('input.fastMode', { defaultValue: 'Toggle Fast mode' })}
                   title={t('input.fastMode', { defaultValue: 'Toggle Fast mode' })}
-                  className={`flex h-8 shrink-0 items-center gap-1.5 rounded-lg border px-2 text-xs font-medium transition-all duration-200 sm:px-2.5 ${
+                  className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${
                     fastMode
                       ? 'border-amber-300/70 bg-amber-50 text-amber-700 hover:bg-amber-100 dark:border-amber-500/40 dark:bg-amber-900/20 dark:text-amber-300 dark:hover:bg-amber-900/30'
                       : supportsFastMode
@@ -787,10 +789,11 @@ export default function ChatComposer({
                   }`}
                 >
                   <Zap className="h-3.5 w-3.5 shrink-0" />
-                  <span className="hidden sm:inline">Fast</span>
                 </button>
               </Tooltip>
             )}
+
+            {!studioMode && continuityControl}
 
             {/* Low-priority extras hidden on phones — mode/model/effort/attach/send stay reachable */}
             {!studioMode && <span className="hidden sm:inline-flex"><IsolatedWorkspaceToggle /></span>}

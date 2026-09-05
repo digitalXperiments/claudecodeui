@@ -72,21 +72,29 @@ export default function ProviderUsageLegend() {
     return null;
   }
 
+  const visibleProviders = usage.data ? {
+    ...usage.data,
+    providers: usage.data.providers.filter(({ providerId }) => isProviderUsageVisible(providerId)),
+  } : null;
+
+  const signedInVisibleProviderIds = visibleProviders?.providers
+    .filter((p) => p.signedIn)
+    .map((p) => p.providerId) ?? [];
+
   return (
     <ProviderUsageLegendContent
-      data={usage.data ? {
-        ...usage.data,
-        providers: usage.data.providers.filter(({ providerId }) => isProviderUsageVisible(providerId)),
-      } : null}
+      data={visibleProviders}
       error={usage.error}
       refreshNotice={usage.refreshNotice}
       refreshing={usage.refreshing}
       collapsed={view.collapsed}
       expandedProvider={view.expandedProvider}
+      expandedProviders={view.expandedProviders}
       now={now}
       onRefresh={() => void usage.refresh()}
       onToggleCollapsed={ui.toggleCollapsed}
       onToggleProvider={ui.toggleProvider}
+      onToggleExpandAll={() => ui.toggleExpandAll(signedInVisibleProviderIds)}
     />
   );
 }

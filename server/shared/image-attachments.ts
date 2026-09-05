@@ -376,6 +376,72 @@ export function buildCodexInputItems(prompt: string, images: unknown, cwd?: stri
   return [{ type: 'text', text }, ...imageItems];
 }
 
+type AcpContentBlock =
+  | { type: 'text'; text: string }
+  | { type: 'image'; data: string; mimeType: string };
+
+/**
+ * Builds an ACP `session/prompt` content list: the prompt text followed by one
+ * inline `image` block per image attachment.
+ *
+ * ACP agents that advertise `promptCapabilities.image` take images as base64
+ * content blocks, which is the only delivery that actually works for
+ * Antigravity: its `view_file` is hard-scoped to the session cwd, its own
+ * GEMINI_HOME and its skills directories (see `make_safe_view_file` in the
+ * runtime), so the shared `<images_input>` block — which hands the agent an
+ * absolute path under `~/.cloudcli/assets` — is denied before it can read a
+ * single attachment. Inlining also gives the model real vision instead of a
+ * text read of a PNG.
+ *
+ * `supportsImage` reflects what the agent advertised at `initialize`. When it
+ * is false, or for anything that is not an inline-able image (documents, SVG,
+ * unreadable files), the attachment falls back to the `<images_input>` path
+ * reference every other runtime uses — those agents read it with their own
+ * file tools and are not scoped the way Antigravity is.
+ */
+export async function buildAcpPromptBlocks(
+  prompt: string,
+  images: unknown,
+  cwd?: string,
+  options: { supportsImage?: boolean } = {},
+): Promise<AcpContentBlock[]> {
+  const imageBlocks: AcpContentBlock[] = [];
+  const referencedByPath: ImageAttachmentDescriptor[] = [];
+
+  for (const descriptor of normalizeImageDescriptors(images)) {
+    const mediaType = resolveImageMediaType(descriptor);
+    if (!options.supportsImage || !mediaType || !mediaType.startsWith('image/') || mediaType === 'image/svg+xml') {
+      referencedByPath.push(descriptor);
+      continue;
+    }
+
+    const resolvedPath = resolveImageAbsolutePath(cwd, descriptor.path);
+    if (!isAllowedImageSourcePath(resolvedPath, cwd)) {
+      console.warn(`[Images] Refusing to attach ACP image outside allowed roots: ${descriptor.path}`);
+      continue;
+    }
+
+    try {
+      const canonicalPath = await fs.realpath(resolvedPath);
+      if (!isAllowedImageSourcePath(canonicalPath, cwd)) {
+        console.warn(`[Images] Refusing to attach symlinked ACP image outside allowed roots: ${descriptor.path}`);
+        continue;
+      }
+      const bytes = await fs.readFile(canonicalPath);
+      imageBlocks.push({ type: 'image', data: bytes.toString('base64'), mimeType: mediaType });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`[Images] Failed to inline ACP image ${descriptor.path}: ${message}`);
+      // Keep it as a path reference rather than dropping the attachment: an
+      // agent whose file tool CAN reach it still gets the attachment.
+      referencedByPath.push(descriptor);
+    }
+  }
+
+  const text = appendImagesInputTag(prompt, referencedByPath);
+  return [{ type: 'text', text }, ...imageBlocks];
+}
+
 type PiImageContent = {
   type: 'image';
   data: string;

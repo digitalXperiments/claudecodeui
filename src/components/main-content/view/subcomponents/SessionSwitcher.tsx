@@ -1,7 +1,7 @@
 import { createPortal } from 'react-dom';
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Archive, ChevronDown, Loader2, MoreHorizontal, Search, Trash2, X } from 'lucide-react';
+import { Archive, Check, ChevronDown, Copy, Link2, Loader2, MoreHorizontal, Search, Trash2, X } from 'lucide-react';
 
 import SessionProviderLogo from '../../../llm-logo-provider/SessionProviderLogo';
 import { Input } from '../../../../shared/view/ui';
@@ -9,6 +9,7 @@ import { cn } from '../../../../lib/utils';
 import type { Project, ProjectSession } from '../../../../types/app';
 import type { SessionActivityMap } from '../../../../hooks/useSessionProtection';
 import { useScrollPointerLock } from '../../../../hooks/useScrollPointerLock';
+import { copyTextToClipboard } from '../../../../utils/clipboard';
 import {
   createSessionViewModel,
   getProjectSessionsWithActivity,
@@ -35,6 +36,15 @@ type SessionMenuPosition = {
   left: number;
   ready: boolean;
 };
+
+type CopiedSessionAction = 'session-id' | 'provider-id' | 'link';
+
+function getProviderSessionId(session: SessionWithProvider): string | null {
+  const providerSessionId = session.provider_session_id ?? session.providerSessionId;
+  return typeof providerSessionId === 'string' && providerSessionId.trim()
+    ? providerSessionId
+    : null;
+}
 
 function formatCompactAge(dateString: string, now: Date): string {
   const date = new Date(dateString);
@@ -86,6 +96,7 @@ export default function SessionSwitcher({
   const [now, setNow] = useState(() => new Date());
   const [openMenuSessionId, setOpenMenuSessionId] = useState<string | null>(null);
   const [sessionMenuPosition, setSessionMenuPosition] = useState<SessionMenuPosition | null>(null);
+  const [copiedSessionAction, setCopiedSessionAction] = useState<CopiedSessionAction | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
@@ -124,6 +135,7 @@ export default function SessionSwitcher({
     restoreSessionMenuFocusRef.current = restoreFocus;
     setOpenMenuSessionId(null);
     setSessionMenuPosition(null);
+    setCopiedSessionAction(null);
   }, []);
 
   const close = useCallback(() => {
@@ -170,6 +182,7 @@ export default function SessionSwitcher({
     restoreSessionMenuFocusRef.current = false;
     sessionMenuButtonRef.current = button;
     setSessionMenuPosition({ top: 0, left: 0, ready: false });
+    setCopiedSessionAction(null);
     setOpenMenuSessionId(sessionId);
   }, [closeSessionMenu, openMenuSessionId]);
 
@@ -317,6 +330,13 @@ export default function SessionSwitcher({
     void onDeleteSession?.(session);
   };
 
+  const copySessionValue = async (action: CopiedSessionAction, value: string) => {
+    if (await copyTextToClipboard(value)) {
+      setCopiedSessionAction(action);
+      window.setTimeout(() => setCopiedSessionAction(null), 1500);
+    }
+  };
+
   const titleFallback = t('mainContent.newSession', { defaultValue: 'New Session' });
   const currentTitle = getSessionTitle(selectedSession, titleFallback);
   const openMenuSession = openMenuSessionId
@@ -336,7 +356,7 @@ export default function SessionSwitcher({
             placeholder={t('sessions.searchPlaceholder', {
               defaultValue: 'Search sessions…',
             })}
-            className="h-10 rounded-lg border-0 bg-muted/50 pl-8 pr-8 text-base sm:h-9 sm:text-sm focus-visible:ring-1"
+            className="h-10 rounded-lg border-0 bg-muted/50 pl-8 pr-8 text-base focus-visible:ring-1 sm:h-9 sm:text-sm"
             aria-label={t('sessions.searchPlaceholder', {
               defaultValue: 'Search sessions…',
             })}
@@ -374,7 +394,7 @@ export default function SessionSwitcher({
             const isLive = Boolean(processingSessions?.has(session.id));
             const age = formatCompactAge(view.sessionTime, now);
             const isMenuOpen = openMenuSessionId === session.id;
-            const hasActions = Boolean(onArchiveSession || onDeleteSession);
+            const hasActions = true;
 
             return (
               <div
@@ -586,6 +606,66 @@ export default function SessionSwitcher({
               }}
               onClick={(event) => event.stopPropagation()}
             >
+              <button
+                type="button"
+                role="menuitem"
+                className="flex min-h-10 w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-[13px] leading-none text-foreground transition-colors hover:bg-accent focus-visible:bg-accent focus-visible:outline-none sm:min-h-8"
+                onClick={() => void copySessionValue('session-id', openMenuSession.id)}
+              >
+                {copiedSessionAction === 'session-id'
+                  ? <Check className="h-3.5 w-3.5 flex-shrink-0 text-muted-foreground" />
+                  : <Copy className="h-3.5 w-3.5 flex-shrink-0 text-muted-foreground" />}
+                <span className="font-medium tracking-tight">
+                  {copiedSessionAction === 'session-id'
+                    ? t('sessions.menuCopied', { defaultValue: 'Copied' })
+                    : t('sessions.menuCopyId', { defaultValue: 'Copy CloudCLI session ID' })}
+                </span>
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                disabled={!getProviderSessionId(openMenuSession)}
+                className={cn(
+                  'flex min-h-10 w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-[13px] leading-none transition-colors focus-visible:outline-none sm:min-h-8',
+                  getProviderSessionId(openMenuSession)
+                    ? 'text-foreground hover:bg-accent focus-visible:bg-accent'
+                    : 'cursor-not-allowed text-muted-foreground opacity-60',
+                )}
+                onClick={() => {
+                  const providerSessionId = getProviderSessionId(openMenuSession);
+                  if (providerSessionId) {
+                    void copySessionValue('provider-id', providerSessionId);
+                  }
+                }}
+              >
+                {copiedSessionAction === 'provider-id'
+                  ? <Check className="h-3.5 w-3.5 flex-shrink-0 text-muted-foreground" />
+                  : <Copy className="h-3.5 w-3.5 flex-shrink-0 text-muted-foreground" />}
+                <span className="font-medium tracking-tight">
+                  {copiedSessionAction === 'provider-id'
+                    ? t('sessions.menuCopied', { defaultValue: 'Copied' })
+                    : t('sessions.menuCopyProviderId', { defaultValue: 'Copy provider session ID' })}
+                </span>
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                className="flex min-h-10 w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-[13px] leading-none text-foreground transition-colors hover:bg-accent focus-visible:bg-accent focus-visible:outline-none sm:min-h-8"
+                onClick={() => void copySessionValue(
+                  'link',
+                  new URL(`/session/${encodeURIComponent(openMenuSession.id)}`, window.location.origin).toString(),
+                )}
+              >
+                {copiedSessionAction === 'link'
+                  ? <Check className="h-3.5 w-3.5 flex-shrink-0 text-muted-foreground" />
+                  : <Link2 className="h-3.5 w-3.5 flex-shrink-0 text-muted-foreground" />}
+                <span className="font-medium tracking-tight">
+                  {copiedSessionAction === 'link'
+                    ? t('sessions.menuCopied', { defaultValue: 'Copied' })
+                    : t('sessions.menuCopyLink', { defaultValue: 'Copy session link' })}
+                </span>
+              </button>
+              <div className="mx-1 my-1 h-px bg-border/60" />
               {onArchiveSession ? (
                 <button
                   type="button"

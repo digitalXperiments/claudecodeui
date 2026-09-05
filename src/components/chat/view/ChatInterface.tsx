@@ -20,6 +20,7 @@ import { resolveProviderModelLabel } from '../../../utils/providerModels';
 import { readProviderToolsSettings, writeQueuedMessage } from '../utils/chatStorage';
 import { DEFAULT_EFFORT_VALUE } from '../constants/providerEffort';
 import { guardWhenReadOnly } from '../utils/workerSessionAccess';
+import { providerMessageTypeLabel } from '../utils/providerLabels';
 import { flattenTranscript } from '../../skills/lib/skillWizardPrompt';
 import SkillWizardDialog from '../../skills/view/SkillWizardDialog';
 
@@ -765,16 +766,7 @@ function ChatInterface({
   ]);
 
   if (!selectedProject) {
-    const selectedProviderLabel =
-      provider === 'cursor'
-        ? t('messageTypes.cursor')
-        : provider === 'codex'
-          ? t('messageTypes.codex')
-          : provider === 'opencode'
-              ? t('messageTypes.opencode', { defaultValue: 'OpenCode' })
-            : provider === 'kilo'
-              ? t('messageTypes.kilo', { defaultValue: 'Kilo Code' })
-            : t('messageTypes.claude');
+    const selectedProviderLabel = providerMessageTypeLabel(t, provider);
 
     return (
       <div className="flex h-full items-center justify-center">
@@ -981,26 +973,7 @@ function ChatInterface({
           mobileToolsOpen={mobileToolsOpen}
           onToggleMobileTools={() => setMobileToolsOpen((current) => !current)}
           placeholder={studioMode ? 'Describe a change to this prototype…' : t('input.placeholder', {
-            provider:
-              provider === 'cursor'
-                ? t('messageTypes.cursor')
-                : provider === 'codex'
-                  ? t('messageTypes.codex')
-                  : provider === 'opencode'
-                      ? t('messageTypes.opencode', { defaultValue: 'OpenCode' })
-                    : provider === 'kilo'
-                      ? t('messageTypes.kilo', { defaultValue: 'Kilo Code' })
-                    : provider === 'grok'
-                      ? t('messageTypes.grok', { defaultValue: 'Grok Build' })
-                      : provider === 'kimi'
-                        ? t('messageTypes.kimi', { defaultValue: 'Kimi' })
-                        : provider === 'pi'
-                          ? t('messageTypes.pi', { defaultValue: 'Pi' })
-                          : provider === 'omp'
-                            ? t('messageTypes.omp', { defaultValue: 'Oh My Pi' })
-                            : provider === 'antigravity'
-                              ? t('messageTypes.antigravity', { defaultValue: 'Antigravity' })
-                              : t('messageTypes.claude'),
+            provider: providerMessageTypeLabel(t, provider),
           })}
           isTextareaExpanded={isTextareaExpanded}
           sendByCtrlEnter={sendByCtrlEnter}

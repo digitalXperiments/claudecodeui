@@ -124,6 +124,7 @@
     "label": "Settings",
     "agents": "Agents",
     "agentProfiles": "Agent profiles",
+    "continuity": "Continuity",
     "modelProfiles": "Model profiles",
     "agentRelay": "Agent Relay",
     "studio": "Studio",
@@ -140,6 +141,7 @@
     "tasks": "Tasks",
     "browser": "Browser",
     "notifications": "Notifications",
+    "backups": "Backups",
     "plugins": "Plugins",
     "about": "About",
     "security": "Security"

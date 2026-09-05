@@ -205,6 +205,7 @@ export function useChatRealtimeHandlers({
         case 'session_upserted':
         case 'session_removed':
         case 'loading_progress':
+        case 'continuity_updated':
           return;
 
         default:

@@ -79,7 +79,7 @@ export const getSessionDate = (session: SessionWithProvider): Date => {
 };
 
 export const getSessionName = (session: SessionWithProvider, t: TFunction): string => {
-  return session.summary || session.name || t('projects.newSession');
+  return session.summary || session.name || t('projects.newSession', { defaultValue: t('newSession', { defaultValue: 'New Session' }) });
 };
 
 export const getSessionTime = (session: SessionWithProvider): string => {

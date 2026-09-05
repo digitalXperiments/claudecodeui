@@ -6,6 +6,7 @@ import test from 'node:test';
 
 import {
   appendImagesInputTag,
+  buildAcpPromptBlocks,
   buildClaudeUserContent,
   buildCodexInputItems,
   buildPiPromptPayload,
@@ -385,4 +386,53 @@ test('provider builders refuse descriptors outside the allowed roots', async () 
     cwd,
   );
   assert.deepEqual(claudeContent, [{ type: 'text', text: 'prompt' }]);
+});
+
+test('buildAcpPromptBlocks inlines images for agents that advertise image prompts', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'acp-project-'));
+  try {
+    const imagePath = path.join(cwd, 'shot.png');
+    await writeFile(imagePath, PNG_BYTES);
+
+    const blocks = await buildAcpPromptBlocks('Look at this', [{ path: imagePath }], cwd, { supportsImage: true });
+
+    assert.equal(blocks.length, 2);
+    // The text block stays clean: no <images_input> path the agent's sandbox
+    // would refuse, which is the whole point for Antigravity.
+    assert.deepEqual(blocks[0], { type: 'text', text: 'Look at this' });
+    assert.deepEqual(blocks[1], { type: 'image', data: PNG_BYTES.toString('base64'), mimeType: 'image/png' });
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test('buildAcpPromptBlocks falls back to path references without the capability', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'acp-project-'));
+  try {
+    const imagePath = path.join(cwd, 'shot.png');
+    await writeFile(imagePath, PNG_BYTES);
+
+    const blocks = await buildAcpPromptBlocks('Look at this', [{ path: imagePath }], cwd, { supportsImage: false });
+    assert.equal(blocks.length, 1);
+    assert.match(String(blocks[0].type === 'text' ? blocks[0].text : ''), /<images_input>/);
+
+    // Documents are never inline-able, so they keep the path reference even
+    // when the agent does take images.
+    const docs = await buildAcpPromptBlocks('Read this', [{ path: 'notes.pdf' }], cwd, { supportsImage: true });
+    assert.equal(docs.length, 1);
+    assert.match(String(docs[0].type === 'text' ? docs[0].text : ''), /notes\.pdf/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test('buildAcpPromptBlocks refuses images outside the allowed roots', async () => {
+  const cwd = path.join(os.tmpdir(), 'acp-project');
+  const blocks = await buildAcpPromptBlocks(
+    'prompt',
+    [{ path: path.join(os.homedir(), '.ssh', 'id_rsa.png'), mimeType: 'image/png' }],
+    cwd,
+    { supportsImage: true },
+  );
+  assert.deepEqual(blocks, [{ type: 'text', text: 'prompt' }]);
 });

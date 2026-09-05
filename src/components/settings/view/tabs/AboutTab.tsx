@@ -1,9 +1,12 @@
-import { Cloud, ExternalLink, MessageSquare, Star, Users } from 'lucide-react';
+import { useRef, useState } from 'react';
+import { Cloud, Download, ExternalLink, MessageSquare, Star, Upload, Users } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import { CLOUDCLI_WORDMARK_FONT_FAMILY } from '../../../../constants/branding';
 import { IS_PLATFORM } from '../../../../constants/config';
 import { useVersionCheck } from '../../../../hooks/useVersionCheck';
+import { createPreferencesBackup, restorePreferencesBackup } from '../../../../utils/settingsBackup';
+import { Button } from '../../../../shared/view/ui';
 import PremiumFeatureCard from '../PremiumFeatureCard';
 
 const GITHUB_REPO_URL = 'https://github.com/siteboon/claudecodeui';
@@ -31,6 +34,41 @@ export default function AboutTab() {
   const { t } = useTranslation('settings');
   const { updateAvailable, latestVersion, currentVersion, releaseInfo } = useVersionCheck('siteboon', 'claudecodeui');
   const releasesUrl = releaseInfo?.htmlUrl || `${GITHUB_REPO_URL}/releases`;
+  const importInputRef = useRef<HTMLInputElement>(null);
+  const [transferStatus, setTransferStatus] = useState<string | null>(null);
+
+  const exportPreferences = () => {
+    try {
+      const backup = createPreferencesBackup(localStorage, window.location.origin);
+      const blob = new Blob([`${JSON.stringify(backup, null, 2)}\n`], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `cloudcli-preferences-${new Date().toISOString().slice(0, 10)}.json`;
+      link.style.display = 'none';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 0);
+      setTransferStatus(`Exported ${Object.keys(backup.preferences).length} preferences from ${window.location.origin}.`);
+    } catch (error) {
+      setTransferStatus(error instanceof Error ? error.message : 'Could not export preferences.');
+    }
+  };
+
+  const importPreferences = async (file: File | undefined) => {
+    if (!file) return;
+
+    try {
+      const result = restorePreferencesBackup(localStorage, await file.text());
+      setTransferStatus(`Restored ${result.restored} preferences from ${result.sourceOrigin}. Reloading…`);
+      window.setTimeout(() => window.location.reload(), 600);
+    } catch (error) {
+      setTransferStatus(error instanceof Error ? error.message : 'Could not import preferences.');
+    } finally {
+      if (importInputRef.current) importInputRef.current.value = '';
+    }
+  };
 
   return (
     <div className="space-y-6">
@@ -123,6 +161,39 @@ export default function AboutTab() {
           <ExternalLink className="h-3.5 w-3.5" />
           cloudcli.ai
         </a>
+      </div>
+
+      <div className="rounded-xl border border-border/60 bg-muted/20 p-4">
+        <h3 className="text-sm font-medium text-foreground">Move browser preferences</h3>
+        <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+          Browser settings are separate for every hostname. Export from the old CloudCLI address, then import the file
+          at the new address to restore model choices, agent visibility, permissions, theme, and UI preferences.
+        </p>
+        <p className="mt-1 text-xs text-muted-foreground">
+          Authentication tokens, API credentials, drafts, and per-session data are never included.
+        </p>
+        <div className="mt-3 flex flex-wrap gap-2">
+          <Button type="button" variant="outline" size="sm" onClick={exportPreferences}>
+            <Download className="mr-1.5 h-3.5 w-3.5" />
+            Export preferences
+          </Button>
+          <Button type="button" variant="outline" size="sm" onClick={() => importInputRef.current?.click()}>
+            <Upload className="mr-1.5 h-3.5 w-3.5" />
+            Import preferences
+          </Button>
+          <input
+            ref={importInputRef}
+            type="file"
+            accept="application/json,.json"
+            className="hidden"
+            onChange={(event) => void importPreferences(event.target.files?.[0])}
+          />
+        </div>
+        {transferStatus && (
+          <p className="mt-2 text-xs text-muted-foreground" role="status">
+            {transferStatus}
+          </p>
+        )}
       </div>
 
       {/* Hosted CTA (OSS mode only) */}

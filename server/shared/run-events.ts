@@ -163,4 +163,5 @@ export type SystemWsEvent =
     }
   | { kind: 'agent_relay_updated'; job: unknown }
   | { kind: 'agent_relay_approval_updated'; approval: unknown }
+  | { kind: 'continuity_updated'; sessionId: string; recovery: unknown }
   | { kind: 'running_sessions_changed' };

@@ -1,5 +1,5 @@
 import { memo, useEffect, useId, useRef, useState } from 'react';
-import { Check, Copy, Edit2, Loader2, MoreHorizontal, Trash2, X } from 'lucide-react';
+import { Check, Copy, Edit2, Link2, Loader2, MoreHorizontal, Trash2, X } from 'lucide-react';
 import type { TFunction } from 'i18next';
 
 import { Badge, Tooltip, buttonVariants } from '../../../../shared/view/ui';
@@ -34,7 +34,7 @@ type SidebarSessionItemProps = {
   t: TFunction;
 };
 
-type SessionIdKind = 'session' | 'provider';
+type SessionIdKind = 'session' | 'provider' | 'link';
 
 type SessionIdOverflowMenuProps = {
   session: SessionWithProvider;
@@ -95,6 +95,9 @@ function SessionIdOverflowMenu({ session, t }: SessionIdOverflowMenuProps) {
   const providerSessionIdLabel = copiedId === 'provider'
     ? t('sessions.menuCopied', { defaultValue: 'Copied' })
     : t('sessions.menuCopyProviderId', { defaultValue: 'Copy provider session ID' });
+  const sessionLinkLabel = copiedId === 'link'
+    ? t('sessions.menuCopied', { defaultValue: 'Copied' })
+    : t('sessions.menuCopyLink', { defaultValue: 'Copy session link' });
 
   return (
     <div ref={rootRef} className="relative flex-shrink-0">
@@ -156,6 +159,24 @@ function SessionIdOverflowMenu({ session, t }: SessionIdOverflowMenuProps) {
               <span className="block font-medium tracking-tight">{providerSessionIdLabel}</span>
               <span className="mt-1 block break-all font-mono text-[10px] leading-snug text-muted-foreground">
                 {providerSessionId || t('sessions.menuProviderIdUnavailable', { defaultValue: 'Not available yet' })}
+              </span>
+            </span>
+          </button>
+
+          <button
+            type="button"
+            role="menuitem"
+            className="flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left text-[13px] leading-none text-foreground transition-colors hover:bg-accent"
+            onClick={() => void copyId(
+              'link',
+              new URL(`/session/${encodeURIComponent(session.id)}`, window.location.origin).toString(),
+            )}
+          >
+            {copiedId === 'link' ? <Check className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" /> : <Link2 className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" />}
+            <span className="min-w-0 flex-1">
+              <span className="block font-medium tracking-tight">{sessionLinkLabel}</span>
+              <span className="mt-1 block break-all font-mono text-[10px] leading-snug text-muted-foreground">
+                /session/{session.id}
               </span>
             </span>
           </button>

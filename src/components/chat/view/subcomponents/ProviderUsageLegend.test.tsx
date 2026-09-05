@@ -215,9 +215,9 @@ test('legend UI controller persists collapse and expands rows', () => {
   assert.equal(states.length, 2);
 
   ui.toggleProvider('claude');
-  assert.equal(ui.getState().expandedProvider, null);
-  ui.toggleProvider('claude');
   assert.equal(ui.getState().expandedProvider, 'claude');
+  ui.toggleProvider('claude');
+  assert.equal(ui.getState().expandedProvider, null);
 
   const html = renderLegend({
     collapsed: true,
@@ -248,6 +248,116 @@ test('legend UI controller keyboard activation toggles collapse and rows', () =>
   assert.equal(ui.getState().collapsed, false);
   assert.equal(ui.getState().expandedProvider, 'claude');
   assert.equal(storage.get('provider-usage-legend-collapsed'), 'false');
+});
+
+test('header toggle button allows expanding and collapsing all providers', () => {
+  const data = response([
+    provider(),
+    provider({
+      providerId: 'grok',
+      displayName: 'Grok',
+      planName: null,
+      primaryWindowId: null,
+      windows: [],
+      status: 'unavailable',
+    }),
+  ]);
+
+  // When not all providers are expanded
+  const partiallyExpandedHtml = renderLegend({
+    data,
+    expandedProviders: ['claude'],
+  });
+  assert.match(partiallyExpandedHtml, /data-testid="provider-usage-expand-all"/);
+  assert.match(partiallyExpandedHtml, /aria-label="Expand all details"/);
+  assert.match(partiallyExpandedHtml, /aria-expanded="false"/);
+  assert.match(partiallyExpandedHtml, /lucide-chevron-down/);
+
+  // When all providers are expanded
+  const allExpandedHtml = renderLegend({
+    data,
+    expandedProviders: ['claude', 'grok'],
+  });
+  assert.match(allExpandedHtml, /aria-label="Collapse all details"/);
+  assert.match(allExpandedHtml, /aria-expanded="true"/);
+  assert.match(allExpandedHtml, /lucide-chevron-up/);
+  // Both Claude windows and Grok unavailable state are visible in expanded mode
+  assert.match(allExpandedHtml, /All models/);
+  assert.match(allExpandedHtml, /Fable/);
+  assert.match(allExpandedHtml, /signed in · usage unavailable/);
+
+  // When all providers are collapsed
+  const allCollapsedHtml = renderLegend({
+    data,
+    expandedProviders: [],
+  });
+  assert.match(allCollapsedHtml, /aria-label="Expand all details"/);
+  assert.match(allCollapsedHtml, /aria-expanded="false"/);
+  assert.match(allCollapsedHtml, /lucide-chevron-down/);
+  assert.doesNotMatch(allCollapsedHtml, /All models/);
+  assert.doesNotMatch(allCollapsedHtml, /Fable/);
+  assert.doesNotMatch(allCollapsedHtml, /signed in · usage unavailable/);
+});
+
+test('individual provider rows do not have chevron arrow icons', () => {
+  const html = renderLegend({
+    data: response([
+      provider(),
+      provider({
+        providerId: 'grok',
+        displayName: 'Grok',
+        planName: null,
+        primaryWindowId: null,
+        windows: [],
+        status: 'unavailable',
+      }),
+    ]),
+    expandedProviders: ['claude'],
+  });
+
+  // Extract row buttons by finding their markup
+  const claudeButtonMatch = html.match(/<button[^>]*aria-label="Claude usage details"[^>]*>[\s\S]*?<\/button>/);
+  assert.ok(claudeButtonMatch, 'Claude row button must exist');
+  assert.doesNotMatch(claudeButtonMatch[0], /lucide-chevron/);
+
+  const grokButtonMatch = html.match(/<button[^>]*aria-label="Grok usage details"[^>]*>[\s\S]*?<\/button>/);
+  assert.ok(grokButtonMatch, 'Grok row button must exist');
+  assert.doesNotMatch(grokButtonMatch[0], /lucide-chevron/);
+
+  // Total chevron icons in the entire legend should be exactly 1 (the master button in the header)
+  const chevrons = html.match(/lucide-chevron-(?:up|down)/g) ?? [];
+  assert.equal(chevrons.length, 1);
+});
+
+test('legend UI controller supports toggleExpandAll, expandAll, and collapseAll', () => {
+  const { ui } = createLegendUi();
+  const providerIds = ['claude', 'grok', 'codex'];
+
+  // Start with all providers collapsed by default
+  assert.deepEqual(ui.getState().expandedProviders, []);
+
+  // Expand all
+  ui.expandAll(providerIds);
+  assert.deepEqual(ui.getState().expandedProviders, providerIds);
+
+  // Collapse all
+  ui.collapseAll();
+  assert.deepEqual(ui.getState().expandedProviders, []);
+  assert.equal(ui.getState().expandedProvider, null);
+
+  // Toggle expand all from empty -> should expand all
+  ui.toggleExpandAll(providerIds);
+  assert.deepEqual(ui.getState().expandedProviders, providerIds);
+
+  // Toggle expand all when all are expanded -> should collapse all
+  ui.toggleExpandAll(providerIds);
+  assert.deepEqual(ui.getState().expandedProviders, []);
+
+  // Toggle expand all when partially expanded -> should expand all
+  ui.toggleProvider('claude');
+  assert.deepEqual(ui.getState().expandedProviders, ['claude']);
+  ui.toggleExpandAll(providerIds);
+  assert.deepEqual(ui.getState().expandedProviders, providerIds);
 });
 
 test('expanded windows render remaining bars without invented percent counts', () => {
