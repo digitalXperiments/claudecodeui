@@ -886,6 +886,56 @@ CREATE INDEX IF NOT EXISTS idx_failover_playbooks_project ON failover_playbooks(
 `;
 
 /**
+ * Session-scoped continuity policy plus restart-safe recovery queue.
+ *
+ * Policies are deliberately attached to the stable app session id: provider
+ * sessions can be replaced during a handoff, while the source conversation
+ * still needs a durable record of what the user asked CloudCLI to do.
+ */
+export const CONTINUITY_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS session_continuity_policies (
+    session_id                    TEXT PRIMARY KEY NOT NULL,
+    mode                          TEXT NOT NULL DEFAULT 'off',
+    fallback_providers_json       TEXT NOT NULL DEFAULT '[]',
+    handoff_mode                  TEXT NOT NULL DEFAULT 'summary',
+    max_attempts                  INTEGER NOT NULL DEFAULT 3,
+    max_wait_seconds              INTEGER NOT NULL DEFAULT 21600,
+    unknown_reset_delay_seconds   INTEGER NOT NULL DEFAULT 900,
+    created_at                    DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at                    DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS continuity_recoveries (
+    recovery_id           TEXT PRIMARY KEY NOT NULL,
+    source_run_id         TEXT NOT NULL UNIQUE,
+    session_id            TEXT NOT NULL,
+    source_provider       TEXT NOT NULL,
+    status                TEXT NOT NULL DEFAULT 'waiting',
+    action                TEXT NOT NULL,
+    fallback_provider     TEXT,
+    detected_reason       TEXT NOT NULL,
+    retry_at              DATETIME,
+    reset_time_source     TEXT NOT NULL DEFAULT 'fallback',
+    attempt               INTEGER NOT NULL DEFAULT 1,
+    max_attempts          INTEGER NOT NULL DEFAULT 3,
+    policy_json           TEXT NOT NULL DEFAULT '{}',
+    last_error            TEXT,
+    resumed_session_id    TEXT,
+    created_at            DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at            DATETIME DEFAULT CURRENT_TIMESTAMP,
+    started_at            DATETIME,
+    completed_at          DATETIME,
+    FOREIGN KEY (source_run_id) REFERENCES agent_runs(run_id) ON DELETE CASCADE,
+    FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_continuity_recoveries_due
+    ON continuity_recoveries(status, retry_at);
+CREATE INDEX IF NOT EXISTS idx_continuity_recoveries_session
+    ON continuity_recoveries(session_id, created_at DESC);
+`;
+
+/**
  * Per-project run observatory budgets and stuck threshold (Run Observatory).
  */
 export const PROJECT_RUN_BUDGETS_TABLE_SCHEMA_SQL = `
@@ -1014,6 +1064,7 @@ ${SECRETS_TABLE_SCHEMA_SQL}
 ${CONTEXT_PACKS_TABLE_SCHEMA_SQL}
 ${AUTOMATION_TABLE_SCHEMA_SQL}
 ${FAILOVER_PLAYBOOKS_TABLE_SCHEMA_SQL}
+${CONTINUITY_SCHEMA_SQL}
 ${SWARM_TABLE_SCHEMA_SQL}
 `;
 

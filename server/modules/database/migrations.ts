@@ -7,6 +7,7 @@ import {
   CONTEXT_PACKS_TABLE_SCHEMA_SQL,
   AUTOMATION_TABLE_SCHEMA_SQL,
   FAILOVER_PLAYBOOKS_TABLE_SCHEMA_SQL,
+  CONTINUITY_SCHEMA_SQL,
   SWARM_TABLE_SCHEMA_SQL,
   KANBAN_SCHEMA_SQL,
   LAST_SCANNED_AT_SQL,
@@ -851,6 +852,60 @@ const ensureAgentRelaySchema = (db: Database): void => {
   db.exec('CREATE INDEX IF NOT EXISTS idx_agent_relay_approvals_status ON agent_relay_approvals(status, created_at)');
 };
 
+
+/** Additive Continuity schema migrations for the 7 new feature toggles & telemetry. */
+const ensureContinuitySchema = (db: Database): void => {
+  if (tableExists(db, "session_continuity_policies")) {
+    const policyCols = getTableInfo(db, "session_continuity_policies").map((c) => c.name);
+    addColumnToTableIfNotExists(db, "session_continuity_policies", policyCols, "in_place_handoff", "INTEGER NOT NULL DEFAULT 0");
+    addColumnToTableIfNotExists(db, "session_continuity_policies", policyCols, "boomerang_mode", "TEXT NOT NULL DEFAULT \x27off\x27");
+    addColumnToTableIfNotExists(db, "session_continuity_policies", policyCols, "preflight_quota_guard", "TEXT NOT NULL DEFAULT \x27warn\x27");
+    addColumnToTableIfNotExists(db, "session_continuity_policies", policyCols, "preflight_threshold_ratio", "REAL NOT NULL DEFAULT 0.05");
+    addColumnToTableIfNotExists(db, "session_continuity_policies", policyCols, "tier_mapping_enabled", "INTEGER NOT NULL DEFAULT 1");
+    addColumnToTableIfNotExists(db, "session_continuity_policies", policyCols, "checkpoint_tools_enabled", "INTEGER NOT NULL DEFAULT 1");
+    addColumnToTableIfNotExists(db, "session_continuity_policies", policyCols, "subagent_continuity_enabled", "INTEGER NOT NULL DEFAULT 1");
+  }
+
+  if (tableExists(db, "continuity_recoveries")) {
+    const recoveryCols = getTableInfo(db, "continuity_recoveries").map((c) => c.name);
+    addColumnToTableIfNotExists(db, "continuity_recoveries", recoveryCols, "target_model", "TEXT");
+    addColumnToTableIfNotExists(db, "continuity_recoveries", recoveryCols, "tier_match", "TEXT");
+    addColumnToTableIfNotExists(db, "continuity_recoveries", recoveryCols, "scope", "TEXT NOT NULL DEFAULT \x27chat\x27");
+    addColumnToTableIfNotExists(db, "continuity_recoveries", recoveryCols, "owner_ref", "TEXT");
+  }
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS continuity_checkpoints (
+      checkpoint_id            TEXT PRIMARY KEY NOT NULL,
+      session_id               TEXT NOT NULL,
+      lineage_root_session_id  TEXT NOT NULL,
+      run_id                   TEXT,
+      provider                 TEXT NOT NULL,
+      seq                      INTEGER NOT NULL DEFAULT 1,
+      summary                  TEXT NOT NULL,
+      next_steps_json          TEXT NOT NULL DEFAULT \x27[]\x27,
+      open_questions_json      TEXT NOT NULL DEFAULT \x27[]\x27,
+      files_touched_json       TEXT NOT NULL DEFAULT \x27[]\x27,
+      commands_json            TEXT NOT NULL DEFAULT \x27[]\x27,
+      do_not_repeat_json       TEXT NOT NULL DEFAULT \x27[]\x27,
+      tags_json                TEXT NOT NULL DEFAULT \x27[]\x27,
+      created_at               DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(session_id, seq)
+    );
+    CREATE INDEX IF NOT EXISTS idx_continuity_checkpoints_lineage
+      ON continuity_checkpoints(lineage_root_session_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS continuity_scratchpad (
+      lineage_root_session_id  TEXT NOT NULL,
+      key                      TEXT NOT NULL,
+      value                    TEXT NOT NULL,
+      expires_at               DATETIME,
+      updated_at               DATETIME DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (lineage_root_session_id, key)
+    );
+  `);
+};
+
 export const runMigrations = (db: Database) => {
   try {
     const usersTableInfo = db.prepare('PRAGMA table_info(users)').all() as { name: string }[];
@@ -949,6 +1004,8 @@ export const runMigrations = (db: Database) => {
     db.exec(CONTEXT_PACKS_TABLE_SCHEMA_SQL);
     db.exec(AUTOMATION_TABLE_SCHEMA_SQL);
     db.exec(FAILOVER_PLAYBOOKS_TABLE_SCHEMA_SQL);
+    db.exec(CONTINUITY_SCHEMA_SQL);
+    ensureContinuitySchema(db);
     db.exec(SWARM_TABLE_SCHEMA_SQL);
     ensureSwarmAgentSchema(db);
     ensureRunSpineBridgeSchema(db);
