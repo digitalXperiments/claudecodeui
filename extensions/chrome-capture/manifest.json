@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "CloudCLI Fix This",
+  "version": "0.1.0",
+  "description": "Capture browser evidence and submit a CloudCLI Kanban task.",
+  "permissions": ["activeTab", "scripting", "sidePanel", "storage"],
+  "host_permissions": [],
+  "action": { "default_title": "Open CloudCLI capture" },
+  "background": { "service_worker": "background.js" },
+  "side_panel": { "default_path": "sidepanel.html" }
+}
