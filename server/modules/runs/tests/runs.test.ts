@@ -302,6 +302,27 @@ test('reconcileOrphans marks in-flight runs failed on boot', async () => {
   }
 });
 
+test('reconcileOrphans fails runs parked on an approval nothing can answer anymore', async () => {
+  const db = await useTempDatabase();
+  try {
+    const waitingPermission = runService.create({ source: 'chat', status: 'running' });
+    runService.updateStatus(waitingPermission.run_id, 'waiting_permission');
+    const waitingApproval = runService.create({ source: 'chat', status: 'running' });
+    runService.updateStatus(waitingApproval.run_id, 'waiting_approval');
+
+    // The pending-approval registry and the provider child that asked the
+    // question both died with the process, so these can never be answered.
+    assert.equal(runService.reconcileOrphans(), 2);
+    for (const orphan of [waitingPermission, waitingApproval]) {
+      const run = runService.get(orphan.run_id);
+      assert.equal(run?.status, 'failed');
+      assert.equal(run?.error_summary, ORPHAN_ERROR_SUMMARY);
+    }
+  } finally {
+    await db.restore();
+  }
+});
+
 test('reconcileOrphans leaves resumable swarm runs for the swarm recovery worker', async () => {
   const db = await useTempDatabase();
   try {

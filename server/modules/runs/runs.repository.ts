@@ -489,6 +489,12 @@ export const runsDb = {
    * Mark non-resumable in-flight runs failed after a restart. Swarm-owned
    * parent/child runs are excluded while their durable swarm is nonterminal;
    * the swarm recovery worker owns those rows and may resume them safely.
+   *
+   * Every non-terminal status is reconciled, including `waiting_permission` /
+   * `waiting_approval`: the pending-approval registry and the provider child
+   * that asked the question both die with the process, so nothing can ever
+   * answer those runs. Leaving them in-flight kept them forever on the
+   * Running rail and endlessly re-flagged by the stuck detector.
    */
   reconcileOrphans(): number {
     const db = getConnection();
@@ -497,7 +503,9 @@ export const runsDb = {
       .prepare(
         `UPDATE agent_runs SET
           status = 'failed', error_summary = ?, finished_at = ?, updated_at = ?
-        WHERE status IN ('queued', 'starting', 'running')
+        WHERE status IN (
+            'queued', 'starting', 'running', 'waiting_permission', 'waiting_approval'
+          )
           AND NOT (
             source = 'swarm'
             AND EXISTS (

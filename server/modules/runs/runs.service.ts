@@ -602,9 +602,18 @@ export function recordNormalizedRunEvent(
       : 'failed';
   const current = runService.get(runId);
   if (current && !TERMINAL_RUN_STATUSES.has(current.status)) {
+    const lastProviderError = status === 'failed'
+      ? runService.listEvents(runId, { newest: true, limit: 50 })
+          .slice()
+          .reverse()
+          .find((event) => event.severity === 'error' && typeof event.payload?.content === 'string')
+          ?.payload.content as string | undefined
+      : undefined;
     runService.markTerminal(runId, {
       status,
-      errorSummary: status === 'failed' ? message.content ?? 'Provider run failed' : null,
+      errorSummary: status === 'failed'
+        ? message.content?.trim() || lastProviderError || 'Provider run failed'
+        : null,
       exitCode: typeof complete.exitCode === 'number' ? complete.exitCode : null,
     });
     if (current.provider === 'claude') {
