@@ -632,6 +632,38 @@ test('resolveCatalogModelId redirects the retired NVIDIA deepseek-v4-flash id to
   );
 });
 
+test('resolveCatalogModelId resolves gemini-3.7 and gemini-3.8 shorthands and aliases', () => {
+  const OPENCODE_GEMINI_CATALOG = {
+    DEFAULT: 'anthropic/claude-sonnet-4-5',
+    OPTIONS: [
+      { value: 'anthropic/claude-sonnet-4-5', label: 'Anthropic · Sonnet 4.5' },
+      { value: 'openrouter/google/gemini-3.7-flash', label: 'OpenRouter · Gemini 3.7 Flash' },
+      { value: 'openrouter/google/gemini-3.8-flash', label: 'OpenRouter · Gemini 3.8 Flash' },
+    ],
+  };
+
+  assert.deepEqual(
+    resolveCatalogModelId('opencode', 'gemini-3.7', OPENCODE_GEMINI_CATALOG),
+    { model: 'openrouter/google/gemini-3.7-flash', repaired: true },
+  );
+  assert.deepEqual(
+    resolveCatalogModelId('opencode', 'gemini-3.8', OPENCODE_GEMINI_CATALOG),
+    { model: 'openrouter/google/gemini-3.8-flash', repaired: true },
+  );
+  assert.deepEqual(
+    resolveCatalogModelId('opencode', 'gemini-3.7-flash', OPENCODE_GEMINI_CATALOG),
+    { model: 'openrouter/google/gemini-3.7-flash', repaired: true },
+  );
+  assert.deepEqual(
+    resolveCatalogModelId('opencode', 'google/gemini-3.8-flash', OPENCODE_GEMINI_CATALOG),
+    { model: 'openrouter/google/gemini-3.8-flash', repaired: true },
+  );
+  assert.deepEqual(
+    resolveCatalogModelId('opencode', 'openrouter/google/gemini-3.7-flash', OPENCODE_GEMINI_CATALOG),
+    { model: 'openrouter/google/gemini-3.7-flash', repaired: false },
+  );
+});
+
 test('Unknown relay models fail with a 400 and catalog suggestions even when unrestricted', () => {
   configureRelayModelRegistry(() => null);
   try {
@@ -767,8 +799,10 @@ test('relay workers never bypass the permission envelope or inherit the relay MC
   assert.equal(relayPermissionMode({ mode: 'read_only', provider: 'opencode' }), 'plan');
   assert.equal(providerSupportsReadOnlyRelay('claude'), true);
   assert.equal(providerSupportsReadOnlyRelay('cursor'), false);
+  assert.equal(providerSupportsReadOnlyRelay('antigravity'), false);
   assert.equal(providerHonorsRelayMcpGrants('claude'), true);
   assert.equal(providerHonorsRelayMcpGrants('codex'), false);
+  assert.equal(providerHonorsRelayMcpGrants('antigravity'), true);
   assert.deepEqual(
     sanitizeWorkerMcpServers(['obsidian', 'cloudcli-agent-relay', 'browser']),
     ['obsidian', 'browser'],

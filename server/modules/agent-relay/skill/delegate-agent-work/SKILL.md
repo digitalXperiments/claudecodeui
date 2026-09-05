@@ -77,16 +77,26 @@ you are landing an already-finished isolated write onto the primary checkout.
    validates it server-side, sends one automatic repair turn on violation, and
    reports the verdict in `result.outputValidation`. Findings lists, verdicts,
    and inventories should always be schema tasks — never re-parse prose.
-8. **Route by strength.** Give the wide mechanical sweep to a fast cheap model
-   and the judgement call to a strong one. Use a *different* provider when you
-   want an independent opinion rather than an echo. Check `honorsMcpGrants`
-   before giving a task `mcpServers`. Codex workers get empty `mcp_servers`
-   (no native inherit, no grants). Cursor does not honor grants or tool-deny
-   flags. Grok workers strip local MCP from the managed home; granted servers
-   attach on ACP. Residual: Grok CLI may still attach a grok.com catalog later.
-   Cursor has no `readOnlyPlanSeat` — never pick it for `read_only`; auto-pick
-   already skips it. Explicit `isolated_write` on Cursor is allowed. Cursor
-   emits no permission events CloudCLI can broker.
+8. **Route by strength and task complexity.** Give the wide mechanical sweep to a
+   fast cheap model and the judgement call to a strong one. Use a *different*
+   provider when you want an independent opinion rather than an echo.
+   - **Gemini Sub-Agents (OpenCode / OpenRouter):** Delegate sub-agent tasks to
+     `openrouter/google/gemini-3.7-flash` or `openrouter/google/gemini-3.8-flash`
+     (or shorthands `gemini-3.7` / `gemini-3.8`) with reasoning effort matched
+     to task complexity:
+     - **Low complexity (`effort: "low"`):** Fast exploration, code search,
+       syntax verification, directory sweeps, and single-file inspections.
+     - **Medium complexity (`effort: "medium"`):** Routine feature implementation,
+       multi-file refactors, unit test generation, and test fixes.
+     - **High complexity (`effort: "high"`):** Deep architectural diagnosis,
+       complex debugging across subsystems, adversarial verification, and security analysis.
+   - Check `honorsMcpGrants` before giving a task `mcpServers`. Codex workers get
+     empty `mcp_servers` (no native inherit, no grants). Cursor does not honor
+     grants or tool-deny flags. Grok workers strip local MCP from the managed home;
+     granted servers attach on ACP. Residual: Grok CLI may still attach a grok.com
+     catalog later. Cursor has no `readOnlyPlanSeat` — never pick it for `read_only`;
+     auto-pick already skips it. Explicit `isolated_write` on Cursor is allowed.
+     Cursor emits no permission events CloudCLI can broker.
 9. **Grant `retries: 1` to long or infra-flaky tasks.** A retry re-dispatches a
    fresh worker only after a run that failed with no output; it never re-runs a
    worker that answered.

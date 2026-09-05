@@ -132,7 +132,6 @@ const READ_ONLY_PLAN_PROVIDERS = new Set<LLMProvider>([
   'qwencode',
   'pi',
   'omp',
-  'antigravity',
 ]);
 
 /**
@@ -148,6 +147,7 @@ const MCP_GRANT_PROVIDERS = new Set<LLMProvider>([
   'kilo',
   'cline',
   'qwencode',
+  'antigravity',
 ]);
 
 /**
@@ -347,6 +347,16 @@ export function resolveCatalogModelId(
     (candidate) => requested.includes('/')
       && candidate.split('/')[0] === requestedHead
       && lastSegment(candidate) === requestedTail,
+    // The request omitted a suffix like `-flash` or `-preview` on the model name
+    // (e.g. `gemini-3.7` → `gemini-3.7-flash`, `gemini-3.8` → `gemini-3.8-flash`).
+    (candidate) => {
+      const candidateTail = lastSegment(candidate);
+      return candidateTail === `${requestedTail}-flash`
+        || candidateTail === `${requestedTail}-preview`
+        || (requested.includes('/') && candidate.split('/')[0] === requestedHead && (
+          candidateTail === `${requestedTail}-flash` || candidateTail === `${requestedTail}-preview`
+        ));
+    },
   ];
   for (const matches of tiers) {
     const hits = candidates.filter(matches);

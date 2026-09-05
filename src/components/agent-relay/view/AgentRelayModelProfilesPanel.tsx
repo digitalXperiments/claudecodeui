@@ -49,7 +49,7 @@ type StaffingPrefs = {
 };
 
 type StatusFilter = 'all' | 'enabled' | 'disabled';
-type SortMode = 'recommended' | 'name' | 'context' | 'confidence';
+type SortMode = 'recommended' | 'coding' | 'agentic' | 'longContext' | 'speed' | 'context' | 'confidence' | 'name';
 
 const PRIMARY_RESEARCH_PROVIDERS = ['claude', 'codex', 'grok'];
 const ORCHESTRATOR_MIN_SCORE = 0.85;
@@ -71,8 +71,8 @@ function providerLabel(provider: string): string {
 }
 
 function formatContextWindow(value: number | null): string {
-  if (!value) return 'Not reported';
-  if (value >= 1_000_000) return `${Number((value / 1_000_000).toFixed(1))}M`;
+  if (!value || value <= 0) return '—';
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(value % 1_000_000 === 0 ? 0 : 1)}M`;
   if (value >= 1_000) return `${Math.round(value / 1_000)}k`;
   return value.toLocaleString();
 }
@@ -97,6 +97,9 @@ function capabilityScore(capability: ModelCapability): number {
 }
 
 function bestFit(capability: ModelCapability): string {
+  if (capability.codingScore >= 0.92 && capability.agenticScore >= 0.92) {
+    return 'Frontier Lead';
+  }
   const scores = [
     { label: 'Implementation', value: capability.codingScore },
     { label: 'Orchestration', value: capability.agenticScore },
@@ -104,6 +107,25 @@ function bestFit(capability: ModelCapability): string {
     { label: 'Fast tasks', value: capability.speedScore ?? -1 },
   ].sort((left, right) => right.value - left.value);
   return scores[0].value > 0 ? scores[0].label : 'Needs assessment';
+}
+
+function BestFitBadge({ capability }: { capability: ModelCapability }) {
+  const fit = bestFit(capability);
+  return (
+    <span
+      className={cn(
+        'inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium border',
+        fit === 'Frontier Lead' && 'border-purple-500/30 bg-purple-500/10 text-purple-700 dark:text-purple-300',
+        fit === 'Implementation' && 'border-blue-500/30 bg-blue-500/10 text-blue-700 dark:text-blue-300',
+        fit === 'Orchestration' && 'border-indigo-500/30 bg-indigo-500/10 text-indigo-700 dark:text-indigo-300',
+        fit === 'Long context' && 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300',
+        fit === 'Fast tasks' && 'border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300',
+        fit === 'Needs assessment' && 'border-border bg-muted/40 text-muted-foreground',
+      )}
+    >
+      {fit}
+    </span>
+  );
 }
 
 function confidenceLabel(value: number): string {
@@ -152,15 +174,22 @@ function ProviderToggle({
       type="button"
       role="switch"
       aria-checked={enabled}
+      aria-label={`${enabled ? 'Disable' : 'Enable'} ${providerLabel(provider)}`}
       onClick={() => onChange(!enabled)}
+      onKeyDown={(e) => {
+        if (e.key === ' ' || e.key === 'Enter') {
+          e.preventDefault();
+          onChange(!enabled);
+        }
+      }}
       className={cn(
-        'flex min-w-0 items-center gap-3 rounded-xl border p-3 text-left transition-colors',
+        'group flex min-w-0 items-center gap-3 rounded-xl border p-3 text-left transition-all cursor-pointer',
         enabled
-          ? 'border-primary/25 bg-primary/[0.045] hover:bg-primary/[0.075]'
-          : 'border-border/70 bg-muted/15 opacity-65 hover:bg-muted/30',
+          ? 'border-primary/30 bg-primary/[0.045] hover:bg-primary/[0.08]'
+          : 'border-border/70 bg-muted/15 opacity-65 hover:bg-muted/30 hover:opacity-90',
       )}
     >
-      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-border/70 bg-background">
+      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-border/70 bg-background shadow-xs">
         <SessionProviderLogo provider={provider} className="h-5 w-5" />
       </span>
       <span className="min-w-0 flex-1">
@@ -169,11 +198,19 @@ function ProviderToggle({
           {modelCount} discovered model{modelCount === 1 ? '' : 's'}
         </span>
       </span>
-      <span className={cn(
-        'flex h-5 w-5 shrink-0 items-center justify-center rounded-md border',
-        enabled ? 'border-primary bg-primary text-primary-foreground' : 'border-border bg-background',
-      )}>
-        {enabled && <Check className="h-3.5 w-3.5" />}
+      <span
+        aria-hidden="true"
+        className={cn(
+          'relative inline-flex h-5 w-9 shrink-0 items-center rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out',
+          enabled ? 'bg-primary' : 'bg-muted-foreground/30 group-hover:bg-muted-foreground/45',
+        )}
+      >
+        <span
+          className={cn(
+            'pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-sm ring-0 transition duration-200 ease-in-out',
+            enabled ? 'translate-x-4' : 'translate-x-0',
+          )}
+        />
       </span>
     </button>
   );
@@ -187,15 +224,23 @@ function ModelStatusToggle({ capability, onChange }: { capability: ModelCapabili
       aria-checked={capability.enabled}
       aria-label={`${capability.enabled ? 'Disable' : 'Enable'} ${capability.displayName || capability.modelId}`}
       onClick={() => onChange(!capability.enabled)}
+      onKeyDown={(e) => {
+        if (e.key === ' ' || e.key === 'Enter') {
+          e.preventDefault();
+          onChange(!capability.enabled);
+        }
+      }}
       className={cn(
-        'relative h-6 w-11 shrink-0 rounded-full border transition-colors',
-        capability.enabled ? 'border-primary bg-primary' : 'border-border bg-muted',
+        'relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
+        capability.enabled ? 'bg-primary' : 'bg-muted-foreground/30 hover:bg-muted-foreground/45',
       )}
     >
-      <span className={cn(
-        'absolute top-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-transform',
-        capability.enabled ? 'translate-x-[1.25rem]' : 'translate-x-0.5',
-      )} />
+      <span
+        className={cn(
+          'pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-sm ring-0 transition duration-200 ease-in-out',
+          capability.enabled ? 'translate-x-4' : 'translate-x-0',
+        )}
+      />
     </button>
   );
 }
@@ -356,6 +401,31 @@ export default function AgentRelayModelProfilesPanel() {
     }
   };
 
+  const bulkToggleFiltered = async (enable: boolean) => {
+    const targets = visibleCapabilities.filter((c) => c.enabled !== enable);
+    if (targets.length === 0) return;
+    setCapabilities((current) =>
+      current.map((row) => {
+        const match = targets.some((t) => t.provider === row.provider && t.modelId === row.modelId);
+        return match ? { ...row, enabled: enable } : row;
+      }),
+    );
+    try {
+      const payload = await requestJson<{ capabilities?: ModelCapability[] }>('/api/model-registry/models', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          models: targets.map((t) => ({ provider: t.provider, modelId: t.modelId, enabled: enable })),
+        }),
+      });
+      if (payload.capabilities) setCapabilities(payload.capabilities);
+      setError(null);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Could not batch update models.');
+      void load();
+    }
+  };
+
   const providerCounts = useMemo(() => {
     const counts = new Map<string, number>();
     capabilities.forEach((capability) => counts.set(capability.provider, (counts.get(capability.provider) ?? 0) + 1));
@@ -401,7 +471,23 @@ export default function AgentRelayModelProfilesPanel() {
       if (sortMode === 'name') {
         return (left.displayName || left.modelId).localeCompare(right.displayName || right.modelId);
       }
-      if (sortMode === 'context') return (right.contextWindow ?? 0) - (left.contextWindow ?? 0);
+      if (sortMode === 'coding') {
+        return right.codingScore - left.codingScore || capabilityScore(right) - capabilityScore(left);
+      }
+      if (sortMode === 'agentic') {
+        return right.agenticScore - left.agenticScore || capabilityScore(right) - capabilityScore(left);
+      }
+      if (sortMode === 'longContext') {
+        return right.longContextScore - left.longContextScore || (right.officialContextWindow ?? 0) - (left.officialContextWindow ?? 0);
+      }
+      if (sortMode === 'speed') {
+        return (right.speedScore ?? 0) - (left.speedScore ?? 0) || right.codingScore - left.codingScore;
+      }
+      if (sortMode === 'context') {
+        const leftCtx = left.contextWindow ?? left.officialContextWindow ?? 0;
+        const rightCtx = right.contextWindow ?? right.officialContextWindow ?? 0;
+        return rightCtx - leftCtx;
+      }
       if (sortMode === 'confidence') return right.confidence - left.confidence;
       return capabilityScore(right) - capabilityScore(left) || right.confidence - left.confidence;
     });
@@ -601,10 +687,14 @@ export default function AgentRelayModelProfilesPanel() {
                   aria-label="Sort model profiles"
                   className="h-10 w-full appearance-none rounded-xl border border-input bg-background pl-9 pr-8 text-sm shadow-sm outline-none focus:ring-2 focus:ring-ring"
                 >
-                  <option value="recommended">Best fit</option>
+                  <option value="recommended">Best fit (Overall)</option>
+                  <option value="coding">Coding (High to Low)</option>
+                  <option value="agentic">Agentic / Tool use</option>
+                  <option value="longContext">Long context</option>
+                  <option value="speed">Speed (Fastest first)</option>
+                  <option value="context">Context window</option>
                   <option value="confidence">Confidence</option>
-                  <option value="context">Context</option>
-                  <option value="name">Name</option>
+                  <option value="name">Name (A–Z)</option>
                 </select>
                 <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
               </label>
@@ -638,21 +728,43 @@ export default function AgentRelayModelProfilesPanel() {
                 </button>
               ))}
             </div>
-            <div className="flex shrink-0 items-center gap-1 rounded-lg border border-border bg-background p-1">
-              <Filter className="ml-1.5 h-3.5 w-3.5 text-muted-foreground" />
-              {(['all', 'enabled', 'disabled'] as StatusFilter[]).map((status) => (
-                <button
-                  key={status}
-                  type="button"
-                  onClick={() => setStatusFilter(status)}
-                  className={cn(
-                    'rounded-md px-2.5 py-1 text-xs font-medium capitalize transition-colors',
-                    statusFilter === status ? 'bg-accent text-foreground' : 'text-muted-foreground hover:text-foreground',
-                  )}
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="flex shrink-0 items-center gap-1 rounded-lg border border-border bg-background p-1">
+                <Filter className="ml-1.5 h-3.5 w-3.5 text-muted-foreground" />
+                {(['all', 'enabled', 'disabled'] as StatusFilter[]).map((status) => (
+                  <button
+                    key={status}
+                    type="button"
+                    onClick={() => setStatusFilter(status)}
+                    className={cn(
+                      'rounded-md px-2.5 py-1 text-xs font-medium capitalize transition-colors cursor-pointer',
+                      statusFilter === status ? 'bg-accent text-foreground' : 'text-muted-foreground hover:text-foreground',
+                    )}
+                  >
+                    {status}
+                  </button>
+                ))}
+              </div>
+              <div className="flex items-center gap-1">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-8 px-2.5 text-xs text-muted-foreground hover:text-foreground cursor-pointer"
+                  onClick={() => void bulkToggleFiltered(true)}
+                  title="Enable all currently shown models"
                 >
-                  {status}
-                </button>
-              ))}
+                  Enable all
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-8 px-2.5 text-xs text-muted-foreground hover:text-foreground cursor-pointer"
+                  onClick={() => void bulkToggleFiltered(false)}
+                  title="Disable all currently shown models"
+                >
+                  Disable all
+                </Button>
+              </div>
             </div>
           </div>
         </div>
@@ -693,7 +805,10 @@ export default function AgentRelayModelProfilesPanel() {
                     <ScoreBar label="Speed" value={capability.speedScore} />
                   </div>
                   <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/60 pt-3 text-xs text-muted-foreground">
-                    <span>{bestFit(capability)} · {formatContextWindow(capability.contextWindow)} runtime context</span>
+                    <div className="flex items-center gap-2">
+                      <BestFitBadge capability={capability} />
+                      <span>· {formatContextWindow(capability.contextWindow ?? capability.officialContextWindow)} {capability.contextWindow ? 'runtime tokens' : 'estimated tokens'}</span>
+                    </div>
                     <ConfidenceBadge capability={capability} />
                   </div>
                 </article>
@@ -730,15 +845,15 @@ export default function AgentRelayModelProfilesPanel() {
                           <ScoreBar label="Speed" value={capability.speedScore} />
                         </div>
                       </td>
-                      <td className="px-3 py-4 align-top text-xs font-medium">{bestFit(capability)}</td>
+                      <td className="px-3 py-4 align-top"><BestFitBadge capability={capability} /></td>
                       <td className="px-3 py-4 align-top">
-                        <p className="font-medium tabular-nums">{formatContextWindow(capability.contextWindow)}</p>
+                        <p className="font-medium tabular-nums">{formatContextWindow(capability.contextWindow ?? capability.officialContextWindow)}</p>
                         <p className="mt-1 text-[11px] text-muted-foreground">
-                          {capability.maxContextWindow && capability.maxContextWindow !== capability.contextWindow
+                          {capability.maxContextWindow && capability.maxContextWindow !== (capability.contextWindow ?? capability.officialContextWindow)
                             ? `${formatContextWindow(capability.maxContextWindow)} max`
-                            : capability.officialContextWindow && capability.officialContextWindow !== capability.contextWindow
-                              ? `${formatContextWindow(capability.officialContextWindow)} official`
-                              : 'runtime tokens'}
+                            : capability.contextWindow != null
+                              ? 'runtime tokens'
+                              : 'estimated tokens'}
                         </p>
                       </td>
                       <td className="px-3 py-4 align-top">
