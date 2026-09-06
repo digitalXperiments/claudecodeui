@@ -1,4 +1,6 @@
 import fs from 'node:fs/promises';
+import { constants as fsConstants } from 'node:fs';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import os from 'node:os';
 
@@ -7,7 +9,7 @@ import { Cron } from 'croner';
 
 import { appConfigDb, getConnection, getDatabasePath, projectsDb, sessionsDb } from '@/modules/database/index.js';
 import { getEnabledProviderWatchPaths } from '@/modules/providers/index.js';
-import { normalizeProjectPath } from '@/shared/utils.js';
+import { getKiloDatabasePath, getOpenCodeDatabasePath, normalizeProjectPath } from '@/shared/utils.js';
 
 const CONFIG_KEY = 'backup_manager_config';
 const HISTORY_KEY = 'backup_manager_history';
@@ -29,7 +31,7 @@ const DEFAULT_CONFIG = {
 // at (a transcript file, or — for providers that anchor a session on a
 // directory — that directory). `dirOfFile` backs up the parent directory of
 // the anchor file, for providers whose transcript lives in a sibling file
-// inside a per-session directory. `unsplittable` means the provider keeps
+// inside a per-session directory. `sharedStore` means the provider keeps
 // every project's sessions in one shared store with no per-session boundary
 // CloudCLI can safely cut along, so it is only backed up whole, and only when
 // doing so cannot include an excluded project's data.
@@ -43,14 +45,24 @@ const PROVIDER_SESSION_ARTIFACT_MODE = {
   kimi: 'dirOfFile',
   grok: 'dirOfFile',
   cline: 'dir',
-  opencode: 'unsplittable',
-  kilo: 'unsplittable',
-  antigravity: 'unsplittable',
+  opencode: 'sharedStore',
+  kilo: 'sharedStore',
+  antigravity: 'antigravity',
+};
+
+const SHARED_PROVIDER_DATABASE_PATH = {
+  opencode: getOpenCodeDatabasePath,
+  kilo: getKiloDatabasePath,
 };
 
 let appRoot = process.cwd();
 let cronJob = null;
 let running = false;
+let conversationSourcesForTests = null;
+
+export function setBackupConversationSourcesForTests(sources) {
+  conversationSourcesForTests = sources;
+}
 
 function readJson(key, fallback) {
   try {
@@ -132,17 +144,100 @@ function shouldSkip(relativePath) {
  */
 async function addDirectory(zip, source, archivePrefix, excludedRoot) {
   let entries;
-  try { entries = await fs.readdir(source, { withFileTypes: true }); } catch { return; }
+  try { entries = await fs.readdir(source, { withFileTypes: true }); } catch { return { filesAdded: 0, errors: 1, unsafeSkipped: 0 }; }
+  let filesAdded = 0;
+  let errors = 0;
+  let unsafeSkipped = 0;
   for (const entry of entries) {
     const fullPath = path.join(source, entry.name);
     if (excludedRoot && path.resolve(fullPath) === path.resolve(excludedRoot)) continue;
-    if (entry.isSymbolicLink()) continue;
+    if (entry.isSymbolicLink()) {
+      unsafeSkipped += 1;
+      continue;
+    }
     const relative = path.join(archivePrefix, entry.name);
     if (shouldSkip(relative)) continue;
-    if (entry.isDirectory()) await addDirectory(zip, fullPath, relative, excludedRoot);
-    else if (entry.isFile()) {
-      try { zip.file(relative.replaceAll(path.sep, '/'), await fs.readFile(fullPath)); } catch { /* file may disappear during a snapshot */ }
+    if (entry.isDirectory()) {
+      const result = await addDirectory(zip, fullPath, relative, excludedRoot);
+      filesAdded += result.filesAdded;
+      errors += result.errors;
+      unsafeSkipped += result.unsafeSkipped;
     }
+    else if (entry.isFile()) {
+      try {
+        zip.file(relative.replaceAll(path.sep, '/'), await fs.readFile(fullPath));
+        filesAdded += 1;
+      } catch {
+        // A file may disappear during a snapshot, but callers still need to
+        // know the requested tree was only partially captured.
+        errors += 1;
+      }
+    }
+  }
+  return { filesAdded, errors, unsafeSkipped };
+}
+
+function isStrictlyContained(rootPath, candidatePath) {
+  const relative = path.relative(rootPath, candidatePath);
+  return Boolean(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+}
+
+async function resolveReadableConversationRoot(rootPath) {
+  try {
+    const canonicalPath = await fs.realpath(rootPath);
+    const stat = await fs.stat(canonicalPath);
+    if (!stat.isDirectory()) return null;
+    await fs.access(canonicalPath, fsConstants.R_OK | fsConstants.X_OK);
+    return { configuredPath: path.resolve(rootPath), canonicalPath };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolves a session-derived artifact without following a planted symlink or
+ * accepting a lexical/canonical escape from the provider's conversation root.
+ */
+async function resolveContainedArtifact(root, artifactPath) {
+  const absolutePath = path.resolve(artifactPath);
+  if (!isStrictlyContained(root.configuredPath, absolutePath)) {
+    return { ok: false, kind: 'unsafe' };
+  }
+
+  try {
+    const lexicalRelativePath = path.relative(root.configuredPath, absolutePath);
+    const lstat = await fs.lstat(absolutePath);
+    if (lstat.isSymbolicLink()) return { ok: false, kind: 'unsafe' };
+
+    const realPath = await fs.realpath(absolutePath);
+    const expectedRealPath = path.resolve(root.canonicalPath, lexicalRelativePath);
+    if (realPath !== expectedRealPath || !isStrictlyContained(root.canonicalPath, realPath)) {
+      return { ok: false, kind: 'unsafe' };
+    }
+    return { ok: true, realPath, stat: lstat };
+  } catch (error) {
+    return { ok: false, kind: error?.code === 'ENOENT' ? 'missing' : 'unreadable' };
+  }
+}
+
+function archiveSessionSegment(sessionId) {
+  return encodeURIComponent(sessionId);
+}
+
+function projectArchivePrefix(projectPath) {
+  const identity = createHash('sha256').update(path.resolve(projectPath)).digest('hex').slice(0, 16);
+  return path.join('projects', `${path.basename(projectPath)}-${identity}`);
+}
+
+async function addContainedFile(zip, root, artifactPath, archivePath) {
+  const resolved = await resolveContainedArtifact(root, artifactPath);
+  if (!resolved.ok) return resolved;
+  if (!resolved.stat.isFile()) return { ok: false, kind: 'unsafe' };
+  try {
+    zip.file(archivePath.replaceAll(path.sep, '/'), await fs.readFile(resolved.realPath));
+    return { ok: true };
+  } catch {
+    return { ok: false, kind: 'unreadable' };
   }
 }
 
@@ -177,27 +272,31 @@ async function addAgentConversations(zip, config) {
     .map((project) => project.project_path)
     .filter((projectPath) => !excludedSet.has(projectPath));
 
-  const allSessions = sessionsDb.getAllSessions();
-  const providerWatchPaths = getEnabledProviderWatchPaths(new Set());
+  // The visible-session query deliberately hides archived and internal rows.
+  // Backup privacy cannot: their provider-native artifacts remain on disk and
+  // can leak through a shared store unless they participate in exclusions.
+  const allSessions = sessionsDb.getAllSessionsForBackup();
+  const providerWatchPaths = conversationSourcesForTests ?? getEnabledProviderWatchPaths(new Set());
   const providers = [];
   const warnings = [];
 
-  for (const { provider, rootPath } of providerWatchPaths) {
+  for (const { provider, rootPath, databasePath: configuredDatabasePath } of providerWatchPaths) {
     const providerSessions = allSessions.filter((session) => session.provider === provider);
-    const mode = PROVIDER_SESSION_ARTIFACT_MODE[provider] ?? 'unsplittable';
+    const mode = PROVIDER_SESSION_ARTIFACT_MODE[provider] ?? 'sharedStore';
+    const includedSessions = providerSessions.filter((session) => {
+      const projectPath = normalizeProjectPath(session.project_path || session.runtime_project_path || '');
+      return !excludedSet.has(projectPath);
+    });
+    const sessionsExcluded = providerSessions.length - includedSessions.length;
 
-    if (mode === 'unsplittable') {
-      const touchesExcludedProject = providerSessions.some((session) => {
-        const projectPath = normalizeProjectPath(session.project_path || session.runtime_project_path || '');
-        return excludedSet.has(projectPath);
-      });
-
-      if (touchesExcludedProject) {
+    if (mode === 'sharedStore') {
+      if (sessionsExcluded > 0) {
         providers.push({
           provider,
           mode,
           coverage: 'skipped',
           sessionsInStore: providerSessions.length,
+          sessionsExcluded,
           reason: 'This provider keeps every project\'s sessions in one shared store with no per-session boundary, so it cannot be split by project. It was skipped entirely to honor the excluded project(s).',
         });
         warnings.push(`${provider}: skipped — cannot exclude projects from its shared session store, and at least one excluded project has ${provider} sessions.`);
@@ -209,46 +308,184 @@ async function addAgentConversations(zip, config) {
         continue;
       }
 
-      await addDirectory(zip, rootPath, path.join('conversations', provider), config.destination);
-      providers.push({ provider, mode, coverage: 'full-store', sessionsInStore: providerSessions.length });
+      const root = await resolveReadableConversationRoot(rootPath);
+      if (!root) {
+        providers.push({ provider, mode, coverage: 'unavailable', sessionsInStore: providerSessions.length });
+        warnings.push(`${provider}: its requested conversation root is missing or unreadable, so no sessions were backed up.`);
+        continue;
+      }
+
+      const databasePath = configuredDatabasePath ?? SHARED_PROVIDER_DATABASE_PATH[provider]?.();
+      if (!databasePath) {
+        providers.push({ provider, mode, coverage: 'skipped', sessionsInStore: providerSessions.length });
+        warnings.push(`${provider}: skipped — no exact transcript store is known, so the provider data root was not copied.`);
+        continue;
+      }
+
+      const archiveDatabaseName = path.basename(databasePath);
+      const mainResult = await addContainedFile(
+        zip,
+        root,
+        databasePath,
+        path.join('conversations', provider, archiveDatabaseName),
+      );
+      if (!mainResult.ok) {
+        providers.push({ provider, mode, coverage: 'unavailable', sessionsInStore: providerSessions.length });
+        warnings.push(`${provider}: its shared conversation database is missing, unreadable, or outside the expected conversation root, so it was skipped.`);
+        continue;
+      }
+
+      let sidecarErrors = 0;
+      for (const suffix of ['-wal', '-shm']) {
+        const sidecarResult = await addContainedFile(
+          zip,
+          root,
+          `${databasePath}${suffix}`,
+          path.join('conversations', provider, `${archiveDatabaseName}${suffix}`),
+        );
+        if (!sidecarResult.ok && sidecarResult.kind !== 'missing') sidecarErrors += 1;
+      }
+      providers.push({
+        provider,
+        mode,
+        coverage: sidecarErrors > 0 ? 'partial' : 'full-store',
+        sessionsInStore: providerSessions.length,
+      });
+      if (sidecarErrors > 0) {
+        warnings.push(`${provider}: ${sidecarErrors} SQLite sidecar(s) were unsafe or unreadable and were skipped.`);
+      }
+      continue;
+    }
+
+    if (includedSessions.length === 0) {
+      providers.push({
+        provider,
+        mode,
+        coverage: 'empty',
+        sessionsBackedUp: 0,
+        sessionsSkippedMissing: 0,
+        sessionsSkippedUnsafe: 0,
+        sessionsExcluded,
+      });
+      continue;
+    }
+
+    const root = await resolveReadableConversationRoot(rootPath);
+    if (!root) {
+      providers.push({
+        provider,
+        mode,
+        coverage: 'unavailable',
+        sessionsBackedUp: 0,
+        sessionsSkippedMissing: includedSessions.length,
+        sessionsSkippedUnsafe: 0,
+        sessionsExcluded,
+      });
+      warnings.push(`${provider}: its requested conversation root is missing or unreadable, so ${includedSessions.length} session(s) were skipped.`);
       continue;
     }
 
     let sessionsBackedUp = 0;
     let sessionsSkippedMissing = 0;
-    let sessionsExcluded = 0;
-    for (const session of providerSessions) {
-      const projectPath = normalizeProjectPath(session.project_path || session.runtime_project_path || '');
-      if (excludedSet.has(projectPath)) { sessionsExcluded += 1; continue; }
+    let sessionsSkippedUnsafe = 0;
+    let sessionsWithSidecarWarnings = 0;
+    let sessionsWithNestedUnsafeArtifacts = 0;
+    for (const session of includedSessions) {
+      const archiveBase = path.join('conversations', provider, archiveSessionSegment(session.session_id));
+
+      if (mode === 'antigravity') {
+        const providerSessionId = session.provider_session_id || session.session_id;
+        if (!providerSessionId || path.basename(providerSessionId) !== providerSessionId || ['.', '..'].includes(providerSessionId)) {
+          sessionsSkippedUnsafe += 1;
+          continue;
+        }
+
+        const databasePath = path.join(rootPath, `${providerSessionId}.db`);
+        const databaseResult = await addContainedFile(
+          zip,
+          root,
+          databasePath,
+          path.join(archiveBase, `${providerSessionId}.db`),
+        );
+        if (!databaseResult.ok) {
+          if (databaseResult.kind === 'unsafe') sessionsSkippedUnsafe += 1;
+          else sessionsSkippedMissing += 1;
+          continue;
+        }
+
+        let sidecarWarnings = 0;
+        for (const suffix of ['-wal', '-shm', '.meta']) {
+          const sidecarPath = suffix === '.meta'
+            ? path.join(rootPath, `${providerSessionId}.meta`)
+            : `${databasePath}${suffix}`;
+          const sidecarResult = await addContainedFile(
+            zip,
+            root,
+            sidecarPath,
+            path.join(archiveBase, path.basename(sidecarPath)),
+          );
+          if (!sidecarResult.ok && sidecarResult.kind !== 'missing') sidecarWarnings += 1;
+        }
+        if (sidecarWarnings > 0) sessionsWithSidecarWarnings += 1;
+        sessionsBackedUp += 1;
+        continue;
+      }
+
       if (!session.jsonl_path) { sessionsSkippedMissing += 1; continue; }
 
       const anchorPath = session.jsonl_path;
       const sourcePath = mode === 'dirOfFile' ? path.dirname(anchorPath) : anchorPath;
-      const archiveBase = path.join('conversations', provider, session.session_id);
-      try {
-        const stat = await fs.lstat(sourcePath);
-        if (stat.isSymbolicLink()) { sessionsSkippedMissing += 1; continue; }
-        if (stat.isDirectory()) {
-          await addDirectory(zip, sourcePath, archiveBase, config.destination);
-        } else {
-          zip.file(path.join(archiveBase, path.basename(sourcePath)).replaceAll(path.sep, '/'), await fs.readFile(sourcePath));
-        }
-        sessionsBackedUp += 1;
-      } catch {
-        sessionsSkippedMissing += 1;
+      const anchorResult = await resolveContainedArtifact(root, anchorPath);
+      const sourceResult = sourcePath === anchorPath
+        ? anchorResult
+        : await resolveContainedArtifact(root, sourcePath);
+      if (!anchorResult.ok || !sourceResult.ok) {
+        if (anchorResult.kind === 'unsafe' || sourceResult.kind === 'unsafe') sessionsSkippedUnsafe += 1;
+        else sessionsSkippedMissing += 1;
+        continue;
       }
+
+      if (sourceResult.stat.isDirectory()) {
+        const addResult = await addDirectory(zip, sourceResult.realPath, archiveBase, config.destination);
+        if (addResult.unsafeSkipped > 0) sessionsWithNestedUnsafeArtifacts += 1;
+        if (addResult.errors > 0) {
+          sessionsSkippedMissing += 1;
+          continue;
+        }
+      } else if (sourceResult.stat.isFile()) {
+        try {
+          zip.file(path.join(archiveBase, path.basename(sourceResult.realPath)).replaceAll(path.sep, '/'), await fs.readFile(sourceResult.realPath));
+        } catch {
+          sessionsSkippedMissing += 1;
+          continue;
+        }
+      } else {
+        sessionsSkippedMissing += 1;
+        continue;
+      }
+      sessionsBackedUp += 1;
     }
 
     providers.push({
       provider,
       mode,
-      coverage: sessionsSkippedMissing > 0 ? 'partial' : 'complete',
+      coverage: sessionsSkippedMissing > 0 || sessionsSkippedUnsafe > 0 || sessionsWithSidecarWarnings > 0 || sessionsWithNestedUnsafeArtifacts > 0 ? 'partial' : 'complete',
       sessionsBackedUp,
       sessionsSkippedMissing,
+      sessionsSkippedUnsafe,
       sessionsExcluded,
     });
     if (sessionsSkippedMissing > 0) {
       warnings.push(`${provider}: ${sessionsSkippedMissing} session(s) referenced in the database could not be read from disk and were skipped.`);
+    }
+    if (sessionsSkippedUnsafe > 0) {
+      warnings.push(`${provider}: ${sessionsSkippedUnsafe} session artifact(s) escaped the expected conversation root or used a symlink and were skipped.`);
+    }
+    if (sessionsWithSidecarWarnings > 0) {
+      warnings.push(`${provider}: unsafe or unreadable sidecars were skipped for ${sessionsWithSidecarWarnings} Antigravity session(s).`);
+    }
+    if (sessionsWithNestedUnsafeArtifacts > 0) {
+      warnings.push(`${provider}: symlinked entries were skipped inside ${sessionsWithNestedUnsafeArtifacts} session director${sessionsWithNestedUnsafeArtifacts === 1 ? 'y' : 'ies'}.`);
     }
   }
 
@@ -287,7 +524,7 @@ export async function runBackup(reason = 'manual') {
     if (config.includeCodebase) await addDirectory(zip, appRoot, 'codebase', config.destination);
     if (config.includeProjects) {
       for (const projectPath of config.projectPaths) {
-        await addDirectory(zip, projectPath, path.join('projects', path.basename(projectPath)), config.destination);
+        await addDirectory(zip, projectPath, projectArchivePrefix(projectPath), config.destination);
       }
     }
     const agentConversations = config.includeAgentConversations

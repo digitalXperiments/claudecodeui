@@ -544,6 +544,25 @@ export const sessionsDb = {
   },
 
   /**
+   * Every indexed row that can describe provider-native conversation data.
+   *
+   * Backup privacy checks must include archived and internal sessions: those
+   * rows are hidden from the interactive session list, but their provider
+   * transcripts can still be present in a shared on-disk store.
+   */
+  getAllSessionsForBackup(): SessionRow[] {
+    const db = getConnection();
+    const rows = db
+      .prepare(
+        `SELECT ${SESSION_ROW_COLUMNS}
+         FROM sessions`
+      )
+      .all() as SessionRow[];
+
+    return normalizeSessionRows(rows);
+  },
+
+  /**
    * Archived rows are intentionally queried separately so the caller can render
    * them in a dedicated view without reintroducing them into active session lists.
    */
