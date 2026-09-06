@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
@@ -15,9 +14,16 @@ import {
   updateBackupConfig,
 } from '../backup.service.js';
 
+const scratchRoot = path.resolve('tmp', 'cloudcli', 'backup-tests');
+
+async function createScratchDirectory(prefix: string): Promise<string> {
+  await mkdir(scratchRoot, { recursive: true });
+  return mkdtemp(path.join(scratchRoot, prefix));
+}
+
 async function withIsolatedDatabase(runTest: () => void | Promise<void>): Promise<void> {
   const previousDatabasePath = process.env.DATABASE_PATH;
-  const tempDirectory = await mkdtemp(path.join(tmpdir(), 'backups-db-'));
+  const tempDirectory = await createScratchDirectory('backups-db-');
   const databasePath = path.join(tempDirectory, 'auth.db');
 
   closeConnection();
@@ -73,7 +79,7 @@ test('backup config normalization', async (t) => {
 
 test('agent conversation backup scoping', async () => {
   await withIsolatedDatabase(async () => {
-    const workDir = await mkdtemp(path.join(tmpdir(), 'backups-run-'));
+    const workDir = await createScratchDirectory('backups-run-');
     const destination = path.join(workDir, 'destination');
     const claudeRoot = path.join(workDir, 'providers', 'claude');
     const clineRoot = path.join(workDir, 'providers', 'cline');
@@ -216,7 +222,7 @@ test('agent conversation backup scoping', async () => {
 
 test('shared conversation stores copy only exact SQLite artifacts and omit auth files', async () => {
   await withIsolatedDatabase(async () => {
-    const workDir = await mkdtemp(path.join(tmpdir(), 'backups-shared-store-'));
+    const workDir = await createScratchDirectory('backups-shared-store-');
     const destination = path.join(workDir, 'destination');
     const opencodeRoot = path.join(workDir, 'opencode');
     const kiloRoot = path.join(workDir, 'kilo');
@@ -270,7 +276,7 @@ test('shared conversation stores copy only exact SQLite artifacts and omit auth 
 
 test('project source archive prefixes distinguish duplicate basenames', async () => {
   await withIsolatedDatabase(async () => {
-    const workDir = await mkdtemp(path.join(tmpdir(), 'backups-project-prefix-'));
+    const workDir = await createScratchDirectory('backups-project-prefix-');
     const destination = path.join(workDir, 'destination');
     const firstProject = path.join(workDir, 'one', 'demo');
     const secondProject = path.join(workDir, 'two', 'demo');
