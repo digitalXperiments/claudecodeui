@@ -1886,13 +1886,21 @@ export const agentRelayService = {
       const profile = settings.workerProfiles?.[provider];
       const modeFallback = profile?.defaultMode ?? settings.defaultMode;
       const approvalFallback = profile?.defaultApprovalPolicy ?? settings.defaultApprovalPolicy;
-      const mode = normalizeMode(task.mode, modeFallback);
+      let mode = normalizeMode(task.mode, modeFallback);
       const approvalPolicy = normalizeApprovalPolicy(task.approvalPolicy, approvalFallback);
       if (mode === 'read_only' && !providerSupportsReadOnlyRelay(provider)) {
-        throw new AppError(
-          `Provider "${provider}" does not expose a host-enforceable read-only relay mode. Choose another worker or use isolated_write.`,
-          { code: 'RELAY_READ_ONLY_UNSUPPORTED', statusCode: 400 },
-        );
+        // An explicit ask for read_only on an incapable provider is an honest
+        // error. But when read_only only arrived via the default/profile
+        // fallback (the lead just picked a provider and didn't think about
+        // mode), silently containing it in isolated_write is friendlier than
+        // failing the whole batch over a mode nobody actually requested.
+        if (requestedMode === 'read_only') {
+          throw new AppError(
+            `Provider "${provider}" does not expose a host-enforceable read-only relay mode. Choose another worker or use isolated_write.`,
+            { code: 'RELAY_READ_ONLY_UNSUPPORTED', statusCode: 400 },
+          );
+        }
+        mode = 'isolated_write';
       }
       let modelIdentity: ReturnType<typeof resolveRelayModelIdentity>;
       let catalogModels: ProviderModelsDefinition | null = null;

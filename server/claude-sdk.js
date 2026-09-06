@@ -1222,16 +1222,21 @@ async function handleCanUseTool(toolName, input, context, ctx) {
   const capturedSessionId = capturedSessionIdRef();
   const requiresInteraction = TOOLS_REQUIRING_INTERACTION.has(toolName);
 
+  // Checked even for interactive tools (AskUserQuestion/ExitPlanMode): a
+  // caller that explicitly disallows one is telling us nobody can ever
+  // answer it, so deny immediately instead of sending a permission_request
+  // that will just sit unanswered for the full approval-wait budget (up to
+  // 10 minutes for unattended runs, forever for attended chat).
+  const isDisallowed = (sdkOptions.disallowedTools || []).some(entry =>
+    matchesToolPermission(entry, toolName, input)
+  );
+  if (isDisallowed) {
+    return { behavior: 'deny', message: 'Tool disallowed by settings' };
+  }
+
   if (!requiresInteraction) {
     if (sdkOptions.permissionMode === 'bypassPermissions') {
       return { behavior: 'allow', updatedInput: input };
-    }
-
-    const isDisallowed = (sdkOptions.disallowedTools || []).some(entry =>
-      matchesToolPermission(entry, toolName, input)
-    );
-    if (isDisallowed) {
-      return { behavior: 'deny', message: 'Tool disallowed by settings' };
     }
 
     const isAllowed = (sdkOptions.allowedTools || []).some(entry =>

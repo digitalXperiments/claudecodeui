@@ -881,6 +881,13 @@ test('auto provider pick skips Cursor for read_only and still allows explicit is
       /does not expose a host-enforceable read-only/,
     );
 
+    const fallback = await agentRelayService.submitBatch({
+      projectPath,
+      tasks: [{ task: 'Cursor picked explicitly, mode left to the read_only default.', provider: 'cursor' }],
+    });
+    assert.equal(fallback.jobs[0]?.provider, 'cursor');
+    assert.equal(fallback.jobs[0]?.mode, 'isolated_write');
+
     const write = await agentRelayService.submitBatch({
       projectPath,
       tasks: [{ task: 'Cursor may write when chosen.', provider: 'cursor', mode: 'isolated_write' }],

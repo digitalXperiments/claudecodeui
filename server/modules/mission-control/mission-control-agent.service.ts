@@ -396,7 +396,11 @@ function buildRuntimeOptions(section: McSection, tools: string[]): AnyRecord {
     case 'cursor':
       options.toolsSettings = {
         allowedTools: expandedTools,
-        disallowedTools: [],
+        // Mission Control runs are always headless (no human on the other
+        // end to answer). AskUserQuestion/ExitPlanMode must never be reached:
+        // deny them outright instead of stalling on an approval nobody can
+        // grant. Prompts already instruct the model to ask via plain text.
+        disallowedTools: ['AskUserQuestion', 'ExitPlanMode'],
         skipPermissions: permissionMode === 'bypassPermissions',
       };
       break;
