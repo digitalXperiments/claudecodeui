@@ -48,19 +48,27 @@ export function downgradeModelForSoftCap(
   options: { provider?: string | null } = {},
 ): string | null {
   const current = (model ?? '').trim();
+  const inferredProvider = options.provider ?? (
+    OPUS_RE.test(current) || FABLE_RE.test(current) || SONNET_RE.test(current) || /^claude/i.test(current)
+      ? 'claude'
+      : undefined
+  );
   try {
     const candidates = rankCandidatesForTask({ kind: 'implementer', difficulty: 'basic' }, {
-      allowedProviders: options.provider ? [options.provider] : undefined,
+      allowedProviders: inferredProvider ? [inferredProvider] : undefined,
       limit: 8,
     });
     const currentEntry = candidates.find((c) => c.modelId === current);
     const cheaper = candidates.find((c) => {
       if (c.modelId === current) return false;
-      if (currentEntry && c.outputCostPerMtok != null && currentEntry.outputCostPerMtok != null) {
-        return c.outputCostPerMtok < currentEntry.outputCostPerMtok;
+      if (currentEntry) {
+        if (c.provider !== currentEntry.provider) return false;
+        if (c.outputCostPerMtok != null && currentEntry.outputCostPerMtok != null) {
+          return c.outputCostPerMtok < currentEntry.outputCostPerMtok;
+        }
+        return c.codingScore < currentEntry.codingScore;
       }
-      // Without pricing data, "cheaper" means a strictly lower coding score.
-      return !currentEntry || c.codingScore < currentEntry.codingScore;
+      return true;
     });
     if (cheaper) return cheaper.modelId;
   } catch {
