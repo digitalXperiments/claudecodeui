@@ -42,6 +42,7 @@ export type { SkillTestResult } from './services/skill-test.service.js';
 export { initializeSessionsWatcher } from './services/sessions-watcher.service.js';
 export { closeSessionsWatcher } from './services/sessions-watcher.service.js';
 export { refreshSessionsWatcher } from './services/sessions-watcher.service.js';
+export { getEnabledProviderWatchPaths } from './services/sessions-watcher.service.js';
 
 export {
   antigravityConversationsDir,

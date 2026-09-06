@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react';
-import { Database, FolderArchive, Loader2, Play, Save } from 'lucide-react';
+import { Database, FolderArchive, Loader2, MessagesSquare, Play, Save } from 'lucide-react';
 
 import { authenticatedFetch } from '../../../../utils/api';
 import { Button } from '../../../../shared/view/ui';
 import SettingsCard from '../SettingsCard';
 import SettingsSection from '../SettingsSection';
 import SettingsToggle from '../SettingsToggle';
+import BackupProjectExclusionsField from '../BackupProjectExclusionsField';
+import { useBackupProjectOptions } from '../../hooks/useBackupProjectOptions';
 
 type BackupConfig = {
   enabled: boolean;
@@ -13,6 +15,8 @@ type BackupConfig = {
   destination: string;
   includeDatabase: boolean;
   includeCodebase: boolean;
+  includeAgentConversations: boolean;
+  excludedProjectPaths: string[];
   includeProjects: boolean;
   projectPaths: string[];
   retention: number;
@@ -20,12 +24,15 @@ type BackupConfig = {
 
 const DEFAULT_CONFIG: BackupConfig = {
   enabled: false, schedule: '0 2 * * *', destination: '~/.cloudcli/backups',
-  includeDatabase: true, includeCodebase: true, includeProjects: false, projectPaths: [], retention: 7,
+  includeDatabase: true, includeCodebase: true,
+  includeAgentConversations: true, excludedProjectPaths: [],
+  includeProjects: false, projectPaths: [], retention: 7,
 };
 
 export default function BackupsSettingsTab() {
   const [config, setConfig] = useState(DEFAULT_CONFIG);
-  const [history, setHistory] = useState<Array<{ status: string; reason: string; filename?: string; error?: string; completedAt: string }>>([]);
+  const { projects: projectOptions, isLoading: projectOptionsLoading, loadError: projectOptionsError } = useBackupProjectOptions();
+  const [history, setHistory] = useState<Array<{ status: string; reason: string; filename?: string; error?: string; completedAt: string; warnings?: string[] }>>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [running, setRunning] = useState(false);
@@ -90,15 +97,58 @@ export default function BackupsSettingsTab() {
         <SettingsCard divided>
           <div className="flex items-center justify-between px-4 py-4"><div className="flex items-center gap-3"><Database className="h-4 w-4 text-muted-foreground" /><div><div className="text-sm font-medium">CloudCLI database</div><div className="text-sm text-muted-foreground">SQLite database and its WAL sidecars.</div></div></div><SettingsToggle checked={config.includeDatabase} onChange={(includeDatabase) => set({ includeDatabase })} ariaLabel="Include database" /></div>
           <div className="flex items-center justify-between px-4 py-4"><div className="flex items-center gap-3"><FolderArchive className="h-4 w-4 text-muted-foreground" /><div><div className="text-sm font-medium">CloudCLI codebase</div><div className="text-sm text-muted-foreground">Source/config files, excluding dependencies, build output, Git metadata, and temp files.</div></div></div><SettingsToggle checked={config.includeCodebase} onChange={(includeCodebase) => set({ includeCodebase })} ariaLabel="Include codebase" /></div>
-          <div className="flex items-center justify-between px-4 py-4"><div><div className="text-sm font-medium">Project folders</div><div className="text-sm text-muted-foreground">Include additional project paths listed below.</div></div><SettingsToggle checked={config.includeProjects} onChange={(includeProjects) => set({ includeProjects })} ariaLabel="Include project folders" /></div>
-          <label className="block px-4 py-4"><span className="text-sm font-medium">Project paths</span><span className="mt-0.5 block text-sm text-muted-foreground">One absolute path per line.</span><textarea value={config.projectPaths.join('\n')} onChange={(event) => set({ projectPaths: event.target.value.split('\n').map((value) => value.trim()).filter(Boolean) })} rows={3} className="mt-3 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" /></label>
+        </SettingsCard>
+      </SettingsSection>
+
+      <SettingsSection title="Agent conversations" description="Back up provider-native session/conversation data (Claude, Codex, Cursor, and every other connected agent) for your registered projects.">
+        <SettingsCard divided>
+          <div className="flex items-center justify-between px-4 py-4">
+            <div className="flex items-center gap-3">
+              <MessagesSquare className="h-4 w-4 text-muted-foreground" />
+              <div>
+                <div className="text-sm font-medium">Include agent conversations</div>
+                <div className="text-sm text-muted-foreground">Enabled by default. Independent of the CloudCLI database/codebase toggles above.</div>
+              </div>
+            </div>
+            <SettingsToggle checked={config.includeAgentConversations} onChange={(includeAgentConversations) => set({ includeAgentConversations })} ariaLabel="Include agent conversations" />
+          </div>
+          {config.includeAgentConversations && (
+            <div className="px-4 py-4">
+              <BackupProjectExclusionsField
+                excludedPaths={config.excludedProjectPaths}
+                options={projectOptions}
+                optionsLoading={projectOptionsLoading}
+                optionsError={projectOptionsError}
+                onChange={(excludedProjectPaths) => set({ excludedProjectPaths })}
+              />
+            </div>
+          )}
+        </SettingsCard>
+      </SettingsSection>
+
+      <SettingsSection title="Additional project source folders" description="A separate, optional set of arbitrary source folders (not agent conversation data) to include verbatim in the archive.">
+        <SettingsCard divided>
+          <div className="flex items-center justify-between px-4 py-4"><div><div className="text-sm font-medium">Project source folders</div><div className="text-sm text-muted-foreground">Include the additional paths listed below.</div></div><SettingsToggle checked={config.includeProjects} onChange={(includeProjects) => set({ includeProjects })} ariaLabel="Include project source folders" /></div>
+          <label className="block px-4 py-4"><span className="text-sm font-medium">Folder paths</span><span className="mt-0.5 block text-sm text-muted-foreground">One absolute path per line.</span><textarea value={config.projectPaths.join('\n')} onChange={(event) => set({ projectPaths: event.target.value.split('\n').map((value) => value.trim()).filter(Boolean) })} rows={3} className="mt-3 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" /></label>
         </SettingsCard>
       </SettingsSection>
 
       <div className="flex flex-wrap items-center gap-3"><Button onClick={() => void save()} disabled={saving}><Save className="mr-2 h-4 w-4" />{saving ? 'Saving…' : 'Save settings'}</Button><Button variant="outline" onClick={() => void runNow()} disabled={running}><Play className="mr-2 h-4 w-4" />{running ? 'Creating backup…' : 'Run backup now'}</Button>{message && <span className="text-sm text-emerald-600">{message}</span>}{error && <span className="text-sm text-destructive">{error}</span>}</div>
       <SettingsSection title="Recent runs" description="The server keeps the latest 20 backup attempts.">
         <SettingsCard divided>
-          {history.length === 0 ? <div className="px-4 py-5 text-sm text-muted-foreground">No backups have run yet.</div> : history.slice(0, 5).map((entry) => <div key={`${entry.completedAt}-${entry.filename || entry.error}`} className="flex items-center justify-between gap-4 px-4 py-3 text-sm"><span className={entry.status === 'success' ? 'text-emerald-600' : 'text-destructive'}>{entry.status === 'success' ? entry.filename : entry.error}</span><span className="shrink-0 text-xs text-muted-foreground">{new Date(entry.completedAt).toLocaleString()}</span></div>)}
+          {history.length === 0 ? <div className="px-4 py-5 text-sm text-muted-foreground">No backups have run yet.</div> : history.slice(0, 5).map((entry) => (
+            <div key={`${entry.completedAt}-${entry.filename || entry.error}`} className="px-4 py-3 text-sm">
+              <div className="flex items-center justify-between gap-4">
+                <span className={entry.status === 'success' ? 'text-emerald-600' : 'text-destructive'}>{entry.status === 'success' ? entry.filename : entry.error}</span>
+                <span className="shrink-0 text-xs text-muted-foreground">{new Date(entry.completedAt).toLocaleString()}</span>
+              </div>
+              {entry.warnings && entry.warnings.length > 0 && (
+                <ul className="mt-1.5 list-disc space-y-0.5 pl-4 text-xs text-amber-600">
+                  {entry.warnings.map((warning) => <li key={warning}>{warning}</li>)}
+                </ul>
+              )}
+            </div>
+          ))}
         </SettingsCard>
       </SettingsSection>
     </div>
