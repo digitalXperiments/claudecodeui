@@ -18,6 +18,29 @@ import {
   writeJsonConfig,
 } from '@/shared/utils.js';
 
+/**
+ * `claude mcp list` stopped enumerating account-managed connectors (e.g. after
+ * switching to a long-lived OAuth token) even though they are still connected
+ * and Settings' catalog still shows them via a cached/hinted read of the same
+ * file. `~/.claude.json` records every claude.ai connector the account has
+ * ever linked in `claudeAiMcpEverConnected`, independent of the CLI — use it
+ * as a name-only fallback so Mission Control's tool picker isn't silently
+ * emptied by a CLI regression. See mcp-catalog.service.ts loadClaudeAccountHints
+ * for the sibling read used by Settings.
+ */
+async function readClaudeAiAccountHintNames(): Promise<string[]> {
+  const filePath = path.join(os.homedir(), '.claude.json');
+  try {
+    const config = await readJsonConfig(filePath) as { claudeAiMcpEverConnected?: unknown };
+    if (!Array.isArray(config.claudeAiMcpEverConnected)) return [];
+    return config.claudeAiMcpEverConnected.filter(
+      (name): name is string => typeof name === 'string' && /^claude\.ai\b/i.test(name),
+    );
+  } catch {
+    return [];
+  }
+}
+
 export class ClaudeMcpProvider extends McpProvider {
   constructor() {
     super('claude', ['user', 'local', 'project'], ['stdio', 'http', 'sse']);
@@ -38,14 +61,23 @@ export class ClaudeMcpProvider extends McpProvider {
     if (scope !== 'user' && scope !== 'project' && scope !== 'local') {
       return fromFiles;
     }
+    let merged = fromFiles;
     try {
       const cliEntries = await listMcpServersFromCli('claude');
-      return mergeCliMcpEntries('claude', scope, fromFiles, cliEntries);
+      merged = mergeCliMcpEntries('claude', scope, fromFiles, cliEntries);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.warn('[ClaudeMcp] CLI list failed, using file config only:', message);
-      return fromFiles;
     }
+
+    const hasAccountConnectors = merged.some((server) => /^claude\.ai\b/i.test(server.name));
+    if (!hasAccountConnectors) {
+      const hintNames = await readClaudeAiAccountHintNames();
+      for (const name of hintNames) {
+        merged.push({ provider: 'claude', name, scope, transport: 'http' });
+      }
+    }
+    return merged;
   }
 
   protected async readScopedServers(scope: McpScope, workspacePath: string): Promise<Record<string, unknown>> {

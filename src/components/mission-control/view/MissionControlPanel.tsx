@@ -494,7 +494,17 @@ export default function MissionControlPanel({
   };
 
   const applyArchitectDraft = (draft: McSectionWorkshopDraft) => {
-    const recommended = draft.recommendedMcpServers.filter((name) => mcpServers.includes(name));
+    // The MCP catalog fetch (several network round trips per scope) can still
+    // be in flight when the architect chat already came back with a ready
+    // draft. Filtering against an empty/loading `mcpServers` would silently
+    // zero out every recommended server (section created with 0 connected
+    // tools, then the agent hits nothing-but-permission-denied at run time).
+    // The backend already filtered recommendations against the same list this
+    // request sent as `availableMcpServers`, so trust it whenever our local
+    // catalog isn't loaded yet.
+    const recommended = mcpLoading || mcpServers.length === 0
+      ? draft.recommendedMcpServers
+      : draft.recommendedMcpServers.filter((name) => mcpServers.includes(name));
     setForm((current) => ({
       ...current,
       title: draft.title,
