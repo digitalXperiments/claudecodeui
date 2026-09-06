@@ -39,12 +39,12 @@
  * Keeping this current
  * ---------------------
  * Prices change. To refresh:
- * 1. Check each vendor's own pricing page (Anthropic, OpenAI, xAI, Moonshot).
+ * 1. Check each vendor's own pricing page (Anthropic, OpenAI, xAI, Moonshot, Google).
  * 2. On a genuine rate change for an existing model: close the current
  *    window with `effectiveTo` (the date the new rate starts) and append a
  *    new window starting there. Do not just edit the numbers in place — that
- *    would misprice every run from before the change on the next backfill.
- * 3. Bump `PRICING_LAST_VERIFIED`.
+ *    would silently rewrite history next time an old run gets backfilled.
+ * 3. Bump `PRICING_LAST_VERIFIED` to today's date.
  */
 
 /** Update this whenever any entry below changes. */
@@ -143,6 +143,29 @@ const PRICING: Record<string, ProviderPricingTable> = {
     'grok-4.5': [{ inputPerMillion: 2.0, outputPerMillion: 6.0 }],
     'kimi-k3': [{ inputPerMillion: 3.0, outputPerMillion: 15.0, cacheReadPerMillion: 0.3 }],
   },
+  antigravity: {
+    // Gemini Flash family ($0.10 input / $0.40 output / $0.025 cache read)
+    'gemini-3.8-flash': [{ inputPerMillion: 0.1, outputPerMillion: 0.4, cacheReadPerMillion: 0.025 }],
+    'gemini-3.8-flash-high': [{ inputPerMillion: 0.1, outputPerMillion: 0.4, cacheReadPerMillion: 0.025 }],
+    'gemini-3.8-flash-low': [{ inputPerMillion: 0.1, outputPerMillion: 0.4, cacheReadPerMillion: 0.025 }],
+    'gemini-3.8-flash-medium': [{ inputPerMillion: 0.1, outputPerMillion: 0.4, cacheReadPerMillion: 0.025 }],
+    'gemini-3.7-flash': [{ inputPerMillion: 0.1, outputPerMillion: 0.4, cacheReadPerMillion: 0.025 }],
+    'gemini-3.7-flash-high': [{ inputPerMillion: 0.1, outputPerMillion: 0.4, cacheReadPerMillion: 0.025 }],
+    'gemini-3.7-flash-low': [{ inputPerMillion: 0.1, outputPerMillion: 0.4, cacheReadPerMillion: 0.025 }],
+    'gemini-3.7-flash-medium': [{ inputPerMillion: 0.1, outputPerMillion: 0.4, cacheReadPerMillion: 0.025 }],
+    'gemini-3.7-flash-exp-b': [{ inputPerMillion: 0.1, outputPerMillion: 0.4, cacheReadPerMillion: 0.025 }],
+    'gemini-2.5-flash': [{ inputPerMillion: 0.1, outputPerMillion: 0.4, cacheReadPerMillion: 0.025 }],
+    'gemini-2.0-flash': [{ inputPerMillion: 0.1, outputPerMillion: 0.4, cacheReadPerMillion: 0.025 }],
+    'gemini-1.5-flash': [{ inputPerMillion: 0.075, outputPerMillion: 0.3, cacheReadPerMillion: 0.01875 }],
+    // Gemini Pro family ($1.25 input / $5.00 output / $0.3125 cache read)
+    'gemini-3.8-pro': [{ inputPerMillion: 1.25, outputPerMillion: 5.0, cacheReadPerMillion: 0.3125 }],
+    'gemini-3.8-pro-high': [{ inputPerMillion: 1.25, outputPerMillion: 5.0, cacheReadPerMillion: 0.3125 }],
+    'gemini-3.8-pro-low': [{ inputPerMillion: 1.25, outputPerMillion: 5.0, cacheReadPerMillion: 0.3125 }],
+    'gemini-3.8-pro-medium': [{ inputPerMillion: 1.25, outputPerMillion: 5.0, cacheReadPerMillion: 0.3125 }],
+    'gemini-3.5-pro': [{ inputPerMillion: 1.25, outputPerMillion: 5.0, cacheReadPerMillion: 0.3125 }],
+    'gemini-2.5-pro': [{ inputPerMillion: 1.25, outputPerMillion: 5.0, cacheReadPerMillion: 0.3125 }],
+    'gemini-1.5-pro': [{ inputPerMillion: 1.25, outputPerMillion: 5.0, cacheReadPerMillion: 0.3125 }],
+  },
 };
 
 /**
@@ -201,7 +224,8 @@ export function resolveModelPriceRate(
 ): ModelPriceRate | null {
   if (!provider || !model) return null;
   if (isFreeTierModel(model)) return { inputPerMillion: 0, outputPerMillion: 0 };
-  const table = PRICING[provider.toLowerCase()];
+  const providerKey = provider.toLowerCase();
+  const table = PRICING[providerKey] ?? (providerKey === 'google' ? PRICING.antigravity : undefined);
   if (!table) return null;
   const windows = table[normalizeModelKey(model)];
   if (!windows) return null;

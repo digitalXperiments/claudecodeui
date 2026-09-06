@@ -13,10 +13,8 @@
  * prompt is the title every other provider uses, and it is the first step in
  * the store.
  *
- * Usage is NOT read from here. These blobs do carry per-step token counts, but
- * the `agy` CLI publishes the real quota buckets (see
- * `antigravity-cli-usage.ts`), and a locally-summed token count is a worse
- * answer than the vendor's own remaining-fraction.
+ * Token usage and per-generation metadata are stored in `gen_metadata` as protobuf
+ * blobs, parsed by `antigravity-token-usage.ts` to populate run metrics and stats.
  *
  * ## On parsing protobuf without a schema
  *
@@ -42,7 +40,7 @@ import Database from 'better-sqlite3';
 import { antigravityProfileDirectory } from './antigravity-auth-support.js';
 
 /** `steps.step_type` for a user turn. Verified against 1.1.1. */
-const STEP_TYPE_USER_INPUT = 14;
+export const STEP_TYPE_USER_INPUT = 14;
 /** `step_payload` field holding the user-input message for a type-14 step. */
 const FIELD_USER_INPUT = 19;
 /** `...19.2` — the prompt text itself. */
@@ -70,7 +68,7 @@ export function antigravityConversationsDir(env: NodeJS.ProcessEnv = process.env
 // Minimal protobuf wire reader
 // ---------------------------------------------------------------------------
 
-type WireField =
+export type WireField =
   | { field: number; kind: 'varint'; value: number }
   | { field: number; kind: 'bytes'; value: Buffer }
   | { field: number; kind: 'fixed' };
@@ -137,12 +135,12 @@ export function decodeProtobufFields(buf: Buffer): WireField[] | null {
   return fields;
 }
 
-const firstBytes = (fields: WireField[] | null, field: number): Buffer | null => {
+export const firstBytes = (fields: WireField[] | null, field: number): Buffer | null => {
   const match = fields?.find((entry) => entry.field === field && entry.kind === 'bytes');
   return match && match.kind === 'bytes' ? match.value : null;
 };
 
-const firstVarint = (fields: WireField[] | null, field: number): number | null => {
+export const firstVarint = (fields: WireField[] | null, field: number): number | null => {
   const match = fields?.find((entry) => entry.field === field && entry.kind === 'varint');
   return match && match.kind === 'varint' ? match.value : null;
 };

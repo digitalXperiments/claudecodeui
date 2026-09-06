@@ -840,7 +840,7 @@ export const runsDb = {
       ), normalized_runs AS (
         SELECT usage_snapshots.*,
           CASE
-            WHEN provider IN ('codex', 'grok', 'kimi', 'opencode', 'kilo') AND app_session_id IS NOT NULL
+            WHEN provider IN ('codex', 'grok', 'kimi', 'opencode', 'kilo', 'antigravity') AND app_session_id IS NOT NULL
               THEN CASE
                 WHEN previous_token_input IS NULL OR COALESCE(token_input, 0) < previous_token_input
                   THEN COALESCE(token_input, 0)
@@ -849,7 +849,7 @@ export const runsDb = {
             ELSE COALESCE(token_input, 0)
           END AS stats_input_tokens,
           CASE
-            WHEN provider IN ('codex', 'grok', 'kimi', 'opencode', 'kilo') AND app_session_id IS NOT NULL
+            WHEN provider IN ('codex', 'grok', 'kimi', 'opencode', 'kilo', 'antigravity') AND app_session_id IS NOT NULL
               THEN CASE
                 WHEN previous_token_output IS NULL OR COALESCE(token_output, 0) < previous_token_output
                   THEN COALESCE(token_output, 0)
@@ -858,7 +858,7 @@ export const runsDb = {
             ELSE COALESCE(token_output, 0)
           END AS stats_output_tokens,
           CASE
-            WHEN provider IN ('codex', 'grok', 'kimi', 'opencode', 'kilo') AND app_session_id IS NOT NULL
+            WHEN provider IN ('codex', 'grok', 'kimi', 'opencode', 'kilo', 'antigravity') AND app_session_id IS NOT NULL
               THEN CASE
                 WHEN previous_token_total IS NULL OR COALESCE(token_total, 0) < previous_token_total
                   THEN COALESCE(token_total, 0)
@@ -867,7 +867,7 @@ export const runsDb = {
             ELSE COALESCE(token_total, COALESCE(token_input, 0) + COALESCE(token_output, 0), 0)
           END AS stats_total_tokens,
           CASE
-            WHEN provider IN ('codex', 'grok', 'kimi', 'opencode', 'kilo') AND app_session_id IS NOT NULL
+            WHEN provider IN ('codex', 'grok', 'kimi', 'opencode', 'kilo', 'antigravity') AND app_session_id IS NOT NULL
               THEN CASE
                 WHEN previous_cache_read IS NULL OR COALESCE(token_cache_read, 0) < previous_cache_read
                   THEN COALESCE(token_cache_read, 0)
@@ -876,7 +876,7 @@ export const runsDb = {
             ELSE COALESCE(token_cache_read, 0)
           END AS stats_cache_read_tokens,
           CASE
-            WHEN provider IN ('codex', 'grok', 'kimi', 'opencode', 'kilo') AND app_session_id IS NOT NULL
+            WHEN provider IN ('codex', 'grok', 'kimi', 'opencode', 'kilo', 'antigravity') AND app_session_id IS NOT NULL
               THEN CASE
                 WHEN previous_cache_write IS NULL OR COALESCE(token_cache_write, 0) < previous_cache_write
                   THEN COALESCE(token_cache_write, 0)
@@ -886,7 +886,7 @@ export const runsDb = {
           END AS stats_cache_write_tokens,
           CASE
             WHEN cost_usd_estimate IS NULL THEN NULL
-            WHEN provider IN ('codex', 'grok', 'kimi', 'opencode', 'kilo') AND app_session_id IS NOT NULL
+            WHEN provider IN ('codex', 'grok', 'kimi', 'opencode', 'kilo', 'antigravity') AND app_session_id IS NOT NULL
               THEN CASE
                 WHEN previous_cost IS NULL OR cost_usd_estimate < previous_cost
                   THEN cost_usd_estimate

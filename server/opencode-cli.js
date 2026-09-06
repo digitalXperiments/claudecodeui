@@ -31,6 +31,7 @@ import {
   antigravityAcpArgs,
   resolveAntigravityBinary,
 } from './modules/providers/list/antigravity/antigravity-runtime.js';
+import { readAntigravitySessionTokenUsage } from './modules/providers/list/antigravity/antigravity-token-usage.js';
 
 // cross-spawn resolves .cmd shims/PATHEXT on Windows and delegates to
 // child_process.spawn everywhere else.
@@ -112,7 +113,7 @@ async function resolveOpenCodeAcpMcpServers(runtime, options = {}) {
   // native-config path.
   if (!options.relayWorker && (runtime.provider === 'opencode' || runtime.provider === 'antigravity')) {
     try {
-      const enabled = await mcpCatalogService.listEnabledNames('opencode');
+      const enabled = await mcpCatalogService.listEnabledNames(runtime.provider);
       for (const name of enabled) names.add(name);
     } catch {
       // Tests and first-boot have no catalog; session/new still works with [].
@@ -1189,9 +1190,12 @@ async function spawnAcpProvider(runtime, command, options = {}, ws) {
     ws.send(createCompleteMessage({ provider: runtime.provider, sessionId: finalSessionId, exitCode: 0 }));
 
     try {
-      const tokenBudget = runtime.databasePath
-        ? readOpenCodeTokenUsage(handle.providerSessionId || finalSessionId, runtime.databasePath())
-        : null;
+      let tokenBudget = null;
+      if (runtime.databasePath) {
+        tokenBudget = readOpenCodeTokenUsage(handle.providerSessionId || finalSessionId, runtime.databasePath());
+      } else if (runtime.provider === 'antigravity') {
+        tokenBudget = readAntigravitySessionTokenUsage(handle.providerSessionId || finalSessionId);
+      }
       if (tokenBudget) {
         ws.send(createNormalizedMessage({
           kind: 'status',
@@ -1199,10 +1203,11 @@ async function spawnAcpProvider(runtime, command, options = {}, ws) {
           tokenBudget,
           sessionId: finalSessionId,
           provider: runtime.provider,
+          ...(tokenBudget.model ? { model: tokenBudget.model } : {}),
         }));
       }
     } catch (tokenError) {
-      console.warn('OpenCode token budget refresh failed (non-fatal):', tokenError?.message || tokenError);
+      console.warn(`${runtime.provider || 'ACP'} token budget refresh failed (non-fatal):`, tokenError?.message || tokenError);
     }
 
     // Isolated from the main try/catch: a notification-plumbing failure must

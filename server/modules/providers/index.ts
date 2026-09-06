@@ -60,3 +60,13 @@ export {
   runAgyUsageCommand,
 } from './list/antigravity/antigravity-cli-usage.js';
 export type { AgyUsageBucket, AgyUsageGroup } from './list/antigravity/antigravity-cli-usage.js';
+export {
+  readAntigravitySessionTokenUsage,
+  readAntigravityRunSnapshots,
+  resolveAntigravityDbPath,
+} from './list/antigravity/antigravity-token-usage.js';
+export type {
+  AntigravitySessionTokenUsage,
+  AntigravityRunSnapshot,
+  AntigravityGenerationRecord,
+} from './list/antigravity/antigravity-token-usage.js';

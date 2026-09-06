@@ -687,6 +687,48 @@ test('toOpenCodeAcpMcpServers converts stdio without a type tag and stamps the l
   assert.equal('type' in converted[0], false);
 });
 
+test('Antigravity lead sessions attach catalog MCP resolved for antigravity', { concurrency: false }, async () => {
+  await withFakeAgent('antigravity-cli-lead-mcp-', async (tempRoot) => {
+    const binaryPath = path.join(tempRoot, 'agy_acp_server');
+    await writeFile(binaryPath, '#!/bin/sh\nnode "$(dirname "$0")/opencode.cjs" "$@"\n', 'utf8');
+    await chmod(binaryPath, 0o755);
+
+    const argsCapturePath = path.join(tempRoot, 'antigravity-capture.json');
+    const previousOverride = process.env.ANTIGRAVITY_ACP_PATH;
+    process.env.ANTIGRAVITY_ACP_PATH = binaryPath;
+    process.env.OPENCODE_ARGS_CAPTURE = argsCapturePath;
+
+    mcpCatalogService.listEnabledNames = async (provider) => {
+      assert.equal(provider, 'antigravity');
+      return ['obsidian'];
+    };
+    mcpCatalogService.resolveForProvider = async (provider, names) => {
+      assert.equal(provider, 'antigravity');
+      const wanted = new Set(names);
+      return [
+        wanted.has('obsidian') ? {
+          name: 'obsidian',
+          transport: 'stdio',
+          command: 'npx',
+          args: ['obsidian-mcp'],
+        } : null,
+      ].filter(Boolean);
+    };
+
+    try {
+      await spawnAntigravity('Hi', { cwd: tempRoot, appSessionId: 'app-lead-agy' }, createWriter([]));
+
+      const capture = JSON.parse(await readFile(argsCapturePath, 'utf8'));
+      assert.equal(capture.mcpServers.length, 1);
+      assert.equal(capture.mcpServers[0].name, 'obsidian');
+    } finally {
+      disposeAntigravitySessions();
+      if (previousOverride === undefined) delete process.env.ANTIGRAVITY_ACP_PATH;
+      else process.env.ANTIGRAVITY_ACP_PATH = previousOverride;
+    }
+  });
+});
+
 test('OpenCode lead sessions attach catalog MCP including Agent Relay', { concurrency: false }, async () => {
   await withFakeAgent('opencode-cli-lead-mcp-', async (tempRoot) => {
     const argsCapturePath = path.join(tempRoot, 'capture.json');

@@ -11,6 +11,7 @@
 import { CLAUDE_MODEL_ALIASES } from '@/modules/providers/index.js';
 import { estimateCostUsd } from '@/modules/runs/model-pricing.js';
 import { runsDb } from '@/modules/runs/runs.repository.js';
+import { reconcileAllAntigravityRuns } from '@/modules/runs/runs-usage-reconciliation.js';
 import {
   mergeRunUsage,
   readTokenBudgetUsage,
@@ -318,6 +319,11 @@ export const runService: RunService = {
   },
 
   globalStats(filter: GlobalStatsFilter = {}): GlobalRunStats {
+    try {
+      reconcileAllAntigravityRuns();
+    } catch {
+      // best-effort
+    }
     return runsDb.globalStats(filter);
   },
 
@@ -507,6 +513,11 @@ export const runService: RunService = {
   },
 
   reconcileOrphans(): number {
+    try {
+      reconcileAllAntigravityRuns();
+    } catch {
+      // best-effort
+    }
     return runsDb.reconcileOrphans();
   },
 
@@ -625,6 +636,14 @@ export function recordNormalizedRunEvent(
         })
         .catch((error) => {
           console.error('[Runs] completed Claude usage reconciliation failed', error);
+        });
+    } else if (current.provider === 'antigravity') {
+      void import('@/modules/runs/runs-usage-reconciliation.js')
+        .then(({ reconcileCompletedAntigravityRunUsage }) => {
+          reconcileCompletedAntigravityRunUsage(runId);
+        })
+        .catch((error) => {
+          console.error('[Runs] completed Antigravity usage reconciliation failed', error);
         });
     }
   }
