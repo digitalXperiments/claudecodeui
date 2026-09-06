@@ -196,6 +196,14 @@ const syncBindings = async (
       continue;
     }
 
+    const providerInstance = providerRegistry.resolveProvider(provider);
+    if (providerInstance.mcp.supportedScopes.length === 0) {
+      // Provider has no on-disk config file (e.g. Antigravity via ACP session/new);
+      // bindings are stored in catalog.json and passed dynamically per session.
+      results.push({ provider, ok: true });
+      continue;
+    }
+
     try {
       if (want) {
         // Per-provider resolve so provider-scoped vault secrets can apply.

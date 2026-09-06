@@ -74,6 +74,7 @@ const MEMORY_MCP_PROVIDERS: LLMProvider[] = [
   'grok',
   'kimi',
   'qwencode',
+  'antigravity',
 ];
 
 /**

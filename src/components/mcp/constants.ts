@@ -27,8 +27,7 @@ export const MCP_SUPPORTED_SCOPES: Record<McpProvider, McpScope[]> = {
   qwencode: ['user', 'project'],
   pi: [],
   omp: [],
-  // Antigravity exposes no CloudCLI-writable MCP config file.
-  antigravity: [],
+  antigravity: ['user', 'project'],
 };
 
 export const MCP_SUPPORTED_TRANSPORTS: Record<McpProvider, McpTransport[]> = {
@@ -43,7 +42,7 @@ export const MCP_SUPPORTED_TRANSPORTS: Record<McpProvider, McpTransport[]> = {
   qwencode: ['stdio', 'http', 'sse'],
   pi: [],
   omp: [],
-  antigravity: [],
+  antigravity: ['stdio', 'http', 'sse'],
 };
 
 export const MCP_GLOBAL_SUPPORTED_SCOPES: McpScope[] = ['user', 'project'];

@@ -26,6 +26,7 @@ export const FANOUT_PROVIDERS: LLMProvider[] = [
   'grok',
   'kimi',
   'qwencode',
+  'antigravity',
 ];
 
 type ProviderBindingMatrixProps = {
