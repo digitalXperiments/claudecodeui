@@ -239,8 +239,18 @@ console.log('SERVER_PORT from env:', process.env.SERVER_PORT);
 
 const app = express();
 
-// Security headers via Helmet
-app.use(helmet());
+// Security headers via Helmet.
+// CSP/COOP/origin-agent-cluster are disabled: this app is served over both
+// plain http (local LAN/Tailscale IP) and https (tunnel), and helmet's default
+// CSP forces `upgrade-insecure-requests` (breaks asset loading over http) and
+// blocks the inline bootstrap scripts in index.html. It's an authenticated
+// tool, not a host for untrusted content, so the other helmet headers
+// (X-Frame-Options, nosniff, etc.) are kept without a CSP.
+app.use(helmet({
+    contentSecurityPolicy: false,
+    crossOriginOpenerPolicy: false,
+    originAgentCluster: false,
+}));
 
 const server = http.createServer(app);
 
