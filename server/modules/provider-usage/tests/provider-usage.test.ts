@@ -25,6 +25,7 @@ import {
   parseCodexUsagePayload,
   parseGrokBillingPayload,
   resetClaudeLiveGate,
+  type ClaudeUsageGateSnapshot,
 } from '../provider-usage.adapters.js';
 import {
   getProviderUsage,
@@ -361,6 +362,66 @@ test('Claude adapter honors retry-after and gates immediate retries', async () =
     assert.equal(second.status, 'stale');
     assert.match(second.error ?? '', /rate-limited \(HTTP 429\)/);
     assert.match(second.error ?? '', /retrying in 30m/);
+  } finally {
+    resetClaudeLiveGate();
+  }
+});
+
+test('Claude live-usage gate survives a restart via the persisted gate store', async () => {
+  resetClaudeLiveGate();
+  let stored: ClaudeUsageGateSnapshot | null = null;
+  const persistedGate = {
+    read: async () => stored,
+    write: async (gate: ClaudeUsageGateSnapshot | null) => {
+      stored = gate;
+    },
+  };
+  const cachedUsage = {
+    utilization: {
+      five_hour: { utilization: 4, resets_at: '2026-08-16T06:50:00.000Z' },
+    },
+  };
+  let fetchCalls = 0;
+
+  try {
+    const firstProcessAdapter = createClaudeUsageAdapter({
+      readCredentials: async () => ({ accessToken: 'fixture-token' }),
+      readCachedUsage: async () => cachedUsage,
+      persistedGate,
+      fetchImpl: async () => {
+        fetchCalls += 1;
+        return new Response('', { status: 429, headers: { 'retry-after': '1800' } });
+      },
+    });
+
+    const tripped = await firstProcessAdapter({ authStatus: authStatus('claude', true) });
+    assert.equal(fetchCalls, 1);
+    assert.equal(tripped.status, 'stale');
+    assert.match(tripped.error ?? '', /retrying in 30m/);
+    assert.ok(stored, 'the gate must be written to the store after a 429');
+
+    // Simulate a process restart: the in-memory gate is wiped, but the store
+    // (standing in for the on-disk file) is not.
+    resetClaudeLiveGate();
+
+    const secondProcessAdapter = createClaudeUsageAdapter({
+      readCredentials: async () => ({ accessToken: 'fixture-token' }),
+      readCachedUsage: async () => cachedUsage,
+      persistedGate,
+      fetchImpl: async () => {
+        fetchCalls += 1;
+        return new Response('{}', { status: 200 });
+      },
+    });
+
+    const afterRestart = await secondProcessAdapter({ authStatus: authStatus('claude', true) });
+    assert.equal(
+      fetchCalls,
+      1,
+      'a restarted process must honor the persisted gate instead of re-hitting the live endpoint',
+    );
+    assert.equal(afterRestart.status, 'stale');
+    assert.match(afterRestart.error ?? '', /retrying in 30m/);
   } finally {
     resetClaudeLiveGate();
   }

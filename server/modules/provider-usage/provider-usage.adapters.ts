@@ -1,4 +1,4 @@
-import { readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
@@ -48,6 +48,13 @@ type AdapterOptions = {
   readCredentialCandidates?: () => Promise<ClaudeCredentialCandidate[]>;
   readCachedUsage?: () => Promise<Record<string, unknown> | null>;
   readRateLimits?: () => Promise<unknown>;
+  /**
+   * Backs the in-memory Claude rate-limit gate with disk so a server restart
+   * does not forget an active backoff and immediately re-hit an endpoint
+   * Anthropic just rate-limited. Unset (the default) keeps the gate
+   * memory-only, which is what every existing test relies on.
+   */
+  persistedGate?: ClaudeUsageGateStore;
 };
 
 type GrokAdapterOptions = {
@@ -1046,6 +1053,66 @@ export const resetClaudeLiveGate = (): void => {
   claudeLiveGate.rejectedToken = null;
 };
 
+export type ClaudeUsageGateSnapshot = {
+  notBeforeMs: number;
+  reason: string | null;
+  rejectedToken: string | null;
+};
+
+export type ClaudeUsageGateStore = {
+  read: () => Promise<ClaudeUsageGateSnapshot | null>;
+  write: (gate: ClaudeUsageGateSnapshot | null) => Promise<void>;
+};
+
+const getClaudeUsageGatePath = (): string =>
+  path.join(os.homedir(), '.cloudcli', 'claude-usage-gate.json');
+
+const isClaudeUsageGateSnapshot = (value: unknown): value is ClaudeUsageGateSnapshot => {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  return (
+    typeof record.notBeforeMs === 'number'
+    && Number.isFinite(record.notBeforeMs)
+    && (typeof record.reason === 'string' || record.reason === null)
+    && (typeof record.rejectedToken === 'string' || record.rejectedToken === null)
+  );
+};
+
+/**
+ * Disk-backed store for the Claude live-usage rate-limit gate, keyed by a
+ * single file under `~/.cloudcli`. A restart (LaunchAgent respawn, rebuild,
+ * crash loop) otherwise wipes the in-memory gate and immediately re-hits an
+ * endpoint Anthropic just told us to back off from.
+ */
+export function createClaudeUsageGateStore(
+  filePath: string = getClaudeUsageGatePath(),
+): ClaudeUsageGateStore {
+  return {
+    async read() {
+      try {
+        const parsed = JSON.parse(await readFile(filePath, 'utf8'));
+        return isClaudeUsageGateSnapshot(parsed) ? parsed : null;
+      } catch {
+        return null;
+      }
+    },
+    async write(gate) {
+      try {
+        if (!gate) {
+          await rm(filePath, { force: true });
+          return;
+        }
+        await mkdir(path.dirname(filePath), { recursive: true });
+        await writeFile(filePath, `${JSON.stringify(gate, null, 2)}\n`, 'utf8');
+      } catch {
+        // Best-effort cache: an unwritable file must not break usage reporting.
+      }
+    },
+  };
+}
+
 const readHttpErrorStatus = (error: unknown): number | null => (
   error && typeof error === 'object' && 'status' in error
     ? readFiniteNumber((error as { status?: unknown }).status)
@@ -1119,7 +1186,27 @@ export function createClaudeUsageAdapter(options: AdapterOptions = {}): Provider
     }
   };
 
+  let gateHydrated = false;
+  const hydrateGateFromDisk = async (): Promise<void> => {
+    if (gateHydrated || !options.persistedGate) {
+      return;
+    }
+    gateHydrated = true;
+    // Only backfill a gate this process hasn't already raised itself.
+    if (claudeLiveGate.notBeforeMs !== 0) {
+      return;
+    }
+    const persisted = await options.persistedGate.read();
+    if (persisted && persisted.notBeforeMs > Date.now()) {
+      claudeLiveGate.notBeforeMs = persisted.notBeforeMs;
+      claudeLiveGate.reason = persisted.reason;
+      claudeLiveGate.rejectedToken = persisted.rejectedToken;
+    }
+  };
+
   return async ({ authStatus }) => {
+    await hydrateGateFromDisk();
+
     if (authStatus.method === 'api_key') {
       return unavailable('Usage unavailable for API-key authentication');
     }
@@ -1146,6 +1233,7 @@ export function createClaudeUsageAdapter(options: AdapterOptions = {}): Provider
       && claudeLiveGate.rejectedToken !== credential.accessToken
     ) {
       resetClaudeLiveGate();
+      void options.persistedGate?.write(null);
     }
 
     if (nowMs < claudeLiveGate.notBeforeMs) {
@@ -1164,6 +1252,7 @@ export function createClaudeUsageAdapter(options: AdapterOptions = {}): Provider
         options.fetchImpl ?? fetch,
       );
       resetClaudeLiveGate();
+      void options.persistedGate?.write(null);
       return parseClaudeUsagePayload(payload);
     } catch (error) {
       const status = readHttpErrorStatus(error);
@@ -1177,6 +1266,11 @@ export function createClaudeUsageAdapter(options: AdapterOptions = {}): Provider
           ? 'rate-limited (HTTP 429)'
           : `rejected (HTTP ${status})`;
         claudeLiveGate.rejectedToken = status === 429 ? null : credential.accessToken;
+        void options.persistedGate?.write({
+          notBeforeMs: claudeLiveGate.notBeforeMs,
+          reason: claudeLiveGate.reason,
+          rejectedToken: claudeLiveGate.rejectedToken,
+        });
         const cause = claudeGateRetryCause(claudeLiveGate.notBeforeMs, Date.now());
         const gatedFallback = await readClaudeFallback(readCachedUsage, cause);
         if (gatedFallback) return gatedFallback;

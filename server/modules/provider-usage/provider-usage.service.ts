@@ -9,6 +9,7 @@ import type { ProviderAuthStatus } from '@/shared/types.js';
 import {
   createAntigravityUsageAdapter,
   createClaudeUsageAdapter,
+  createClaudeUsageGateStore,
   createCodexUsageAdapter,
   createKimiUsageAdapter,
   grokUsageAdapter,
@@ -33,7 +34,10 @@ type ProviderUsageCache = {
 };
 
 const adapters: Record<string, ProviderUsageAdapter> = {
-  claude: createClaudeUsageAdapter(),
+  // Gate persisted to disk (~/.cloudcli/claude-usage-gate.json) so a server
+  // restart honors a live-usage rate-limit backoff instead of forgetting it
+  // and immediately re-hitting Anthropic's endpoint.
+  claude: createClaudeUsageAdapter({ persistedGate: createClaudeUsageGateStore() }),
   codex: createCodexUsageAdapter(),
   grok: grokUsageAdapter,
   kimi: createKimiUsageAdapter(),
