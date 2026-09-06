@@ -192,3 +192,58 @@ export function extractSkillDraft(text: string): SkillWizardDraft | null {
 
   return draft;
 }
+
+/**
+ * Heading that introduces the current editor buffer inside a revision
+ * message. Everything from this line on is machine-appended context, not
+ * something the user typed — the chat panel strips it before rendering the
+ * bubble.
+ */
+export const EDITOR_STATE_HEADING = '## Current SKILL.md in my editor';
+
+const EDIT_BRIEF = `You are helping me revise an existing agent skill (a SKILL.md file) from inside a small editor dialog. Treat this as a focused editing session, not an interview.
+
+A SKILL.md is:
+- YAML front matter between \`---\` lines with \`name:\` (kebab-case) and \`description:\` (one line stating what the skill does AND when to use it).
+- A markdown body: when to use the skill, the steps or checklist to follow, and the expected output format.
+
+Rules for this conversation:
+1. I am editing this file in a text editor next to this chat. You have no access to it beyond what I paste here — do NOT read, write, or search files with tools, and do not try to save anything. Your only job is to hand me revised text.
+2. When I ask for a change, apply it and emit the COMPLETE revised SKILL.md as a single fenced \`\`\`markdown code block (front matter + body). Never a diff, never a fragment — the block replaces my editor contents verbatim.
+3. Preserve everything I did not ask you to change, including wording, ordering, and formatting.
+4. Keep your prose around the block to one or two short lines. Ask a question instead of guessing only when the request is genuinely ambiguous.
+5. If I paste an updated "${EDITOR_STATE_HEADING}" section, that is the current truth — rebase your next revision on it.
+
+Reply to this message with one short line confirming you have read the skill and are ready. Do not emit a code block until I ask for a change.`;
+
+/**
+ * Build the hidden first message of an edit session: the reviser brief plus
+ * the skill as it currently stands in the editor.
+ */
+export function buildEditBrief(opts: { skillName?: string; content: string }): string {
+  const header = opts.skillName ? `The skill is \`${opts.skillName}\`.` : '';
+  return [
+    EDIT_BRIEF,
+    header,
+    EDITOR_STATE_HEADING,
+    '',
+    '```markdown',
+    opts.content,
+    '```',
+  ].filter((section) => section.length > 0).join('\n\n');
+}
+
+/**
+ * Append the editor buffer to a user turn when it drifted from the version
+ * the agent last emitted (hand edits between turns), so the next revision
+ * rebases on what I actually have.
+ */
+export function withEditorState(message: string, content: string): string {
+  return [message, EDITOR_STATE_HEADING, '', '```markdown', content, '```'].join('\n\n');
+}
+
+/** Strip machine-appended editor state from a user turn before rendering it. */
+export function stripEditorState(message: string): string {
+  const index = message.indexOf(EDITOR_STATE_HEADING);
+  return index === -1 ? message : message.slice(0, index).trimEnd();
+}

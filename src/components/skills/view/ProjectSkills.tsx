@@ -670,6 +670,7 @@ export default function ProjectSkills({ currentProjects }: ProjectSkillsProps) {
         allowScopeSelection
         defaultScope="projects"
         defaultProjects={selectedPath ? [selectedPath] : []}
+        agentProjectPath={selectedPath ?? undefined}
         initialDraft={editorState?.mode === 'create' ? editorDraft ?? undefined : undefined}
         createSkill={async (entries, options) => {
           const targets = options?.scope === 'all'

@@ -48,7 +48,7 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p server/tsconfig.json",
     "test:server": "tsx --tsconfig server/tsconfig.json --test \"server/**/tests/**/*.test.ts\" \"server/**/*.test.js\" \"extensions/**/*.test.js\"",
-    "test:client": "tsx --test \"src/components/studio/**/*.test.ts\" \"src/components/studio/**/*.test.tsx\" \"src/components/chat/**/*.test.ts\" \"src/components/chat/**/*.test.tsx\" \"src/components/settings/**/*.test.ts\" \"src/components/settings/**/*.test.tsx\" \"src/components/browser-use/**/*.test.ts\" \"src/utils/**/*.test.ts\"",
+    "test:client": "tsx --test \"src/components/studio/**/*.test.ts\" \"src/components/studio/**/*.test.tsx\" \"src/components/chat/**/*.test.ts\" \"src/components/chat/**/*.test.tsx\" \"src/components/settings/**/*.test.ts\" \"src/components/settings/**/*.test.tsx\" \"src/components/browser-use/**/*.test.ts\" \"src/components/skills/**/*.test.ts\" \"src/utils/**/*.test.ts\"",
     "test": "npm run test:server && npm run test:client",
     "lint": "eslint src/ server/",
     "lint:fix": "eslint src/ server/ --fix",

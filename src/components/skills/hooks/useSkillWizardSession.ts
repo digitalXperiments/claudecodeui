@@ -18,8 +18,17 @@ export interface UseSkillWizardSession {
   ready: boolean;
   draft: SkillWizardDraft | null;
   error: string | null;
-  start(opts: { provider: string; projectPath?: string; transcript?: string }): Promise<void>;
-  send(text: string): void;
+  /**
+   * Opens a session and sends the hidden opening brief. Pass `brief` to
+   * override the default skill-author brief (the editor's revision brief).
+   */
+  start(opts: { provider: string; projectPath?: string; transcript?: string; brief?: string }): Promise<void>;
+  /**
+   * Sends a user turn. `payload` overrides what actually goes to the agent
+   * while `text` stays as the locally echoed bubble — used to append the
+   * current editor buffer without showing the paste in the thread.
+   */
+  send(text: string, payload?: string): void;
   reset(): void;
 }
 
@@ -278,7 +287,7 @@ export function useSkillWizardSession(): UseSkillWizardSession {
     setError(null);
   }, [store, updateStreaming, clearWatchdog]);
 
-  const start = useCallback(async (opts: { provider: string; projectPath?: string; transcript?: string }) => {
+  const start = useCallback(async (opts: { provider: string; projectPath?: string; transcript?: string; brief?: string }) => {
     reset();
     const myGeneration = generationRef.current;
     providerRef.current = opts.provider as LLMProvider;
@@ -334,7 +343,7 @@ export function useSkillWizardSession(): UseSkillWizardSession {
 
     sendMessage({ type: 'chat.subscribe', sessions: [{ sessionId: newSessionId, lastSeq: 0 }] });
 
-    const brief = buildWizardBrief({ transcript: opts.transcript });
+    const brief = opts.brief ?? buildWizardBrief({ transcript: opts.transcript });
     briefRef.current = brief;
     updateStreaming(true);
     armWatchdog();
@@ -346,7 +355,7 @@ export function useSkillWizardSession(): UseSkillWizardSession {
     });
   }, [reset, sendMessage, store, updateStreaming, armWatchdog]);
 
-  const send = useCallback((text: string) => {
+  const send = useCallback((text: string, payload?: string) => {
     const activeSessionId = sessionIdRef.current;
     const trimmed = text.trim();
     if (!activeSessionId || !trimmed) {
@@ -369,7 +378,7 @@ export function useSkillWizardSession(): UseSkillWizardSession {
     sendMessage({
       type: 'chat.send',
       sessionId: activeSessionId,
-      content: trimmed,
+      content: payload?.trim() || trimmed,
       options: {},
     });
   }, [sendMessage, store, updateStreaming, armWatchdog]);

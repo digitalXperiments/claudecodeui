@@ -27,5 +27,12 @@
       "project": "Skill created in this project."
     },
     "createError": "Failed to create skill"
+  },
+  "editorChat": {
+    "title": "Edit with agent",
+    "close": "Close agent chat",
+    "starting": "Briefing the agent on this skill…",
+    "composerPlaceholder": "Ask the agent to change this skill…",
+    "applyHint": "Revisions land in the editor automatically. Nothing is written until you save."
   }
 }

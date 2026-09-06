@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import CodeMirror from '@uiw/react-codemirror';
 import { markdown } from '@codemirror/lang-markdown';
 import { oneDark } from '@codemirror/theme-one-dark';
-import { BrainCircuit, Loader2, Save } from 'lucide-react';
+import { BrainCircuit, Loader2, Save, Sparkles } from 'lucide-react';
 
 import type { LLMProvider } from '../../../types/app';
 import { useTheme } from '../../../contexts/ThemeContext';
@@ -13,10 +13,13 @@ import {
   DialogTitle,
   Input,
 } from '../../../shared/view/ui';
+import { cn } from '../../../lib/utils';
 import ProviderBindingMatrix, { FANOUT_PROVIDERS } from '../../shared/view/ProviderBindingMatrix';
 import { useProjectsOptions } from '../hooks/useProjectsOptions';
+import { splitSkillMarkdown, type SkillWizardDraft } from '../lib/skillWizardPrompt';
 import type { GlobalSkillScope, ProviderSkillCreateEntryPayload } from '../types';
 
+import SkillAgentPanel from './SkillAgentPanel';
 import SkillScopeField from './SkillScopeField';
 
 type EditableSkillRef = {
@@ -49,6 +52,13 @@ type SkillEditorDialogProps = {
    * (e.g. a draft handed off from the skill wizard).
    */
   initialDraft?: { name: string; description: string; body: string };
+  /** Hide the "Edit with agent" chat panel (defaults to shown). */
+  disableAgentChat?: boolean;
+  /**
+   * Agent cwd for the chat panel's session. Falls back to the first known
+   * project — the session gateway rejects a session without one.
+   */
+  agentProjectPath?: string;
 };
 
 const normalizeDirectoryName = (value: string): string => (
@@ -95,6 +105,8 @@ export default function SkillEditorDialog({
   defaultProjects,
   allowProviderSelection = false,
   initialDraft,
+  disableAgentChat = false,
+  agentProjectPath,
 }: SkillEditorDialogProps) {
   const { isDarkMode } = useTheme();
   const { projects: projectOptions, isLoading: projectsLoading } = useProjectsOptions();
@@ -109,6 +121,8 @@ export default function SkillEditorDialog({
   const [isLoadingContent, setIsLoadingContent] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [isAgentChatOpen, setIsAgentChatOpen] = useState(false);
+  const [agentFlash, setAgentFlash] = useState(false);
 
   // (Re)initialize state whenever the dialog is opened for a skill/mode.
   useEffect(() => {
@@ -118,6 +132,7 @@ export default function SkillEditorDialog({
 
     setError(null);
     setIsSaving(false);
+    setIsAgentChatOpen(false);
     if (mode === 'create') {
       setName(initialDraft?.name ?? '');
       setDescription(initialDraft?.description ?? '');
@@ -233,6 +248,48 @@ export default function SkillEditorDialog({
     }
   }, [mode, name, description, content, skill, allowScopeSelection, allowProviderSelection, scope, selectedProjects, selectedProviders, createSkill, saveContent, onOpenChange]);
 
+  // The chat panel reads the buffer lazily at send time; in create mode the
+  // editor holds only the body, so the agent always sees a whole SKILL.md.
+  const contentRef = useRef(content);
+  const nameRef = useRef(name);
+  const descriptionRef = useRef(description);
+  useEffect(() => {
+    contentRef.current = content;
+    nameRef.current = name;
+    descriptionRef.current = description;
+  });
+
+  const getAgentContent = useCallback(() => (
+    mode === 'create'
+      ? buildCreateContent(normalizeDirectoryName(nameRef.current) || 'new-skill', descriptionRef.current, contentRef.current)
+      : contentRef.current
+  ), [mode]);
+
+  // Auto-apply: an agent revision replaces the buffer outright. Nothing hits
+  // disk until Save, so an unwanted rewrite is one Cancel away.
+  const handleAgentDraft = useCallback((draft: SkillWizardDraft) => {
+    if (mode === 'create') {
+      const split = splitSkillMarkdown(draft.content);
+      setName(split.name || draft.name);
+      setDescription(split.description || draft.description);
+      setContent(split.body);
+    } else {
+      setContent(draft.content);
+    }
+    setAgentFlash(true);
+  }, [mode]);
+
+  useEffect(() => {
+    if (!agentFlash) {
+      return undefined;
+    }
+    const timer = window.setTimeout(() => setAgentFlash(false), 700);
+    return () => window.clearTimeout(timer);
+  }, [agentFlash]);
+
+  const agentSessionPath = agentProjectPath ?? projectOptions[0]?.fullPath;
+  const canUseAgentChat = !disableAgentChat && Boolean(agentSessionPath);
+
   const isMemoryTemplate = skill?.kind === 'memory-template';
   const title = mode === 'create'
     ? 'New Skill'
@@ -242,11 +299,16 @@ export default function SkillEditorDialog({
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent
         wrapperClassName="z-[10100]"
-        className="flex h-[calc(100vh-2rem)] max-h-[760px] w-[calc(100vw-2rem)] max-w-3xl flex-col overflow-hidden p-0 sm:h-[680px]"
+        className={cn(
+          'flex h-[calc(100vh-2rem)] max-h-[760px] w-[calc(100vw-2rem)] flex-col overflow-hidden p-0 sm:h-[680px]',
+          // The chat panel needs a second column; widen only when it is open.
+          isAgentChatOpen ? 'max-w-[1100px]' : 'max-w-3xl',
+        )}
       >
         <DialogTitle>{title}</DialogTitle>
 
-        <div className="flex-shrink-0 border-b border-border/60 px-4 py-4">
+        <div className="flex flex-shrink-0 items-start justify-between gap-3 border-b border-border/60 px-4 py-4">
+          <div className="min-w-0">
           <div className="text-base font-medium text-foreground">{title}</div>
           <div className="mt-1 text-sm text-muted-foreground">
             {mode === 'create'
@@ -255,6 +317,19 @@ export default function SkillEditorDialog({
                 : 'Author a skill from scratch. It installs into every agent\u2019s project skill folder.'
               : 'Changes are written to the canonical copy and every agent folder it was installed into.'}
           </div>
+          </div>
+          {canUseAgentChat && (
+            <Button
+              type="button"
+              variant={isAgentChatOpen ? 'secondary' : 'outline'}
+              size="sm"
+              className="shrink-0"
+              onClick={() => setIsAgentChatOpen((previous) => !previous)}
+            >
+              <Sparkles className="h-4 w-4" />
+              Edit with agent
+            </Button>
+          )}
         </div>
 
         {isMemoryTemplate && (
@@ -315,7 +390,11 @@ export default function SkillEditorDialog({
           </div>
         )}
 
-        <div className="min-h-0 flex-1 overflow-hidden">
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden md:flex-row">
+          <div className={cn(
+            'min-h-0 flex-1 overflow-hidden transition-colors',
+            agentFlash && 'bg-primary/10',
+          )}>
           {isLoadingContent ? (
             <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -335,6 +414,18 @@ export default function SkillEditorDialog({
                 dropCursor: false,
                 allowMultipleSelections: false,
               }}
+            />
+          )}
+          </div>
+
+          {canUseAgentChat && (
+            <SkillAgentPanel
+              open={isAgentChatOpen}
+              onClose={() => setIsAgentChatOpen(false)}
+              projectPath={agentSessionPath}
+              skillName={mode === 'create' ? (name || undefined) : skill?.name}
+              getContent={getAgentContent}
+              onDraft={handleAgentDraft}
             />
           )}
         </div>
