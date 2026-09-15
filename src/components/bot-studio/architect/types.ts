@@ -66,6 +66,10 @@ export type CreateMcSectionInput = {
   kanban_review_provider?: string | null;
   kanban_mcp_tools?: string[];
   tool_policy?: ToolPolicy;
+  /** Wizard-only local state; stripped before sending the section payload. */
+  read_only_preset?: boolean;
+  /** Wizard-only local state; distinguishes manual-only from an invalid blank cron. */
+  manual_schedule?: boolean;
 };
 
 export type McSectionWorkshopDraft = {
@@ -122,8 +126,8 @@ export function applyWorkshopDraft(
   };
 }
 
-export function isValidCron(cron: string | null | undefined): boolean {
-  if (!cron?.trim()) return true;
+export function isValidCron(cron: string | null | undefined, manualOnly = false): boolean {
+  if (!cron?.trim()) return manualOnly;
   return cron.trim().split(/\s+/).length === 5;
 }
 
@@ -144,14 +148,22 @@ export function cronSummary(cron: string | null | undefined): string {
 
 export const READ_ONLY_WRITE_PATTERN = /create|send|update|delete|put|post|transition|merge|trash|click|fill/i;
 
-export function applyReadOnlyPreset(policy: ToolPolicy): ToolPolicy {
+export function applyReadOnlyPreset(policy: ToolPolicy, toolsByServer: Record<string, string[]> = {}): ToolPolicy {
+  const servers = new Set([...Object.keys(policy), ...Object.keys(toolsByServer)]);
   return Object.fromEntries(
-    Object.entries(policy).map(([server, tools]) => [
+    Array.from(servers).map((server) => [
       server,
-      Object.fromEntries(Object.entries(tools).map(([tool, decision]) => [
+      Object.fromEntries(Array.from(new Set([
+        ...Object.keys(policy[server] ?? {}),
+        ...(toolsByServer[server] ?? []),
+      ])).map((tool) => [
         tool,
-        READ_ONLY_WRITE_PATTERN.test(tool) ? 'ask' : decision,
+        READ_ONLY_WRITE_PATTERN.test(tool) ? 'ask' : policy[server]?.[tool] ?? 'allow',
       ])),
     ]),
   );
+}
+
+export function defaultToolDecision(toolName: string, readOnlyPreset = false): ToolPolicyDecision {
+  return readOnlyPreset && READ_ONLY_WRITE_PATTERN.test(toolName) ? 'ask' : 'allow';
 }

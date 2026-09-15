@@ -6,6 +6,7 @@ import {
   applyWorkshopDraft,
   autonomyFromSection,
   cronSummary,
+  defaultToolDecision,
   isValidCron,
   sectionFieldsForAutonomy,
   type CreateMcSectionInput,
@@ -44,7 +45,9 @@ test('workshop draft maps server fields and recommended servers', () => {
 test('cron presets validate and summarize raw cron', () => {
   assert.equal(isValidCron('*/30 * * * *'), true);
   assert.equal(isValidCron('0 9 * *'), false);
-  assert.equal(cronSummary('0 9 * * 1-5'), 'Workdays, 09:00–19:00');
+  assert.equal(cronSummary('0 9-19 * * 1-5'), 'Workdays, 09:00–19:00');
+  assert.equal(isValidCron(null), false);
+  assert.equal(isValidCron(null, true), true);
   assert.equal(cronSummary(null), 'Manual only');
 });
 
@@ -66,4 +69,6 @@ test('read-only preset holds write-like tools for approval', () => {
   assert.equal(result.github.merge_pull_request, 'ask');
   assert.equal(result.browser.click, 'ask');
   assert.equal(result.browser.read_page, 'allow');
+  assert.equal(defaultToolDecision('create_issue', true), 'ask');
+  assert.equal(defaultToolDecision('list_issues', true), 'allow');
 });
