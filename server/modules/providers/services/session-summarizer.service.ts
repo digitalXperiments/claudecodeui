@@ -7,6 +7,7 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 
 import { providerAuthService } from '@/modules/providers/services/provider-auth.service.js';
 import { resolveClaudeCodeExecutablePath } from '@/shared/claude-cli-path.js';
+// eslint-disable-next-line boundaries/no-unknown -- shared auth helper is intentionally kept outside module boundaries.
 import { applyClaudeSpawnAuthEnv } from '@/shared/claude-spawn-auth-env.js';
 import type { LLMProvider } from '@/shared/types.js';
 

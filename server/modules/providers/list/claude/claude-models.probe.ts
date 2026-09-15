@@ -3,6 +3,7 @@ import { rm } from 'node:fs/promises';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 
 import { resolveClaudeCodeExecutablePath } from '@/shared/claude-cli-path.js';
+// eslint-disable-next-line boundaries/no-unknown -- shared auth helper is intentionally kept outside module boundaries.
 import { applyClaudeSpawnAuthEnv } from '@/shared/claude-spawn-auth-env.js';
 import { makeScratchDir } from '@/shared/scratch.js';
 import type { ProviderModelOption, ProviderModelsDefinition } from '@/shared/types.js';

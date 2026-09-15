@@ -21,6 +21,7 @@ import {
     initializeSessionsWatcher,
     configureSkillTestRuntimes,
     configureMemoryCurationRuntimes,
+    mcpCatalogService,
 } from '@/modules/providers/index.js';
 import { createWebSocketServer, shellSessionRegistry } from '@/modules/websocket/index.js';
 
@@ -196,22 +197,6 @@ import {
     stopWebhookRetryScheduler,
 } from './modules/webhooks/index.js';
 import {
-    botsRoutes,
-    configureBotRuntimes,
-    initBotAutomation,
-    startBotScheduler,
-    stopBotAutomation,
-    stopBotScheduler,
-} from './modules/bots/index.js';
-import {
-    integrationsRoutes,
-    integrationsOauthRoutes,
-    integrationsMcpRoutes,
-    registerBuiltInIntegrations,
-    startIntegrationsKernel,
-    stopIntegrationsKernel,
-} from './modules/integrations/index.js';
-import {
     startNotificationDigestScheduler,
     stopNotificationDigestScheduler,
     syncNotificationDigestSchedules,
@@ -335,14 +320,8 @@ configureSwarmAbortFns(providerAbortFns);
 configureWebhookRuntimes(providerSpawnFns);
 initWebhookAutomation();
 
-// Bot Studio: scheduled headless ticks on the same runtime map. Each tick is
-// an agent_run; initBotAutomation subscribes the settle step to run completion.
-configureBotRuntimes(providerSpawnFns);
-initBotAutomation();
-
-// Integration Center: register the built-in OAuth adapters so the registry is
-// populated before any route, MCP call or refresh sweep touches it.
-registerBuiltInIntegrations();
+// Automation recipes (scheduled prompts & event triggers): headless agent runs
+configureAutomationRuntimes(providerSpawnFns);
 
 // Skill wizard dry-run tests and memory auto-curation reuse the same runtimes.
 configureSkillTestRuntimes(providerSpawnFns);
@@ -516,9 +495,6 @@ app.use('/api/session-mailbox-mcp', sessionMailboxMcpRoutes);
 // Public OAuth callback: the browser landing here may have no CloudCLI session.
 // Security lives in the single-use `state` row. Mounted before authenticateToken
 // for the same reason as the MCP routers above.
-app.use('/api/integrations-oauth', integrationsOauthRoutes);
-// Bearer-token MCP surface for agent sessions. Denied at the nginx edge.
-app.use('/api/integrations-mcp', integrationsMcpRoutes);
 
 // PRD platform primitives (protected). Project-scoped workspace routes are
 // mounted before the general projects router so they cannot be swallowed by a
@@ -589,8 +565,6 @@ app.use('/api/hooks', webhooksIngestRoutes);
 // Webhook config CRUD (JWT)
 app.use('/api/webhooks', authenticateToken, webhooksRoutes);
 app.use('/api/hooks-catalog', authenticateToken, hooksRoutes);
-app.use('/api/bots', authenticateToken, botsRoutes);
-app.use('/api/integrations', authenticateToken, integrationsRoutes);
 
 app.use('/api/voice', authenticateToken, voiceRoutes);
 
@@ -2105,6 +2079,7 @@ async function startServer() {
     try {
         // Initialize authentication database
         await initializeDatabase();
+        await mcpCatalogService.cleanupLegacyIntegrations();
         configureBackupRuntime(APP_ROOT);
 
         const interruptedRelayJobs = agentRelayService.recoverOnBoot();
@@ -2191,17 +2166,6 @@ async function startServer() {
             console.error('[Webhooks] retry scheduler start failed:', error.message);
         }
 
-        try {
-            startBotScheduler();
-        } catch (error) {
-            console.error('[Bots] scheduler start failed:', error.message);
-        }
-
-        try {
-            startIntegrationsKernel();
-        } catch (error) {
-            console.error('[Integrations] kernel start failed:', error.message);
-        }
 
         try {
             startContinuityScheduler();
@@ -2287,17 +2251,6 @@ async function startServer() {
                 stopWebhookRetryScheduler();
             } catch (err) {
                 console.error('[Webhooks] Error stopping retry scheduler during shutdown:', err?.message || err);
-            }
-            try {
-                stopBotScheduler();
-                stopBotAutomation();
-            } catch (err) {
-                console.error('[Bots] Error stopping scheduler during shutdown:', err?.message || err);
-            }
-            try {
-                stopIntegrationsKernel();
-            } catch (err) {
-                console.error('[Integrations] Error stopping kernel during shutdown:', err?.message || err);
             }
             try {
                 stopContinuityScheduler();

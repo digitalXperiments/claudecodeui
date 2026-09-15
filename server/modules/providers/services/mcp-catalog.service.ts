@@ -624,6 +624,17 @@ const workspacePathsSafe = (): string[] => {
 };
 
 export const mcpCatalogService = {
+  /** Remove the catalog record left by the retired integrations bridge. */
+  async cleanupLegacyIntegrations(): Promise<void> {
+    const catalog = await readCatalog();
+    const legacyNames = Object.values(catalog.servers)
+      .filter((server) => server.name === 'cloudcli-integrations' || (server.kind as string | undefined) === 'integrations')
+      .map((server) => server.name);
+    for (const name of legacyNames) {
+      await this.remove(name);
+    }
+  },
+
   /**
    * List catalog-only entries (CloudCLI source of truth).
    */

@@ -1,6 +1,5 @@
 import type { ComponentType } from 'react';
 import {
-  Plug,
   Bell,
   Bot,
   BrainCircuit,
@@ -58,7 +57,6 @@ export const SETTINGS_MAIN_TABS: SettingsMainTabMeta[] = [
   },
   { id: 'evals', label: 'Eval Center', keywords: 'evals evaluation suites tests harness', icon: FlaskConical },
   { id: 'mcp', label: 'MCP', keywords: 'mcp servers catalog tools', icon: Server },
-  { id: 'integrations', label: 'Integrations', keywords: 'integrations gmail calendar drive slack x oauth connect accounts', icon: Plug },
   { id: 'skills', label: 'Skills', keywords: 'skills skill.md project global wizard', icon: FileCode2 },
   { id: 'hooks', label: 'Hooks', keywords: 'hooks session start instructions routines default prompt', icon: ScrollText },
   { id: 'memory', label: 'Memory', keywords: 'memory obsidian vault second brain', icon: BrainCircuit },

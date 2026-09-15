@@ -4,7 +4,6 @@ import test from 'node:test';
 
 import {
   applyClaudeSpawnAuthEnv,
-  hasNativeClaudeAuth,
   resolveClaudeSpawnOAuthToken,
   setClaudeSpawnAuthEnvIoForTests,
 } from '../claude-spawn-auth-env.js';
