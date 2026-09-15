@@ -2,6 +2,7 @@ import express from 'express';
 
 import { AppError, asyncHandler } from '@/shared/utils.js';
 import { missionControlDb } from '@/modules/mission-control/mission-control.repository.js';
+import { runsDb } from '@/modules/runs/index.js';
 import {
   applyItemAction,
   previewItemResolution,
@@ -17,6 +18,7 @@ import {
   type McAction,
   type McItemStatus,
   type McProvider,
+  type McToolPolicy,
   type McSectionMode,
   type McSectionScope,
   type UpdateMcSectionInput,
@@ -100,6 +102,36 @@ function parseTools(value: unknown): string[] | undefined {
     .filter(Boolean);
 }
 
+function parseToolPolicy(value: unknown): McToolPolicy | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new AppError('tool_policy must be an object of tool policies', {
+      code: 'MC_INVALID_TOOL_POLICY',
+      statusCode: 400,
+    });
+  }
+  const policy: McToolPolicy = {};
+  for (const [server, rawTools] of Object.entries(value)) {
+    if (!rawTools || typeof rawTools !== 'object' || Array.isArray(rawTools)) {
+      throw new AppError('tool_policy entries must be objects', {
+        code: 'MC_INVALID_TOOL_POLICY',
+        statusCode: 400,
+      });
+    }
+    policy[server] = {};
+    for (const [tool, decision] of Object.entries(rawTools)) {
+      if (decision !== 'allow' && decision !== 'ask' && decision !== 'deny') {
+        throw new AppError('tool_policy decisions must be allow, ask, or deny', {
+          code: 'MC_INVALID_TOOL_POLICY',
+          statusCode: 400,
+        });
+      }
+      policy[server][tool] = decision;
+    }
+  }
+  return policy;
+}
+
 function parseSectionBody(body: Record<string, unknown>, partial: boolean): CreateMcSectionInput | UpdateMcSectionInput {
   const title = readOptionalString(body.title);
   if (!partial && (!title || !title.trim())) {
@@ -177,6 +209,7 @@ function parseSectionBody(body: Record<string, unknown>, partial: boolean): Crea
     ...(body.resolve_tools !== undefined
       ? { resolve_tools: parseTools(body.resolve_tools) }
       : {}),
+    ...(body.tool_policy !== undefined ? { tool_policy: parseToolPolicy(body.tool_policy) } : {}),
     ...(body.actions !== undefined ? { actions: parseActions(body.actions) } : {}),
     ...(body.create_kanban_task !== undefined
       ? { create_kanban_task: readBoolean(body.create_kanban_task, false) }
@@ -214,10 +247,7 @@ function parseKanbanProvider(value: unknown): McProvider | null {
 router.get(
   '/summary',
   asyncHandler(async (_req, res) => {
-    res.json({
-      pendingCount: missionControlDb.countPending(),
-      sectionCount: missionControlDb.listSections().length,
-    });
+    res.json(missionControlDb.getSummary());
   }),
 );
 
@@ -281,6 +311,31 @@ router.post(
   }),
 );
 
+// POST /sections/bulk — update enabled state for a roster selection.
+router.post(
+  '/sections/bulk',
+  asyncHandler(async (req, res) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const rawIds = body.ids;
+    const ids = rawIds === 'all'
+      ? 'all' as const
+      : Array.isArray(rawIds)
+        ? rawIds.filter((id): id is string => typeof id === 'string' && id.trim().length > 0)
+        : null;
+    const patch = body.patch;
+    if (!ids || !patch || typeof patch !== 'object' || Array.isArray(patch) || typeof (patch as Record<string, unknown>).enabled !== 'boolean') {
+      throw new AppError('ids and patch.enabled are required', {
+        code: 'MC_INVALID_BULK_PATCH',
+        statusCode: 400,
+      });
+    }
+    const enabled = (patch as Record<string, unknown>).enabled as boolean;
+    const updated = missionControlDb.updateSectionsEnabled(ids, enabled);
+    syncMissionControlSchedules();
+    res.json({ updated });
+  }),
+);
+
 // GET /sections/:id
 router.get(
   '/sections/:id',
@@ -293,6 +348,53 @@ router.get(
       });
     }
     res.json({ section });
+  }),
+);
+
+// GET /sections/:id/runs — bounded produce/resolve tick history.
+router.get(
+  '/sections/:id/runs',
+  asyncHandler(async (req, res) => {
+    const sectionId = paramId(req.params.id);
+    const section = missionControlDb.getSection(sectionId);
+    if (!section) {
+      throw new AppError('Section not found', {
+        code: 'MC_SECTION_NOT_FOUND',
+        statusCode: 404,
+      });
+    }
+    const itemIds = missionControlDb.listItemIdsBySection(sectionId);
+    const rawLimit = typeof req.query.limit === 'string' ? Number(req.query.limit) : undefined;
+    const runs = runsDb.listBySourceRefs('mission_control', [sectionId, ...itemIds], rawLimit);
+    res.json({
+      runs: runs.map((run) => {
+        const phase = run.meta.phase;
+        const kind = phase === 'resolve' || phase === 'retry' || phase === 'architect'
+          ? phase
+          : 'produce';
+        const itemId = typeof run.meta.item_id === 'string'
+          ? run.meta.item_id
+          : run.source_ref && run.source_ref !== sectionId ? run.source_ref : null;
+        const start = run.started_at ?? run.created_at;
+        const end = run.finished_at ?? new Date().toISOString();
+        const durationMs = Math.max(0, Date.parse(end) - Date.parse(start));
+        return {
+          run_id: run.run_id,
+          status: run.status,
+          trigger: run.trigger,
+          started_at: run.started_at,
+          finished_at: run.finished_at,
+          duration_ms: Number.isFinite(durationMs) ? durationMs : null,
+          error_summary: run.error_summary,
+          kind,
+          item_id: itemId,
+          tokens: run.token_total ?? (run.token_input !== null && run.token_output !== null
+            ? run.token_input + run.token_output
+            : null),
+          cost_usd: run.cost_usd_estimate,
+        };
+      }),
+    });
   }),
 );
 

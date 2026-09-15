@@ -189,6 +189,7 @@ export async function runSectionWorkshop(input: {
     produce_tools: [],
     resolve_prompt: '',
     resolve_tools: [],
+    tool_policy: {},
     actions: [],
     create_kanban_task: false,
     create_swarm_on_approve: false,

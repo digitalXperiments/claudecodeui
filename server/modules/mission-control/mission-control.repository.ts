@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import { getConnection } from '@/modules/database/index.js';
+import { broadcastSystemEvent } from '@/modules/websocket/index.js';
 import {
   DEFAULT_MC_ACTIONS,
   withSystemItemActions,
@@ -35,6 +36,7 @@ type SectionRow = {
   produce_tools_json: string;
   resolve_prompt: string;
   resolve_tools_json: string;
+  tool_policy_json: string | null;
   actions_json: string;
   create_kanban_task: number | null;
   create_swarm_on_approve: number | null;
@@ -112,6 +114,22 @@ function parseTools(raw: string | null | undefined): string[] {
     .map((t) => t.trim());
 }
 
+function parseToolPolicy(raw: string | null | undefined): McSection['tool_policy'] {
+  const parsed = parseJsonObject(raw);
+  const policy: McSection['tool_policy'] = {};
+  for (const [server, tools] of Object.entries(parsed)) {
+    if (!tools || typeof tools !== 'object' || Array.isArray(tools)) continue;
+    const entries: Record<string, 'allow' | 'ask' | 'deny'> = {};
+    for (const [tool, decision] of Object.entries(tools)) {
+      if (decision === 'allow' || decision === 'ask' || decision === 'deny') {
+        entries[tool] = decision;
+      }
+    }
+    if (Object.keys(entries).length > 0) policy[server] = entries;
+  }
+  return policy;
+}
+
 function mapSection(row: SectionRow): McSection {
   return {
     section_id: row.section_id,
@@ -132,6 +150,7 @@ function mapSection(row: SectionRow): McSection {
     produce_tools: parseTools(row.produce_tools_json),
     resolve_prompt: row.resolve_prompt ?? '',
     resolve_tools: parseTools(row.resolve_tools_json),
+    tool_policy: parseToolPolicy(row.tool_policy_json),
     actions: parseActions(row.actions_json),
     create_kanban_task: Boolean(row.create_kanban_task),
     create_swarm_on_approve: Boolean(row.create_swarm_on_approve),
@@ -190,6 +209,40 @@ export const missionControlDb = {
     return row ? mapSection(row) : null;
   },
 
+  updateSectionsEnabled(sectionIds: string[] | 'all', enabled: boolean): number {
+    const sections = sectionIds === 'all'
+      ? this.listSections()
+      : [...new Set(sectionIds)].map((sectionId) => this.getSection(sectionId)).filter(
+          (section): section is McSection => section !== null,
+        );
+    if (sections.length === 0) return 0;
+    const db = getConnection();
+    const placeholders = sections.map(() => '?').join(', ');
+    const result = db.prepare(
+      `UPDATE mc_sections SET enabled = ?, updated_at = ? WHERE section_id IN (${placeholders})`,
+    ).run(enabled ? 1 : 0, nowIso(), ...sections.map((section) => section.section_id));
+    for (const section of sections) {
+      const updated = this.getSection(section.section_id);
+      if (updated) {
+        broadcastSystemEvent({
+          kind: 'mc_section_updated',
+          section_id: updated.section_id,
+          last_run_at: updated.last_run_at,
+          last_error: updated.last_run_error,
+          enabled: updated.enabled,
+        });
+      }
+    }
+    return result.changes;
+  },
+
+  listItemIdsBySection(sectionId: string): string[] {
+    const rows = getConnection().prepare(
+      `SELECT item_id FROM mc_items WHERE section_id = ?`,
+    ).all(sectionId) as Array<{ item_id: string }>;
+    return rows.map((row) => row.item_id);
+  },
+
   listEnabledScheduledSections(): McSection[] {
     const db = getConnection();
     const rows = db
@@ -213,13 +266,13 @@ export const missionControlDb = {
         section_id, title, icon, sort_order, enabled, scope, project_id, mode,
         schedule_cron, provider, model, permission_mode, dry_run, auto_approve,
         produce_prompt, produce_tools_json, resolve_prompt, resolve_tools_json,
-        actions_json, create_kanban_task, create_swarm_on_approve, kanban_assignee_provider, kanban_review_provider,
+        tool_policy_json, actions_json, create_kanban_task, create_swarm_on_approve, kanban_assignee_provider, kanban_review_provider,
         kanban_mcp_tools_json, created_at, updated_at
       ) VALUES (
         ?, ?, ?, ?, ?, ?, ?, ?,
         ?, ?, ?, ?, ?, ?,
         ?, ?, ?, ?,
-        ?, ?, ?, ?, ?,
+        ?, ?, ?, ?, ?, ?,
         ?, ?, ?
       )`,
     ).run(
@@ -241,6 +294,7 @@ export const missionControlDb = {
       JSON.stringify(input.produce_tools ?? []),
       input.resolve_prompt ?? '',
       JSON.stringify(input.resolve_tools ?? []),
+      JSON.stringify(input.tool_policy ?? {}),
       JSON.stringify(actions),
       input.create_kanban_task ? 1 : 0,
       input.create_swarm_on_approve ? 1 : 0,
@@ -292,6 +346,7 @@ export const missionControlDb = {
           : existing.resolve_prompt,
       resolve_tools:
         input.resolve_tools !== undefined ? input.resolve_tools : existing.resolve_tools,
+      tool_policy: input.tool_policy !== undefined ? input.tool_policy : existing.tool_policy,
       actions: input.actions !== undefined ? input.actions : existing.actions,
       create_kanban_task:
         input.create_kanban_task !== undefined
@@ -321,7 +376,7 @@ export const missionControlDb = {
         title = ?, icon = ?, sort_order = ?, enabled = ?, scope = ?, project_id = ?,
         mode = ?, schedule_cron = ?, provider = ?, model = ?, permission_mode = ?,
         dry_run = ?, auto_approve = ?, produce_prompt = ?, produce_tools_json = ?,
-        resolve_prompt = ?, resolve_tools_json = ?, actions_json = ?,
+        resolve_prompt = ?, resolve_tools_json = ?, tool_policy_json = ?, actions_json = ?,
         create_kanban_task = ?, create_swarm_on_approve = ?, kanban_assignee_provider = ?, kanban_review_provider = ?,
         kanban_mcp_tools_json = ?,
         updated_at = ?
@@ -344,6 +399,7 @@ export const missionControlDb = {
       JSON.stringify(next.produce_tools),
       next.resolve_prompt,
       JSON.stringify(next.resolve_tools),
+      JSON.stringify(next.tool_policy),
       JSON.stringify(next.actions),
       next.create_kanban_task ? 1 : 0,
       next.create_swarm_on_approve ? 1 : 0,
@@ -353,7 +409,17 @@ export const missionControlDb = {
       nowIso(),
       sectionId,
     );
-    return this.getSection(sectionId);
+    const updated = this.getSection(sectionId);
+    if (updated) {
+      broadcastSystemEvent({
+        kind: 'mc_section_updated',
+        section_id: updated.section_id,
+        last_run_at: updated.last_run_at,
+        last_error: updated.last_run_error,
+        enabled: updated.enabled,
+      });
+    }
+    return updated;
   },
 
   deleteSection(sectionId: string): boolean {
@@ -370,6 +436,16 @@ export const missionControlDb = {
     db.prepare(
       `UPDATE mc_sections SET last_run_at = ?, last_run_error = ?, updated_at = ? WHERE section_id = ?`,
     ).run(nowIso(), opts.error ?? null, nowIso(), sectionId);
+    const section = this.getSection(sectionId);
+    if (section) {
+      broadcastSystemEvent({
+        kind: 'mc_section_updated',
+        section_id: section.section_id,
+        last_run_at: section.last_run_at,
+        last_error: section.last_run_error,
+        enabled: section.enabled,
+      });
+    }
   },
 
   listItems(options?: {
@@ -427,6 +503,52 @@ export const missionControlDb = {
       )
       .get() as { c: number };
     return row?.c ?? 0;
+  },
+
+  getSummary(): {
+    pendingCount: number;
+    sectionCount: number;
+    sections: Array<{
+      section_id: string;
+      pending: number;
+      failed: number;
+      resolved_today: number;
+      last_run_at: string | null;
+      last_error: string | null;
+    }>;
+  } {
+    const db = getConnection();
+    const rows = db.prepare(
+      `SELECT s.section_id,
+          COALESCE(SUM(CASE WHEN i.status = 'pending' THEN 1 ELSE 0 END), 0) AS pending,
+          COALESCE(SUM(CASE WHEN i.status = 'failed' THEN 1 ELSE 0 END), 0) AS failed,
+          COALESCE(SUM(CASE WHEN i.status = 'resolved' AND date(i.resolved_at) = date('now') THEN 1 ELSE 0 END), 0) AS resolved_today,
+          s.last_run_at,
+          s.last_run_error AS last_error
+       FROM mc_sections s
+       LEFT JOIN mc_items i ON i.section_id = s.section_id
+       GROUP BY s.section_id
+       ORDER BY s.sort_order ASC, s.created_at ASC`,
+    ).all() as Array<{
+      section_id: string;
+      pending: number;
+      failed: number;
+      resolved_today: number;
+      last_run_at: string | null;
+      last_error: string | null;
+    }>;
+    return {
+      pendingCount: rows.reduce((total, row) => total + Number(row.pending) + Number(row.failed), 0),
+      sectionCount: rows.length,
+      sections: rows.map((row) => ({
+        section_id: row.section_id,
+        pending: Number(row.pending),
+        failed: Number(row.failed),
+        resolved_today: Number(row.resolved_today),
+        last_run_at: row.last_run_at,
+        last_error: row.last_error,
+      })),
+    };
   },
 
   /**
@@ -522,7 +644,9 @@ export const missionControlDb = {
         ts,
         ts,
       );
-      return this.getItem(itemId);
+      const item = this.getItem(itemId);
+      if (item) broadcastSystemEvent({ kind: 'mc_item_created', item });
+      return item;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (message.includes('UNIQUE')) {
@@ -576,7 +700,9 @@ export const missionControlDb = {
       ts,
       existing.item_id,
     );
-    return { item: this.getItem(existing.item_id)!, created: false };
+    const item = this.getItem(existing.item_id)!;
+    broadcastSystemEvent({ kind: 'mc_item_updated', item });
+    return { item, created: false };
   },
 
   setItemStatus(
@@ -621,7 +747,9 @@ export const missionControlDb = {
       ts,
       itemId,
     );
-    return this.getItem(itemId)!;
+    const item = this.getItem(itemId)!;
+    broadcastSystemEvent({ kind: 'mc_item_updated', item });
+    return item;
   },
 
   /**
@@ -657,7 +785,9 @@ export const missionControlDb = {
       ts,
       itemId,
     );
-    return this.getItem(itemId);
+    const item = this.getItem(itemId);
+    if (item) broadcastSystemEvent({ kind: 'mc_item_updated', item });
+    return item;
   },
 
   /**

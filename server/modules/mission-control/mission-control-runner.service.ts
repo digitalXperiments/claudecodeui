@@ -249,6 +249,7 @@ export async function runSectionProduce(sectionId: string): Promise<ProduceRunRe
       tools: section.produce_tools,
       sourceRef: section.section_id,
       trigger: 'manual',
+      phase: 'produce',
     });
 
     // Provider/runtime failure (API unreachable, CLI crash, …): the output is
@@ -1025,6 +1026,7 @@ export async function applyItemAction(
       tools: section.resolve_tools,
       sourceRef: itemId,
       trigger: 'manual',
+      phase: 'resolve',
     });
 
     // Provider/runtime failure: mark the item failed (retryable) instead of
@@ -1136,6 +1138,7 @@ export async function retryItem(itemId: string): Promise<RetryItemResult> {
       tools: section.produce_tools,
       sourceRef: itemId,
       trigger: 'replay',
+      phase: 'retry',
     });
     text = run.text;
     success = run.success;
@@ -1281,6 +1284,7 @@ export async function previewItemResolution(
       tools: section.resolve_tools,
       sourceRef: itemId,
       trigger: 'preview',
+      phase: 'resolve',
     });
     text = run.text;
     success = run.success;

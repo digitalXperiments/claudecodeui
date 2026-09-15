@@ -14,7 +14,7 @@ import {
 import type { AnyRecord, LLMProvider } from '@/shared/types.js';
 import { expandMcpSelectionsToTools } from '@/shared/mcp-tool-expand.js';
 import { AppError } from '@/shared/utils.js';
-import type { McSection } from '@/modules/mission-control/mission-control.types.js';
+import type { McSection, McToolPolicyDecision } from '@/modules/mission-control/mission-control.types.js';
 
 export { expandMcpSelectionsToTools };
 
@@ -374,7 +374,42 @@ function resolveProjectPath(section: McSection): string {
   return os.homedir();
 }
 
-function buildRuntimeOptions(section: McSection, tools: string[]): AnyRecord {
+function policyToolPattern(server: string, tool: string): string | null {
+  const wildcard = expandMcpSelectionsToTools([server], 'claude')
+    .find((entry) => entry.startsWith('mcp__') && entry.endsWith('__*'));
+  return wildcard ? `${wildcard.slice(0, -3)}__${tool}` : null;
+}
+
+function policyEntries(section: McSection, tools: string[]): Array<{
+  pattern: string;
+  decision: McToolPolicyDecision;
+}> {
+  const entries: Array<{ pattern: string; decision: McToolPolicyDecision }> = [];
+  for (const server of tools) {
+    const policy = section.tool_policy?.[server];
+    if (!policy) continue;
+    for (const [tool, decision] of Object.entries(policy)) {
+      const pattern = policyToolPattern(server, tool);
+      if (pattern) entries.push({ pattern, decision });
+    }
+  }
+  return entries;
+}
+
+export function buildToolPolicyAdvisoryPrompt(section: McSection, tools: string[] = []): string {
+  const entries = policyEntries(section, tools);
+  const denied = entries.filter((entry) => entry.decision === 'deny').map((entry) => entry.pattern);
+  const held = entries.filter((entry) => entry.decision === 'ask').map((entry) => entry.pattern);
+  if (denied.length === 0 && held.length === 0) return '';
+  return [
+    'TOOL POLICY (advisory)',
+    denied.length > 0 ? `Denied tools: ${denied.join(', ')}` : null,
+    held.length > 0 ? `Held tools (ask): ${held.join(', ')}` : null,
+    'This provider cannot enforce per-tool MCP policy. Do not call denied or held tools.',
+  ].filter(Boolean).join('\n');
+}
+
+export function buildRuntimeOptions(section: McSection, tools: string[]): AnyRecord {
   const provider = section.provider;
   const permissionMode = section.permission_mode || 'bypassPermissions';
   // Mission Control sections always run detached (no websocket/human on the
@@ -390,16 +425,40 @@ function buildRuntimeOptions(section: McSection, tools: string[]): AnyRecord {
   }
 
   const expandedTools = expandMcpSelectionsToTools(tools, provider);
+  const entries = policyEntries(section, tools);
+  const policyServers = new Set(
+    tools.filter((server) => Object.keys(section.tool_policy?.[server] ?? {}).length > 0),
+  );
+  const fallbackTools = expandMcpSelectionsToTools(
+    tools.filter((server) => !policyServers.has(server)),
+    provider,
+  );
+  const allowedPolicyTools = entries
+    .filter((entry) => entry.decision === 'allow')
+    .map((entry) => entry.pattern);
+  const deniedPolicyTools = entries
+    .filter((entry) => entry.decision === 'deny')
+    .map((entry) => entry.pattern);
 
   switch (provider) {
     case 'claude':
-    case 'cursor':
       options.toolsSettings = {
-        allowedTools: expandedTools,
+        // Ask tools are intentionally omitted from allowedTools; unattended
+        // runs have nobody to approve them, so they are effectively held.
+        allowedTools: [...new Set([...fallbackTools, ...allowedPolicyTools])],
         // Mission Control runs are always headless (no human on the other
         // end to answer). AskUserQuestion/ExitPlanMode must never be reached:
         // deny them outright instead of stalling on an approval nobody can
         // grant. Prompts already instruct the model to ask via plain text.
+        disallowedTools: [...new Set(['AskUserQuestion', 'ExitPlanMode', ...deniedPolicyTools])],
+        skipPermissions: permissionMode === 'bypassPermissions',
+      };
+      break;
+    case 'cursor':
+      options.toolsSettings = {
+        allowedTools: expandedTools,
+        // Cursor's tool settings are advisory; its runtime does not enforce
+        // per-tool MCP allow/ask/deny decisions. The policy is repeated in the prompt.
         disallowedTools: ['AskUserQuestion', 'ExitPlanMode'],
         skipPermissions: permissionMode === 'bypassPermissions',
       };
@@ -439,6 +498,7 @@ export async function runMissionControlAgent(params: {
   tools: string[];
   sourceRef?: string;
   trigger?: string;
+  phase?: 'produce' | 'resolve' | 'retry' | 'architect';
 }): Promise<McAgentRunResult> {
   const { section, prompt, tools } = params;
   const provider = section.provider as LLMProvider;
@@ -467,6 +527,11 @@ export async function runMissionControlAgent(params: {
     permissionMode: section.permission_mode,
     title: section.title,
     trigger: params.trigger ?? 'manual',
+    meta: {
+      section_id: section.section_id,
+      ...(params.sourceRef && params.sourceRef !== section.section_id ? { item_id: params.sourceRef } : {}),
+      phase: params.phase ?? 'produce',
+    },
   });
 
   let result: Awaited<ReturnType<typeof startProviderRun>>;
@@ -478,7 +543,9 @@ export async function runMissionControlAgent(params: {
       providerSessionId: null,
       projectPath,
       spawnFn,
-      content: prompt,
+      content: ['codex', 'grok', 'opencode', 'kimi', 'cursor'].includes(provider)
+        ? [prompt, buildToolPolicyAdvisoryPrompt(section, tools)].filter(Boolean).join('\n\n')
+        : prompt,
       options: buildRuntimeOptions(section, tools),
       connection: DETACHED_CONNECTION,
       userId: null,

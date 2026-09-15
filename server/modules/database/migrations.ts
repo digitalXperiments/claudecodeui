@@ -698,6 +698,27 @@ const ensureMissionControlKanbanBridgeSchema = (db: Database): void => {
   addColumnToTableIfNotExists(db, 'mc_sections', columns, 'kanban_review_provider', 'TEXT');
   columns = getTableInfo(db, 'mc_sections').map((column) => column.name);
   addColumnToTableIfNotExists(db, 'mc_sections', columns, 'kanban_mcp_tools_json', "TEXT DEFAULT '[]'");
+  columns = getTableInfo(db, 'mc_sections').map((column) => column.name);
+  addColumnToTableIfNotExists(db, 'mc_sections', columns, 'tool_policy_json', "TEXT NOT NULL DEFAULT '{}'");
+};
+
+/** Remove tables from the never-shipped standalone Bot Studio prototype. */
+const dropAbandonedBotStudioPrototypeTables = (db: Database): void => {
+  const tables = [
+    'bots', 'bot_versions', 'bot_ticks', 'bot_proposals', 'bot_spend_daily',
+    'integration_apps', 'integration_accounts', 'integration_oauth_states',
+    'integration_grants', 'integration_calls',
+  ];
+  for (const table of tables) {
+    const indexes = db.prepare(
+      `SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = ?`,
+    ).all(table) as Array<{ name: string }>;
+    for (const index of indexes) {
+      if (index.name.startsWith('sqlite_autoindex_')) continue;
+      db.exec(`DROP INDEX IF EXISTS "${index.name.replace(/"/g, '""')}"`);
+    }
+    db.exec(`DROP TABLE IF EXISTS ${table}`);
+  }
 };
 
 /**
@@ -992,6 +1013,7 @@ export const runMigrations = (db: Database) => {
     // Mission Control (sections + reviewable items).
     db.exec(MISSION_CONTROL_SCHEMA_SQL);
     ensureMissionControlKanbanBridgeSchema(db);
+    dropAbandonedBotStudioPrototypeTables(db);
 
     // Inbound webhooks (source-routed headless agent runs).
     db.exec(WEBHOOKS_SCHEMA_SQL);

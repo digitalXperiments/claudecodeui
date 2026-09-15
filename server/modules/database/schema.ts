@@ -386,6 +386,7 @@ CREATE TABLE IF NOT EXISTS mc_sections (
     produce_tools_json  TEXT DEFAULT '[]',
     resolve_prompt      TEXT DEFAULT '',
     resolve_tools_json  TEXT DEFAULT '[]',
+    tool_policy_json    TEXT NOT NULL DEFAULT '{}',
     actions_json        TEXT DEFAULT '[]',
     -- Bridge: on approve, also create a card on the global kanban backlog.
     create_kanban_task        INTEGER DEFAULT 0,

@@ -150,6 +150,14 @@ export type SystemWsEvent =
   | { kind: 'run_event'; run_id: string; event: RunEventEnvelope }
   | { kind: 'run_updated'; run: AgentRunSummary }
   | { kind: 'interrupt_created' | 'interrupt_updated'; interrupt: unknown }
+  | { kind: 'mc_item_created' | 'mc_item_updated'; item: unknown }
+  | {
+      kind: 'mc_section_updated';
+      section_id: string;
+      last_run_at: string | null;
+      last_error: string | null;
+      enabled: boolean;
+    }
   | { kind: 'workspace_updated'; workspace: unknown }
   | { kind: 'secret_rotated'; secret_id: string }
   | { kind: 'notification_created' }
