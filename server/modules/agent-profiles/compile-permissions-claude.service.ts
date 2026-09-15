@@ -10,6 +10,7 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 
 import { compilePermissionIntent } from '@/modules/database/index.js';
 import { resolveClaudeCodeExecutablePath } from '@/shared/claude-cli-path.js';
+// eslint-disable-next-line boundaries/no-unknown -- shared auth helper is intentionally kept outside module boundaries.
 import { applyClaudeSpawnAuthEnv } from '@/shared/claude-spawn-auth-env.js';
 
 export type CompiledPermissions = {

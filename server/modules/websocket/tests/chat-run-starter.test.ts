@@ -6,10 +6,8 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { closeConnection, initializeDatabase, sessionsDb } from '@/modules/database/index.js';
-import { configureHooksStorePath, hooksStore } from '@/modules/hooks/hooks.store.js';
-import { chatRunRegistry } from '@/modules/websocket/services/chat-run-registry.service.js';
-import { startProviderRun } from '@/modules/websocket/services/chat-run-starter.service.js';
-import { connectedClients } from '@/modules/websocket/services/websocket-state.service.js';
+import { configureHooksStorePath, hooksService } from '@/modules/hooks/index.js';
+import { chatRunRegistry, connectedClients, startProviderRun } from '@/modules/websocket/index.js';
 import type { AnyRecord } from '@/shared/types.js';
 
 /**
@@ -207,7 +205,7 @@ test('startProviderRun does not prepend SessionStart hooks to the first prompt',
     const hooksPath = path.join(hooksDir, `hooks-starter-${Date.now()}.json`);
     configureHooksStorePath(hooksPath);
     try {
-      hooksStore.create({
+      hooksService.create({
         name: 'House style',
         instruction: 'Always reply in British English.',
         provider: 'all',
