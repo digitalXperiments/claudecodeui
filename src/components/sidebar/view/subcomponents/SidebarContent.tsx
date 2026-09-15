@@ -161,12 +161,13 @@ type SidebarContentProps = {
   onShowSettings: () => void;
   onShowNeedsYou?: () => void;
   needsYouCount?: number;
-  onShowMissionControl?: () => void;
-  missionControlPendingCount?: number;
+  onShowBotStudio?: () => void;
+  botStudioPendingCount?: number;
   onShowKanban?: () => void;
   onShowAgentRelay?: () => void;
   onShowStudio?: () => void;
   studioActive?: boolean;
+  botsActive?: boolean;
   onShowStats?: () => void;
   projectListProps: SidebarProjectListProps;
   /** User-resizable desktop width for the Projects column. */
@@ -215,12 +216,13 @@ export default function SidebarContent({
   onShowSettings,
   onShowNeedsYou,
   needsYouCount = 0,
-  onShowMissionControl,
-  missionControlPendingCount = 0,
+  onShowBotStudio,
+  botStudioPendingCount = 0,
   onShowKanban,
   onShowAgentRelay,
   onShowStudio,
   studioActive = false,
+  botsActive = false,
   onShowStats,
   projectListProps,
   projectsPanelWidth,
@@ -685,8 +687,9 @@ export default function SidebarContent({
       onShowAgentRelay={onShowAgentRelay ?? (() => {})}
       onShowStudio={onShowStudio ?? (() => {})}
       studioActive={studioActive}
-      onShowMissionControl={onShowMissionControl ?? (() => {})}
-      missionControlPendingCount={missionControlPendingCount}
+      botsActive={botsActive}
+      onShowBotStudio={onShowBotStudio ?? (() => {})}
+      botStudioPendingCount={botStudioPendingCount}
       onShowStats={onShowStats ?? (() => {})}
       onShowNeedsYou={onShowNeedsYou ?? (() => {})}
       needsYouCount={needsYouCount}

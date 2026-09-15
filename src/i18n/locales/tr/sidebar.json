@@ -66,7 +66,7 @@
   "actions": {
     "refresh": "Yenile",
     "settings": "Ayarlar",
-    "missionControl": "Eylem Merkezi",
+    "botStudio": "Bot Studio",
     "collapseAll": "Tümünü Daralt",
     "expandAll": "Tümünü Genişlet",
     "cancel": "İptal",

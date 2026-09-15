@@ -66,6 +66,9 @@ export type MainContentProps = {
   projects?: Project[];
   studioActive?: boolean;
   onLeaveStudio?: () => void;
+  botsActive?: boolean;
+  onLeaveBots?: () => void;
+  onWorkThis?: (request: import('../../bot-studio/types').WorkThisSessionRequest) => void;
 };
 
 export type MainContentHeaderProps = {

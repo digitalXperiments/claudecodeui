@@ -33,6 +33,7 @@ export type McSection = {
   kanban_assignee_provider: string | null;
   kanban_review_provider: string | null;
   kanban_mcp_tools: string[];
+  tool_policy?: Record<string, Record<string, 'allow' | 'ask' | 'deny'>>;
   last_run_at: string | null;
   last_run_error: string | null;
   created_at: string;
@@ -83,7 +84,11 @@ export type McSectionInput = {
   kanban_assignee_provider?: string | null;
   kanban_review_provider?: string | null;
   kanban_mcp_tools?: string[];
+  tool_policy?: Record<string, Record<string, 'allow' | 'ask' | 'deny'>>;
 };
+
+/** Names used by Bot Studio for the existing Mission Control section contract. */
+export type CreateMcSectionInput = McSectionInput;
 
 export type McSectionWorkshopDraft = {
   title: string;
@@ -117,7 +122,18 @@ async function parseJson<T>(res: Response): Promise<T> {
 }
 
 export const missionControlApi = {
-  async summary(): Promise<{ pendingCount: number; sectionCount: number }> {
+  async summary(): Promise<{
+    pendingCount: number;
+    sectionCount: number;
+    sections?: Array<{
+      section_id: string;
+      pending: number;
+      failed: number;
+      resolved_today: number;
+      last_run_at: string | null;
+      last_error: string | null;
+    }>;
+  }> {
     const res = await authenticatedFetch('/api/mission-control/summary');
     return parseJson(res);
   },
@@ -316,6 +332,35 @@ export const missionControlApi = {
 
   async importDefaultPath(): Promise<{ path: string | null; found: boolean }> {
     const res = await authenticatedFetch('/api/mission-control/import/default-path');
+    return parseJson(res);
+  },
+
+  async listRuns(id: string, limit = 30): Promise<{
+    runs: Array<{
+      run_id: string;
+      status: string;
+      trigger?: string;
+      started_at?: string | null;
+      finished_at?: string | null;
+      duration_ms?: number | null;
+      error_summary?: string | null;
+      kind?: string;
+      item_id?: string | null;
+      tokens?: number | null;
+      cost_usd?: number | null;
+    }>;
+  }> {
+    const res = await authenticatedFetch(
+      `/api/mission-control/sections/${encodeURIComponent(id)}/runs?limit=${encodeURIComponent(String(limit))}`,
+    );
+    return parseJson(res);
+  },
+
+  async bulkUpdate(ids: string[] | 'all', patch: { enabled: boolean }): Promise<{ updated: number }> {
+    const res = await authenticatedFetch('/api/mission-control/sections/bulk', {
+      method: 'POST',
+      body: JSON.stringify({ ids, patch }),
+    });
     return parseJson(res);
   },
 };
