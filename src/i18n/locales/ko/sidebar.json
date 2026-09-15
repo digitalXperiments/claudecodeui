@@ -65,7 +65,7 @@
   "actions": {
     "refresh": "새로고침",
     "settings": "설정",
-    "missionControl": "작업 센터",
+    "botStudio": "Bot Studio",
     "collapseAll": "모두 접기",
     "expandAll": "모두 펼치기",
     "cancel": "취소",

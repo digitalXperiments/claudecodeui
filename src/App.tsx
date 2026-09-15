@@ -117,6 +117,7 @@ export default function App() {
                       <Route path="/" element={<AppContent />} />
                       <Route path="/session/:sessionId" element={<AppContent />} />
                       <Route path="/studio" element={<AppContent />} />
+                      <Route path="/bots/*" element={<AppContent />} />
                     </Routes>
                   </Router>
                 </ProtectedRoute>

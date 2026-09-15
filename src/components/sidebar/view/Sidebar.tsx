@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useState } from 'react';
+import { lazy, Suspense, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { useDeviceSettings } from '../../../hooks/useDeviceSettings';
@@ -11,7 +11,6 @@ import { usePaletteOps, usePaletteOpsRegister } from '../../../contexts/PaletteO
 import { useTasksSettings } from '../../../contexts/TasksSettingsContext';
 import type { Project, ProjectCategory, LLMProvider } from '../../../types/app';
 import type { MCPServerStatus, SidebarProps } from '../types/types';
-import { type WorkThisSessionRequest } from '../../mission-control/view/MissionControlPanel';
 import { missionControlApi } from '../../mission-control/api/missionControlApi';
 import KanbanPanel from '../../kanban/view/KanbanPanel';
 import StatsPanel from '../../stats/view/StatsPanel';
@@ -21,7 +20,6 @@ import SidebarModals from './subcomponents/SidebarModals';
 import NeedsYouPanel from './subcomponents/NeedsYouPanel';
 import type { SidebarProjectListProps } from './subcomponents/SidebarProjectList';
 
-const MissionControlPanel = lazy(() => import('../../mission-control/view/MissionControlPanel'));
 const AgentRelayPanel = lazy(() => import('../../agent-relay/view/AgentRelayPanel'));
 
 type TaskMasterSidebarContext = {
@@ -52,6 +50,8 @@ function Sidebar({
   projectsPanelWidth,
   studioActive = false,
   onShowStudio,
+  botsActive = false,
+  onShowBotStudio,
 }: SidebarProps) {
   const { t } = useTranslation(['sidebar', 'common']);
   const { isPWA } = useDeviceSettings({ trackMobile: false });
@@ -67,23 +67,18 @@ function Sidebar({
   const paletteOps = usePaletteOps();
   const [showNeedsYou, setShowNeedsYou] = useState(false);
   const [needsYouCount, setNeedsYouCount] = useState(0);
-  const [showMissionControl, setShowMissionControl] = useState(false);
-  const [missionControlPendingCount, setMissionControlPendingCount] = useState(0);
+  const [botStudioPendingCount, setBotStudioPendingCount] = useState(0);
   const [showKanban, setShowKanban] = useState(false);
   const [showAgentRelay, setShowAgentRelay] = useState(false);
   const [showStats, setShowStats] = useState(false);
-  const handleMissionControlPendingChange = useCallback((count: number) => {
-    setMissionControlPendingCount(count);
-  }, []);
-
-  // Keep Mission Control badge fresh even when the panel is closed.
+  // Keep the Bot Studio inbox badge fresh even when the route is closed.
   useEffect(() => {
     let cancelled = false;
     const load = () => {
       void missionControlApi
         .summary()
         .then((s) => {
-          if (!cancelled) setMissionControlPendingCount(s.pendingCount);
+          if (!cancelled) setBotStudioPendingCount(s.pendingCount);
         })
         .catch(() => {});
     };
@@ -214,7 +209,7 @@ function Sidebar({
 
   usePaletteOpsRegister({
     openNeedsYou: () => setShowNeedsYou(true),
-    openMissionControl: () => setShowMissionControl(true),
+    openBotStudio: () => onShowBotStudio?.(),
     openKanban: features.kanbanEnabled ? () => setShowKanban(true) : undefined,
     openAgentRelay: () => setShowAgentRelay(true),
     openStudio: () => onShowStudio?.(),
@@ -417,12 +412,13 @@ function Sidebar({
         onShowSettings={onShowSettings}
         onShowNeedsYou={() => setShowNeedsYou(true)}
         needsYouCount={needsYouCount}
-        onShowMissionControl={() => setShowMissionControl(true)}
-        missionControlPendingCount={missionControlPendingCount}
+        onShowBotStudio={() => onShowBotStudio?.()}
+        botStudioPendingCount={botStudioPendingCount}
         onShowKanban={features.kanbanEnabled ? () => setShowKanban(true) : undefined}
         onShowAgentRelay={() => setShowAgentRelay(true)}
         onShowStudio={() => onShowStudio?.()}
         studioActive={studioActive}
+        botsActive={botsActive}
         onShowStats={() => setShowStats(true)}
         projectListProps={projectListProps}
         projectsPanelWidth={projectsPanelWidth}
@@ -434,38 +430,6 @@ function Sidebar({
         onClose={() => setShowNeedsYou(false)}
         onCountChange={setNeedsYouCount}
       />
-
-      {showMissionControl ? (
-        <Suspense fallback={null}>
-      <MissionControlPanel
-        isOpen={showMissionControl}
-        onClose={() => setShowMissionControl(false)}
-        projects={projects}
-        onPendingCountChange={handleMissionControlPendingChange}
-        onWorkThis={(request: WorkThisSessionRequest) => {
-          sessionStorage.setItem(
-            `cloudcli:pending-prompt:${request.sessionId}`,
-            JSON.stringify({
-              prompt: request.prompt,
-              provider: request.provider,
-              summary: request.title,
-            }),
-          );
-          const project = projects.find((entry) => entry.projectId === request.projectId);
-          if (project) {
-            onProjectSelect(project);
-          }
-          onSessionSelect({
-            id: request.sessionId,
-            title: request.title,
-            summary: request.title,
-            __provider: request.provider as LLMProvider,
-            __projectId: request.projectId,
-          });
-        }}
-      />
-        </Suspense>
-      ) : null}
 
       {features.kanbanEnabled ? (
         <KanbanPanel

@@ -85,6 +85,8 @@ export type SidebarProps = {
   projectsPanelWidth?: number;
   studioActive?: boolean;
   onShowStudio?: () => void;
+  botsActive?: boolean;
+  onShowBotStudio?: () => void;
 };
 
 export type SessionViewModel = {

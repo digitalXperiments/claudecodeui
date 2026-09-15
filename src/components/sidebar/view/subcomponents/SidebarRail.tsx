@@ -10,7 +10,6 @@ import {
   History,
   PanelLeftClose,
   PanelLeftOpen,
-  Radar,
   Search,
   Settings,
   Sparkles,
@@ -43,12 +42,11 @@ type SidebarRailProps = {
   runningSessionsCount: number;
   onShowKanban?: () => void;
   onShowAgentRelay: () => void;
-  onShowBots: () => void;
-  botsPendingCount: number;
+  onShowBotStudio: () => void;
+  botStudioPendingCount: number;
   onShowStudio: () => void;
   studioActive?: boolean;
-  onShowMissionControl: () => void;
-  missionControlPendingCount: number;
+  botsActive?: boolean;
   onShowStats: () => void;
   onShowNeedsYou: () => void;
   needsYouCount: number;
@@ -113,12 +111,11 @@ export default function SidebarRail({
   runningSessionsCount,
   onShowKanban,
   onShowAgentRelay,
-  onShowBots,
-  botsPendingCount,
+  onShowBotStudio,
+  botStudioPendingCount,
   onShowStudio,
   studioActive = false,
-  onShowMissionControl,
-  missionControlPendingCount,
+  botsActive = false,
   onShowStats,
   onShowNeedsYou,
   needsYouCount,
@@ -200,14 +197,6 @@ export default function SidebarRail({
       </RailButton>
 
       <RailButton
-        title={t('actions.bots', { defaultValue: 'Bot Studio' })}
-        onClick={onShowBots}
-        badge={botsPendingCount > 0 ? botsPendingCount : false}
-      >
-        <Bot className="h-[18px] w-[18px]" />
-      </RailButton>
-
-      <RailButton
         active={studioActive}
         title={t('actions.studio', { defaultValue: 'Studio' })}
         onClick={onShowStudio}
@@ -216,11 +205,12 @@ export default function SidebarRail({
       </RailButton>
 
       <RailButton
-        title={t('actions.missionControl', { defaultValue: 'Action Centre' })}
-        onClick={onShowMissionControl}
-        badge={missionControlPendingCount > 0 ? missionControlPendingCount : false}
+        active={botsActive}
+        title={t('actions.botStudio', { defaultValue: 'Bot Studio' })}
+        onClick={onShowBotStudio}
+        badge={botStudioPendingCount > 0 ? botStudioPendingCount : false}
       >
-        <Radar className="h-[18px] w-[18px]" />
+        <Bot className="h-[18px] w-[18px]" />
       </RailButton>
 
       <RailButton

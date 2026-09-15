@@ -17,6 +17,7 @@ import MainContentStateView from './subcomponents/MainContentStateView';
 import MobileMenuButton from './subcomponents/MobileMenuButton';
 
 const StudioView = lazy(() => import('../../studio/view/StudioView'));
+const BotStudioView = lazy(() => import('../../bot-studio/view/BotStudioView'));
 const FileTree = lazy(() => import('../../file-tree/view/FileTree'));
 const StandaloneShell = lazy(() => import('../../standalone-shell/view/StandaloneShell'));
 const GitPanel = lazy(() => import('../../git-panel/view/GitPanel'));
@@ -69,6 +70,9 @@ function MainContent({
   projects = [],
   studioActive = false,
   onLeaveStudio,
+  botsActive = false,
+  onLeaveBots,
+  onWorkThis,
 }: MainContentProps) {
   const { preferences } = useUiPreferences();
   const { showRawParameters, showThinking, sendByCtrlEnter } = preferences;
@@ -175,7 +179,7 @@ function MainContent({
     return <MainContentStateView mode="loading" isMobile={isMobile} onMenuClick={onMenuClick} />;
   }
 
-  if (studioActive) {
+  if (studioActive || botsActive) {
     return (
       <div className="flex h-full min-h-0 flex-col">
         {/* Keep the normal chat session alive while Studio owns the visible
@@ -215,7 +219,15 @@ function MainContent({
         <div className="min-h-0 flex-1 overflow-hidden">
           <ErrorBoundary showDetails>
             <Suspense fallback={null}>
-            <StudioView
+            {botsActive ? (
+              <BotStudioView
+                projects={projects.length > 0 ? projects : selectedProject ? [selectedProject] : []}
+                isMobile={isMobile}
+                onMenuClick={onMenuClick}
+                onBackToChat={onLeaveBots ?? (() => undefined)}
+                onWorkThis={onWorkThis}
+              />
+            ) : <StudioView
               selectedProject={selectedProject}
               projects={projects.length > 0 ? projects : selectedProject ? [selectedProject] : []}
               ws={ws}
@@ -242,7 +254,7 @@ function MainContent({
                 onNewSession(project);
               }}
               onBackToChat={onLeaveStudio}
-            />
+            />}
             </Suspense>
           </ErrorBoundary>
         </div>

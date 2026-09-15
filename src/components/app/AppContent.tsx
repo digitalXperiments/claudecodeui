@@ -12,6 +12,8 @@ import { useSessionProtection } from '../../hooks/useSessionProtection';
 import { useProjectsState } from '../../hooks/useProjectsState';
 import { useQueuedMessageAutoSend } from '../../hooks/useQueuedMessageAutoSend';
 import { api } from '../../utils/api';
+import type { WorkThisSessionRequest } from '../bot-studio/types';
+import type { LLMProvider } from '../../types/app';
 
 const CommandPalette = lazy(() => import('../command-palette/CommandPalette'));
 
@@ -95,6 +97,8 @@ function AppContentInner() {
     loadMoreProjectSessions,
     studioActive,
     leaveStudio,
+    botsActive,
+    leaveBots,
   } = useProjectsState({
     sessionId,
     navigate,
@@ -207,6 +211,22 @@ function AppContentInner() {
       }
     });
   }, [refreshRunningSessions, subscribe]);
+
+  const handleBotWorkThis = useCallback((request: WorkThisSessionRequest) => {
+    sessionStorage.setItem(
+      `cloudcli:pending-prompt:${request.sessionId}`,
+      JSON.stringify({ prompt: request.prompt, provider: request.provider, summary: request.title }),
+    );
+    const project = projects.find((entry) => entry.projectId === request.projectId);
+    if (project) handleProjectSelect(project);
+    handleSessionSelect({
+      id: request.sessionId,
+      title: request.title,
+      summary: request.title,
+      __provider: request.provider as LLMProvider,
+      __projectId: request.projectId,
+    });
+  }, [handleProjectSelect, handleSessionSelect, projects]);
 
   usePaletteOpsRegister({
     openSettings,
@@ -347,6 +367,9 @@ function AppContentInner() {
           projects={projects}
           studioActive={studioActive}
           onLeaveStudio={leaveStudio}
+          botsActive={botsActive}
+          onLeaveBots={leaveBots}
+          onWorkThis={handleBotWorkThis}
         />
       </div>
 

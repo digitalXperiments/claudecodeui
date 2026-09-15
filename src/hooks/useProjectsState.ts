@@ -360,6 +360,7 @@ export function useProjectsState({
 }: UseProjectsStateArgs) {
   const location = useLocation();
   const studioActive = location.pathname === '/studio' || location.pathname.startsWith('/studio/');
+  const botsActive = location.pathname === '/bots' || location.pathname.startsWith('/bots/');
   const [projects, setProjects] = useState<Project[]>([]);
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
   const [selectedSession, setSelectedSession] = useState<ProjectSession | null>(null);
@@ -1011,6 +1012,7 @@ export function useProjectsState({
   );
 
   const STUDIO_RETURN_SESSION_KEY = 'cloudcli:studio-return-session';
+  const BOTS_RETURN_SESSION_KEY = 'cloudcli:bots-return-session';
 
   const leaveStudio = useCallback(() => {
     const rememberedId = (() => {
@@ -1048,6 +1050,35 @@ export function useProjectsState({
       setSidebarOpen(false);
     }
   }, [isMobile, leaveStudio, navigate, selectedSession?.id, studioActive]);
+
+  const leaveBots = useCallback(() => {
+    const rememberedId = (() => {
+      try {
+        return sessionStorage.getItem(BOTS_RETURN_SESSION_KEY);
+      } catch {
+        return null;
+      }
+    })();
+    const targetId = rememberedId || selectedSession?.id;
+    navigate(targetId ? `/session/${targetId}` : '/');
+    if (isMobile) setSidebarOpen(false);
+  }, [isMobile, navigate, selectedSession?.id]);
+
+  const enterBots = useCallback(() => {
+    if (botsActive) {
+      leaveBots();
+      return;
+    }
+    if (selectedSession?.id) {
+      try {
+        sessionStorage.setItem(BOTS_RETURN_SESSION_KEY, selectedSession.id);
+      } catch {
+        // ignore storage errors
+      }
+    }
+    navigate('/bots');
+    if (isMobile) setSidebarOpen(false);
+  }, [botsActive, isMobile, leaveBots, navigate, selectedSession?.id]);
 
   const handleNewSession = useCallback(
     (project: Project) => {
@@ -1261,6 +1292,8 @@ export function useProjectsState({
       isMobile,
       studioActive,
       onShowStudio: openStudio,
+      botsActive,
+      onShowBotStudio: enterBots,
     }),
     [
       attentionSessionIds,
@@ -1282,6 +1315,8 @@ export function useProjectsState({
       showSettings,
       studioActive,
       openStudio,
+      botsActive,
+      enterBots,
     ],
   );
 
@@ -1312,6 +1347,9 @@ export function useProjectsState({
     studioActive,
     openStudio,
     leaveStudio,
+    botsActive,
+    enterBots,
+    leaveBots,
     handleProjectSelect,
     handleSessionSelect,
     handleNewSession,
