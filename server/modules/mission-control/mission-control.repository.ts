@@ -114,6 +114,21 @@ function parseTools(raw: string | null | undefined): string[] {
     .map((t) => t.trim());
 }
 
+export function broadcastMissionControlSectionUpdated(params: {
+  sectionId: string;
+  lastRunAt: string | null;
+  lastError: string | null;
+  enabled: boolean;
+}): void {
+  broadcastSystemEvent({
+    kind: 'mc_section_updated',
+    section_id: params.sectionId,
+    last_run_at: params.lastRunAt,
+    last_error: params.lastError,
+    enabled: params.enabled,
+  });
+}
+
 function parseToolPolicy(raw: string | null | undefined): McSection['tool_policy'] {
   const parsed = parseJsonObject(raw);
   const policy: McSection['tool_policy'] = {};
@@ -411,11 +426,10 @@ export const missionControlDb = {
     );
     const updated = this.getSection(sectionId);
     if (updated) {
-      broadcastSystemEvent({
-        kind: 'mc_section_updated',
-        section_id: updated.section_id,
-        last_run_at: updated.last_run_at,
-        last_error: updated.last_run_error,
+      broadcastMissionControlSectionUpdated({
+        sectionId: updated.section_id,
+        lastRunAt: updated.last_run_at,
+        lastError: updated.last_run_error,
         enabled: updated.enabled,
       });
     }
@@ -438,11 +452,10 @@ export const missionControlDb = {
     ).run(nowIso(), opts.error ?? null, nowIso(), sectionId);
     const section = this.getSection(sectionId);
     if (section) {
-      broadcastSystemEvent({
-        kind: 'mc_section_updated',
-        section_id: section.section_id,
-        last_run_at: section.last_run_at,
-        last_error: section.last_run_error,
+      broadcastMissionControlSectionUpdated({
+        sectionId: section.section_id,
+        lastRunAt: section.last_run_at,
+        lastError: section.last_run_error,
         enabled: section.enabled,
       });
     }

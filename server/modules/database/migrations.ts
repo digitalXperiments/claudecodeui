@@ -703,22 +703,28 @@ const ensureMissionControlKanbanBridgeSchema = (db: Database): void => {
 };
 
 /** Remove tables from the never-shipped standalone Bot Studio prototype. */
-const dropAbandonedBotStudioPrototypeTables = (db: Database): void => {
+export const dropAbandonedBotStudioPrototypeTables = (db: Database): void => {
+  // Child tables must be removed before their parents while foreign_keys is on.
+  // Keep this in one transaction so a failed cleanup cannot leave a half-removed
+  // prototype schema. PRAGMA foreign_keys is deliberately not toggled here:
+  // SQLite ignores toggles inside transactions, and ordering is sufficient.
   const tables = [
-    'bots', 'bot_versions', 'bot_ticks', 'bot_proposals', 'bot_spend_daily',
-    'integration_apps', 'integration_accounts', 'integration_oauth_states',
-    'integration_grants', 'integration_calls',
+    'bot_spend_daily', 'bot_proposals', 'bot_ticks', 'bot_versions', 'bots',
+    'integration_calls', 'integration_grants', 'integration_oauth_states',
+    'integration_accounts', 'integration_apps',
   ];
-  for (const table of tables) {
-    const indexes = db.prepare(
-      `SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = ?`,
-    ).all(table) as Array<{ name: string }>;
-    for (const index of indexes) {
-      if (index.name.startsWith('sqlite_autoindex_')) continue;
-      db.exec(`DROP INDEX IF EXISTS "${index.name.replace(/"/g, '""')}"`);
+  db.transaction(() => {
+    for (const table of tables) {
+      const indexes = db.prepare(
+        `SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = ?`,
+      ).all(table) as Array<{ name: string }>;
+      for (const index of indexes) {
+        if (index.name.startsWith('sqlite_autoindex_')) continue;
+        db.exec(`DROP INDEX IF EXISTS "${index.name.replace(/"/g, '""')}"`);
+      }
+      db.exec(`DROP TABLE IF EXISTS ${table}`);
     }
-    db.exec(`DROP TABLE IF EXISTS ${table}`);
-  }
+  })();
 };
 
 /**

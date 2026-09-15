@@ -439,19 +439,26 @@ export function buildRuntimeOptions(section: McSection, tools: string[]): AnyRec
   const deniedPolicyTools = entries
     .filter((entry) => entry.decision === 'deny')
     .map((entry) => entry.pattern);
+  const hasRestrictedPolicy = policyServers.size > 0;
+  const effectivePermissionMode =
+    provider === 'claude' && permissionMode === 'bypassPermissions' && hasRestrictedPolicy
+      ? 'default'
+      : permissionMode;
+  options.permissionMode = effectivePermissionMode;
 
   switch (provider) {
     case 'claude':
       options.toolsSettings = {
-        // Ask tools are intentionally omitted from allowedTools; unattended
-        // runs have nobody to approve them, so they are effectively held.
+        // Ask tools are intentionally omitted from allowedTools. Restricted
+        // policies also downgrade bypassPermissions above, so Claude's
+        // unattended default mode cannot auto-allow omitted tools.
         allowedTools: [...new Set([...fallbackTools, ...allowedPolicyTools])],
         // Mission Control runs are always headless (no human on the other
         // end to answer). AskUserQuestion/ExitPlanMode must never be reached:
         // deny them outright instead of stalling on an approval nobody can
         // grant. Prompts already instruct the model to ask via plain text.
         disallowedTools: [...new Set(['AskUserQuestion', 'ExitPlanMode', ...deniedPolicyTools])],
-        skipPermissions: permissionMode === 'bypassPermissions',
+        skipPermissions: effectivePermissionMode === 'bypassPermissions',
       };
       break;
     case 'cursor':

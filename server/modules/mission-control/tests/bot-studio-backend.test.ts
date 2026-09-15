@@ -10,8 +10,53 @@ import {
   buildToolPolicyAdvisoryPrompt,
 } from '@/modules/mission-control/mission-control-agent.service.js';
 import { missionControlDb } from '@/modules/mission-control/mission-control.repository.js';
+import missionControlRoutes from '@/modules/mission-control/mission-control.routes.js';
+import {
+  getMissionControlScheduledJobCount,
+  startMissionControlScheduler,
+  stopMissionControlScheduler,
+} from '@/modules/mission-control/mission-control-scheduler.service.js';
 import { runsDb } from '@/modules/runs/index.js';
 import type { AnyRecord } from '@/shared/types.js';
+
+type RouteResponse = { statusCode: number; body: Record<string, unknown> };
+
+function invokeMissionControlRoute(
+  method: string,
+  url: string,
+  body: Record<string, unknown> = {},
+): Promise<RouteResponse> {
+  return new Promise((resolve, reject) => {
+    const req = { method, url, originalUrl: url, body, query: {} };
+    const response: RouteResponse = { statusCode: 200, body: {} };
+    const res = {
+      status(code: number) {
+        response.statusCode = code;
+        return res;
+      },
+      json(payload: Record<string, unknown>) {
+        response.body = payload;
+        resolve(response);
+        return res;
+      },
+      send(payload: Record<string, unknown>) {
+        response.body = payload;
+        resolve(response);
+        return res;
+      },
+      end() {
+        resolve(response);
+        return res;
+      },
+    };
+    (missionControlRoutes as unknown as {
+      handle: (request: unknown, response: unknown, next: (error?: unknown) => void) => void;
+    }).handle(req, res, (error: unknown) => {
+      if (error) reject(error);
+      else resolve(response);
+    });
+  });
+}
 
 async function withIsolatedDatabase(runTest: () => void | Promise<void>): Promise<void> {
   const previousDatabasePath = process.env.DATABASE_PATH;
@@ -42,6 +87,22 @@ test('MCP policy translates allow/deny and preserves wildcard fallback', async (
     assert.ok((settings.disallowedTools as string[]).includes('mcp__my_server__write'));
     assert.ok(!(settings.allowedTools as string[]).includes('mcp__my_server__*'));
     assert.ok((settings.allowedTools as string[]).includes('mcp__unrestricted__*'));
+    assert.ok(!(settings.allowedTools as string[]).includes('mcp__my_server__send'));
+  });
+});
+
+test('restricted policy downgrades Claude bypass permissions', async () => {
+  await withIsolatedDatabase(() => {
+    const section = missionControlDb.createSection({
+      title: 'Held policy test',
+      produce_tools: ['my-server'],
+      permission_mode: 'bypassPermissions',
+      tool_policy: { 'my-server': { read: 'allow', send: 'ask' } },
+    });
+    const options = buildRuntimeOptions(section, section.produce_tools) as AnyRecord;
+    const settings = options.toolsSettings as AnyRecord;
+    assert.equal(options.permissionMode, 'default');
+    assert.equal(settings.skipPermissions, false);
     assert.ok(!(settings.allowedTools as string[]).includes('mcp__my_server__send'));
   });
 });
@@ -96,5 +157,52 @@ test('run history, roster summary, and bulk enabled updates stay bounded and sha
     });
     assert.equal(missionControlDb.updateSectionsEnabled('all', false), 1);
     assert.equal(missionControlDb.getSection(section.section_id)?.enabled, false);
+  });
+});
+
+test('mission control routes expose compatible summary, runs, and bulk responses', async () => {
+  await withIsolatedDatabase(async () => {
+    const section = missionControlDb.createSection({
+      title: 'Route test',
+      schedule_cron: '* * * * *',
+    });
+    const item = missionControlDb.insertItemIfNew(section, {
+      title: 'Route item', summary: 'summary', body: {}, dedupeKey: 'route-item',
+    });
+    assert.ok(item);
+    const run = runsDb.create({
+      source: 'mission_control', sourceRef: item.item_id, trigger: 'manual',
+      meta: { section_id: section.section_id, item_id: item.item_id, phase: 'resolve' },
+    });
+    runsDb.markTerminal(run.run_id, { status: 'succeeded' });
+
+    startMissionControlScheduler();
+    try {
+      assert.equal(getMissionControlScheduledJobCount(), 1);
+      const summary = await invokeMissionControlRoute('GET', '/summary');
+      assert.equal(summary.statusCode, 200);
+      assert.equal(summary.body.pendingCount, 1);
+      assert.equal(summary.body.sectionCount, 1);
+      assert.ok(Array.isArray(summary.body.sections));
+
+      const history = await invokeMissionControlRoute(
+        'GET', `/sections/${section.section_id}/runs?limit=50`,
+      );
+      assert.equal(history.statusCode, 200);
+      const runs = history.body.runs as Array<Record<string, unknown>>;
+      assert.equal(runs.length, 1);
+      assert.equal(runs[0]?.kind, 'resolve');
+      assert.equal(runs[0]?.item_id, item.item_id);
+
+      const bulk = await invokeMissionControlRoute('POST', '/sections/bulk', {
+        ids: [section.section_id], patch: { enabled: false },
+      });
+      assert.equal(bulk.statusCode, 200);
+      assert.equal(bulk.body.updated, 1);
+      assert.equal(missionControlDb.getSection(section.section_id)?.enabled, false);
+      assert.equal(getMissionControlScheduledJobCount(), 0);
+    } finally {
+      stopMissionControlScheduler();
+    }
   });
 });
