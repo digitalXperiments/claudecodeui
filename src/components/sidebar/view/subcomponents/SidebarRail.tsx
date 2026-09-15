@@ -3,6 +3,7 @@ import {
   AlertTriangle,
   Archive,
   BarChart3,
+  Bot,
   Bug,
   CircleAlert,
   Folder,
@@ -42,6 +43,8 @@ type SidebarRailProps = {
   runningSessionsCount: number;
   onShowKanban?: () => void;
   onShowAgentRelay: () => void;
+  onShowBots: () => void;
+  botsPendingCount: number;
   onShowStudio: () => void;
   studioActive?: boolean;
   onShowMissionControl: () => void;
@@ -110,6 +113,8 @@ export default function SidebarRail({
   runningSessionsCount,
   onShowKanban,
   onShowAgentRelay,
+  onShowBots,
+  botsPendingCount,
   onShowStudio,
   studioActive = false,
   onShowMissionControl,
@@ -125,7 +130,7 @@ export default function SidebarRail({
 }: SidebarRailProps) {
   return (
     <nav
-      className="flex h-full w-14 flex-col items-center gap-1 border-r border-border/50 bg-background/80 py-2 backdrop-blur-sm"
+      className="scrollbar-thin flex h-full w-14 flex-col items-center gap-1 overflow-y-auto border-r border-border/50 bg-background/80 py-2 backdrop-blur-sm"
       style={{ paddingBottom: 'env(safe-area-inset-bottom, 0)' }}
     >
       <RailButton title={isCollapsed ? t('tooltips.showSidebar') : t('tooltips.hideSidebar')} onClick={onToggleCollapse}>
@@ -192,6 +197,14 @@ export default function SidebarRail({
         onClick={onShowAgentRelay}
       >
         <Waypoints className="h-[18px] w-[18px]" />
+      </RailButton>
+
+      <RailButton
+        title={t('actions.bots', { defaultValue: 'Bot Studio' })}
+        onClick={onShowBots}
+        badge={botsPendingCount > 0 ? botsPendingCount : false}
+      >
+        <Bot className="h-[18px] w-[18px]" />
       </RailButton>
 
       <RailButton

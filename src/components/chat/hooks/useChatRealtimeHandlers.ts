@@ -216,6 +216,20 @@ export function useChatRealtimeHandlers({
       /*  Provider NormalizedMessage handling                            */
       /* -------------------------------------------------------------- */
 
+      const eventProvider = (msg.provider as LLMProvider) || provider;
+
+      // A tool/reasoning/text boundary can arrive before the 100ms text flush.
+      // Flush first so the preceding reply cannot appear after that tool.
+      if (sid && ['tool_use', 'thinking', 'text', 'interactive_prompt', 'error'].includes(String(msg.kind))) {
+        const entry = streamBuffersRef.current.get(sid);
+        if (entry) {
+          if (entry.timer) clearTimeout(entry.timer);
+          sessionStore.updateStreaming(sid, entry.text, eventProvider);
+          sessionStore.finalizeStreaming(sid);
+          streamBuffersRef.current.delete(sid);
+        }
+      }
+
       // A live `thinking` burst (see below) ends the moment any other kind
       // of message arrives for THAT SAME session - a tool call starting, the
       // reply text starting, or the turn completing. Close out only the
@@ -228,7 +242,7 @@ export function useChatRealtimeHandlers({
             clearTimeout(thinkingEntry.timer);
             thinkingEntry.timer = null;
           }
-          sessionStore.updateThinkingStream(sid, thinkingEntry.text, provider);
+          sessionStore.updateThinkingStream(sid, thinkingEntry.text, eventProvider);
           sessionStore.finalizeThinkingStream(sid);
           thinkingBuffersRef.current.delete(sid);
         }
@@ -242,13 +256,14 @@ export function useChatRealtimeHandlers({
         if (!thinkingEntry) {
           thinkingEntry = { text: '', timer: null };
           thinkingBuffersRef.current.set(sid, thinkingEntry);
+          sessionStore.updateThinkingStream(sid, text, eventProvider);
         }
         thinkingEntry.text += text;
         if (!thinkingEntry.timer) {
           const entry = thinkingEntry;
           entry.timer = window.setTimeout(() => {
             entry.timer = null;
-            sessionStore.updateThinkingStream(sid, entry.text, provider);
+            sessionStore.updateThinkingStream(sid, entry.text, eventProvider);
           }, 100);
         }
         return;
@@ -262,13 +277,14 @@ export function useChatRealtimeHandlers({
         if (!streamEntry) {
           streamEntry = { text: '', timer: null };
           streamBuffersRef.current.set(sid, streamEntry);
+          sessionStore.updateStreaming(sid, text, eventProvider);
         }
         streamEntry.text += text;
         if (!streamEntry.timer) {
           const entry = streamEntry;
           entry.timer = window.setTimeout(() => {
             entry.timer = null;
-            sessionStore.updateStreaming(sid, entry.text, provider);
+            sessionStore.updateStreaming(sid, entry.text, eventProvider);
           }, 100);
         }
         return;
@@ -283,7 +299,7 @@ export function useChatRealtimeHandlers({
               streamEntry.timer = null;
             }
             if (streamEntry.text) {
-              sessionStore.updateStreaming(sid, streamEntry.text, provider);
+              sessionStore.updateStreaming(sid, streamEntry.text, eventProvider);
             }
             streamBuffersRef.current.delete(sid);
           }
@@ -324,7 +340,7 @@ export function useChatRealtimeHandlers({
               }
               streamBuffersRef.current.delete(sid);
               if (streamEntry.text) {
-                sessionStore.updateStreaming(sid, streamEntry.text, provider);
+                sessionStore.updateStreaming(sid, streamEntry.text, eventProvider);
                 sessionStore.finalizeStreaming(sid);
               }
             }

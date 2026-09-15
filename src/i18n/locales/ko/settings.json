@@ -90,6 +90,7 @@
     "agentProfiles": "에이전트 프로필",
     "modelProfiles": "모델 프로필",
     "agentRelay": "Agent Relay",
+    "hooks": "훅",
     "globalSkills": "전역 스킬",
     "appearance": "외관",
     "git": "Git",
@@ -99,6 +100,17 @@
     "plugins": "플러그인",
     "about": "정보",
     "security": "보안"
+  },
+  "hooksTab": {
+    "title": "훅",
+    "description": "이름 있는 지시문을 슬래시 명령으로 사용합니다. 사용 중인 훅은 채팅에서 / 를 입력하면 /name 으로 나타납니다(스킬·사용자 명령과 같음). 선택하거나 입력하면 지시문 본문이 메시지에 펼쳐집니다. 끄면 메뉴에서 숨겨집니다. 에이전트 범위는 어떤 채팅 공급자가 명령을 볼지 필터합니다.",
+    "instructionLabel": "지시문 (채팅 메시지에 펼쳐짐)",
+    "emptyTitle": "슬래시 명령 훅이 아직 없습니다",
+    "emptyBody": "이름 있는 지시문을 만드세요. 채팅에서 / 를 입력하면 사용 중인 훅이 /name 으로 보입니다. 선택하면 본문이 사용자 메시지로 펼쳐집니다(명령 뒤 인자 포함).",
+    "slashBadge": "slash",
+    "enabled": "사용 (/ 메뉴에 표시)",
+    "count_one": "훅 {{count}}개",
+    "count_other": "훅 {{count}}개"
   },
   "notifications": {
     "title": "알림",

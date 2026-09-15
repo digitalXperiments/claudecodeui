@@ -3,6 +3,7 @@ import { rm } from 'node:fs/promises';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 
 import { resolveClaudeCodeExecutablePath } from '@/shared/claude-cli-path.js';
+import { applyClaudeSpawnAuthEnv } from '@/shared/claude-spawn-auth-env.js';
 import { makeScratchDir } from '@/shared/scratch.js';
 import type { ProviderModelOption, ProviderModelsDefinition } from '@/shared/types.js';
 
@@ -49,13 +50,15 @@ export const probeClaudeCliModels = async (): Promise<ClaudeCliModelInfo[]> => {
   let timeoutHandle: NodeJS.Timeout | null = null;
 
   try {
+    const probeOptions = {
+      cwd: probeCwd,
+      env: { ...process.env } as NodeJS.ProcessEnv,
+      pathToClaudeCodeExecutable: resolveClaudeCodeExecutablePath(process.env.CLAUDE_CLI_PATH),
+    };
+    await applyClaudeSpawnAuthEnv(probeOptions);
     queryInstance = query({
       prompt: createIdlePrompt(),
-      options: {
-        cwd: probeCwd,
-        env: { ...process.env },
-        pathToClaudeCodeExecutable: resolveClaudeCodeExecutablePath(process.env.CLAUDE_CLI_PATH),
-      },
+      options: probeOptions,
     });
 
     const activeQuery = queryInstance;

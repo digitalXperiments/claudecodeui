@@ -168,10 +168,11 @@ export async function startProviderRun(params: StartProviderRunParams): Promise<
   }
 
   const runtimeOptions = buildRuntimeOptions(params.providerSessionId);
+  const spawnContent = params.content;
 
   const completion = (async () => {
     try {
-      await params.spawnFn(params.content, runtimeOptions, run.writer);
+      await params.spawnFn(spawnContent, runtimeOptions, run.writer);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`[Chat] Provider runtime "${params.provider}" failed`, {

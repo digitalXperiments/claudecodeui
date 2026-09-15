@@ -51,8 +51,6 @@ interface ChatMessagesPaneProps {
    */
   readOnly?: boolean;
   scrollContainerRef: RefObject<HTMLDivElement>;
-  onWheel: () => void;
-  onTouchMove: () => void;
   isLoadingSessionMessages: boolean;
   /** True while the viewed session has an active provider run in flight. */
   isProcessing?: boolean;
@@ -119,8 +117,6 @@ interface ChatMessagesPaneProps {
 function ChatMessagesPane({
   readOnly = false,
   scrollContainerRef,
-  onWheel,
-  onTouchMove,
   isLoadingSessionMessages,
   isProcessing = false,
   hasActivityIndicator = false,
@@ -228,8 +224,8 @@ function ChatMessagesPane({
   return (
     <div
       ref={scrollContainerRef}
-      onWheel={onWheel}
-      onTouchMove={onTouchMove}
+      tabIndex={0}
+      style={{ overflowAnchor: 'none' }}
       className={`chat-messages-pane relative min-h-0 flex-1 overflow-y-auto overflow-x-hidden pt-3 sm:pt-4 ${
         hasActivityIndicator ? 'pb-12 sm:pb-14' : 'pb-3 sm:pb-4'
       }`}
@@ -246,7 +242,7 @@ function ChatMessagesPane({
           </div>
         </div>
       )}
-      <div className="mx-auto w-full max-w-[54.25rem] space-y-3 px-4 sm:space-y-4">
+      <div data-transcript-content className="mx-auto w-full max-w-[54.25rem] space-y-3 px-4 sm:space-y-4">
       {isLoadingSessionMessages && chatMessages.length === 0 ? (
         <div className="mt-8 text-center text-gray-500 dark:text-gray-400">
           <div className="flex items-center justify-center space-x-2">

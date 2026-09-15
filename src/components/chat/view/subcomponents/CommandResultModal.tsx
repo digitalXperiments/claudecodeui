@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Activity,
   AlertTriangle,
@@ -33,6 +33,10 @@ import type {
   ModelCommandData,
   StatusCommandData,
 } from '../../hooks/useChatComposerState';
+import { getPermissionModeCopy } from '../../constants/permissionModeCopy';
+import { readProviderPermissionModePreference } from '../../../../utils/providerPermissionPreference';
+import { FALLBACK_PERMISSION_MODES } from '../../hooks/useChatProviderState';
+import type { PermissionMode } from '../../types/types';
 
 /** Context-carrying modes that go through the session handoff API. */
 export type SessionHandoffMode = 'summary' | 'full' | 'fresh';
@@ -43,11 +47,12 @@ export type SessionSwitchRequest = {
   targetProvider: LLMProvider;
   targetModel?: string;
   mode: SessionHandoffMode;
+  permissionMode?: PermissionMode;
   saveToFile?: boolean;
   saveToMemory?: boolean;
 };
 
-type CommandResultModalProps = {
+export type CommandResultModalProps = {
   payload: CommandModalPayload | null;
   onClose: () => void;
   providerModelCatalog: Partial<Record<LLMProvider, ProviderModelsDefinition>>;
@@ -59,6 +64,10 @@ type CommandResultModalProps = {
   providerAuthStatus?: Partial<ProviderAuthStatusMap>;
   onHardRefreshProviderModels: () => void;
   currentSessionId: string | null;
+  currentPermissionMode?: PermissionMode;
+  getPermissionModesForProvider?: (provider: LLMProvider) => PermissionMode[];
+  getDefaultPermissionModeForProvider?: (provider: LLMProvider) => PermissionMode;
+  onSelectPermissionMode?: (mode: PermissionMode, sessionId?: string | null) => void;
   onSelectProviderModel: (
     provider: LLMProvider,
     model: string,
@@ -301,6 +310,93 @@ function HelpContent({ data }: { data: HelpCommandData }) {
   );
 }
 
+export function StartingPermissionsPicker({
+  provider,
+  modes,
+  selectedMode,
+  onSelect,
+  disabled = false,
+}: {
+  provider: LLMProvider;
+  modes: PermissionMode[];
+  selectedMode: PermissionMode;
+  onSelect: (mode: PermissionMode) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <div className="flex flex-col gap-2" data-testid="starting-permissions-section">
+      <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+        Starting permissions
+      </p>
+      <div
+        className="grid grid-cols-1 gap-1.5 sm:grid-cols-2"
+        role="radiogroup"
+        aria-label="Starting permissions"
+      >
+        {modes.map((mode) => {
+          const isSelected = selectedMode === mode;
+          const copy = getPermissionModeCopy(provider, mode);
+          const dotClass =
+            mode === 'acceptEdits'
+              ? 'bg-green-500'
+              : mode === 'bypassPermissions'
+                ? 'bg-orange-500'
+                : mode === 'auto'
+                  ? 'bg-blue-500'
+                  : mode === 'plan'
+                    ? 'bg-primary'
+                    : 'bg-muted-foreground';
+
+          return (
+            <button
+              key={mode}
+              type="button"
+              role="radio"
+              aria-checked={isSelected}
+              data-testid={`permission-mode-option-${mode}`}
+              onClick={() => onSelect(mode)}
+              disabled={disabled}
+              className={`flex items-start gap-2.5 rounded-xl border p-2.5 text-left transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default disabled:opacity-60 ${
+                isSelected
+                  ? 'border-primary/50 bg-primary/10 shadow-sm'
+                  : 'border-border/70 bg-background/60 hover:border-primary/30 hover:bg-background'
+              }`}
+            >
+              <span className="mt-1 flex h-3.5 w-3.5 shrink-0 items-center justify-center">
+                <span className={`h-2 w-2 rounded-full ${dotClass}`} />
+              </span>
+              <span className="min-w-0">
+                <span className="block text-xs font-semibold text-foreground">{copy.label}</span>
+                <span className="mt-0.5 block text-[11px] leading-4 text-muted-foreground line-clamp-2">
+                  {copy.summary}
+                </span>
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+export type ModelsContentProps = {
+  data: ModelCommandData;
+  providerModelCatalog: Partial<Record<LLMProvider, ProviderModelsDefinition>>;
+  providerModelsRefreshing: boolean;
+  providerModelErrors?: CommandResultModalProps['providerModelErrors'];
+  providerAuthStatus?: CommandResultModalProps['providerAuthStatus'];
+  onHardRefreshProviderModels: () => void;
+  currentSessionId: string | null;
+  currentPermissionMode?: PermissionMode;
+  getPermissionModesForProvider?: (provider: LLMProvider) => PermissionMode[];
+  getDefaultPermissionModeForProvider?: (provider: LLMProvider) => PermissionMode;
+  onSelectPermissionMode?: (mode: PermissionMode, sessionId?: string | null) => void;
+  onSelectProviderModel: CommandResultModalProps['onSelectProviderModel'];
+  onSwitchSessionTarget: CommandResultModalProps['onSwitchSessionTarget'];
+  onClose: () => void;
+  initialPendingSwitch?: { provider: LLMProvider; model: string } | null;
+};
+
 export function ModelsContent({
   data,
   providerModelCatalog,
@@ -309,21 +405,15 @@ export function ModelsContent({
   providerAuthStatus,
   onHardRefreshProviderModels,
   currentSessionId,
+  currentPermissionMode,
+  getPermissionModesForProvider,
+  getDefaultPermissionModeForProvider,
+  onSelectPermissionMode,
   onSelectProviderModel,
   onSwitchSessionTarget,
   onClose,
-}: {
-  data: ModelCommandData;
-  providerModelCatalog: Partial<Record<LLMProvider, ProviderModelsDefinition>>;
-  providerModelsRefreshing: boolean;
-  providerModelErrors?: CommandResultModalProps['providerModelErrors'];
-  providerAuthStatus?: CommandResultModalProps['providerAuthStatus'];
-  onHardRefreshProviderModels: () => void;
-  currentSessionId: string | null;
-  onSelectProviderModel: CommandResultModalProps['onSelectProviderModel'];
-  onSwitchSessionTarget: CommandResultModalProps['onSwitchSessionTarget'];
-  onClose: () => void;
-}) {
+  initialPendingSwitch = null,
+}: ModelsContentProps) {
   const [query, setQuery] = useState('');
   const [changingModel, setChangingModel] = useState<string | null>(null);
   const [pendingSessionModel, setPendingSessionModel] = useState<string | null>(null);
@@ -336,12 +426,49 @@ export function ModelsContent({
   // from the session's own provider so the user can jump providers entirely.
   const [scopeProvider, setScopeProvider] = useState<LLMProvider | null>(null);
   // Picked target (provider + model) awaiting switch-option confirmation.
-  const [pendingSwitch, setPendingSwitch] = useState<{ provider: LLMProvider; model: string } | null>(null);
+  const [pendingSwitch, setPendingSwitch] = useState<{ provider: LLMProvider; model: string } | null>(initialPendingSwitch);
   const [switchMode, setSwitchMode] = useState<'keep' | SessionHandoffMode>('summary');
   const [saveToFile, setSaveToFile] = useState(false);
   const [saveToMemory, setSaveToMemory] = useState(false);
   const [handoffInFlight, setHandoffInFlight] = useState(false);
   const [handoffError, setHandoffError] = useState<string | null>(null);
+
+  const resolveTargetPermissionModes = useCallback((targetProvider: LLMProvider): PermissionMode[] => {
+    if (getPermissionModesForProvider) {
+      return getPermissionModesForProvider(targetProvider);
+    }
+    return FALLBACK_PERMISSION_MODES[targetProvider] ?? ['default'];
+  }, [getPermissionModesForProvider]);
+
+  const resolveTargetDefaultPermissionMode = useCallback((targetProvider: LLMProvider): PermissionMode => {
+    if (getDefaultPermissionModeForProvider) {
+      return getDefaultPermissionModeForProvider(targetProvider);
+    }
+    const modes = resolveTargetPermissionModes(targetProvider);
+    return modes[0] ?? 'default';
+  }, [getDefaultPermissionModeForProvider, resolveTargetPermissionModes]);
+
+  const resolveInitialPermissionMode = useCallback((targetProvider: LLMProvider): PermissionMode => {
+    const validModes = resolveTargetPermissionModes(targetProvider);
+    if (currentPermissionMode && validModes.includes(currentPermissionMode)) {
+      return currentPermissionMode;
+    }
+    const preferred = readProviderPermissionModePreference(targetProvider, resolveTargetDefaultPermissionMode(targetProvider));
+    if (preferred && validModes.includes(preferred as PermissionMode)) {
+      return preferred as PermissionMode;
+    }
+    return resolveTargetDefaultPermissionMode(targetProvider);
+  }, [currentPermissionMode, resolveTargetDefaultPermissionMode, resolveTargetPermissionModes]);
+
+  const [selectedPermissionMode, setSelectedPermissionMode] = useState<PermissionMode>(() => (
+    resolveInitialPermissionMode((data?.current?.provider || 'claude') as LLMProvider)
+  ));
+
+  useEffect(() => {
+    if (pendingSwitch?.provider) {
+      setSelectedPermissionMode(resolveInitialPermissionMode(pendingSwitch.provider));
+    }
+  }, [pendingSwitch?.provider, resolveInitialPermissionMode]);
   const currentProvider = (data?.current?.provider || 'claude') as LLMProvider;
   const currentModel = data?.current?.model || 'Unknown';
   const providerLabel = data?.current?.providerLabel || getProviderLabel(currentProvider);
@@ -465,6 +592,9 @@ export function ModelsContent({
     if (switchMode === 'keep') {
       const model = pendingSwitch.model;
       setPendingSwitch(null);
+      if (onSelectPermissionMode && selectedPermissionMode) {
+        onSelectPermissionMode(selectedPermissionMode, currentSessionId);
+      }
       void applyModelChange(model);
       return;
     }
@@ -481,6 +611,7 @@ export function ModelsContent({
         targetProvider: pendingSwitch.provider,
         targetModel: pendingSwitch.model,
         mode: switchMode,
+        permissionMode: selectedPermissionMode,
         // A full-transcript handoff always implies saving the file.
         saveToFile: switchMode === 'full' ? true : saveToFile,
         saveToMemory,
@@ -552,6 +683,27 @@ export function ModelsContent({
             {pendingSessionModel && pendingSessionModel !== currentModel && (
               <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-emerald-500 dark:text-emerald-400">
                 → {pendingSessionModel} next
+              </span>
+            )}
+            {currentPermissionMode && (
+              <span
+                data-testid="active-permission-badge"
+                className="inline-flex items-center gap-1.5 rounded-full border border-border/60 bg-background/60 px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
+              >
+                <span
+                  className={`h-1.5 w-1.5 rounded-full ${
+                    currentPermissionMode === 'acceptEdits'
+                      ? 'bg-green-500'
+                      : currentPermissionMode === 'bypassPermissions'
+                        ? 'bg-orange-500'
+                        : currentPermissionMode === 'auto'
+                          ? 'bg-blue-500'
+                          : currentPermissionMode === 'plan'
+                            ? 'bg-primary'
+                            : 'bg-muted-foreground'
+                  }`}
+                />
+                <span>{getPermissionModeCopy(currentProvider, currentPermissionMode).label}</span>
               </span>
             )}
           </p>
@@ -669,6 +821,16 @@ export function ModelsContent({
               <div className="rounded-xl border border-red-500/35 bg-red-500/10 px-3 py-2.5 text-xs leading-5 text-red-600 dark:text-red-300">
                 {handoffError}
               </div>
+            )}
+
+            {pendingSwitch && (
+              <StartingPermissionsPicker
+                provider={pendingSwitch.provider}
+                modes={resolveTargetPermissionModes(pendingSwitch.provider)}
+                selectedMode={selectedPermissionMode}
+                onSelect={setSelectedPermissionMode}
+                disabled={handoffInFlight}
+              />
             )}
 
             <div className="flex flex-wrap items-center justify-end gap-2">
@@ -1102,6 +1264,10 @@ export default function CommandResultModal({
   providerAuthStatus,
   onHardRefreshProviderModels,
   currentSessionId,
+  currentPermissionMode,
+  getPermissionModesForProvider,
+  getDefaultPermissionModeForProvider,
+  onSelectPermissionMode,
   onSelectProviderModel,
   onSwitchSessionTarget,
 }: CommandResultModalProps) {
@@ -1193,6 +1359,10 @@ export default function CommandResultModal({
               providerAuthStatus={providerAuthStatus}
               onHardRefreshProviderModels={onHardRefreshProviderModels}
               currentSessionId={currentSessionId}
+              currentPermissionMode={currentPermissionMode}
+              getPermissionModesForProvider={getPermissionModesForProvider}
+              getDefaultPermissionModeForProvider={getDefaultPermissionModeForProvider}
+              onSelectPermissionMode={onSelectPermissionMode}
               onSelectProviderModel={onSelectProviderModel}
               onSwitchSessionTarget={onSwitchSessionTarget}
               onClose={onClose}

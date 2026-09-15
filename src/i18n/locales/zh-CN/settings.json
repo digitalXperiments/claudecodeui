@@ -90,6 +90,7 @@
     "agentProfiles": "智能体配置",
     "modelProfiles": "模型配置",
     "agentRelay": "Agent Relay",
+    "hooks": "Hooks",
     "globalSkills": "全局技能",
     "appearance": "外观",
     "git": "Git",
@@ -100,6 +101,17 @@
     "plugins": "插件",
     "about": "关于",
     "security": "安全"
+  },
+  "hooksTab": {
+    "title": "Hooks",
+    "description": "将具名说明作为斜杠命令。启用的钩子在聊天中输入 / 时以 /name 显示（与技能和自定义命令相同）。选择或输入后，说明正文会展开进消息。关闭则从菜单隐藏。代理范围仍会过滤哪个聊天提供方能看到该命令。",
+    "instructionLabel": "说明（展开到聊天消息）",
+    "emptyTitle": "还没有斜杠命令钩子",
+    "emptyBody": "创建一条具名说明。在聊天中输入 / 时，已启用的钩子会显示为 /name。选中后会将正文展开为用户消息（并带上命令后的参数）。",
+    "slashBadge": "slash",
+    "enabled": "已启用（显示在 / 菜单）",
+    "count_one": "{{count}} 个钩子",
+    "count_other": "{{count}} 个钩子"
   },
   "notifications": {
     "title": "通知",

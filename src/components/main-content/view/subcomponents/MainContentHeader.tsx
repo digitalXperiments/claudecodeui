@@ -1,7 +1,8 @@
 import { useCallback, useRef, useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Plus } from 'lucide-react';
+import { ChevronDown, Clock, Plus } from 'lucide-react';
 
+import { usePlugins } from '../../../../contexts/PluginsContext';
 import { Button } from '../../../../shared/view/ui';
 import type { MainContentHeaderProps } from '../../types/types';
 
@@ -23,11 +24,14 @@ export default function MainContentHeader({
   onArchiveSession,
   onDeleteSession,
   onNewSession,
+  onShowSettings,
   onLoadMoreSessions,
   isLoadingMoreSessions = false,
   processingSessions,
 }: MainContentHeaderProps) {
   const { t } = useTranslation();
+  const { plugins } = usePlugins();
+  const [newSessionMenuOpen, setNewSessionMenuOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [canScrollLeft, setCanScrollLeft] = useState(false);
   const [canScrollRight, setCanScrollRight] = useState(false);
@@ -72,20 +76,50 @@ export default function MainContentHeader({
     />
   );
 
+  const scheduledPromptPlugin = plugins.find(
+    (plugin) => plugin.name === 'workspace-scheduled-prompts' && plugin.enabled,
+  );
+
   const newSessionButton = isChatTab ? (
-    <Button
-      variant="default"
-      size="sm"
-      className="h-9 w-9 flex-shrink-0 gap-1.5 p-0 text-xs font-medium sm:h-8 sm:w-auto sm:px-3"
-      onClick={() => onNewSession(selectedProject)}
-      title={t('sessions.newSession', { defaultValue: 'New Session' })}
-      aria-label={t('sessions.newSession', { defaultValue: 'New Session' })}
-    >
-      <Plus className="h-4 w-4 sm:h-3.5 sm:w-3.5" />
-      <span className="hidden sm:inline">
-        {t('sessions.newSession', { defaultValue: 'New Session' })}
-      </span>
-    </Button>
+    <div className="relative flex flex-shrink-0">
+      <Button
+        variant="default"
+        size="sm"
+        className="h-9 w-9 gap-1.5 rounded-r-none p-0 text-xs font-medium sm:h-8 sm:w-auto sm:px-3"
+        onClick={() => onNewSession(selectedProject)}
+        title={t('sessions.newSession', { defaultValue: 'New Session' })}
+        aria-label={t('sessions.newSession', { defaultValue: 'New Session' })}
+      >
+        <Plus className="h-4 w-4 sm:h-3.5 sm:w-3.5" />
+        <span className="hidden sm:inline">{t('sessions.newSession', { defaultValue: 'New Session' })}</span>
+      </Button>
+      <Button
+        variant="default"
+        size="sm"
+        className="h-9 w-7 rounded-l-none border-l border-primary-foreground/20 p-0 sm:h-8"
+        onClick={() => setNewSessionMenuOpen((open) => !open)}
+        aria-label={t('mainContent.moreNewSessionOptions', { defaultValue: 'More new session options' })}
+        aria-expanded={newSessionMenuOpen}
+      >
+        <ChevronDown className="h-3.5 w-3.5" />
+      </Button>
+      {newSessionMenuOpen && (
+        <div className="absolute right-0 top-full z-50 mt-1 min-w-52 rounded-md border border-border bg-popover p-1 shadow-lg">
+          <button
+            type="button"
+            className="flex w-full items-center gap-2 rounded-sm px-3 py-2 text-left text-sm hover:bg-accent"
+            onClick={() => {
+              setNewSessionMenuOpen(false);
+              if (scheduledPromptPlugin) setActiveTab(`plugin:${scheduledPromptPlugin.name}` as typeof activeTab);
+              else onShowSettings?.('plugins');
+            }}
+          >
+            <Clock className="h-4 w-4 text-muted-foreground" />
+            <span>{t('mainContent.scheduledPrompt', { defaultValue: 'Scheduled Prompt' })}</span>
+          </button>
+        </div>
+      )}
+    </div>
   ) : null;
 
   const tabScroller = (

@@ -6,7 +6,8 @@
   "type": "module",
   "main": "dist-server/server/index.js",
   "bin": {
-    "cloudcli": "dist-server/server/cli.js"
+    "cloudcli": "dist-server/server/cli.js",
+    "cloudcli-auth": "scripts/auth-relay.mjs"
   },
   "files": [
     "electron/",
@@ -27,6 +28,8 @@
     "url": "https://github.com/siteboon/claudecodeui/issues"
   },
   "scripts": {
+    "auth:relay": "node scripts/auth-relay.mjs",
+    "test:auth-relay": "node --test scripts/tests/auth-relay.test.mjs",
     "dev": "concurrently --kill-others \"npm run server:dev\" \"npm run client\"",
     "predev:isolated": "node -e \"const f=require('node:fs');f.rmSync('tmp/cloudcli/dev-db',{recursive:true,force:true});f.mkdirSync('tmp/cloudcli/dev-db',{recursive:true})\"",
     "dev:isolated": "cross-env DATABASE_PATH=tmp/cloudcli/dev-db/auth.db node scripts/dev-isolated.mjs",
@@ -48,7 +51,7 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p server/tsconfig.json",
     "test:server": "tsx --tsconfig server/tsconfig.json --test \"server/**/tests/**/*.test.ts\" \"server/**/*.test.js\" \"extensions/**/*.test.js\"",
-    "test:client": "tsx --test \"src/components/studio/**/*.test.ts\" \"src/components/studio/**/*.test.tsx\" \"src/components/chat/**/*.test.ts\" \"src/components/chat/**/*.test.tsx\" \"src/components/settings/**/*.test.ts\" \"src/components/settings/**/*.test.tsx\" \"src/components/browser-use/**/*.test.ts\" \"src/components/skills/**/*.test.ts\" \"src/utils/**/*.test.ts\"",
+    "test:client": "tsx --test \"src/components/studio/**/*.test.ts\" \"src/components/studio/**/*.test.tsx\" \"src/components/chat/**/*.test.ts\" \"src/components/chat/**/*.test.tsx\" \"src/components/settings/**/*.test.ts\" \"src/components/settings/**/*.test.tsx\" \"src/components/browser-use/**/*.test.ts\" \"src/components/skills/**/*.test.ts\" \"src/components/bots/**/*.test.ts\" \"src/components/bots/**/*.test.tsx\" \"src/components/integrations/**/*.test.ts\" \"src/components/integrations/**/*.test.tsx\" \"src/utils/**/*.test.ts\"",
     "test": "npm run test:server && npm run test:client",
     "lint": "eslint src/ server/",
     "lint:fix": "eslint src/ server/ --fix",

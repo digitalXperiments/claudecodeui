@@ -81,6 +81,7 @@ export type MainContentHeaderProps = {
   onArchiveSession?: (session: ProjectSession) => void | Promise<void>;
   onDeleteSession?: (session: ProjectSession) => void | Promise<void>;
   onNewSession: (project: Project) => void;
+  onShowSettings?: (tab?: SettingsMainTab) => void;
   onLoadMoreSessions?: (projectId: string) => void | Promise<void>;
   isLoadingMoreSessions?: boolean;
   processingSessions?: import('../../../hooks/useSessionProtection').SessionActivityMap;

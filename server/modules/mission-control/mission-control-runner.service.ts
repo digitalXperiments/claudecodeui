@@ -85,13 +85,17 @@ function coerceDrafts(raw: unknown): McDraftItem[] {
   return drafts;
 }
 
+/**
+ * True only for the built-in Action Centre "Slack" reply-drafting section
+ * (and any section deliberately modeled the same way), never for a generic
+ * section that merely happens to use Slack as a produce/resolve tool (e.g.
+ * "Jira Drafts" pulling Slack threads to triage into tickets). A substring
+ * match on title/tool names used to gate this and silently discarded every
+ * draft from any such section — the `draft_reply` action kind is the actual,
+ * purpose-built signature of the reply-drafting workflow.
+ */
 function isSlackSection(section: McSection): boolean {
-  const sectionSignals = [
-    section.title,
-    ...section.produce_tools,
-    ...section.resolve_tools,
-  ].join(' ').toLowerCase();
-  return /\bslack\b/.test(sectionSignals);
+  return section.actions.some((action) => action.kind === 'draft_reply');
 }
 
 /**

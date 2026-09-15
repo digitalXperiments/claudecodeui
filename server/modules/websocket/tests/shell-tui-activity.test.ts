@@ -18,6 +18,27 @@ test('Grok idle prompt with shortcut chrome is idle, not a live turn', () => {
   assert.equal(classifyTuiActivity(frame), 'idle');
 });
 
+test('Grok idle footer with leftover Thinking text is idle', () => {
+  const frame = [
+    'Thinking',
+    'Yes. Each Action Centre draft now shows its section name.',
+    '> ',
+    'Ctrl+P  Shift+Tab',
+  ].join('\n');
+
+  assert.equal(classifyTuiActivity(frame), 'idle');
+});
+
+test('Grok Ctrl+X stop chrome is a live turn even with Shift+Tab on screen', () => {
+  const frame = [
+    'Thinking…',
+    'Ctrl+X stop',
+    'Shift+Tab',
+  ].join('\n');
+
+  assert.equal(classifyTuiActivity(frame), 'busy');
+});
+
 test('Claude-style interrupt chrome is busy', () => {
   const frame = [
     '✶ Thinking…',

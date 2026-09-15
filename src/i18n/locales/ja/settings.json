@@ -90,6 +90,7 @@
     "agentProfiles": "エージェントプロファイル",
     "modelProfiles": "モデルプロファイル",
     "agentRelay": "Agent Relay",
+    "hooks": "フック",
     "globalSkills": "グローバルスキル",
     "appearance": "外観",
     "git": "Git",
@@ -99,6 +100,17 @@
     "plugins": "プラグイン",
     "about": "概要",
     "security": "セキュリティ"
+  },
+  "hooksTab": {
+    "title": "フック",
+    "description": "名前付き指示をスラッシュコマンドとして使います。有効なフックはチャットで / を入力すると /name として表示されます（スキルやカスタムコマンドと同様）。選ぶか入力すると指示本文がメッセージに展開されます。無効にするとメニューから隠れます。エージェント範囲は、どのチャットプロバイダーにコマンドが見えるかを絞ります。",
+    "instructionLabel": "指示（チャットメッセージに展開）",
+    "emptyTitle": "スラッシュコマンドのフックはまだありません",
+    "emptyBody": "名前付きの指示を作成してください。チャットで / を入力すると、有効なフックが /name として表示されます。選択すると本文がユーザーメッセージに展開されます（コマンド後の引数も付きます）。",
+    "slashBadge": "slash",
+    "enabled": "有効（/ メニューに表示）",
+    "count_one": "{{count}} 件のフック",
+    "count_other": "{{count}} 件のフック"
   },
   "notifications": {
     "title": "通知",

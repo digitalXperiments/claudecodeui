@@ -39,6 +39,7 @@ export type ClaudeAuthIo = {
   platform: () => NodeJS.Platform;
   homedir: () => string;
   env: () => NodeJS.ProcessEnv;
+  username?: () => string | null;
   now: () => number;
   keychainTimeoutMs: () => number;
   unrefTimers?: boolean;
@@ -65,12 +66,21 @@ const AUTHENTICATED_CACHE_TTL_MS = 30_000;
 const UNAUTHENTICATED_CACHE_TTL_MS = 3_000;
 const KEYCHAIN_TIMEOUT_MS = 2_000;
 
+const readOsUsername = (): string | null => {
+  try {
+    return os.userInfo().username || process.env.USER || null;
+  } catch {
+    return process.env.USER || null;
+  }
+};
+
 const defaultAuthIo = (): ClaudeAuthIo => ({
   readFile: (filePath, encoding) => readFile(filePath, encoding),
   spawn,
   platform: () => process.platform,
   homedir: () => os.homedir(),
   env: () => process.env,
+  username: () => readOsUsername(),
   now: () => Date.now(),
   keychainTimeoutMs: () => KEYCHAIN_TIMEOUT_MS,
 });
@@ -398,86 +408,99 @@ export class ClaudeProviderAuth implements IProviderAuth {
       return { kind: 'missing' };
     }
 
-    return new Promise((resolve) => {
-      let done = false;
-      let child: ReturnType<typeof spawn> | undefined;
-      const finish = (value: KeychainRead) => {
-        if (done) return;
-        done = true;
-        clearTimeout(timeout);
-        resolve(value);
-      };
+    const username = authIo().username?.() ?? readOsUsername();
 
-      const timeout = setTimeout(() => {
-        try {
-          child?.kill();
-        } catch {
-          // ignore
+    const queryKeychain = (account?: string): Promise<KeychainRead> => {
+      return new Promise((resolve) => {
+        let done = false;
+        let child: ReturnType<typeof spawn> | undefined;
+        const finish = (value: KeychainRead) => {
+          if (done) return;
+          done = true;
+          clearTimeout(timeout);
+          resolve(value);
+        };
+
+        const timeout = setTimeout(() => {
+          try {
+            child?.kill();
+          } catch {
+            // ignore
+          }
+          finish({ kind: 'inconclusive', error: 'Claude keychain credential read timed out' });
+        }, authIo().keychainTimeoutMs());
+        if (authIo().unrefTimers !== false) {
+          timeout.unref?.();
         }
-        finish({ kind: 'inconclusive', error: 'Claude keychain credential read timed out' });
-      }, authIo().keychainTimeoutMs());
-      if (authIo().unrefTimers !== false) {
-        timeout.unref?.();
-      }
 
-      try {
-        child = authIo().spawn('security', [
-          'find-generic-password',
-          '-s',
-          'Claude Code-credentials',
-          '-w',
-        ], { stdio: ['ignore', 'pipe', 'pipe'] });
-      } catch (error) {
-        finish({
-          kind: 'inconclusive',
-          error: error instanceof Error
-            ? `Failed to spawn Claude keychain lookup: ${error.message}`
-            : 'Failed to spawn Claude keychain lookup',
-        });
-        return;
-      }
+        const args = ['find-generic-password', '-s', 'Claude Code-credentials'];
+        if (account) {
+          args.push('-a', account);
+        }
+        args.push('-w');
 
-      let stdout = '';
-      child.stdout?.on('data', (chunk: Buffer) => {
-        stdout += chunk.toString();
-      });
-      child.on('error', (error) => {
-        finish({
-          kind: 'inconclusive',
-          error: error instanceof Error
-            ? `Claude keychain lookup failed: ${error.message}`
-            : 'Claude keychain lookup failed',
-        });
-      });
-      child.on('close', (code) => {
-        if (code === KEYCHAIN_ITEM_NOT_FOUND) {
-          finish({ kind: 'missing' });
+        try {
+          child = authIo().spawn('security', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+        } catch (error) {
+          finish({
+            kind: 'inconclusive',
+            error: error instanceof Error
+              ? `Failed to spawn Claude keychain lookup: ${error.message}`
+              : 'Failed to spawn Claude keychain lookup',
+          });
           return;
         }
-        if (code !== 0 || !stdout.trim()) {
-          if (code !== 0) {
-            finish({
-              kind: 'inconclusive',
-              error: `Claude keychain lookup exited with code ${code}`,
-            });
+
+        let stdout = '';
+        child.stdout?.on('data', (chunk: Buffer) => {
+          stdout += chunk.toString();
+        });
+        child.on('error', (error) => {
+          finish({
+            kind: 'inconclusive',
+            error: error instanceof Error
+              ? `Claude keychain lookup failed: ${error.message}`
+              : 'Claude keychain lookup failed',
+          });
+        });
+        child.on('close', (code) => {
+          if (code === KEYCHAIN_ITEM_NOT_FOUND) {
+            finish({ kind: 'missing' });
             return;
           }
-          finish({ kind: 'missing' });
-          return;
-        }
-        try {
-          finish({
-            kind: 'found',
-            status: this.credentialsFromOAuthRecord(
-              JSON.parse(stdout.trim()),
-              'Claude CLI is not authenticated. Run claude auth login.',
-            ),
-          });
-        } catch {
-          finish({ kind: 'inconclusive', error: 'Claude keychain credentials were not valid JSON' });
-        }
+          if (code !== 0 || !stdout.trim()) {
+            if (code !== 0) {
+              finish({
+                kind: 'inconclusive',
+                error: `Claude keychain lookup exited with code ${code}`,
+              });
+              return;
+            }
+            finish({ kind: 'missing' });
+            return;
+          }
+          try {
+            finish({
+              kind: 'found',
+              status: this.credentialsFromOAuthRecord(
+                JSON.parse(stdout.trim()),
+                'Claude CLI is not authenticated. Run claude auth login.',
+              ),
+            });
+          } catch {
+            finish({ kind: 'inconclusive', error: 'Claude keychain credentials were not valid JSON' });
+          }
+        });
       });
-    });
+    };
+
+    if (username) {
+      const byUser = await queryKeychain(username);
+      if (byUser.kind !== 'missing') {
+        return byUser;
+      }
+    }
+    return queryKeychain();
   }
 
   /**

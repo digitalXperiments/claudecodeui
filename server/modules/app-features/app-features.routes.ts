@@ -8,10 +8,10 @@ import { AppError, asyncHandler } from '@/shared/utils.js';
 
 const router = express.Router();
 
-function readOptionalBoolean(value: unknown): boolean | undefined {
+function readOptionalBoolean(value: unknown, field: string): boolean | undefined {
   if (value === undefined) return undefined;
   if (typeof value === 'boolean') return value;
-  throw new AppError('kanbanEnabled must be a boolean', {
+  throw new AppError(`${field} must be a boolean`, {
     code: 'FEATURES_INVALID',
     statusCode: 400,
   });
@@ -42,7 +42,8 @@ router.put(
   asyncHandler(async (req, res) => {
     const body = (req.body ?? {}) as Record<string, unknown>;
     const features = updateAppFeatures({
-      kanbanEnabled: readOptionalBoolean(body.kanbanEnabled),
+      kanbanEnabled: readOptionalBoolean(body.kanbanEnabled, 'kanbanEnabled'),
+      botsEnabled: readOptionalBoolean(body.botsEnabled, 'botsEnabled'),
       spendSoftCostUsd: readOptionalCost(body.spendSoftCostUsd, 'spendSoftCostUsd'),
       spendHardCostUsd: readOptionalCost(body.spendHardCostUsd, 'spendHardCostUsd'),
     });

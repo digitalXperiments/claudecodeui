@@ -269,6 +269,7 @@ function MainContent({
         onArchiveSession={onArchiveSession}
         onDeleteSession={onDeleteSession}
         onNewSession={onNewSession}
+        onShowSettings={onShowSettings}
         onLoadMoreSessions={onLoadMoreSessions}
         isLoadingMoreSessions={isLoadingMoreSessions}
         processingSessions={processingSessions}

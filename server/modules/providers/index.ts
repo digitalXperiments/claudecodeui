@@ -11,6 +11,8 @@ export { providerSkillsService } from './services/skills.service.js';
 export { providerMcpService } from './services/mcp.service.js';
 export { mcpCatalogService } from './services/mcp-catalog.service.js';
 export { obsidianSettingsService } from './services/obsidian-settings.service.js';
+// Vault-escape guard, reused by any module that writes notes into the vault.
+export { resolveVaultTargetDir } from './shared/memory/memory.scaffold.js';
 export { projectSkillsService } from './services/project-skills.service.js';
 export { globalSkillsService } from './services/global-skills.service.js';
 export { projectMemoryService, getMemoryPreamble, configureMemoryCurationRuntimes } from './services/project-memory.service.js';

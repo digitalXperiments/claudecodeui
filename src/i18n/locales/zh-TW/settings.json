@@ -90,6 +90,7 @@
     "agentProfiles": "代理設定檔",
     "modelProfiles": "模型設定檔",
     "agentRelay": "Agent Relay",
+    "hooks": "Hooks",
     "globalSkills": "全域技能",
     "appearance": "外觀",
     "git": "Git",
@@ -100,6 +101,17 @@
     "plugins": "外掛",
     "about": "關於",
     "security": "安全性"
+  },
+  "hooksTab": {
+    "title": "Hooks",
+    "description": "將具名說明作為斜線指令。啟用的鉤子在聊天中輸入 / 時以 /name 顯示（與技能和自訂指令相同）。選擇或輸入後，說明本文會展開進訊息。關閉則從選單隱藏。代理範圍仍會過濾哪個聊天提供者能看到該指令。",
+    "instructionLabel": "說明（展開到聊天訊息）",
+    "emptyTitle": "還沒有斜線指令鉤子",
+    "emptyBody": "建立一條具名說明。在聊天中輸入 / 時，已啟用的鉤子會顯示為 /name。選取後會將本文展開為使用者訊息（並帶上指令後的參數）。",
+    "slashBadge": "slash",
+    "enabled": "已啟用（顯示在 / 選單）",
+    "count_one": "{{count}} 個鉤子",
+    "count_other": "{{count}} 個鉤子"
   },
   "notifications": {
     "title": "通知",

@@ -34,6 +34,7 @@ import { escapeRegExp } from '../utils/chatFormatting';
 
 import { useFileMentions } from './useFileMentions';
 import { type SlashCommand, useSlashCommands } from './useSlashCommands';
+import { expandHookInstruction } from '../utils/hookSlash';
 
 const PROVIDER_MODEL_LABELS: Record<LLMProvider, string> = {
   claude: 'Claude',
@@ -92,7 +93,7 @@ interface UseChatComposerStateArgs {
   /** Live session store so the hook can decide when there is nothing to distill. */
   sessionStore: SessionStore;
   scrollToBottom: () => void;
-  addMessage: (msg: ChatMessage) => void;
+  addMessage: (msg: ChatMessage, targetSessionId?: string, targetProvider?: LLMProvider) => void;
   setIsUserScrolledUp: (isScrolledUp: boolean) => void;
   setPendingPermissionRequests: Dispatch<SetStateAction<PendingPermissionRequest[]>>;
   /** Whether the active provider accepts inline image attachments (vision). */
@@ -460,8 +461,19 @@ export function useChatComposerState({
       try {
         const effectiveInput = rawInput ?? input;
         const commandMatch = effectiveInput.match(new RegExp(`${escapeRegExp(command.name)}\\s*(.*)`));
-        const args =
-          commandMatch && commandMatch[1] ? commandMatch[1].trim().split(/\s+/) : [];
+        const remainder = commandMatch && commandMatch[1] ? commandMatch[1].trim() : '';
+        const args = remainder ? remainder.split(/\s+/) : [];
+
+        if (command.type === 'hook' || command.metadata?.type === 'hook') {
+          const instruction =
+            typeof command.metadata?.instruction === 'string' ? command.metadata.instruction : '';
+          await handleCustomCommand({
+            type: 'custom',
+            content: expandHookInstruction(instruction, remainder),
+            hasBashCommands: false,
+          });
+          return;
+        }
 
         // The `/api/commands/execute` context sends `projectId` now instead of
         // a folder-derived project name; the path is still included verbatim.
@@ -974,7 +986,9 @@ export function useChatComposerState({
         sendOptions.effort as string,
       );
 
-      addMessage(userMessage);
+      // React navigation has not necessarily committed after session creation.
+      // Write the echo to the same session as chat.send, not the old render's view.
+      addMessage(userMessage, targetSessionId, provider);
       // Mark this request as processing in the per-session activity map (the
       // single source of truth the indicator derives from). The id is always
       // concrete at this point — no pending placeholder exists anymore.
@@ -984,7 +998,7 @@ export function useChatComposerState({
       });
 
       setIsUserScrolledUp(false);
-      setTimeout(() => scrollToBottom(), 100);
+      scrollToBottom();
 
       setInput('');
       inputValueRef.current = '';

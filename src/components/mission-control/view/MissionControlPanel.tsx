@@ -1249,18 +1249,25 @@ export default function MissionControlPanel({
                           <p className="mt-0.5 break-words text-xs text-muted-foreground">{item.summary}</p>
                         ) : null}
                         <p className="mt-1 break-words text-[10px] text-muted-foreground/80">
-                          {section?.title ?? item.section_id}
-                          {item.provider ? ` · ${item.provider}` : ''}
+                          {item.provider ? `${item.provider}` : ''}
                           {item.model ? `/${item.model}` : ''}
-                          {' · '}
+                          {item.provider || item.model ? ' · ' : ''}
                           {new Date(item.created_at).toLocaleString()}
                         </p>
                       </div>
-                      <span
-                        className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium capitalize ${statusBadgeClass(item.status)}`}
-                      >
-                        {item.status}
-                      </span>
+                      <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
+                        <span
+                          className="max-w-[12rem] truncate rounded-full border border-border bg-muted/70 px-2 py-0.5 text-[10px] font-medium text-muted-foreground"
+                          title={section?.title ?? item.section_id}
+                        >
+                          {section?.title ?? item.section_id}
+                        </span>
+                        <span
+                          className={`rounded-full px-2 py-0.5 text-[10px] font-medium capitalize ${statusBadgeClass(item.status)}`}
+                        >
+                          {item.status}
+                        </span>
+                      </div>
                     </div>
 
                     {item.error ? (

@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
 import { closeConnection, initializeDatabase, sessionsDb } from '@/modules/database/index.js';
+import { configureHooksStorePath, hooksStore } from '@/modules/hooks/hooks.store.js';
 import { chatRunRegistry } from '@/modules/websocket/services/chat-run-registry.service.js';
 import { startProviderRun } from '@/modules/websocket/services/chat-run-starter.service.js';
 import { connectedClients } from '@/modules/websocket/services/websocket-state.service.js';
@@ -195,5 +197,52 @@ test('an injectFn that throws falls back to RUN_IN_PROGRESS', async () => {
       userId: null,
     });
     assert.deepEqual(result, { ok: false, code: 'RUN_IN_PROGRESS' });
+  });
+});
+
+test('startProviderRun does not prepend SessionStart hooks to the first prompt', async () => {
+  await withIsolatedDatabase(async () => {
+    const hooksDir = path.join('tmp', 'cloudcli', 'hooks-tests');
+    fs.mkdirSync(hooksDir, { recursive: true });
+    const hooksPath = path.join(hooksDir, `hooks-starter-${Date.now()}.json`);
+    configureHooksStorePath(hooksPath);
+    try {
+      hooksStore.create({
+        name: 'House style',
+        instruction: 'Always reply in British English.',
+        provider: 'all',
+      });
+
+      sessionsDb.createAppSession('app-hooks-1', 'grok', '/workspace/demo');
+      const connection = new FakeConnection();
+      const spawnCalls: string[] = [];
+      const spawnFn = async (command: string) => {
+        spawnCalls.push(command);
+      };
+
+      const started = await startProviderRun({
+        appSessionId: 'app-hooks-1',
+        provider: 'grok',
+        providerSessionId: null,
+        projectPath: '/workspace/demo',
+        spawnFn,
+        content: 'Fix the test.',
+        options: {},
+        connection,
+        userId: null,
+      });
+      assert.equal(started.ok, true);
+      if (started.ok) await started.completion;
+
+      assert.equal(spawnCalls.length, 1);
+      assert.equal(spawnCalls[0], 'Fix the test.');
+    } finally {
+      configureHooksStorePath(null);
+      try {
+        fs.unlinkSync(hooksPath);
+      } catch {
+        // ignore
+      }
+    }
   });
 });

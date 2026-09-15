@@ -90,6 +90,7 @@
     "agentProfiles": "Profili agente",
     "modelProfiles": "Profili modello",
     "agentRelay": "Agent Relay",
+    "hooks": "Hooks",
     "globalSkills": "Skill globali",
     "appearance": "Aspetto",
     "git": "Git",
@@ -99,6 +100,17 @@
     "plugins": "Plugin",
     "about": "Informazioni",
     "security": "Sicurezza"
+  },
+  "hooksTab": {
+    "title": "Hooks",
+    "description": "Istruzioni con nome come comandi slash. Gli hook abilitati appaiono in chat quando digiti / come /nome (come skill e comandi personalizzati). Sceglierli o digitarli espande il testo nel messaggio. Disabilita un hook per nasconderlo dal menu. L’ambito agente filtra quale provider di chat vede il comando.",
+    "instructionLabel": "Istruzione (inserita nel messaggio di chat)",
+    "emptyTitle": "Nessun hook slash ancora",
+    "emptyBody": "Crea un’istruzione con nome. Quando digiti / in chat, gli hook abilitati appaiono come /nome. Selezionarne uno inserisce il corpo nel messaggio utente (più gli argomenti dopo il comando).",
+    "slashBadge": "slash",
+    "enabled": "Abilitato (elenco nel menu /)",
+    "count_one": "{{count}} hook",
+    "count_other": "{{count}} hook"
   },
   "notifications": {
     "title": "Notifiche",

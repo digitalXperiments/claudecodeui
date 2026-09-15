@@ -6,7 +6,12 @@ import { useTasksSettings } from '../../../contexts/TasksSettingsContext';
 import { useWebSocket } from '../../../contexts/WebSocketContext';
 import PermissionContext from '../../../contexts/PermissionContext';
 import { QuickSettingsPanel } from '../../quick-settings-panel';
-import type { ChatInterfaceProps, Provider  } from '../types/types';
+import {
+  PERMISSION_MODE_CHANGED_EVENT,
+  type PermissionModeChangedDetail,
+} from '../../../constants/permissionModeEvents';
+import { writeProviderPermissionModePreference } from '../../../utils/providerPermissionPreference';
+import type { ChatInterfaceProps, PermissionMode, Provider } from '../types/types';
 import { useChatProviderState } from '../hooks/useChatProviderState';
 import { normalizedToChatMessages } from '../hooks/useChatMessages';
 import { useChatSessionState } from '../hooks/useChatSessionState';
@@ -129,9 +134,12 @@ function ChatInterface({
     antigravityModel,
     setAntigravityModel,
     permissionMode,
+    setPermissionMode,
     pendingPermissionRequests,
-    setPendingPermissionRequests,
     cyclePermissionMode,
+    getPermissionModesForProvider,
+    getDefaultPermissionModeForProvider,
+    setPendingPermissionRequests,
     providerModelCatalog,
     providerModelCacheCatalog,
     providerModelsLoading,
@@ -218,7 +226,6 @@ function ChatInterface({
     scrollContainerRef,
     scrollToBottom,
     scrollToBottomAndReset,
-    handleScroll,
   } = useChatSessionState({
     selectedProject,
     selectedSession,
@@ -273,6 +280,7 @@ function ChatInterface({
 
   const handleCyclePermissionMode = useCallback(() => {
     const nextMode = cyclePermissionMode();
+    writeProviderPermissionModePreference(provider, nextMode);
     const sessionId = currentSessionId || selectedSession?.id || null;
     if (!sessionId) return;
 
@@ -292,6 +300,42 @@ function ChatInterface({
       });
     }
   }, [cyclePermissionMode, currentSessionId, selectedSession?.id, sendMessage]);
+
+  const handleSelectPermissionMode = useCallback((targetMode: PermissionMode, targetSessionId?: string | null) => {
+    const validModes = getPermissionModesForProvider(provider);
+    if (!validModes.includes(targetMode)) {
+      return;
+    }
+    setPermissionMode(targetMode);
+    localStorage.setItem(`permissionMode-last-${provider}`, targetMode);
+    writeProviderPermissionModePreference(provider, targetMode);
+
+    const sessionId = targetSessionId || currentSessionId || selectedSession?.id || null;
+    if (sessionId) {
+      localStorage.setItem(`permissionMode-${sessionId}`, targetMode);
+      const sent = sendMessage({
+        type: 'chat.session-preferences',
+        sessionId,
+        preferences: { permissionMode: targetMode },
+      });
+      if (!sent) {
+        void authenticatedFetch(`/api/providers/sessions/${encodeURIComponent(sessionId)}/runtime-preferences`, {
+          method: 'PUT',
+          body: JSON.stringify({ permissionMode: targetMode }),
+        }).catch((error) => {
+          console.error('Failed to persist session permission mode:', error);
+        });
+      }
+    }
+
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(
+        new CustomEvent<PermissionModeChangedDetail>(PERMISSION_MODE_CHANGED_EVENT, {
+          detail: { provider, mode: targetMode, sessionId },
+        }),
+      );
+    }
+  }, [getPermissionModesForProvider, provider, setPermissionMode, currentSessionId, selectedSession?.id, sendMessage]);
 
   const handleSaveAsSkill = useCallback(() => {
     if (isReadOnlyWorkerSession) {
@@ -418,13 +462,17 @@ function ChatInterface({
       throw new Error('Select a project before switching providers.');
     }
 
+    const chosenPermissionMode = request.permissionMode
+      ? resolvePermissionModeForProvider(request.targetProvider, request.permissionMode)
+      : resolvePermissionModeForProvider(request.targetProvider, permissionMode);
+
     const data = (await createSessionHandoff(request.sourceSessionId, {
       targetProvider: request.targetProvider,
       targetModel: request.targetModel,
       mode: request.mode,
       saveToFile: request.saveToFile,
       saveToMemory: request.saveToMemory,
-      permissionMode: resolvePermissionModeForProvider(request.targetProvider, permissionMode),
+      permissionMode: chosenPermissionMode,
     })) as {
       sessionId?: string;
       provider?: string;
@@ -455,6 +503,18 @@ function ChatInterface({
       localStorage.setItem(`${targetProvider}-model-${newSessionId}`, targetModel);
     }
 
+    setPermissionMode(chosenPermissionMode);
+    localStorage.setItem(`permissionMode-${newSessionId}`, chosenPermissionMode);
+    localStorage.setItem(`permissionMode-last-${targetProvider}`, chosenPermissionMode);
+    writeProviderPermissionModePreference(targetProvider, chosenPermissionMode);
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(
+        new CustomEvent<PermissionModeChangedDetail>(PERMISSION_MODE_CHANGED_EVENT, {
+          detail: { provider: targetProvider, mode: chosenPermissionMode, sessionId: newSessionId },
+        }),
+      );
+    }
+
     // Same establishment path as the first-message flow: records the id
     // locally, navigates to /session/:id, and upserts the sidebar entry.
     handleSessionEstablished(newSessionId, {
@@ -481,6 +541,7 @@ function ChatInterface({
   }, [
     selectedProject,
     setProvider,
+    setPermissionMode,
     handleSessionEstablished,
     permissionMode,
     resolvePermissionModeForProvider,
@@ -567,7 +628,7 @@ function ChatInterface({
       canInterrupt: true,
     });
     setIsUserScrolledUp(false);
-    setTimeout(() => scrollToBottom(), 100);
+    scrollToBottom();
   }, [
     pendingHandoffSend,
     selectedSession?.id,
@@ -790,8 +851,6 @@ function ChatInterface({
         <ChatMessagesPane
           readOnly={isReadOnlyWorkerSession}
           scrollContainerRef={scrollContainerRef}
-          onWheel={handleScroll}
-          onTouchMove={handleScroll}
           isLoadingSessionMessages={isLoadingSessionMessages}
           isProcessing={isProcessing}
           hasActivityIndicator={hasActivityIndicator}
@@ -996,6 +1055,10 @@ function ChatInterface({
         providerAuthStatus={providerAuthStatus}
         onHardRefreshProviderModels={hardRefreshProviderModels}
         currentSessionId={currentSessionId || selectedSession?.id || null}
+        currentPermissionMode={permissionMode}
+        getPermissionModesForProvider={getPermissionModesForProvider}
+        getDefaultPermissionModeForProvider={getDefaultPermissionModeForProvider}
+        onSelectPermissionMode={handleSelectPermissionMode}
         onSelectProviderModel={selectProviderModel}
         onSwitchSessionTarget={handleSwitchSessionTarget}
       />

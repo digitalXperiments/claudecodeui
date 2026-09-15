@@ -136,3 +136,23 @@ test('computeMerged keeps realtime rows the transcript does not have yet', () =>
     1,
   );
 });
+
+
+test('live updates preserve provider transcript order despite non-monotonic timestamps', () => {
+  const server = [
+    text('user', 'question', { timestamp: '2026-01-01T00:00:03Z' }),
+    text('assistant', 'answer', { timestamp: '2026-01-01T00:00:01Z' }),
+  ];
+  const live = text('assistant', 'next answer', { timestamp: '2026-01-01T00:00:04Z' });
+  assert.deepEqual(computeMerged(server, [live]).map(row => row.id), [...server, live].map(row => row.id));
+});
+
+test('live socket order survives equal timestamps and clock corrections', () => {
+  const server = [text('user', 'question', { timestamp: '2026-01-01T00:00:00Z' })];
+  const live = [
+    text('assistant', 'first', { timestamp: '2026-01-01T00:00:03Z' }),
+    text('assistant', 'second', { timestamp: '2026-01-01T00:00:01Z' }),
+    text('assistant', 'third', { timestamp: '2026-01-01T00:00:01Z' }),
+  ];
+  assert.deepEqual(computeMerged(server, live).map(row => row.id), [...server, ...live].map(row => row.id));
+});

@@ -1,11 +1,13 @@
 import { useMemo, useState } from 'react';
 import {
+  Plug,
   Bell,
   Bot,
   BrainCircuit,
   ChevronDown,
   ChevronRight,
   FileCode2,
+  ScrollText,
   FlaskConical,
   GitBranch,
   Info,
@@ -64,7 +66,9 @@ const NAV_GROUPS: NavGroup[] = [
     label: 'Context & tools',
     items: [
       { id: 'mcp', labelKey: 'mainTabs.mcpServers', fallbackLabel: 'MCP', keywords: 'servers tools integrations', icon: Server },
+      { id: 'integrations', labelKey: 'mainTabs.integrations', fallbackLabel: 'Integrations', keywords: 'gmail calendar drive slack x oauth connect accounts', icon: Plug },
       { id: 'skills', labelKey: 'mainTabs.skills', fallbackLabel: 'Skills', keywords: 'instructions skill md', icon: FileCode2 },
+      { id: 'hooks', labelKey: 'mainTabs.hooks', fallbackLabel: 'Hooks', keywords: 'session start instructions routines', icon: ScrollText },
       { id: 'memory', labelKey: 'mainTabs.memory', fallbackLabel: 'Memory', keywords: 'obsidian vault context', icon: BrainCircuit },
     ],
   },

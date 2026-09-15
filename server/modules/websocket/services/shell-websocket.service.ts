@@ -1101,10 +1101,13 @@ export function handleShellConnection(
       return;
     }
 
-    // The client closed (tab switch / unmount) but the PTY stays alive for
-    // the reconnect window. Sync whatever the TUI already wrote so the Chat
-    // tab reflects shell work immediately on return.
+    // The client closed (tab switch / unmount / Chatbar taking over) but the
+    // PTY stays alive for the reconnect window. Running-state must follow the
+    // live socket, not the parked process — otherwise Chat keeps showing
+    // "Shell" after the turn already finished.
     captureShellSessionSync(dependencies, session);
+    clearTuiIdleTimer(ptySessionKey);
+    shellSessionRegistry.unregister(ptySessionKey);
 
     session.ws = null;
     if (session.timeoutId) {

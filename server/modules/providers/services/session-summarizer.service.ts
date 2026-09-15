@@ -7,6 +7,7 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 
 import { providerAuthService } from '@/modules/providers/services/provider-auth.service.js';
 import { resolveClaudeCodeExecutablePath } from '@/shared/claude-cli-path.js';
+import { applyClaudeSpawnAuthEnv } from '@/shared/claude-spawn-auth-env.js';
 import type { LLMProvider } from '@/shared/types.js';
 
 export type SummarizeConversationInput = {
@@ -56,15 +57,18 @@ const summarizeWithClaudeSdk = async (prompt: string, projectPath: string): Prom
   const timeout = setTimeout(() => abortController.abort(), SUMMARIZER_TIMEOUT_MS);
 
   try {
+    const sdkOptions = {
+      cwd: projectPath,
+      tools: [] as string[],
+      maxTurns: 1,
+      abortController,
+      env: { ...process.env } as NodeJS.ProcessEnv,
+      pathToClaudeCodeExecutable: resolveClaudeCodeExecutablePath(process.env.CLAUDE_CLI_PATH),
+    };
+    await applyClaudeSpawnAuthEnv(sdkOptions);
     const instance = query({
       prompt,
-      options: {
-        cwd: projectPath,
-        tools: [],
-        maxTurns: 1,
-        abortController,
-        pathToClaudeCodeExecutable: resolveClaudeCodeExecutablePath(process.env.CLAUDE_CLI_PATH),
-      },
+      options: sdkOptions,
     });
 
     for await (const message of instance) {

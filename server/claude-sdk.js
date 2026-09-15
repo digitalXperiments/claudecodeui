@@ -23,6 +23,7 @@ import { buildClaudeUserContent, normalizeImageDescriptors } from './shared/imag
 import { CLAUDE_FALLBACK_MODELS } from './modules/providers/list/claude/claude-models.provider.js';
 import { providerModelsService } from './modules/providers/services/provider-models.service.js';
 import { resolveClaudeCodeExecutablePath } from './shared/claude-cli-path.js';
+import { applyClaudeSpawnAuthEnv } from './shared/claude-spawn-auth-env.js';
 import {
   createNotificationEvent,
   notifyRunFailed,
@@ -31,6 +32,7 @@ import {
 } from './services/notification-orchestrator.js';
 import { sessionsService } from './modules/providers/services/sessions.service.js';
 import { getMemoryPreamble } from './modules/providers/services/project-memory.service.js';
+
 import { providerAuthService } from './modules/providers/services/provider-auth.service.js';
 import { obsidianSettingsService } from './modules/providers/services/obsidian-settings.service.js';
 import {
@@ -843,6 +845,10 @@ async function queryClaudeSDK(command, options = {}, ws) {
       model: resolvedModel || options.model,
       effortModels,
     });
+    // LaunchAgent / non-TTY SDK children cannot use Claude's native keychain
+    // library even when `security` can read the same item. Copy the live
+    // access token so the session shell authenticates like the Terminal TUI.
+    await applyClaudeSpawnAuthEnv(sdkOptions);
 
     let mcpServers = await loadMcpConfig(options.cwd);
     if (options.relayWorker && mcpServers) {

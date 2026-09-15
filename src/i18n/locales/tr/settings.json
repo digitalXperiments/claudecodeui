@@ -90,6 +90,7 @@
     "agentProfiles": "Ajan profilleri",
     "modelProfiles": "Model profilleri",
     "agentRelay": "Agent Relay",
+    "hooks": "Hooks",
     "globalSkills": "Küresel Yetenekler",
     "appearance": "Görünüm",
     "git": "Git",
@@ -100,6 +101,17 @@
     "plugins": "Eklentiler",
     "about": "Hakkında",
     "security": "Güvenlik"
+  },
+  "hooksTab": {
+    "title": "Hooks",
+    "description": "Adlandırılmış yönergeler slash komutları olarak. Etkin kancalar sohbette / yazınca /name olarak görünür (beceriler ve özel komutlar gibi). Seçmek veya yazmak yönerge gövdesini mesaja açar. Kapatmak menüden gizler. Ajan kapsamı komutu hangi sohbet sağlayıcısının göreceğini süzgeçler.",
+    "instructionLabel": "Yönerge (sohbet mesajına açılır)",
+    "emptyTitle": "Henüz slash komut kancası yok",
+    "emptyBody": "Adlandırılmış bir yönerge oluşturun. Sohbette / yazınca etkin kancalar /name olarak görünür. Seçmek gövdeyi kullanıcı mesajına açar (komuttan sonraki bağımsız değişkenlerle birlikte).",
+    "slashBadge": "slash",
+    "enabled": "Etkin (/ menüsünde listelenir)",
+    "count_one": "{{count}} kanca",
+    "count_other": "{{count}} kanca"
   },
   "notifications": {
     "title": "Bildirimler",

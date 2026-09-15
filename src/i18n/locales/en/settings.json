@@ -131,6 +131,7 @@
     "evals": "Eval Center",
     "mcpServers": "MCP",
     "skills": "Skills",
+    "hooks": "Hooks",
     "globalSkills": "Global Skills",
     "memory": "Memory",
     "appearance": "Appearance",
@@ -145,6 +146,17 @@
     "plugins": "Plugins",
     "about": "About",
     "security": "Security"
+  },
+  "hooksTab": {
+    "title": "Hooks",
+    "description": "Named instruction slash commands. Enabled hooks appear in chat when you type / as /name (like skills and custom commands). Pick one or type it and the instruction body expands into the message. Disable a hook to hide it from the menu. Agent scope still filters which chat provider sees the command.",
+    "instructionLabel": "Instruction (expanded into the chat message)",
+    "emptyTitle": "No slash-command hooks yet",
+    "emptyBody": "Create a named instruction. When you type / in chat, enabled hooks show as /name. Selecting one expands the body into the user message (plus any arguments after the command).",
+    "slashBadge": "slash",
+    "enabled": "Enabled (listed in / menu)",
+    "count_one": "{{count}} hook",
+    "count_other": "{{count}} hooks"
   },
   "notifications": {
     "title": "Notifications",

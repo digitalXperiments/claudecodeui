@@ -154,6 +154,10 @@ tasks/
 
 # Local scripts and tooling
 scripts/*
+!scripts/auth-relay.mjs
+!scripts/tests/
+scripts/tests/*
+!scripts/tests/auth-relay.test.mjs
 !scripts/build-server.mjs
 !scripts/dev-isolated.mjs
 !scripts/fix-node-pty.js

@@ -4,6 +4,7 @@ import type { Dispatch, KeyboardEvent, RefObject, SetStateAction } from 'react';
 import { authenticatedFetch } from '../../../utils/api';
 import { safeLocalStorage } from '../utils/chatStorage';
 import type { LLMProvider, Project } from '../../../types/app';
+import { mapEnabledHooksToSlashCommands, type HookCatalogItem } from '../utils/hookSlash';
 
 const COMMAND_QUERY_DEBOUNCE_MS = 150;
 
@@ -207,6 +208,23 @@ export function useSlashCommands({
           : null;
         const skillCommands = dedupeProviderSkills(skillsData?.data?.skills || [])
           .map(mapSkillToSlashCommand);
+
+        let hookCommands: SlashCommand[] = [];
+        try {
+          const hooksResponse = await authenticatedFetch('/api/hooks-catalog');
+          if (hooksResponse.ok) {
+            const hooksPayload = (await hooksResponse.json()) as {
+              data?: { hooks?: HookCatalogItem[] };
+            };
+            hookCommands = mapEnabledHooksToSlashCommands(
+              hooksPayload.data?.hooks ?? [],
+              provider,
+            );
+          }
+        } catch {
+          hookCommands = [];
+        }
+
         const allCommands: SlashCommand[] = [
           ...((data.builtIn || []) as SlashCommand[]).map((command) => ({
             ...command,
@@ -217,6 +235,7 @@ export function useSlashCommands({
             ...command,
             type: 'custom',
           })),
+          ...hookCommands,
         ];
 
         const parsedHistory = readCommandHistory(selectedProject.projectId);

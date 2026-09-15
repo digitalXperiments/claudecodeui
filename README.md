@@ -278,6 +278,7 @@ Yes, for self-hosted. CloudCLI UI reads from and writes to the same `~/.claude` 
 ## Community & Support
 
 - **[Documentation](https://cloudcli.ai/docs)** — installation, configuration, features, and troubleshooting
+- **[Headless Mac login relay](docs/auth-relay.md)** — sign in to Claude, Codex, and Grok Build using another Mac's browser over Tailscale
 - **[Discord](https://discord.gg/buxwujPNRE)** — get help and connect with other users
 - **[GitHub Issues](https://github.com/siteboon/claudecodeui/issues)** — bug reports and feature requests
 - **[Contributing Guide](CONTRIBUTING.md)** — how to contribute to the project

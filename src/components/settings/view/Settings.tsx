@@ -10,7 +10,9 @@ import AgentProfilesSettingsTab from '../view/tabs/AgentProfilesSettingsTab';
 import StudioSettingsTab from '../view/tabs/StudioSettingsTab';
 import EvalCenterSettingsTab from '../view/tabs/EvalCenterSettingsTab';
 import SkillsSettingsTab from '../view/tabs/SkillsSettingsTab';
+import HooksSettingsTab from '../view/tabs/HooksSettingsTab';
 import McpSettingsTab from '../view/tabs/McpSettingsTab';
+import IntegrationsSettingsTab from '../../integrations/view/IntegrationsSettingsTab';
 import MemorySettingsTab from '../view/tabs/MemorySettingsTab';
 import AppearanceSettingsTab from '../view/tabs/AppearanceSettingsTab';
 import CredentialsSettingsTab from '../view/tabs/api-settings/CredentialsSettingsTab';
@@ -312,7 +314,11 @@ function Settings({ isOpen, onClose, projects = [], initialTab = 'agents' }: Set
 
               {activeTab === 'mcp' && <McpSettingsTab projects={projects} />}
 
+              {activeTab === 'integrations' && <IntegrationsSettingsTab />}
+
               {activeTab === 'skills' && <SkillsSettingsTab projects={projects} />}
+
+              {activeTab === 'hooks' && <HooksSettingsTab />}
 
               {activeTab === 'memory' && <MemorySettingsTab projects={projects} />}
 

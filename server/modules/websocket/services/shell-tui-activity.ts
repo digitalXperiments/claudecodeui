@@ -13,6 +13,7 @@ const BRAILLE_SPINNER = /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏⣾⣽⣻⢿⡿⣟⣯⣷
 const BUSY_PATTERNS: readonly RegExp[] = [
   /esc to interrupt/i,
   /ctrl\s*\+\s*c to interrupt/i,
+  /ctrl\s*\+\s*x\s+stop/i,
   /\bthinking\b/i,
   /\banalyzi(?:ng|e)\b/i,
   /\breasoning\b/i,
@@ -26,7 +27,8 @@ const BUSY_PATTERNS: readonly RegExp[] = [
 
 const IDLE_CHROME: readonly RegExp[] = [
   /shift\s*\+\s*tab/i,
-  /ctrl\s*\+\s*x/i,
+  /ctrl\s*\+\s*p\b/i,
+  /ctrl\s*\+\s*x:shortcuts/i,
   /\? for shortcuts/i,
   /ctrl\s*\+\s*g to edit/i,
   /tab to accept/i,
@@ -49,6 +51,7 @@ export function classifyTuiActivity(strippedText: string): TuiActivity {
   const strongBusy =
     /esc to interrupt/i.test(tail)
     || /ctrl\s*\+\s*c to interrupt/i.test(tail)
+    || /ctrl\s*\+\s*x\s+stop/i.test(tail)
     || BRAILLE_SPINNER.test(tail);
   const busy = strongBusy || BUSY_PATTERNS.some((pattern) => pattern.test(tail));
   const idleChrome = IDLE_CHROME.some((pattern) => pattern.test(tail));

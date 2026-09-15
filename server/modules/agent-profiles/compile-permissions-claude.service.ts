@@ -10,6 +10,7 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 
 import { compilePermissionIntent } from '@/modules/database/index.js';
 import { resolveClaudeCodeExecutablePath } from '@/shared/claude-cli-path.js';
+import { applyClaudeSpawnAuthEnv } from '@/shared/claude-spawn-auth-env.js';
 
 export type CompiledPermissions = {
   allowedCommands: string[];
@@ -154,22 +155,24 @@ Respond with JSON only.`;
   const timeout = setTimeout(() => abortController.abort(), COMPILE_TIMEOUT_MS);
 
   try {
+    const sdkOptions = {
+      abortController,
+      env: { ...process.env } as NodeJS.ProcessEnv,
+      pathToClaudeCodeExecutable: resolveClaudeCodeExecutablePath(process.env.CLAUDE_CLI_PATH),
+      model: COMPILE_MODEL,
+      // No tools — pure text generation.
+      tools: [] as string[],
+      allowedTools: [] as string[],
+      permissionMode: 'bypassPermissions' as const,
+      maxTurns: 1,
+      // Avoid project settings side-effects for this ephemeral call.
+      settingSources: [] as [],
+      systemPrompt: 'You are a precise permissions compiler. Output only valid JSON as instructed.',
+    };
+    await applyClaudeSpawnAuthEnv(sdkOptions);
     const q = query({
       prompt,
-      options: {
-        abortController,
-        env: { ...process.env },
-        pathToClaudeCodeExecutable: resolveClaudeCodeExecutablePath(process.env.CLAUDE_CLI_PATH),
-        model: COMPILE_MODEL,
-        // No tools — pure text generation.
-        tools: [],
-        allowedTools: [],
-        permissionMode: 'bypassPermissions',
-        maxTurns: 1,
-        // Avoid project settings side-effects for this ephemeral call.
-        settingSources: [],
-        systemPrompt: 'You are a precise permissions compiler. Output only valid JSON as instructed.',
-      },
+      options: sdkOptions,
     });
 
     let lastText = '';

@@ -8,6 +8,7 @@ const KNOWN_MAIN_TABS: SettingsMainTab[] = [
   'evals',
   'mcp',
   'skills',
+  'hooks',
   'memory',
   'appearance',
   'git',

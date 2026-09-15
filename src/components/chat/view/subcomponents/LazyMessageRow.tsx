@@ -64,7 +64,7 @@ export default function LazyMessageRow({
       // Measured now, while the content is still in the DOM (state applies on
       // the next render), so the placeholder that replaces it occupies exactly
       // the same space.
-      const height = elementRef.current?.offsetHeight ?? 0;
+      const height = elementRef.current?.getBoundingClientRect().height ?? 0;
       if (height > 0) {
         measuredHeightRef.current = height;
       }
@@ -80,22 +80,26 @@ export default function LazyMessageRow({
 
   const isMounted = lazyRows === null || forceMounted || isNearViewport;
 
-  // A row mounted only because it is live can keep growing without any
-  // further intersection callback. Refresh its recorded height each commit so
-  // that when the force is released (run finishes) the placeholder that may
-  // replace it still matches the space it occupied.
+  // Capture asynchronous size changes too (images and expanded tool output).
+  // Fractional CSS pixels avoid accumulating rounding errors across long lists.
   useLayoutEffect(() => {
-    if (forceMounted && !isNearViewport && elementRef.current) {
-      const height = elementRef.current.offsetHeight;
-      if (height > 0) {
-        measuredHeightRef.current = height;
-      }
-    }
-  });
+    const element = elementRef.current;
+    if (!isMounted || !element) return;
+    const measure = () => {
+      const height = element.getBoundingClientRect().height;
+      if (height > 0) measuredHeightRef.current = height;
+    };
+    measure();
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure);
+    observer?.observe(element);
+    return () => observer?.disconnect();
+  }, [isMounted]);
 
   return (
     <div
       ref={elementRef}
+      data-transcript-row
+      className="flow-root"
       data-message-timestamp={timestamp || undefined}
       style={isMounted ? undefined : { height: measuredHeightRef.current ?? ESTIMATED_ROW_HEIGHT_PX }}
     >

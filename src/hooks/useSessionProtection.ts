@@ -103,12 +103,16 @@ export function useSessionProtection() {
 
     setProcessingSessions((prev) => {
       const existing = prev.get(sessionId);
+      const nextSource = activity?.source ?? existing?.source ?? 'chat';
       const next: SessionActivity = {
-        source: activity?.source ?? existing?.source ?? 'chat',
+        source: nextSource,
         statusText:
           activity?.statusText !== undefined ? activity.statusText : existing?.statusText ?? null,
         canInterrupt: activity?.canInterrupt ?? existing?.canInterrupt ?? true,
-        startedAt: existing?.startedAt ?? Date.now(),
+        startedAt:
+          existing && existing.source === nextSource
+            ? existing.startedAt
+            : Date.now(),
         title: existing?.title,
         projectId: existing?.projectId,
         projectDisplayName: existing?.projectDisplayName,

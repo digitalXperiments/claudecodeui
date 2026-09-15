@@ -8,7 +8,7 @@ import type { ChatMessage, SubagentChildTool } from '../types/types';
 import { decodeHtmlEntities, unescapeWithMathProtection, formatUsageLimitText } from '../utils/chatFormatting';
 
 function formatToolResultContent(content: unknown): string {
-  const text = typeof content === 'string' ? content : JSON.stringify(content);
+  const text = typeof content === 'string' ? content : (JSON.stringify(content) ?? '');
   const toolUseErrorMatch = /^<tool_use_error>([\s\S]*)<\/tool_use_error>$/.exec(text.trim());
   return toolUseErrorMatch ? toolUseErrorMatch[1] : text;
 }
@@ -63,6 +63,11 @@ function parseTaskNotification(content: string): ParsedTaskNotification | null {
  * transcript artifacts such as local slash commands and compact summaries are
  * intentionally preserved and annotated so they can render like normal chat.
  */
+const projectionCache = new WeakMap<NormalizedMessage, {
+  toolResult: NormalizedMessage | undefined;
+  rows: ChatMessage[];
+}>();
+
 export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMessage[] {
   const converted: ChatMessage[] = [];
 
@@ -80,8 +85,16 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
   }
 
   for (const msg of messages) {
+    const attachedResult = msg.kind === 'tool_use' && msg.toolId ? toolResultMap.get(msg.toolId) : undefined;
+    const cached = projectionCache.get(msg);
+    if (cached && cached.toolResult === attachedResult) {
+      converted.push(...cached.rows);
+      continue;
+    }
+    const start = converted.length;
     const sharedMetadata = {
       id: msg.id,
+      renderId: msg.renderId,
       displayText: msg.displayText,
       commandName: msg.commandName,
       commandMessage: msg.commandMessage,
@@ -117,6 +130,7 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
                 content: formatUsageLimitText(unescapeWithMathProtection(decodeHtmlEntities(taskNotif.result))),
                 timestamp: msg.timestamp,
                 ...sharedMetadata,
+                id: `${msg.id}:result`,
               });
             }
           } else {
@@ -288,6 +302,7 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
       default:
         break;
     }
+    projectionCache.set(msg, { toolResult: attachedResult, rows: converted.slice(start) });
   }
 
   return converted;

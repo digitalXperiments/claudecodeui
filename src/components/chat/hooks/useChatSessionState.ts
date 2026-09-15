@@ -12,10 +12,13 @@ import {
   type MessageHistoryRefreshCoordinator,
 } from '../utils/messageHistoryRefreshCoordinator';
 import { createCachedDiffCalculator, type DiffCalculator } from '../utils/messageTransforms';
+import { getIntrinsicMessageKey } from '../utils/messageKeys';
+import { createTranscriptScrollController } from '../utils/transcriptScrollController';
 
 import { normalizedToChatMessages } from './useChatMessages';
 
 const INITIAL_VISIBLE_MESSAGES = 100;
+const EMPTY_MESSAGES: NormalizedMessage[] = [];
 
 interface UseChatSessionStateArgs {
   selectedProject: Project | null;
@@ -32,11 +35,6 @@ interface UseChatSessionStateArgs {
   /** Highest live seq observed per session; sent as `lastSeq` on subscribe. */
   lastSeqRef: MutableRefObject<Map<string, number>>;
   sessionStore: SessionStore;
-}
-
-interface ScrollRestoreState {
-  height: number;
-  top: number;
 }
 
 /* ------------------------------------------------------------------ */
@@ -116,7 +114,12 @@ export function useChatSessionState({
   const [isLoadingMoreMessages, setIsLoadingMoreMessages] = useState(false);
   const [hasMoreMessages, setHasMoreMessages] = useState(false);
   const [totalMessages, setTotalMessages] = useState(0);
-  const [isUserScrolledUp, setIsUserScrolledUp] = useState(false);
+  const [isUserScrolledUp, updateIsUserScrolledUp] = useState(false);
+  const scrollControllerRef = useRef<ReturnType<typeof createTranscriptScrollController> | null>(null);
+  const setIsUserScrolledUp = useCallback((reading: boolean) => {
+    scrollControllerRef.current?.setReading(reading);
+    updateIsUserScrolledUp(reading);
+  }, []);
   const [tokenBudget, setTokenBudget] = useState<Record<string, unknown> | null>(null);
   const [visibleMessageCount, setVisibleMessageCount] = useState(INITIAL_VISIBLE_MESSAGES);
   const [allMessagesLoaded, setAllMessagesLoaded] = useState(false);
@@ -129,14 +132,10 @@ export function useChatSessionState({
   const wasNearTopRef = useRef(false);
   const [searchTarget, setSearchTarget] = useState<{ timestamp?: string; uuid?: string; snippet?: string } | null>(null);
   const searchScrollActiveRef = useRef(false);
-  const isLoadingSessionRef = useRef(false);
   const isLoadingMoreRef = useRef(false);
   const allMessagesLoadedRef = useRef(false);
   const topLoadLockRef = useRef(false);
-  const pendingScrollRestoreRef = useRef<ScrollRestoreState | null>(null);
-  const pendingInitialScrollRef = useRef(true);
   const messagesOffsetRef = useRef(0);
-  const scrollPositionRef = useRef({ height: 0, top: 0 });
   const loadAllFinishedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const loadAllOverlayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastLoadedSessionKeyRef = useRef<string | null>(null);
@@ -183,6 +182,7 @@ export function useChatSessionState({
      * - No coupling to unrelated external update signals.
      */
     resetStreamingState();
+    setIsUserScrolledUp(false);
     setCurrentSessionId(null);
     setPendingUserMessage(null);
     messagesOffsetRef.current = 0;
@@ -201,8 +201,6 @@ export function useChatSessionState({
     wasNearTopRef.current = false;
     searchScrollActiveRef.current = false;
     topLoadLockRef.current = false;
-    pendingScrollRestoreRef.current = null;
-    pendingInitialScrollRef.current = true;
     lastLoadedSessionKeyRef.current = null;
     lastSubscribedSessionRef.current = null;
 
@@ -214,7 +212,7 @@ export function useChatSessionState({
       clearTimeout(loadAllFinishedTimerRef.current);
       loadAllFinishedTimerRef.current = null;
     }
-  }, [newSessionTrigger, onSessionIdle, resetStreamingState]);
+  }, [newSessionTrigger, onSessionIdle, resetStreamingState, setIsUserScrolledUp]);
 
   /* ---------------------------------------------------------------- */
   /*  Derive processing state for the viewed session                  */
@@ -360,7 +358,7 @@ export function useChatSessionState({
     setPendingUserMessage(null);
   }, [activeSessionId, pendingUserMessage, sessionStore]);
 
-  const storeMessages = activeSessionId ? sessionStore.getMessages(activeSessionId) : [];
+  const storeMessages = activeSessionId ? sessionStore.getMessages(activeSessionId) : EMPTY_MESSAGES;
 
   // Reset viewHiddenCount when store messages change
   const prevStoreLenRef = useRef(0);
@@ -383,16 +381,16 @@ export function useChatSessionState({
   /*  addMessage / clearMessages / rewindMessages                     */
   /* ---------------------------------------------------------------- */
 
-  const addMessage = useCallback((msg: ChatMessage) => {
-    if (!activeSessionId) {
+  const addMessage = useCallback((msg: ChatMessage, targetSessionId = activeSessionId, targetProvider?: LLMProvider) => {
+    if (!targetSessionId) {
       // No session yet — show as pending until the backend creates one
       setPendingUserMessage(msg);
       return;
     }
-    const prov = (localStorage.getItem('selected-provider') as LLMProvider) || 'claude';
-    const normalized = chatMessageToNormalized(msg, activeSessionId, prov);
+    const prov = targetProvider || (localStorage.getItem('selected-provider') as LLMProvider) || 'claude';
+    const normalized = chatMessageToNormalized(msg, targetSessionId, prov);
     if (normalized) {
-      sessionStore.appendRealtime(activeSessionId, normalized);
+      sessionStore.appendRealtime(targetSessionId, normalized);
     }
   }, [activeSessionId, sessionStore]);
 
@@ -403,44 +401,16 @@ export function useChatSessionState({
 
   const rewindMessages = useCallback((count: number) => setViewHiddenCount(count), []);
 
-  // Ignore scroll events caused by our own stick-to-bottom writes so the
-  // 50–100px near-bottom threshold does not thrash isUserScrolledUp mid-stream.
-  const isProgrammaticScrollRef = useRef(false);
-
   const scrollToBottom = useCallback(() => {
-    const container = scrollContainerRef.current;
-    if (!container) return;
-    isProgrammaticScrollRef.current = true;
-    container.scrollTop = container.scrollHeight;
-    // Clear on next frame after the browser has applied scrollTop.
-    requestAnimationFrame(() => {
-      isProgrammaticScrollRef.current = false;
-    });
+    scrollControllerRef.current?.jumpToBottom();
   }, []);
 
-  const scrollToBottomAndReset = useCallback(() => {
-    scrollToBottom();
-    if (allMessagesLoaded) {
-      setVisibleMessageCount(INITIAL_VISIBLE_MESSAGES);
-      setAllMessagesLoaded(false);
-      allMessagesLoadedRef.current = false;
-    }
-  }, [allMessagesLoaded, scrollToBottom]);
+  // Jumping to the latest message must not discard already loaded history.
+  const scrollToBottomAndReset = scrollToBottom;
 
-  // Hysteresis: enter "near bottom" within 100px; only leave after > 150px so
-  // stick-to-bottom does not fight the user at the threshold edge.
   const isNearBottom = useCallback(() => {
     const container = scrollContainerRef.current;
-    if (!container) return false;
-    const { scrollTop, scrollHeight, clientHeight } = container;
-    return scrollHeight - scrollTop - clientHeight < 100;
-  }, []);
-
-  const isClearlyScrolledUp = useCallback(() => {
-    const container = scrollContainerRef.current;
-    if (!container) return false;
-    const { scrollTop, scrollHeight, clientHeight } = container;
-    return scrollHeight - scrollTop - clientHeight > 150;
+    return Boolean(container && container.scrollHeight - container.scrollTop - container.clientHeight <= 2);
   }, []);
 
   const loadOlderMessages = useCallback(
@@ -450,15 +420,16 @@ export function useChatSessionState({
       if (!hasMoreMessages || !selectedSession || !selectedProject) return false;
 
       isLoadingMoreRef.current = true;
-      const previousScrollHeight = container.scrollHeight;
-      const previousScrollTop = container.scrollTop;
+      const requestSessionId = selectedSession.id;
+      const previousRows = sessionStore.getMessages(requestSessionId);
+      setIsLoadingMoreMessages(true);
 
       try {
         const slot = await sessionStore.fetchMore(selectedSession.id, {
           limit: SESSION_MESSAGES_PAGE_SIZE,
         });
-        if (!slot) return false;
-        if (slot.serverMessages.length === 0) {
+        if (activeSessionIdRef.current !== requestSessionId || !slot) return false;
+        if (sessionStore.getMessages(requestSessionId) === previousRows || slot.serverMessages.length === 0) {
           if (!slot.hasMore) {
             setHasMoreMessages(false);
             allMessagesLoadedRef.current = true;
@@ -472,7 +443,6 @@ export function useChatSessionState({
           return false;
         }
 
-        pendingScrollRestoreRef.current = { height: previousScrollHeight, top: previousScrollTop };
         setHasMoreMessages(slot.hasMore);
         setTotalMessages(slot.total);
         setVisibleMessageCount((prev) => prev + SESSION_MESSAGES_PAGE_SIZE);
@@ -487,7 +457,10 @@ export function useChatSessionState({
         }
         return true;
       } finally {
-        isLoadingMoreRef.current = false;
+        if (activeSessionIdRef.current === requestSessionId) {
+          isLoadingMoreRef.current = false;
+          setIsLoadingMoreMessages(false);
+        }
       }
     },
     [hasMoreMessages, isLoadingMoreMessages, selectedProject, selectedSession, sessionStore],
@@ -496,15 +469,6 @@ export function useChatSessionState({
   const handleScroll = useCallback(async () => {
     const container = scrollContainerRef.current;
     if (!container) return;
-
-    // Programmatic stick-to-bottom must not flip isUserScrolledUp.
-    if (!isProgrammaticScrollRef.current) {
-      if (isNearBottom()) {
-        setIsUserScrolledUp(false);
-      } else if (isClearlyScrolledUp()) {
-        setIsUserScrolledUp(true);
-      }
-    }
 
     const scrolledNearTop = container.scrollTop < 100;
 
@@ -533,71 +497,19 @@ export function useChatSessionState({
       const didLoad = await loadOlderMessages(container);
       if (didLoad) topLoadLockRef.current = true;
     }
-  }, [hasMoreMessages, isNearBottom, isClearlyScrolledUp, loadOlderMessages]);
-
-  useLayoutEffect(() => {
-    if (!pendingScrollRestoreRef.current || !scrollContainerRef.current) return;
-    const { height, top } = pendingScrollRestoreRef.current;
-    const container = scrollContainerRef.current;
-    const newScrollHeight = container.scrollHeight;
-    container.scrollTop = top + Math.max(newScrollHeight - height, 0);
-    pendingScrollRestoreRef.current = null;
-  }, [chatMessages.length]);
+  }, [hasMoreMessages, loadOlderMessages]);
 
   // Reset scroll/pagination state on session change
   useEffect(() => {
     if (!searchScrollActiveRef.current) {
-      pendingInitialScrollRef.current = true;
       setVisibleMessageCount(INITIAL_VISIBLE_MESSAGES);
     }
+    searchScrollActiveRef.current = false;
+    setSearchTarget(null);
     topLoadLockRef.current = false;
-    pendingScrollRestoreRef.current = null;
     wasNearTopRef.current = false;
     setIsUserScrolledUp(false);
-  }, [selectedProject?.projectId, selectedSession?.id]);
-
-  // Initial scroll to bottom — robust to lazy content reflow.
-  // The previous implementation fired one scrollToBottom() at +200ms and
-  // cleared the pending flag. When markdown blocks, code highlighting, or
-  // images finished rendering after that window, scrollHeight grew but
-  // nothing re-anchored the viewport, leaving the chat tab visually
-  // "scrolled way up" with the latest assistant message off-screen.
-  //
-  // This version re-scrolls every animation frame while scrollHeight is
-  // still growing, capped at ~1s (60 frames) or 3 consecutive stable
-  // frames. Cancels cleanly on session change via the pending flag.
-  useEffect(() => {
-    if (!pendingInitialScrollRef.current || !scrollContainerRef.current || isLoadingSessionMessages) return;
-    if (chatMessages.length === 0) { pendingInitialScrollRef.current = false; return; }
-    if (searchScrollActiveRef.current) { pendingInitialScrollRef.current = false; return; }
-
-    const container = scrollContainerRef.current;
-    let frame = 0;
-    let lastHeight = 0;
-    let stableCount = 0;
-    let rafId = 0;
-
-    const tick = () => {
-      if (!pendingInitialScrollRef.current || !scrollContainerRef.current) return;
-      container.scrollTop = container.scrollHeight;
-      if (container.scrollHeight === lastHeight) {
-        stableCount++;
-      } else {
-        stableCount = 0;
-        lastHeight = container.scrollHeight;
-      }
-      frame++;
-      if (stableCount < 3 && frame < 60) {
-        rafId = requestAnimationFrame(tick);
-      } else {
-        pendingInitialScrollRef.current = false;
-      }
-    };
-    rafId = requestAnimationFrame(tick);
-    return () => {
-      if (rafId) cancelAnimationFrame(rafId);
-    };
-  }, [chatMessages.length, isLoadingSessionMessages, scrollToBottom]);
+  }, [selectedProject?.projectId, selectedSession?.id, setIsUserScrolledUp]);
 
   // Main session loading effect — store-based
   useEffect(() => {
@@ -681,6 +593,8 @@ export function useChatSessionState({
     }
 
     // Reset pagination/scroll state only when actually switching conversations
+    isLoadingMoreRef.current = false;
+    setIsLoadingMoreMessages(false);
     messagesOffsetRef.current = 0;
     setHasMoreMessages(false);
     setTotalMessages(0);
@@ -719,6 +633,7 @@ export function useChatSessionState({
       limit: SESSION_MESSAGES_PAGE_SIZE,
       offset: 0,
     }).then(slot => {
+      if (activeSessionIdRef.current !== selectedSessionId) return;
       if (slot) {
         setHasMoreMessages(slot.hasMore);
         setTotalMessages(slot.total);
@@ -726,7 +641,7 @@ export function useChatSessionState({
       }
       setIsLoadingSessionMessages(false);
     }).catch(() => {
-      setIsLoadingSessionMessages(false);
+      if (activeSessionIdRef.current === selectedSessionId) setIsLoadingSessionMessages(false);
     });
   }, [
     resetStreamingState,
@@ -740,43 +655,17 @@ export function useChatSessionState({
     sessionStore,
   ]);
 
-  // External message update (e.g. WebSocket reconnect, background refresh).
-  // Routed through the coalescing coordinator: visible panes fetch one bounded
-  // latest page; hidden panes are marked dirty and flushed on activation
-  // instead of re-downloading the transcript behind a hidden tab.
+  // Refresh signals must not follow rebuilt project/session object identities.
+  // The coordinator gates network requests by visibility; the scroll controller
+  // alone decides whether resulting content should follow the bottom.
+  const refreshSessionId = selectedSession?.id;
+  const refreshProjectId = selectedProject?.projectId;
   useEffect(() => {
-    if (!externalMessageUpdate || !selectedSession || !selectedProject) return;
-
-    const reloadExternalMessages = async () => {
-      try {
-        // Skip store refresh during an active Chatbar stream. Shell-owned
-        // sessions still need a disk reload so Chat can catch up with the TUI.
-        if (!isProcessing) {
-          // Capture before the await: the merge itself grows scrollHeight,
-          // which would otherwise flip the near-bottom check mid-refresh.
-          const shouldStickToBottom = isChatPaneVisible() && isNearBottom();
-          await requestLatestMessages(selectedSession.id);
-
-          if (shouldStickToBottom) {
-            setTimeout(() => scrollToBottom(), 200);
-          }
-        }
-      } catch (error) {
-        console.error('Error reloading messages from external update:', error);
-      }
-    };
-
-    reloadExternalMessages();
-  }, [
-    externalMessageUpdate,
-    isChatPaneVisible,
-    isNearBottom,
-    requestLatestMessages,
-    scrollToBottom,
-    selectedProject,
-    selectedSession,
-    isProcessing,
-  ]);
+    if (!externalMessageUpdate || !refreshSessionId || !refreshProjectId || isProcessing) return;
+    void requestLatestMessages(refreshSessionId).catch(error => {
+      console.error('Error reloading messages from external update:', error);
+    });
+  }, [externalMessageUpdate, refreshSessionId, refreshProjectId, isProcessing, requestLatestMessages]);
 
   // Flush a deferred refresh when the CSS-hidden chat pane becomes visible
   // again (MainContent flips the wrapper from `hidden` to `block` with no
@@ -798,11 +687,14 @@ export function useChatSessionState({
     return () => observer.disconnect();
   }, [activeSessionId, hasRenderedMessages]);
 
-  // Search navigation target
+  const searchSession = selectedSession as Record<string, unknown> | null;
+  const searchSnippet = searchSession?.__searchTargetSnippet;
+  const searchTimestamp = searchSession?.__searchTargetTimestamp;
+
+  // Search navigation target: object refreshes are not new navigation requests.
   useEffect(() => {
-    const session = selectedSession as Record<string, unknown> | null;
-    const targetSnippet = session?.__searchTargetSnippet;
-    const targetTimestamp = session?.__searchTargetTimestamp;
+    const targetSnippet = searchSnippet;
+    const targetTimestamp = searchTimestamp;
     if (typeof targetSnippet === 'string' && targetSnippet) {
       searchScrollActiveRef.current = true;
       setSearchTarget({
@@ -810,14 +702,21 @@ export function useChatSessionState({
         timestamp: typeof targetTimestamp === 'string' ? targetTimestamp : undefined,
       });
     }
-  }, [selectedSession]);
+  }, [activeSessionId, searchSnippet, searchTimestamp]);
 
   // Scroll to search target
   useEffect(() => {
     if (!searchTarget || chatMessages.length === 0 || isLoadingSessionMessages) return;
 
     const target = searchTarget;
-    setSearchTarget(null);
+    const controller = scrollControllerRef.current;
+    controller?.interrupt();
+    const revision = controller?.revision;
+    const requestSessionId = activeSessionId;
+    let cancelled = false;
+    const isCurrent = () => !cancelled && activeSessionIdRef.current === requestSessionId
+      && scrollControllerRef.current === controller && controller?.revision === revision;
+    const finish = () => { searchScrollActiveRef.current = false; setSearchTarget(null); };
 
     const scrollToTarget = async () => {
       if (!allMessagesLoadedRef.current && selectedSession && selectedProject) {
@@ -827,6 +726,7 @@ export function useChatSessionState({
               limit: null,
               offset: 0,
             });
+            if (!isCurrent()) return;
             if (slot) {
               setHasMoreMessages(false);
               setTotalMessages(slot.total);
@@ -840,9 +740,11 @@ export function useChatSessionState({
             // Fall through and scroll in current messages
           }
       }
+      if (!isCurrent()) { if (!cancelled) finish(); return; }
       setVisibleMessageCount(Infinity);
 
       const findAndScroll = (retriesLeft: number) => {
+        if (!isCurrent()) { if (!cancelled) finish(); return; }
         const container = scrollContainerRef.current;
         if (!container) return;
 
@@ -873,23 +775,25 @@ export function useChatSessionState({
         }
 
         if (targetElement) {
-          targetElement.scrollIntoView({ block: 'center', behavior: 'smooth' });
+          targetElement.scrollIntoView({ block: 'center', behavior: 'auto' });
+          controller?.capture();
           targetElement.classList.add('search-highlight-flash');
           setTimeout(() => targetElement?.classList.remove('search-highlight-flash'), 4000);
-          searchScrollActiveRef.current = false;
+          finish();
         } else if (retriesLeft > 0) {
           setTimeout(() => findAndScroll(retriesLeft - 1), 200);
         } else {
-          searchScrollActiveRef.current = false;
+          finish();
         }
       };
 
       setTimeout(() => findAndScroll(15), 150);
     };
 
-    scrollToTarget();
+    void scrollToTarget();
+    return () => { cancelled = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chatMessages.length, isLoadingSessionMessages, searchTarget]);
+  }, [activeSessionId, chatMessages.length, isLoadingSessionMessages, searchTarget]);
 
   // Initial token usage fetch for providers with file-backed usage data.
   useEffect(() => {
@@ -924,39 +828,52 @@ export function useChatSessionState({
     };
   }, [selectedProject, selectedSession?.id]);
 
+  const previousWindowRef = useRef({ sessionId: activeSessionId, messages: chatMessages });
+  const previousWindow = previousWindowRef.current;
+  if (previousWindow.messages !== chatMessages || previousWindow.sessionId !== activeSessionId) {
+    previousWindowRef.current = { sessionId: activeSessionId, messages: chatMessages };
+    if (previousWindow.sessionId === activeSessionId && previousWindow.messages.length > 0) {
+      const previousTail = previousWindow.messages[previousWindow.messages.length - 1];
+      const tailKey = getIntrinsicMessageKey(previousTail);
+      const tailIndex = chatMessages.findIndex(message => getIntrinsicMessageKey(message) === tailKey);
+      const appended = tailIndex < 0 ? 0 : chatMessages.length - tailIndex - 1;
+      if (tailKey && appended > 0) setVisibleMessageCount(count => count + appended);
+    }
+  }
+
   const visibleMessages = useMemo(() => {
     if (chatMessages.length <= visibleMessageCount) return chatMessages;
     return chatMessages.slice(-visibleMessageCount);
   }, [chatMessages, visibleMessageCount]);
 
-  useEffect(() => {
+  // One controller owns follow intent, user input, and geometry correction.
+  useLayoutEffect(() => {
     const container = scrollContainerRef.current;
     if (!container) return;
-    scrollPositionRef.current = { height: container.scrollHeight, top: container.scrollTop };
+    const controller = createTranscriptScrollController(container, (reading) => {
+      updateIsUserScrolledUp(reading);
+    }, () => searchScrollActiveRef.current, () => {
+      searchScrollActiveRef.current = false;
+      setSearchTarget(null);
+    });
+    scrollControllerRef.current = controller;
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(controller.reconcile);
+    observer?.observe(container);
+    const content = container.querySelector('[data-transcript-content]');
+    if (content) observer?.observe(content);
+    controller.reconcile();
+    return () => {
+      observer?.disconnect();
+      controller.dispose();
+      scrollControllerRef.current = null;
+    };
+  }, [activeSessionId, selectedProject?.projectId]);
+
+  // Includes in-place thinking/tool updates for every provider, not only text
+  // length changes on the final message. ResizeObserver covers later layout.
+  useLayoutEffect(() => {
+    scrollControllerRef.current?.reconcile();
   });
-
-  // Stick-to-bottom on both new rows and in-place stream content growth.
-  const lastMessageStickKey = chatMessages.length === 0
-    ? ''
-    : `${chatMessages.length}:${String(chatMessages[chatMessages.length - 1]?.id ?? '')}:${String(chatMessages[chatMessages.length - 1]?.content ?? '').length}`;
-
-  useEffect(() => {
-    if (!scrollContainerRef.current || chatMessages.length === 0) return;
-    if (isLoadingMoreRef.current || isLoadingMoreMessages || pendingScrollRestoreRef.current) return;
-    if (searchScrollActiveRef.current) return;
-
-    if (!isUserScrolledUp) {
-      const frame = requestAnimationFrame(() => scrollToBottom());
-      return () => cancelAnimationFrame(frame);
-    }
-
-    const container = scrollContainerRef.current;
-    const prevHeight = scrollPositionRef.current.height;
-    const prevTop = scrollPositionRef.current.top;
-    const newHeight = container.scrollHeight;
-    const heightDiff = newHeight - prevHeight;
-    if (heightDiff > 0 && prevTop > 0) container.scrollTop = prevTop + heightDiff;
-  }, [lastMessageStickKey, chatMessages.length, isLoadingMoreMessages, isUserScrolledUp, scrollToBottom]);
 
   useEffect(() => {
     const container = scrollContainerRef.current;
@@ -983,7 +900,7 @@ export function useChatSessionState({
   useEffect(() => {
     if (isLoadingSessionMessages || isLoadingMoreMessages || isLoadingAllMessages) return;
     if (!hasMoreMessages || allMessagesLoaded || allMessagesLoadedRef.current) return;
-    if (isLoadingMoreRef.current || pendingScrollRestoreRef.current) return;
+    if (isLoadingMoreRef.current) return;
 
     const container = scrollContainerRef.current;
     if (!container) return;
@@ -1023,23 +940,15 @@ export function useChatSessionState({
       loadAllOverlayTimerRef.current = null;
     }
 
-    const container = scrollContainerRef.current;
-    const previousScrollHeight = container ? container.scrollHeight : 0;
-    const previousScrollTop = container ? container.scrollTop : 0;
-
     try {
       const slot = await sessionStore.fetchFromServer(requestSessionId, {
         limit: null,
         offset: 0,
       });
 
-      if (currentSessionId !== requestSessionId) return;
+      if (activeSessionIdRef.current !== requestSessionId) return;
 
       if (slot) {
-        if (container) {
-          pendingScrollRestoreRef.current = { height: previousScrollHeight, top: previousScrollTop };
-        }
-
         setHasMoreMessages(false);
         setTotalMessages(slot.total);
         messagesOffsetRef.current = slot.total;
@@ -1058,14 +967,17 @@ export function useChatSessionState({
         setShowLoadAllOverlay(false);
       }
     } catch (error) {
+      if (activeSessionIdRef.current !== requestSessionId) return;
       console.error('Error loading all messages:', error);
       allMessagesLoadedRef.current = false;
       setShowLoadAllOverlay(false);
     } finally {
-      isLoadingMoreRef.current = false;
-      setIsLoadingAllMessages(false);
+      if (activeSessionIdRef.current === requestSessionId) {
+        isLoadingMoreRef.current = false;
+        setIsLoadingAllMessages(false);
+      }
     }
-  }, [selectedSession, selectedProject, isLoadingAllMessages, currentSessionId, sessionStore]);
+  }, [selectedSession, selectedProject, isLoadingAllMessages, sessionStore]);
 
   const loadEarlierMessages = useCallback(() => {
     setVisibleMessageCount((prev) => prev + 100);

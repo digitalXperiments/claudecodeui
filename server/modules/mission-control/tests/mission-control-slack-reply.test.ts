@@ -13,6 +13,7 @@ import {
   applyItemAction,
   runSectionProduce,
 } from '@/modules/mission-control/mission-control-runner.service.js';
+import { DEFAULT_MC_ACTIONS } from '@/modules/mission-control/mission-control.types.js';
 import { chatRunRegistry } from '@/modules/websocket/index.js';
 import type { AnyRecord } from '@/shared/types.js';
 
@@ -267,6 +268,34 @@ test('Slack produce treats an all-filtered result as a normal no-op', async () =
     assert.equal(result.created, 0);
     assert.equal(result.error, undefined);
     assert.match(result.message, /no Slack messages addressed to you/i);
+  });
+});
+
+test('a non-Slack-reply section that merely uses Slack as a produce tool keeps its drafts', async () => {
+  // Regression: a "Jira Drafts"-style section (generic approve/deny actions,
+  // Slack used only to source raw messages) must not be misclassified as the
+  // Slack reply-drafting workflow just because "Slack" appears in its title
+  // or produce tools — that used to filter out every draft it ever produced.
+  await withIsolatedDatabase(async () => {
+    const section = missionControlDb.createSection({
+      title: 'Jira Drafts',
+      produce_prompt: 'Triage Slack threads into Jira ticket drafts.',
+      produce_tools: ['claude ai Slack'],
+      resolve_tools: ['claude ai Atlassian Rovo'],
+      actions: DEFAULT_MC_ACTIONS,
+    });
+    stubClaudeRuntime([
+      JSON.stringify([{
+        title: 'Fix broken export job',
+        summary: 'Reported in #data-eng.',
+        dedupeKey: 'jira:C1:123',
+      }]),
+    ]);
+
+    const result = await runSectionProduce(section.section_id);
+
+    assert.equal(result.created, 1);
+    assert.equal(result.items[0]?.title, 'Fix broken export job');
   });
 });
 

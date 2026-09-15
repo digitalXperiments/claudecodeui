@@ -58,6 +58,22 @@ function compareMessagesChronologically(a: NormalizedMessage, b: NormalizedMessa
   return 0;
 }
 
+/** Merge ordered sources without re-sorting either provider history or socket order. */
+export function mergeOrderedMessages(
+  server: NormalizedMessage[], realtime: NormalizedMessage[],
+): NormalizedMessage[] {
+  const merged: NormalizedMessage[] = [];
+  let next = 0;
+  for (const message of realtime) {
+    while (next < server.length && compareMessagesChronologically(server[next], message) <= 0) {
+      merged.push(server[next++]);
+    }
+    merged.push(message);
+  }
+  merged.push(...server.slice(next));
+  return merged;
+}
+
 /**
  * Count how many user turns precede `message` in a chronologically merged view
  * of server + realtime rows. Used to match a realtime row to the correct turn
@@ -312,6 +328,6 @@ export function computeMerged(server: NormalizedMessage[], realtime: NormalizedM
   // Interleave by timestamp so live rows stay with their turn instead of
   // piling up at the bottom after every refresh.
   return dedupeAdjacentAssistantEchoes(
-    [...server, ...extra].sort(compareMessagesChronologically),
+    mergeOrderedMessages(server, extra),
   );
 }

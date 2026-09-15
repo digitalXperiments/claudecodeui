@@ -79,7 +79,7 @@ const getSessionEffortStorageKey = (targetProvider: LLMProvider, sessionId: stri
  * source of truth; this mirror exists so the composer renders sensibly on
  * first paint and when the capabilities request fails.
  */
-const FALLBACK_PERMISSION_MODES: Record<LLMProvider, PermissionMode[]> = {
+export const FALLBACK_PERMISSION_MODES: Record<LLMProvider, PermissionMode[]> = {
   claude: ['default', 'auto', 'acceptEdits', 'bypassPermissions', 'plan'],
   // Cursor headless only supports default vs -f (bypass).
   cursor: ['default', 'bypassPermissions'],
@@ -1096,6 +1096,8 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     persistSessionModelEffort,
     setStoredProviderEffort,
     resolvePermissionModeForProvider,
+    getPermissionModesForProvider,
+    getDefaultPermissionModeForProvider,
     // Attachment capabilities for the active provider: images need inline
     // vision (a subset of providers), documents are supported everywhere.
     supportsImages: getSupportsImagesForProvider(provider),

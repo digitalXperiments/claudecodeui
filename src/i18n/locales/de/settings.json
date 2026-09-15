@@ -90,6 +90,7 @@
     "agentProfiles": "Agentenprofile",
     "modelProfiles": "Modellprofile",
     "agentRelay": "Agent Relay",
+    "hooks": "Hooks",
     "globalSkills": "Globale Skills",
     "appearance": "Darstellung",
     "git": "Git",
@@ -99,6 +100,17 @@
     "plugins": "Plugins",
     "about": "Info",
     "security": "Sicherheit"
+  },
+  "hooksTab": {
+    "title": "Hooks",
+    "description": "Benannte Anweisungen als Slash-Befehle. Aktivierte Hooks erscheinen im Chat, wenn du / tippst, als /name (wie Skills und eigene Befehle). Auswahl oder Eingabe erweitert den Anweisungstext in die Nachricht. Deaktivieren blendet den Hook aus dem Menü aus. Der Agent-Filter bestimmt, welcher Chat-Provider den Befehl sieht.",
+    "instructionLabel": "Anweisung (wird in die Chat-Nachricht eingesetzt)",
+    "emptyTitle": "Noch keine Slash-Command-Hooks",
+    "emptyBody": "Lege eine benannte Anweisung an. Wenn du / im Chat tippst, erscheinen aktivierte Hooks als /name. Die Auswahl setzt den Text in die Benutzernachricht ein (plus Argumente nach dem Befehl).",
+    "slashBadge": "slash",
+    "enabled": "Aktiv (im /-Menü gelistet)",
+    "count_one": "{{count}} Hook",
+    "count_other": "{{count}} Hooks"
   },
   "notifications": {
     "title": "Benachrichtigungen",

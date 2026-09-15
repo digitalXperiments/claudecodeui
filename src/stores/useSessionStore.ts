@@ -44,6 +44,8 @@ export type MessageKind =
 
 export interface NormalizedMessage {
   id: string;
+  /** Stable UI identity while a live buffer id is reused for later bursts. */
+  renderId?: string;
   sessionId: string;
   timestamp: string;
   provider: LLMProvider;
@@ -387,6 +389,7 @@ const MAX_REALTIME_MESSAGES = 500;
 
 export function useSessionStore() {
   const storeRef = useRef(new Map<string, SessionSlot>());
+  const nextStreamRowRef = useRef(0);
   const activeSessionIdRef = useRef<string | null>(null);
   // Bump to force re-render — only when the active session's data changes.
   // Session ids are stable for the whole conversation lifetime (the backend
@@ -680,6 +683,7 @@ export function useSessionStore() {
         ...slot.realtimeMessages,
         {
           id: streamId,
+          renderId: `stream-row-${sessionId}-${++nextStreamRowRef.current}`,
           sessionId,
           timestamp: new Date().toISOString(),
           provider: msgProvider,
@@ -750,6 +754,7 @@ export function useSessionStore() {
         ...slot.realtimeMessages,
         {
           id: streamId,
+          renderId: `stream-row-${sessionId}-${++nextStreamRowRef.current}`,
           sessionId,
           timestamp: new Date().toISOString(),
           provider: msgProvider,

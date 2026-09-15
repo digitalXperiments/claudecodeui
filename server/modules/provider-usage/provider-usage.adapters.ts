@@ -776,8 +776,10 @@ const readClaudeCredentialCandidates = async (): Promise<ClaudeCredentialCandida
   if (username) {
     await addKeychainCandidate(username, `keychain:${username}`);
   }
-  await addKeychainCandidate('unknown', 'keychain:unknown');
-  await addKeychainCandidate(undefined, 'keychain:first-match');
+  if (candidates.length === 0) {
+    await addKeychainCandidate('unknown', 'keychain:unknown');
+    await addKeychainCandidate(undefined, 'keychain:first-match');
+  }
 
   try {
     addCandidate(
