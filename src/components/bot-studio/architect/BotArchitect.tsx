@@ -23,6 +23,7 @@ import { useMcpCatalog } from '../../mcp/hooks/useMcpCatalog';
 import type { McpInventoryItem } from '../../mcp/types';
 import { authenticatedFetch } from '../../../utils/api';
 import { botStudioApi } from '../api/botStudioApi';
+import BotIcon from '../ui/BotIcon';
 
 import {
   applyReadOnlyPreset,
@@ -169,7 +170,7 @@ function ArchitectCard({ form, autonomy }: { form: CreateMcSectionInput; autonom
     <div className="overflow-hidden rounded-2xl border border-border/70 bg-card shadow-sm">
       <div className="border-b border-border/60 bg-gradient-to-br from-primary/[0.10] via-card to-violet-500/[0.07] p-5">
         <div className="flex items-start gap-3">
-          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-background text-2xl shadow-sm">{form.icon || '🤖'}</div>
+          <div className="flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-2xl bg-background text-2xl shadow-sm"><BotIcon icon={form.icon} size={26} /></div>
           <div className="min-w-0">
             <p className="truncate text-sm font-semibold text-foreground">{form.title || 'Untitled bot'}</p>
             <p className="mt-1 line-clamp-3 text-xs leading-relaxed text-muted-foreground">{form.produce_prompt || 'Your bot purpose and brief will appear here as you shape it.'}</p>
@@ -430,7 +431,7 @@ export default function BotArchitect({ mode, initialSection, projects, onSaved, 
         <div><FieldLabel>Scope</FieldLabel><div className="grid grid-cols-2 gap-2">{(['global', 'project'] as const).map((scope) => <button key={scope} type="button" className={`choice ${form.scope === scope ? 'choice-active' : ''}`} onClick={() => updateForm({ scope, project_id: scope === 'global' ? null : form.project_id })}>{scope === 'global' ? 'Global' : 'Project'}<span>{scope === 'global' ? 'Across workspaces' : 'One workspace'}</span></button>)}</div></div>
         {form.scope === 'project' ? <div><FieldLabel>Project</FieldLabel><select className="field" value={form.project_id ?? ''} onChange={(event) => updateForm({ project_id: event.target.value || null })}><option value="">Select a project…</option>{projects.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.name}</option>)}</select></div> : <div className="rounded-xl border border-border/60 bg-muted/25 p-3 text-xs text-muted-foreground">Global bots can use any connected MCP server. Scope down to a project when the brief depends on local files or a board.</div>}
       </div>
-      <div><FieldLabel>Bot icon</FieldLabel><div className="flex flex-wrap gap-2">{ICONS.map((icon) => <button key={icon} type="button" aria-label={`Use ${icon} icon`} className={`flex h-9 w-9 items-center justify-center rounded-xl border text-lg transition ${form.icon === icon ? 'border-primary bg-primary/10 ring-2 ring-primary/20' : 'border-border/70 bg-background hover:bg-muted'}`} onClick={() => updateForm({ icon })}>{icon}</button>)}</div></div>
+      <div><FieldLabel>Bot icon</FieldLabel><div className="flex flex-wrap gap-2">{ICONS.map((icon) => <button key={icon} type="button" aria-label={`Use ${icon} icon`} className={`flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-xl border text-lg transition ${form.icon === icon ? 'border-primary bg-primary/10 ring-2 ring-primary/20' : 'border-border/70 bg-background hover:bg-muted'}`} onClick={() => updateForm({ icon })}><BotIcon icon={icon} size={20} /></button>)}</div></div>
     </StepPanel>
   );
 
@@ -488,8 +489,8 @@ export default function BotArchitect({ mode, initialSection, projects, onSaved, 
   </StepPanel>;
 
   const currentStep = [renderPurpose, renderAgent, renderBrief, renderTools, renderTriggers, renderOutputs, renderGuardrails, renderReview][step - 1]();
-  const createdPanel = createdSection ? <StepPanel eyebrow="Bot created" title={`${createdSection.icon} ${createdSection.title}`} description="Your bot is saved. Run one tick now to inspect what it would create, or finish and let Bot Studio take over.">
-    <div className="rounded-2xl border border-emerald-500/25 bg-emerald-500/[0.07] p-5"><p className="text-sm font-semibold text-emerald-700 dark:text-emerald-300">Created successfully</p><p className="mt-1 text-xs leading-relaxed text-muted-foreground">The bot is {createdSection.enabled ? 'enabled' : 'paused'} and its tool policy was saved with the section.</p><div className="mt-4 flex flex-wrap gap-2"><button type="button" className="button button-primary" onClick={() => void runFirstTick(createdSection.section_id)}><Sparkles className="h-4 w-4" />{createdSection.enabled ? 'Run first tick now' : 'Enable and run first tick'}</button><button type="button" className="button" onClick={() => onSaved(createdSection)}>Done</button></div>{runResult ? <p className="mt-3 text-xs text-foreground">{runResult.created} created · {runResult.skipped ?? 0} skipped{runResult.message ? ` · ${runResult.message}` : ''}</p> : null}{runError ? <p role="alert" className="mt-3 text-xs text-red-600 dark:text-red-300">{runError}</p> : null}</div>
+  const createdPanel = createdSection ? <StepPanel eyebrow="Bot created" title={createdSection.title} description="Your bot is saved. Run one tick now to inspect what it would create, or finish and let Bot Studio take over.">
+    <div className="rounded-2xl border border-emerald-500/25 bg-emerald-500/[0.07] p-5"><div className="flex items-center gap-2"><BotIcon icon={createdSection.icon} size={20} className="text-emerald-700 dark:text-emerald-300" /><p className="text-sm font-semibold text-emerald-700 dark:text-emerald-300">Created successfully</p></div><p className="mt-1 text-xs leading-relaxed text-muted-foreground">The bot is {createdSection.enabled ? 'enabled' : 'paused'} and its tool policy was saved with the section.</p><div className="mt-4 flex flex-wrap gap-2"><button type="button" className="button button-primary" onClick={() => void runFirstTick(createdSection.section_id)}><Sparkles className="h-4 w-4" />{createdSection.enabled ? 'Run first tick now' : 'Enable and run first tick'}</button><button type="button" className="button" onClick={() => onSaved(createdSection)}>Done</button></div>{runResult ? <p className="mt-3 text-xs text-foreground">{runResult.created} created · {runResult.skipped ?? 0} skipped{runResult.message ? ` · ${runResult.message}` : ''}</p> : null}{runError ? <p role="alert" className="mt-3 text-xs text-red-600 dark:text-red-300">{runError}</p> : null}</div>
   </StepPanel> : null;
 
   return <div className="flex min-h-[min(900px,calc(100vh-2rem))] flex-col overflow-hidden rounded-2xl border border-border/70 bg-background text-foreground shadow-sm lg:flex-row">

@@ -98,12 +98,13 @@ export function useBotStudioLayout() {
     });
   }, [containerWidth]);
   const toggleContext = useCallback(() => {
+    const wasTemporarilyCollapsed = contextTemporarilyCollapsed;
     setContextTemporarilyCollapsed(false);
     setLayout((current) => {
-      const contextOpen = !current.contextOpen;
+      const contextOpen = wasTemporarilyCollapsed ? true : !current.contextOpen;
       return { ...current, contextOpen, ...fitWidths(containerWidth, current.rosterWidth, current.contextWidth, current.rosterOpen, contextOpen) };
     });
-  }, [containerWidth]);
+  }, [containerWidth, contextTemporarilyCollapsed]);
   const temporarilyCollapseContext = useCallback(() => setContextTemporarilyCollapsed(true), []);
   const restoreContext = useCallback(() => setContextTemporarilyCollapsed(false), []);
   const startResize = useCallback((target: 'roster' | 'context', event: React.PointerEvent) => {
