@@ -1,4 +1,4 @@
-import { useId, type ReactNode } from 'react';
+import { useId } from 'react';
 
 import { cn } from '../../../lib/utils';
 
@@ -10,5 +10,3 @@ export default function Tabs<T extends string>({ value, options, onChange }: { v
     </div>
   );
 }
-
-export function TabPanel({ children }: { children: ReactNode }) { return <div className="min-h-0 flex-1 overflow-y-auto">{children}</div>; }

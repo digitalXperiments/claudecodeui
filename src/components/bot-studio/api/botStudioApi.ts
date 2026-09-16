@@ -54,21 +54,14 @@ export const botStudioApi = {
   },
   async listMcpTools(name: string): Promise<McpTool[]> {
     const response = await authenticatedFetch(`/api/providers/mcp/catalog/${encodeURIComponent(name)}/tools`);
-    const payload = await readJson<{ tools?: McpTool[] }>(response);
-    return Array.isArray(payload.tools) ? payload.tools : [];
+    const payload = await readJson<{ success?: boolean; data?: { tools?: McpTool[] } }>(response);
+    if (payload.success === false) throw new Error('Failed to load MCP tools.');
+    return Array.isArray(payload.data?.tools) ? payload.data.tools : [];
   },
   async listMcpInventory(): Promise<Array<{ name: string; displayName?: string; connected?: boolean; needsAuth?: boolean }>> {
     const response = await authenticatedFetch('/api/providers/mcp/inventory?phase=fast');
     const payload = await readJson<{ data?: { items?: Array<{ name: string; displayName?: string; connected?: boolean; needsAuth?: boolean }> }; items?: Array<{ name: string; displayName?: string; connected?: boolean; needsAuth?: boolean }> }>(response);
     return payload.data?.items ?? payload.items ?? [];
-  },
-  async listModels(provider: string): Promise<Array<{ id: string; label?: string }>> {
-    const response = await authenticatedFetch(`/api/providers/${encodeURIComponent(provider)}/models`);
-    const payload = await readJson<{ models?: Array<{ id?: string; value?: string; label?: string; name?: string }> }>(response);
-    return (payload.models ?? []).flatMap((model) => {
-      const id = model.id ?? model.value ?? model.name;
-      return id ? [{ id, label: model.label ?? id }] : [];
-    });
   },
 };
 
