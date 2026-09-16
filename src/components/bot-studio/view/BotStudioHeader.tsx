@@ -1,10 +1,11 @@
-import { ArrowLeft, Bot, Inbox, PanelLeft, PanelRight, Pause, Plus, Search, Activity, LayoutTemplate } from 'lucide-react';
+import { Activity, ArrowLeft, Bot, Inbox, LayoutTemplate, PanelLeft, PanelRight, Pause, Play, Plus, Search } from 'lucide-react';
+
 import { Button } from '../../../shared/view/ui';
 import SegmentedControl from '../ui/SegmentedControl';
 
 export type BotStudioViewKey = 'inbox' | 'bots' | 'templates' | 'activity' | 'import';
 
-export default function BotStudioHeader({ activeView, counts, search, onSearchChange, onViewChange, onBackToChat, onNewBot, onPauseAll, onToggleRoster, onToggleContext, rosterOpen, contextOpen }: {
+export default function BotStudioHeader({ activeView, counts, search, onSearchChange, onViewChange, onBackToChat, onNewBot, onPauseAll, pauseAllLabel = 'Pause all', onToggleRoster, onToggleContext, rosterOpen, contextOpen }: {
   activeView: BotStudioViewKey;
   counts: { inbox: number; bots: number; templates?: number; activity?: number };
   search: string;
@@ -13,6 +14,7 @@ export default function BotStudioHeader({ activeView, counts, search, onSearchCh
   onBackToChat: () => void;
   onNewBot: () => void;
   onPauseAll: () => void;
+  pauseAllLabel?: string;
   onToggleRoster: () => void;
   onToggleContext: () => void;
   rosterOpen: boolean;
@@ -28,7 +30,7 @@ export default function BotStudioHeader({ activeView, counts, search, onSearchCh
     <div className="mt-3 flex flex-wrap items-center gap-2">
       <SegmentedControl value={activeView} onChange={onViewChange} label="Bot Studio views" options={[{ value: 'inbox', label: <><Inbox className="mr-1 inline h-3 w-3" />Inbox</>, count: counts.inbox }, { value: 'bots', label: <><Bot className="mr-1 inline h-3 w-3" />Bots</>, count: counts.bots }, { value: 'templates', label: <><LayoutTemplate className="mr-1 inline h-3 w-3" />Templates</>, count: counts.templates }, { value: 'activity', label: <><Activity className="mr-1 inline h-3 w-3" />Activity</>, count: counts.activity }]} />
       <label className="relative min-w-[180px] flex-1 sm:max-w-xs"><Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" /><input value={search} onChange={(event) => onSearchChange(event.target.value)} placeholder="Search bots and inbox…" aria-label="Search bots and inbox" className="h-9 w-full rounded-lg border border-border bg-background pl-8 pr-3 text-xs outline-none transition-colors placeholder:text-muted-foreground/70 focus:border-primary focus:ring-2 focus:ring-primary/10" /></label>
-      <Button size="sm" variant="ghost" onClick={onPauseAll} title="Pause or resume all bots"><Pause className="h-3.5 w-3.5" /><span className="hidden md:inline">Pause / resume all</span></Button><Button size="sm" onClick={onNewBot}><Plus className="h-3.5 w-3.5" />New bot</Button>
+      <Button size="sm" variant="ghost" onClick={onPauseAll} title={`${pauseAllLabel} bots`}><span className="sr-only">{pauseAllLabel} bots</span>{pauseAllLabel === 'Resume all' ? <Play className="h-3.5 w-3.5" /> : <Pause className="h-3.5 w-3.5" />}<span className="hidden md:inline">{pauseAllLabel}</span></Button><Button size="sm" onClick={onNewBot}><Plus className="h-3.5 w-3.5" />New bot</Button>
     </div>
   </header>;
 }

@@ -1,25 +1,15 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Check, CheckSquare, X } from 'lucide-react';
-import type { McAction, McItem } from '../../mission-control/api/missionControlApi';
-import type { Bot } from '../types';
+
 import SegmentedControl from '../ui/SegmentedControl';
-import InboxItemCard from './InboxItemCard';
 import { Button } from '../../../shared/view/ui';
+
+import InboxItemCard from './InboxItemCard';
+import type { InboxViewProps } from './contracts';
 
 type Filter = 'pending' | 'resolving' | 'resolved' | 'failed' | 'all';
 
-export default function InboxView({ items, bots, search, selectedItemId, onSelectItem, onAction, onPreview, onRetry, onWork, onGenerateAssets }: {
-  items: McItem[];
-  bots: Bot[];
-  search: string;
-  selectedItemId: string | null;
-  onSelectItem: (item: McItem) => void;
-  onAction: (item: McItem, action: McAction, body?: Record<string, unknown>) => void;
-  onPreview: (item: McItem, action?: McAction) => void;
-  onRetry: (item: McItem) => void;
-  onWork: (item: McItem) => void;
-  onGenerateAssets: (item: McItem, force: boolean) => Promise<{ generated: number; skipped: number; failed: number; messages: string[] }>;
-}) {
+export default function InboxView({ items, bots, search, selectedItemId, onSelectItem, onAction, onPreview, onRetry, onWork, onGenerateAssets }: InboxViewProps) {
   const [filter, setFilter] = useState<Filter>('pending');
   const [botFilter, setBotFilter] = useState('all');
   const [selectedIds, setSelectedIds] = useState<string[]>([]);

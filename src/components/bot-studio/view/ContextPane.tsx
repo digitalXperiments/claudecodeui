@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react';
 import { Bot as BotIcon, Eye, FileJson, X } from 'lucide-react';
-import type { McItem } from '../../mission-control/api/missionControlApi';
-import type { Bot } from '../types';
+
 import StatusPill from '../ui/StatusPill';
 import { Button } from '../../../shared/view/ui';
 
-export default function ContextPane({ item, bot, preview, operatorContext, onOperatorContextChange, onBodyChange, onClose }: { item: McItem | null; bot?: Bot; preview: Record<string, unknown> | null; operatorContext: string; onOperatorContextChange: (value: string) => void; onBodyChange: (body: Record<string, unknown>) => void; onClose?: () => void }) {
+import type { ContextPaneProps } from './contracts';
+
+export default function ContextPane({ item, bot, preview, operatorContext, onOperatorContextChange, onBodyChange, onClose }: ContextPaneProps) {
   const [bodyDraft, setBodyDraft] = useState('');
   const [bodyError, setBodyError] = useState<string | null>(null);
   useEffect(() => { setBodyDraft(item ? JSON.stringify(item.body, null, 2) : ''); setBodyError(null); }, [item]);
