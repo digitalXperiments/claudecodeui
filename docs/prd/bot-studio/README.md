@@ -1,6 +1,8 @@
 # Bot Studio — Action Centre grown up
 
-**Date:** 2026-09-15 · **Status:** brainstorm + clickable prototype · **Owner:** Ram
+**Date:** 2026-09-15 · **Status:** IMPLEMENTED 2026-09-16 (web app, route `/bots`) · **Owner:** Ram
+
+> Implementation landed on `main` via Agent Relay (GPT-5.6-Luna workers, lead-reviewed). Live screenshots from the smoke test are in `shots/live/`. The standalone Bots modal and the Integration Center were removed; a Bot is a Mission Control section, all capabilities are MCP servers with per-tool allow / ask / deny.
 
 Open `prototype.html` in any browser (no build, no server). Hash routes work, so you
 can deep-link: `#/inbox`, `#/bots/work-gmail/tools`, `#/new/3`, `#/templates`,
