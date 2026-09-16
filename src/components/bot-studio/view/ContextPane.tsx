@@ -12,9 +12,6 @@ import ArticleDraftCard from '../../mission-control/view/subcomponents/ArticleDr
 import type { ContextPaneProps } from './contracts';
 
 type ExtendedContextPaneProps = ContextPaneProps & {
-  /** Optional until the shell wires the run-selection contract through. */
-  run?: BotRun | null;
-  onSelectRun?: (run: BotRun) => void;
   onAction?: (item: NonNullable<ContextPaneProps['item']>, action: NonNullable<ContextPaneProps['item']>['actions'][number], body?: Record<string, unknown>) => void;
 };
 
@@ -49,7 +46,7 @@ function runDetail(run: BotRun, onSelectRun?: (run: BotRun) => void) {
   </div>;
 }
 
-export default function ContextPane({ item, bot, preview, operatorContext, onOperatorContextChange, onBodyChange, onClose, run, onSelectRun, onAction }: ExtendedContextPaneProps) {
+export default function ContextPane({ item, bot, preview, operatorContext, onOperatorContextChange, onBodyChange, onGenerateAssets, onClose, selectedRun, onSelectRun, onAction }: ExtendedContextPaneProps) {
   const [bodyDraft, setBodyDraft] = useState('');
   const [draftText, setDraftText] = useState('');
   const [bodyError, setBodyError] = useState<string | null>(null);
@@ -113,7 +110,7 @@ export default function ContextPane({ item, bot, preview, operatorContext, onOpe
     return next;
   }, [bodyDraft, operatorContext]);
 
-  if (run) return <aside className="flex min-h-0 flex-col border-t border-border/70 bg-card/30 xl:border-t-0"><div className="flex items-center justify-between border-b border-border/70 px-4 py-3"><p className="text-sm font-semibold">Run {run.run_id}</p>{onClose ? <Button size="sm" variant="ghost" onClick={onClose} aria-label="Close context pane"><X className="h-3.5 w-3.5" /></Button> : null}</div><div className="min-h-0 flex-1 overflow-y-auto">{runDetail(run, onSelectRun)}</div></aside>;
+  if (selectedRun) return <aside className="flex min-h-0 flex-col border-t border-border/70 bg-card/30 xl:border-t-0"><div className="flex items-center justify-between border-b border-border/70 px-4 py-3"><p className="text-sm font-semibold">Run {selectedRun.run_id}</p>{onClose ? <Button size="sm" variant="ghost" onClick={onClose} aria-label="Close context pane"><X className="h-3.5 w-3.5" /></Button> : null}</div><div className="min-h-0 flex-1 overflow-y-auto">{runDetail(selectedRun, onSelectRun)}</div></aside>;
   if (!item) return <aside className="flex min-h-0 flex-col border-t border-border/70 bg-card/30 xl:border-t-0"><div className="flex flex-1 flex-col items-center justify-center p-8 text-center"><div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary"><BotIcon className="h-4 w-4" /></div><p className="mt-3 text-sm font-medium">Context pane</p><p className="mt-1 max-w-xs text-xs leading-5 text-muted-foreground">Select an inbox item to inspect its evidence, draft, and next action.</p></div></aside>;
 
   return <aside className="flex min-h-0 flex-col border-t border-border/70 bg-card/30 xl:border-t-0">
@@ -123,7 +120,7 @@ export default function ContextPane({ item, bot, preview, operatorContext, onOpe
 
       <section className="rounded-xl border border-dashed border-amber-500/40 bg-amber-500/5 p-3"><div className="flex items-center justify-between gap-2"><p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-amber-700 dark:text-amber-300">Source · untrusted content</p>{sourceUrl(item) ? <a href={sourceUrl(item) ?? undefined} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-[10px] font-medium text-amber-700 underline-offset-2 hover:underline dark:text-amber-300">Open original <ExternalLink className="h-3 w-3" /></a> : null}</div><p className="mt-1 max-h-24 overflow-auto whitespace-pre-wrap break-words text-xs leading-5 text-muted-foreground">{sourceExcerpt(item)}</p></section>
 
-      {article ? <ArticleDraftCard article={article} itemId={item.item_id} onGenerateAssets={async () => ({ generated: 0, skipped: 0, failed: 0, messages: ['Render assets from the inbox card.'] })} /> : bodyHasDraft ? <section><label htmlFor="bot-draft" className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">Draft</label><textarea id="bot-draft" value={draftText} onChange={(event) => updateDraft(event.target.value)} className="mt-2 min-h-28 w-full resize-y rounded-xl border border-border bg-background px-3 py-2 text-xs leading-5 outline-none focus:border-primary focus:ring-2 focus:ring-primary/10" /></section> : null}
+      {article && onGenerateAssets ? <ArticleDraftCard article={article} itemId={item.item_id} onGenerateAssets={(force) => onGenerateAssets(item, force)} /> : bodyHasDraft ? <section><label htmlFor="bot-draft" className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">Draft</label><textarea id="bot-draft" value={draftText} onChange={(event) => updateDraft(event.target.value)} className="mt-2 min-h-28 w-full resize-y rounded-xl border border-border bg-background px-3 py-2 text-xs leading-5 outline-none focus:border-primary focus:ring-2 focus:ring-primary/10" /></section> : null}
 
       <section><label htmlFor="bot-steering-note" className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">Steering note</label><textarea id="bot-steering-note" value={operatorContext} onChange={(event) => onOperatorContextChange(event.target.value)} placeholder="Add facts, corrections, tone, or the outcome you want…" className="mt-2 min-h-20 w-full resize-y rounded-xl border border-border bg-background px-3 py-2 text-xs leading-5 outline-none focus:border-primary focus:ring-2 focus:ring-primary/10" /><p className="mt-1 text-[10px] text-muted-foreground">Included in the next action body.</p></section>
 

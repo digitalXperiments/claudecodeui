@@ -77,6 +77,7 @@ function RailButton({
     <Tooltip content={title} position="right">
       <button
         type="button"
+        aria-label={title}
         onClick={onClick}
         className={cn(
           'group relative flex h-11 w-11 touch-manipulation items-center justify-center rounded-xl transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',

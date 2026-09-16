@@ -159,6 +159,10 @@ export function actionIsSendLike(action: McAction): boolean {
   return /send|publish|post|reply|transition|update|delete|archive/i.test(`${action.id} ${action.kind} ${action.label}`);
 }
 
+export function isInboxActionLocked(item: McItem, bot: Pick<Bot, 'autonomy'> | undefined, action: McAction): boolean {
+  return item.status === 'resolving' || (bot?.autonomy === 'propose' && actionIsSendLike(action));
+}
+
 export function formatAge(value: string | null | undefined): string {
   if (!value) return 'No ticks yet';
   const timestamp = new Date(value).getTime();

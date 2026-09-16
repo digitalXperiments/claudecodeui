@@ -50,8 +50,8 @@ export function getActionSemantics(
     return {
       scope: 'local',
       label: action.label,
-      detail: 'Deletes this local Action Centre item',
-      confirmation: `Delete “${itemTitle}” permanently?\n\nThis only deletes the local Action Centre item and frees its dedupe key. Dismiss keeps the key and blocks re-creation.`,
+      detail: 'Deletes this local Action Centre item in Bot Studio',
+      confirmation: `Delete “${itemTitle}” permanently?\n\nThis only deletes the local Action Centre item in Bot Studio and frees its dedupe key. Dismiss keeps the key and blocks re-creation.`,
     };
   }
 
@@ -69,7 +69,7 @@ export function getActionSemantics(
       scope: 'remote',
       label: action.label,
       detail: sendsReply ? 'Remote action · sends the reply now' : 'Remote action · updates the source',
-      confirmation: `Confirm you want to ${operation}.\n\nThis changes the connected source and may not be reversible from Action Centre.`,
+      confirmation: `Confirm you want to ${operation}.\n\nThis changes the connected source and may not be reversible from Bot Studio.`,
     };
   }
 
