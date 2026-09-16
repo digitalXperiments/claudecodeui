@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { AlarmClock } from 'lucide-react';
+import { ListChecks } from 'lucide-react';
 
 import { resolveBotIcon } from './BotIconResolver';
 
@@ -16,10 +16,12 @@ test('BotIcon maps legacy SF Symbol names', () => {
   assert.equal(resolveBotIcon('DOC.TEXT').kind, 'icon');
 });
 
-test('BotIcon resolves PascalCase lucide exports as a fallback', () => {
-  const result = resolveBotIcon('alarm-clock');
-  assert.equal(result.kind, 'icon');
-  if (result.kind === 'icon') assert.equal(result.value, AlarmClock);
+test('BotIcon normalises kebab and camel lucide names', () => {
+  const kebab = resolveBotIcon('list-checks');
+  const camel = resolveBotIcon('ListChecks');
+  assert.equal(kebab.kind, 'icon');
+  if (kebab.kind === 'icon') assert.equal(kebab.value, ListChecks);
+  if (camel.kind === 'icon') assert.equal(camel.value, ListChecks);
 });
 
 test('BotIcon uses Bot for empty and unknown values', () => {
