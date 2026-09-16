@@ -1,5 +1,12 @@
 import type { McItem, McSection } from '../../mission-control/api/missionControlApi';
 
+export const BOT_STUDIO_CENTRE_COLLAPSE_THRESHOLD = 620;
+
+/** Narrow centres need the context pane hidden until the operator picks a context. */
+export function shouldTemporarilyCollapseContext(centerWidth: number, hasSelection: boolean): boolean {
+  return !hasSelection && centerWidth > 0 && centerWidth < BOT_STUDIO_CENTRE_COLLAPSE_THRESHOLD;
+}
+
 /** Replace one inbox item's status without mutating the hook's current list. */
 export function setItemStatus(items: McItem[], itemId: string, status: McItem['status']): McItem[] {
   return items.map((item) => item.item_id === itemId ? { ...item, status } : item);
