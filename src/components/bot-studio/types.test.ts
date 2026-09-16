@@ -38,6 +38,7 @@ test('unions MCP servers and merges health summary fields', () => {
   assert.equal(bot.health, 'needs');
   assert.equal(sectionToBot(section({ enabled: false })).health, 'paused');
   assert.equal(sectionToBot(section({ last_run_error: 'failed' })).health, 'failing');
+  assert.equal(sectionToBot(section(), { failed: 1, pending: 0 }).health, 'failing');
 });
 
 test('maps all autonomy modes back to mode and dry_run', () => {

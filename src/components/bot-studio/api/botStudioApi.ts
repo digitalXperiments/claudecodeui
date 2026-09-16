@@ -20,7 +20,8 @@ export type BotRun = {
   cost_usd?: number | null;
 };
 
-export type McpTool = { name: string; description?: string; inputSchema?: Record<string, unknown> };
+export type McpTool = { name: string; description?: string; inputSchema?: Record<string, unknown>; fromPolicy?: boolean };
+export type McpToolsResult = McpTool[] & { error?: string };
 
 async function readJson<T>(response: Response): Promise<T> {
   const payload = await response.json().catch(() => ({}));
@@ -52,11 +53,14 @@ export const botStudioApi = {
     const result = await missionControlApi.listRuns(sectionId, limit);
     return result.runs ?? [];
   },
-  async listMcpTools(name: string): Promise<McpTool[]> {
+  async listMcpTools(name: string): Promise<McpToolsResult> {
     const response = await authenticatedFetch(`/api/providers/mcp/catalog/${encodeURIComponent(name)}/tools`);
-    const payload = await readJson<{ success?: boolean; data?: { tools?: McpTool[] } }>(response);
+    const payload = await readJson<{ success?: boolean; data?: { tools?: McpTool[]; error?: string } }>(response);
     if (payload.success === false) throw new Error('Failed to load MCP tools.');
-    return Array.isArray(payload.data?.tools) ? payload.data.tools : [];
+    return Object.assign(
+      Array.isArray(payload.data?.tools) ? payload.data.tools : [],
+      { error: payload.data?.error },
+    );
   },
   async listMcpInventory(): Promise<Array<{ name: string; displayName?: string; connected?: boolean; needsAuth?: boolean }>> {
     const response = await authenticatedFetch('/api/providers/mcp/inventory?phase=fast');
