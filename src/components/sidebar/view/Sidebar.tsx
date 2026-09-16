@@ -12,8 +12,6 @@ import { useTasksSettings } from '../../../contexts/TasksSettingsContext';
 import type { Project, ProjectCategory, LLMProvider } from '../../../types/app';
 import type { MCPServerStatus, SidebarProps } from '../types/types';
 import { missionControlApi } from '../../mission-control/api/missionControlApi';
-import KanbanPanel from '../../kanban/view/KanbanPanel';
-import StatsPanel from '../../stats/view/StatsPanel';
 
 import SidebarContent from './subcomponents/SidebarContent';
 import SidebarModals from './subcomponents/SidebarModals';
@@ -21,6 +19,10 @@ import NeedsYouPanel from './subcomponents/NeedsYouPanel';
 import type { SidebarProjectListProps } from './subcomponents/SidebarProjectList';
 
 const AgentRelayPanel = lazy(() => import('../../agent-relay/view/AgentRelayPanel'));
+// Kanban and Stats are opened on demand; load their chunks on first open and keep
+// them mounted afterwards so their in-panel state survives close/reopen.
+const KanbanPanel = lazy(() => import('../../kanban/view/KanbanPanel'));
+const StatsPanel = lazy(() => import('../../stats/view/StatsPanel'));
 
 type TaskMasterSidebarContext = {
   setCurrentProject: (project: Project) => void;
@@ -71,6 +73,11 @@ function Sidebar({
   const [showKanban, setShowKanban] = useState(false);
   const [showAgentRelay, setShowAgentRelay] = useState(false);
   const [showStats, setShowStats] = useState(false);
+  // Latches: once a lazily loaded panel has been opened it stays mounted.
+  const [kanbanEverOpened, setKanbanEverOpened] = useState(false);
+  const [statsEverOpened, setStatsEverOpened] = useState(false);
+  useEffect(() => { if (showKanban) setKanbanEverOpened(true); }, [showKanban]);
+  useEffect(() => { if (showStats) setStatsEverOpened(true); }, [showStats]);
   // Keep the Bot Studio inbox badge fresh even when the route is closed.
   useEffect(() => {
     let cancelled = false;
@@ -431,13 +438,15 @@ function Sidebar({
         onCountChange={setNeedsYouCount}
       />
 
-      {features.kanbanEnabled ? (
-        <KanbanPanel
-          isOpen={showKanban}
-          onClose={() => setShowKanban(false)}
-          selectedProject={selectedProject}
-          projects={projects}
-        />
+      {features.kanbanEnabled && kanbanEverOpened ? (
+        <Suspense fallback={null}>
+          <KanbanPanel
+            isOpen={showKanban}
+            onClose={() => setShowKanban(false)}
+            selectedProject={selectedProject}
+            projects={projects}
+          />
+        </Suspense>
       ) : null}
 
       {showAgentRelay ? (
@@ -450,10 +459,14 @@ function Sidebar({
         </Suspense>
       ) : null}
 
-      <StatsPanel
-        isOpen={showStats}
-        onClose={() => setShowStats(false)}
-      />
+      {statsEverOpened ? (
+        <Suspense fallback={null}>
+          <StatsPanel
+            isOpen={showStats}
+            onClose={() => setShowStats(false)}
+          />
+        </Suspense>
+      ) : null}
 
     </>
   );

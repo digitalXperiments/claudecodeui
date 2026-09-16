@@ -81,6 +81,11 @@ export default defineConfig(({ mode }) => {
               '@codemirror/theme-one-dark'
             ],
             'vendor-xterm': ['@xterm/xterm', '@xterm/addon-fit', '@xterm/addon-clipboard', '@xterm/addon-webgl']
+            ,
+            // Leaf libraries with no back-references into the app or the remark
+            // graph, so they split cleanly: math rendering and code highlighting.
+            'vendor-katex': ['katex'],
+            'vendor-highlight': ['refractor', 'react-syntax-highlighter']
           }
         }
       }
