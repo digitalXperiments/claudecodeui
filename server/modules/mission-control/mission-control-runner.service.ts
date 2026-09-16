@@ -5,7 +5,10 @@ import {
   parseJsonFromAgentText,
   runMissionControlAgent,
 } from '@/modules/mission-control/mission-control-agent.service.js';
-import { missionControlDb } from '@/modules/mission-control/mission-control.repository.js';
+import {
+  broadcastMissionControlSectionUpdated,
+  missionControlDb,
+} from '@/modules/mission-control/mission-control.repository.js';
 import type {
   McAction,
   McDraftItem,
@@ -203,6 +206,23 @@ function notifyPendingItems(section: McSection, count: number, itemIds: string[]
     });
 }
 
+/** Mark the latest section phase and emit one canonical roster update event. */
+export function finishMissionControlSectionRun(sectionId: string, error: string | null = null): void {
+  const section = missionControlDb.getSection(sectionId);
+  if (section) {
+    missionControlDb.markSectionRun(sectionId, { error });
+    return;
+  }
+  // Architect previews use an ephemeral section-shaped object rather than a
+  // persisted row, but still need to refresh the live Bot Studio activity rail.
+  broadcastMissionControlSectionUpdated({
+    sectionId,
+    lastRunAt: new Date().toISOString(),
+    lastError: error,
+    enabled: true,
+  });
+}
+
 /**
  * Run a section's produce step (scheduled or manual).
  * - review mode: parse draft items into the queue
@@ -249,6 +269,7 @@ export async function runSectionProduce(sectionId: string): Promise<ProduceRunRe
       tools: section.produce_tools,
       sourceRef: section.section_id,
       trigger: 'manual',
+      phase: 'produce',
     });
 
     // Provider/runtime failure (API unreachable, CLI crash, …): the output is
@@ -260,7 +281,7 @@ export async function runSectionProduce(sectionId: string): Promise<ProduceRunRe
         || errorMessage
         || text.slice(0, 500)
         || `Provider "${section.provider}" run failed`;
-      missionControlDb.markSectionRun(sectionId, { error: msg });
+      finishMissionControlSectionRun(sectionId, msg);
       return {
         created: 0,
         skipped: 0,
@@ -297,7 +318,7 @@ export async function runSectionProduce(sectionId: string): Promise<ProduceRunRe
           resolvedAt: now.toISOString(),
         });
       }
-      missionControlDb.markSectionRun(sectionId, { error: null });
+      finishMissionControlSectionRun(sectionId);
       const resolved = item ? [missionControlDb.getItem(item.item_id)!] : [];
       return {
         created: resolved.length,
@@ -321,7 +342,7 @@ export async function runSectionProduce(sectionId: string): Promise<ProduceRunRe
       // and left one bogus item per scheduled run to triage by hand.
       const authFailure = resolveProviderAuthFailure(section.provider, errorMessage, text);
       if (authFailure) {
-        missionControlDb.markSectionRun(sectionId, { error: authFailure });
+        finishMissionControlSectionRun(sectionId, authFailure);
         return {
           created: 0,
           skipped: 0,
@@ -331,9 +352,7 @@ export async function runSectionProduce(sectionId: string): Promise<ProduceRunRe
         };
       }
 
-      missionControlDb.markSectionRun(sectionId, {
-        error: `Failed to parse produce output: ${message}`,
-      });
+      finishMissionControlSectionRun(sectionId, `Failed to parse produce output: ${message}`);
       // Park raw output as a failed item for visibility
       const failed = missionControlDb.insertItemIfNew(section, {
         title: `${section.title}: produce parse failed`,
@@ -358,7 +377,7 @@ export async function runSectionProduce(sectionId: string): Promise<ProduceRunRe
     const drafts = filterSectionDrafts(section, parsedDrafts);
     if (drafts.length === 0) {
       if (isSlackSection(section) && parsedDrafts.length > 0) {
-        missionControlDb.markSectionRun(sectionId, { error: null });
+        finishMissionControlSectionRun(sectionId);
         return {
           created: 0,
           skipped: 0,
@@ -371,7 +390,7 @@ export async function runSectionProduce(sectionId: string): Promise<ProduceRunRe
       // resolve/auto-approve. Only treat as an error when the model returned
       // objects that were missing required title + dedupeKey.
       if (candidateCount === 0) {
-        missionControlDb.markSectionRun(sectionId, { error: null });
+        finishMissionControlSectionRun(sectionId);
         return {
           created: 0,
           skipped: 0,
@@ -381,7 +400,7 @@ export async function runSectionProduce(sectionId: string): Promise<ProduceRunRe
       }
       const msg =
         'Produce finished but returned 0 valid drafts (each item needs title + dedupeKey).';
-      missionControlDb.markSectionRun(sectionId, { error: msg });
+      finishMissionControlSectionRun(sectionId, msg);
       return {
         created: 0,
         skipped: 0,
@@ -434,7 +453,7 @@ export async function runSectionProduce(sectionId: string): Promise<ProduceRunRe
       createdItems.push(current);
     }
 
-    missionControlDb.markSectionRun(sectionId, { error: null });
+    finishMissionControlSectionRun(sectionId);
     notifyPendingItems(
       section,
       section.auto_approve ? 0 : createdItems.length,
@@ -458,7 +477,7 @@ export async function runSectionProduce(sectionId: string): Promise<ProduceRunRe
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    missionControlDb.markSectionRun(sectionId, { error: message });
+    finishMissionControlSectionRun(sectionId, message);
     throw error;
   }
 }
@@ -980,6 +999,7 @@ export async function applyItemAction(
       resolvedAt: new Date().toISOString(),
     });
     await resolveMissionControlInterrupts(itemId, actionId);
+    finishMissionControlSectionRun(item.section_id);
     return dismissed;
   }
 
@@ -1002,6 +1022,7 @@ export async function applyItemAction(
     });
     const bridged = maybeBridgeToSwarm(section, action, maybeBridgeToKanban(section, action, resolved));
     await resolveMissionControlInterrupts(itemId, actionId);
+    finishMissionControlSectionRun(section.section_id);
     return bridged;
   }
 
@@ -1014,6 +1035,7 @@ export async function applyItemAction(
     });
     const bridged = maybeBridgeToSwarm(section, action, maybeBridgeToKanban(section, action, resolved));
     await resolveMissionControlInterrupts(itemId, actionId);
+    finishMissionControlSectionRun(section.section_id);
     return bridged;
   }
 
@@ -1025,18 +1047,20 @@ export async function applyItemAction(
       tools: section.resolve_tools,
       sourceRef: itemId,
       trigger: 'manual',
+      phase: 'resolve',
     });
 
     // Provider/runtime failure: mark the item failed (retryable) instead of
     // resolving it with an error dump as the result.
     if (!success) {
-      return missionControlDb.setItemStatus(itemId, 'failed', {
-        error:
+      const error =
           resolveProviderAuthFailure(section.provider, errorMessage, text)
           || errorMessage
           || text.slice(0, 500)
-          || `Provider "${section.provider}" run failed`,
-      });
+          || `Provider "${section.provider}" run failed`;
+      const failed = missionControlDb.setItemStatus(itemId, 'failed', { error });
+      finishMissionControlSectionRun(section.section_id, error);
+      return failed;
     }
 
     let result: Record<string, unknown> = { raw: text };
@@ -1054,24 +1078,30 @@ export async function applyItemAction(
       // legitimately auth-themed content.
       const authFailure = resolveProviderAuthFailure(section.provider, errorMessage, text);
       if (authFailure) {
-        return missionControlDb.setItemStatus(itemId, 'failed', { error: authFailure });
+        const failed = missionControlDb.setItemStatus(itemId, 'failed', { error: authFailure });
+        finishMissionControlSectionRun(section.section_id, authFailure);
+        return failed;
       }
       result = { raw: text };
     }
 
     if (typeof result.error === 'string') {
-      return missionControlDb.setItemStatus(itemId, 'failed', {
+      const failed = missionControlDb.setItemStatus(itemId, 'failed', {
         error: result.error,
         result,
         resolvedAt: null,
       });
+      finishMissionControlSectionRun(section.section_id, result.error);
+      return failed;
     }
 
     if (action.terminal === false) {
-      return missionControlDb.setItemStatus(itemId, 'pending', {
+      const pending = missionControlDb.setItemStatus(itemId, 'pending', {
         body: { ...body, ...result },
         error: null,
       });
+      finishMissionControlSectionRun(section.section_id);
+      return pending;
     }
 
     const resolved = missionControlDb.setItemStatus(itemId, 'resolved', {
@@ -1081,12 +1111,15 @@ export async function applyItemAction(
     });
     const bridged = maybeBridgeToSwarm(section, action, maybeBridgeToKanban(section, action, resolved));
     await resolveMissionControlInterrupts(itemId, actionId);
+    finishMissionControlSectionRun(section.section_id);
     return bridged;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    return missionControlDb.setItemStatus(itemId, 'failed', {
+    const failed = missionControlDb.setItemStatus(itemId, 'failed', {
       error: message,
     });
+    finishMissionControlSectionRun(section.section_id, message);
+    return failed;
   }
 }
 
@@ -1136,6 +1169,7 @@ export async function retryItem(itemId: string): Promise<RetryItemResult> {
       tools: section.produce_tools,
       sourceRef: itemId,
       trigger: 'replay',
+      phase: 'retry',
     });
     text = run.text;
     success = run.success;
@@ -1145,6 +1179,7 @@ export async function retryItem(itemId: string): Promise<RetryItemResult> {
     // retryable instead of throwing a 500 at the user.
     const message = error instanceof Error ? error.message : String(error);
     const failed = missionControlDb.setItemStatus(itemId, 'failed', { error: message });
+    finishMissionControlSectionRun(section.section_id, message);
     return { success: false, item: failed, error: message };
   }
 
@@ -1155,6 +1190,7 @@ export async function retryItem(itemId: string): Promise<RetryItemResult> {
       || text.slice(0, 500)
       || `Provider "${section.provider}" run failed`;
     const failed = missionControlDb.setItemStatus(itemId, 'failed', { error: msg });
+    finishMissionControlSectionRun(section.section_id, msg);
     return { success: false, item: failed, error: msg };
   }
 
@@ -1163,6 +1199,7 @@ export async function retryItem(itemId: string): Promise<RetryItemResult> {
     parsed = parseJsonFromAgentText(text);
   } catch {
     // Unparseable output: nothing to match against, keep the item as-is.
+    finishMissionControlSectionRun(section.section_id, 'Retry produced unparseable output');
     return {
       success: false,
       item: missionControlDb.getItem(itemId)!,
@@ -1175,6 +1212,7 @@ export async function retryItem(itemId: string): Promise<RetryItemResult> {
     (draft) => draft.dedupeKey === item.dedupe_key || draft.title === item.title,
   );
   if (!match) {
+    finishMissionControlSectionRun(section.section_id, 'Retry produced no matching item');
     return {
       success: false,
       item: missionControlDb.getItem(itemId)!,
@@ -1196,6 +1234,7 @@ export async function retryItem(itemId: string): Promise<RetryItemResult> {
     confidence: preparedMatch.confidence,
   });
   const refreshed = missionControlDb.getItem(itemId) ?? updated ?? item;
+  finishMissionControlSectionRun(section.section_id);
   return {
     success: true,
     item: refreshed,
@@ -1266,6 +1305,7 @@ export async function previewItemResolution(
 
   // No agent needed: resolving would just approve the body (or dry-run).
   if (!section.resolve_prompt.trim() || section.dry_run) {
+    finishMissionControlSectionRun(section.section_id);
     return { success: true, preview: { approved: true, body }, type: 'static' };
   }
 
@@ -1281,12 +1321,14 @@ export async function previewItemResolution(
       tools: section.resolve_tools,
       sourceRef: itemId,
       trigger: 'preview',
+      phase: 'resolve',
     });
     text = run.text;
     success = run.success;
     errorMessage = run.errorMessage;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    finishMissionControlSectionRun(section.section_id, message);
     return { success: false, error: message };
   }
 
@@ -1296,6 +1338,7 @@ export async function previewItemResolution(
       || errorMessage
       || text.slice(0, 500)
       || `Provider "${section.provider}" run failed`;
+    finishMissionControlSectionRun(section.section_id, message);
     return { success: false, error: message };
   }
 
@@ -1305,9 +1348,11 @@ export async function previewItemResolution(
       parsed && typeof parsed === 'object' && !Array.isArray(parsed)
         ? (parsed as Record<string, unknown>)
         : { value: parsed };
+    finishMissionControlSectionRun(section.section_id);
     return { success: true, preview, type: 'agent' };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    finishMissionControlSectionRun(section.section_id, message);
     return { success: false, error: `Preview output could not be parsed: ${message}` };
   }
 }

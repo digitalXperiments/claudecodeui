@@ -9,6 +9,7 @@ import {
   runMissionControlAgent,
   type McAgentRunResult,
 } from '@/modules/mission-control/mission-control-agent.service.js';
+import { finishMissionControlSectionRun } from '@/modules/mission-control/mission-control-runner.service.js';
 import {
   isMcProvider,
   type McProvider,
@@ -46,6 +47,7 @@ type WorkshopRunner = (input: {
   tools: string[];
   sourceRef?: string;
   trigger?: string;
+  phase?: 'architect';
 }) => Promise<Pick<McAgentRunResult, 'success' | 'text' | 'errorMessage'>>;
 
 let runnerOverride: WorkshopRunner | null = null;
@@ -189,6 +191,7 @@ export async function runSectionWorkshop(input: {
     produce_tools: [],
     resolve_prompt: '',
     resolve_tools: [],
+    tool_policy: {},
     actions: [],
     create_kanban_task: false,
     create_swarm_on_approve: false,
@@ -207,7 +210,12 @@ export async function runSectionWorkshop(input: {
     tools: [],
     sourceRef: section.section_id,
     trigger: 'section-workshop',
+    phase: 'architect',
   });
+  finishMissionControlSectionRun(
+    section.section_id,
+    outcome.success ? null : outcome.errorMessage || 'Section architect run failed',
+  );
   if (!outcome.success || !outcome.text.trim()) {
     throw new AppError(outcome.errorMessage || 'Section architect produced no reply', {
       code: 'MC_SECTION_WORKSHOP_FAILED',

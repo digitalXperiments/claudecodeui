@@ -292,6 +292,23 @@ export const runsDb = {
     return { runs: page.map(mapRun), nextCursor };
   },
 
+  /** List a bounded history for one source across several source references. */
+  listBySourceRefs(source: string, refs: string[], limit = DEFAULT_LIST_LIMIT): AgentRun[] {
+    const uniqueRefs = [...new Set(refs.filter((ref) => ref.trim()))];
+    if (uniqueRefs.length === 0) return [];
+    const boundedLimit = clampLimit(limit, DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT);
+    const placeholders = uniqueRefs.map(() => '?').join(', ');
+    const rows = getConnection()
+      .prepare(
+        `SELECT * FROM agent_runs
+         WHERE source = ? AND source_ref IN (${placeholders})
+         ORDER BY created_at DESC, run_id DESC
+         LIMIT ?`,
+      )
+      .all(source, ...uniqueRefs, boundedLimit) as RunRow[];
+    return rows.map(mapRun);
+  },
+
   updateStatus(
     runId: string,
     status: RunStatus,

@@ -74,6 +74,7 @@ test('headless Mission Control runs use an internal app session', async () => {
       produce_tools: [],
       resolve_prompt: '',
       resolve_tools: [],
+      tool_policy: {},
       actions: [],
       create_kanban_task: false,
       create_swarm_on_approve: false,

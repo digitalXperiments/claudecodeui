@@ -24,6 +24,8 @@ export function isMcProvider(value: unknown): value is McProvider {
 
 export type McSectionMode = 'review' | 'fire_and_forget';
 export type McSectionScope = 'global' | 'project';
+export type McToolPolicyDecision = 'allow' | 'ask' | 'deny';
+export type McToolPolicy = Record<string, Record<string, McToolPolicyDecision>>;
 
 export type McItemStatus =
   | 'pending'
@@ -106,6 +108,7 @@ export type McSection = {
   produce_tools: string[];
   resolve_prompt: string;
   resolve_tools: string[];
+  tool_policy: McToolPolicy;
   actions: McAction[];
   /** On approve, also create a card on the global kanban backlog. */
   create_kanban_task: boolean;
@@ -164,6 +167,7 @@ export type CreateMcSectionInput = {
   produce_tools?: string[];
   resolve_prompt?: string;
   resolve_tools?: string[];
+  tool_policy?: McToolPolicy;
   actions?: McAction[];
   create_kanban_task?: boolean;
   create_swarm_on_approve?: boolean;
