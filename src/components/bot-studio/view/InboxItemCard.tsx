@@ -1,11 +1,14 @@
 import { Eye, ExternalLink, Lock, RefreshCw, Send } from 'lucide-react';
-import type { McAction, McItem } from '../../mission-control/api/missionControlApi';
+
+import type { McItem } from '../../mission-control/api/missionControlApi';
 import ArticleDraftCard from '../../mission-control/view/subcomponents/ArticleDraftCard';
 import { getActionSemantics } from '../../mission-control/utils/actionSemantics';
 import { isXArticleBody } from '../../mission-control/utils/xArticle';
-import { actionIsSendLike, formatAge, itemHasDraft, type Bot } from '../types';
+import { actionIsSendLike, formatAge, itemHasDraft } from '../types';
 import StatusPill from '../ui/StatusPill';
 import { Button } from '../../../shared/view/ui';
+
+import type { InboxItemCardProps } from './contracts';
 
 function sourceExcerpt(item: McItem): string {
   const source = item.source ?? {};
@@ -20,19 +23,7 @@ function draftText(item: McItem): string | null {
   return typeof draft === 'string' && draft.trim() ? draft.trim() : null;
 }
 
-export default function InboxItemCard({ item, bot, selected, checked, onSelect, onCheck, onAction, onPreview, onRetry, onWork, onGenerateAssets }: {
-  item: McItem;
-  bot?: Bot;
-  selected: boolean;
-  checked: boolean;
-  onSelect: () => void;
-  onCheck: (checked: boolean) => void;
-  onAction: (item: McItem, action: McAction, body?: Record<string, unknown>) => void;
-  onPreview: (item: McItem, action?: McAction) => void;
-  onRetry: (item: McItem) => void;
-  onWork: (item: McItem) => void;
-  onGenerateAssets: (force: boolean) => Promise<{ generated: number; skipped: number; failed: number; messages: string[] }>;
-}) {
+export default function InboxItemCard({ item, bot, selected, checked, onSelect, onCheck, onAction, onPreview, onRetry, onWork, onGenerateAssets }: InboxItemCardProps) {
   const actionable = item.status === 'pending' || item.status === 'failed';
   const draft = draftText(item);
   return <article className={`rounded-xl border bg-card p-4 transition-shadow hover:shadow-sm ${selected ? 'border-primary/50 shadow-sm' : 'border-border/70'}`} onClick={onSelect}>

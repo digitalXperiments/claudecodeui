@@ -1,8 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { botPatch, sectionToBot } from './types';
 import type { McSection } from '../mission-control/api/missionControlApi';
+
+import { botPatch, sectionToBot } from './types';
 
 const section = (overrides: Partial<McSection> = {}): McSection => ({
   section_id: 'bot-1', title: 'Inbox helper', icon: 'bot', sort_order: 0, enabled: true,
@@ -21,9 +22,28 @@ test('maps section autonomy and purpose into a bot', () => {
   assert.equal(sectionToBot(section()).purpose, 'Find useful things.');
 });
 
+test('unions MCP servers and merges health summary fields', () => {
+  const bot = sectionToBot(section({
+    enabled: false,
+    produce_tools: ['github', 'slack'],
+    resolve_tools: ['slack'],
+    kanban_mcp_tools: ['github'],
+  }), { pending: 2, failed: 1, resolvedToday: 4, lastRunAt: '2026-09-16T08:00:00Z', lastError: 'timeout' });
+  assert.deepEqual(bot.tools.map((tool) => [tool.name, tool.produce, tool.resolve, tool.kanban]), [
+    ['github', true, false, true],
+    ['slack', true, true, false],
+  ]);
+  assert.equal(bot.pending, 2);
+  assert.equal(bot.resolvedToday, 4);
+  assert.equal(bot.health, 'needs');
+  assert.equal(sectionToBot(section({ enabled: false })).health, 'paused');
+  assert.equal(sectionToBot(section({ last_run_error: 'failed' })).health, 'failing');
+});
+
 test('maps all autonomy modes back to mode and dry_run', () => {
   assert.deepEqual(botPatch('dry_run'), { mode: 'review', dry_run: true });
   assert.deepEqual(botPatch('propose'), { mode: 'review', dry_run: false });
   assert.deepEqual(botPatch('act'), { mode: 'fire_and_forget', dry_run: false });
   assert.equal(botPatch('act', { title: 'Updated' }).title, 'Updated');
+  assert.deepEqual(botPatch({ autonomy: 'act', title: 'Updated' }), { title: 'Updated', mode: 'fire_and_forget', dry_run: false });
 });
