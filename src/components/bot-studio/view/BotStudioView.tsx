@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type CSSProperties } from 'react';
-import { GripVertical, Loader2, Menu } from 'lucide-react';
+import { GripVertical, Menu } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
 
 import type { Project } from '../../../types/app';
@@ -14,6 +14,7 @@ import { useBotStudioLayout } from '../hooks/useBotStudioLayout';
 import { getActionSemantics } from '../../mission-control/utils/actionSemantics';
 import type { Bot, WorkThisSessionRequest } from '../types';
 import InlineToast from '../ui/InlineToast';
+import Skeleton from '../ui/Skeleton';
 
 import ActivityView from './ActivityView';
 import BotDetailView, { type DetailTab } from './BotDetailView';
@@ -170,7 +171,7 @@ export default function BotStudioView({ projects, isMobile, onMenuClick, onBackT
   const projectsForArchitect = projects.map((project) => ({ id: project.projectId, name: project.displayName, path: project.fullPath }));
   const gridStyle = { '--bot-grid': `${layout.rosterOpen ? `${layout.rosterWidth}px 8px ` : ''}minmax(0,1fr)${layout.contextOpen ? ` 8px ${layout.contextWidth}px` : ''}` } as CSSProperties;
 
-  if (data.loading && !data.bots.length) return <div className="flex h-full items-center justify-center gap-2 text-xs text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" />Loading Bot Studio…</div>;
+  if (data.loading && !data.bots.length) return <div className="space-y-4 p-5" role="status" aria-label="Loading Bot Studio"><Skeleton className="h-10 w-48" /><div className="grid gap-4 xl:grid-cols-[280px_minmax(0,1fr)_400px]"><Skeleton className="h-[min(36rem,70vh)]" /><Skeleton className="h-[min(36rem,70vh)]" /><Skeleton className="h-[min(36rem,70vh)]" /></div></div>;
 
   return <div className="flex h-full min-h-0 flex-col bg-background text-foreground">
     {compact && onMenuClick ? <button type="button" onClick={onMenuClick} aria-label="Open sidebar" className="absolute left-3 top-3 z-10 rounded-lg border border-border bg-card p-2 text-muted-foreground shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"><Menu className="h-4 w-4" /></button> : null}
