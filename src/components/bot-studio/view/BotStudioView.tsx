@@ -77,10 +77,10 @@ export default function BotStudioView({ projects, isMobile, onMenuClick, onBackT
   useEffect(() => {
     if (hasContextSelection) {
       restoreContext();
-    } else if (shouldTemporarilyCollapseContext(centerWidth, false)) {
+    } else if (shouldTemporarilyCollapseContext(centerWidth, false, route.page === 'bots' && Boolean(selectedBot))) {
       temporarilyCollapseContext();
     }
-  }, [centerWidth, hasContextSelection, restoreContext, shouldTemporarilyCollapseContext, temporarilyCollapseContext]);
+  }, [centerWidth, hasContextSelection, restoreContext, route.botId, route.page, selectedBot, shouldTemporarilyCollapseContext, temporarilyCollapseContext]);
 
   useEffect(() => {
     if (route.page === 'new') setArchitectOpen(true);

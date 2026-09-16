@@ -7,6 +7,7 @@ import { getActionSemantics } from '../../mission-control/utils/actionSemantics'
 import { isXArticleBody } from '../../mission-control/utils/xArticle';
 import { formatAge, isInboxActionLocked, itemHasDraft } from '../types';
 import StatusPill from '../ui/StatusPill';
+import BotIcon from '../ui/BotIcon';
 import { Button } from '../../../shared/view/ui';
 
 import type { InboxItemCardProps } from './contracts';
@@ -66,7 +67,7 @@ export default function InboxItemCard({ item, bot, selected, checked, onSelect, 
         <input type="checkbox" checked={checked} onChange={(event) => onCheck(event.target.checked)} onClick={(event) => event.stopPropagation()} aria-label={`Select ${item.title}`} className="mt-1 h-3.5 w-3.5 accent-primary" />
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary">{bot?.icon || '🤖'} {bot?.title ?? item.section_id}</span>
+            <span className="inline-flex min-w-0 max-w-full items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary"><BotIcon icon={bot?.icon} size={12} /><span className="min-w-0 truncate">{bot?.title ?? item.section_id}</span></span>
             <StatusPill status={item.status} />
             <span className="ml-auto text-[10px] text-muted-foreground">{formatAge(item.created_at)}</span>
           </div>
