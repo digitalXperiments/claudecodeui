@@ -40,9 +40,25 @@ export function useBotStudio() {
   const generationRef = useRef(0);
   const runsRef = useRef<Record<string, BotRun[]>>({});
   const runsLoadingRef = useRef(new Set<string>());
+  const sectionsRef = useRef<McSection[]>([]);
+  const activityLoadingRef = useRef(false);
+  const activityExhaustedRef = useRef<Record<string, boolean>>({});
+  const activityHasMoreRef = useRef(false);
   const [activityLoading, setActivityLoading] = useState(false);
   const [activityPage, setActivityPage] = useState(0);
+  const [activityHasMore, setActivityHasMore] = useState(false);
   const activityPageSize = 30;
+
+  useEffect(() => {
+    sectionsRef.current = sections;
+    const sectionIds = new Set(sections.map((section) => section.section_id));
+    activityExhaustedRef.current = Object.fromEntries(
+      Object.entries(activityExhaustedRef.current).filter(([id]) => sectionIds.has(id)),
+    );
+    const hasMore = sections.some((section) => !activityExhaustedRef.current[section.section_id]);
+    activityHasMoreRef.current = hasMore;
+    setActivityHasMore(hasMore);
+  }, [sections]);
 
   const refreshItems = useCallback(async (options: { sectionId?: string } = {}) => {
     try {
@@ -58,17 +74,19 @@ export function useBotStudio() {
     }
   }, []);
 
-  const loadRuns = useCallback(async (sectionId: string, limit = 30) => {
-    if (!sectionId || runsLoadingRef.current.has(sectionId)) return;
+  const loadRuns = useCallback(async (sectionId: string, limit = 30): Promise<number | null> => {
+    if (!sectionId || runsLoadingRef.current.has(sectionId)) return null;
     runsLoadingRef.current.add(sectionId);
     try {
       const nextRuns = await botStudioApi.listRuns(sectionId, limit);
       runsRef.current = { ...runsRef.current, [sectionId]: nextRuns };
       setRunsBySection(runsRef.current);
+      return nextRuns.length;
     } catch (nextError) {
       // Runs are supplemental. Keep the core inbox usable if an older server
       // does not expose the new runs endpoint yet.
       console.warn('[BotStudio] unable to load runs', nextError);
+      return null;
     } finally {
       runsLoadingRef.current.delete(sectionId);
     }
@@ -99,24 +117,37 @@ export function useBotStudio() {
   }, []);
 
   const loadActivityRuns = useCallback(async (nextPage = 1) => {
-    if (activityLoading || !sections.length) return;
+    if (activityLoadingRef.current || !sectionsRef.current.length) return;
+    if (nextPage > 1 && !activityHasMoreRef.current) return;
+    if (nextPage === 1) {
+      activityExhaustedRef.current = {};
+    }
+    const activitySections = [...sectionsRef.current];
+    activityLoadingRef.current = true;
     setActivityLoading(true);
     try {
       const limit = nextPage * activityPageSize;
-      const queue = [...sections];
+      const queue = [...activitySections];
       const workers = Array.from({ length: Math.min(3, queue.length) }, async () => {
         while (queue.length) {
           const section = queue.shift();
           if (!section) return;
-          await loadRuns(section.section_id, limit);
+          const count = await loadRuns(section.section_id, limit);
+          if (count !== null && count < limit) {
+            activityExhaustedRef.current[section.section_id] = true;
+          }
         }
       });
       await Promise.all(workers);
       setActivityPage(nextPage);
+      const hasMore = activitySections.some((section) => !activityExhaustedRef.current[section.section_id]);
+      activityHasMoreRef.current = hasMore;
+      setActivityHasMore(hasMore);
     } finally {
+      activityLoadingRef.current = false;
       setActivityLoading(false);
     }
-  }, [activityLoading, loadRuns, sections]);
+  }, [loadRuns]);
 
   useEffect(() => {
     void refreshAll({ includeRuns: true });
@@ -213,9 +244,10 @@ export function useBotStudio() {
     await botStudioApi.deleteSection(sectionId);
     setSections((current) => current.filter((section) => section.section_id !== sectionId));
     setItems((current) => current.filter((item) => item.section_id !== sectionId));
+    await refreshItems();
     runsRef.current = Object.fromEntries(Object.entries(runsRef.current).filter(([id]) => id !== sectionId));
     setRunsBySection(runsRef.current);
-  }, []);
+  }, [refreshItems]);
 
   const createBot = useCallback(async (input: Partial<CreateMcSectionInput>) => {
     const created = await botStudioApi.createSection({ title: input.title?.trim() || 'New bot', ...input });
@@ -272,30 +304,18 @@ export function useBotStudio() {
     return runsRef.current[sectionId] ?? [];
   }, [loadRuns]);
 
-  // Compatibility aliases let the independently developed inbox/detail views
-  // migrate to the stable contract without forcing a synchronized merge.
-  const applyAction = useCallback((item: McItem, actionId: string, body?: Record<string, unknown>) => itemAction(item.item_id, actionId, body), [itemAction]);
-  const updateBot = useCallback((sectionId: string, patch: SaveBotPatch) => saveBot(sectionId, patch), [saveBot]);
-  const workThis = workItem;
   const generateAssets = useCallback((itemId: string, force = false) => botStudioApi.generateAssets(itemId, force), []);
-  const setOptimisticStatus = optimisticItemStatus;
-  const refresh = useCallback(async (options: { sectionId?: string; runs?: boolean } = {}) => {
-    if (options.sectionId) await refreshItems({ sectionId: options.sectionId });
-    else await refreshAll({ includeRuns: options.runs });
-  }, [refreshAll, refreshItems]);
 
   return {
     bots,
     items,
     summary,
     loading,
-    isLoading: loading,
     error,
     filters,
     setFilters,
     sections,
     setSections,
-    setItems,
     mcpServers,
     isConnected,
     runsBySection,
@@ -310,21 +330,14 @@ export function useBotStudio() {
     createBot,
     bulkEnabled,
     itemAction,
-    optimisticItemStatus,
-    setOptimisticStatus,
     previewItem,
     retryItem,
     workItem,
     runsFor,
     loadActivityRuns,
     activityPage,
-    activityPageSize,
     activityLoading,
-    // Transitional names used by the current view workers.
-    refresh,
-    applyAction,
-    updateBot,
-    workThis,
+    activityHasMore,
     generateAssets,
   };
 }

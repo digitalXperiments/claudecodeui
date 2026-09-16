@@ -1,15 +1,9 @@
 import type { Project } from '../../../types/app';
 import type { CreateMcSectionInput, McAction, McItem } from '../../mission-control/api/missionControlApi';
 import type { BotRun } from '../api/botStudioApi';
-import type { Bot, BotAutonomy, ToolPolicyDecision } from '../types';
+import type { Bot, BotAutonomy } from '../types';
 
 export type RunDetail = BotRun & { bot_id?: string; bot_title?: string };
-
-/** Shared keyboard registration surface for views that opt into Inbox shortcuts. */
-export interface KeyboardRegistrationApi {
-  /** Register a handler and return its cleanup function. */
-  register: (handler: (event: KeyboardEvent) => void) => () => void;
-}
 
 /** Props supplied to the unified cross-bot inbox. */
 export interface InboxViewProps {
@@ -33,8 +27,8 @@ export interface InboxViewProps {
   onWork: (item: McItem) => void;
   /** Render missing assets for an article item. */
   onGenerateAssets: (item: McItem, force: boolean) => Promise<{ generated: number; skipped: number; failed: number; messages: string[] }>;
-  /** Optional keyboard shortcut registration owned by the shell. */
-  keyboard?: KeyboardRegistrationApi;
+  /** Explain skipped batch selections to the user. */
+  onNotice?: (message: string) => void;
 }
 
 /** Props for one compact inbox card. */
@@ -77,10 +71,14 @@ export interface ContextPaneProps {
   onOperatorContextChange: (value: string) => void;
   /** Apply edited item body JSON. */
   onBodyChange: (body: Record<string, unknown>) => void;
+  /** Generate article assets through the real Mission Control endpoint. */
+  onGenerateAssets?: (item: McItem, force: boolean) => Promise<{ generated: number; skipped: number; failed: number; messages: string[] }>;
   /** Close the current context selection. */
   onClose?: () => void;
   /** Selected tick detail; optional so inbox consumers remain compatible. */
   selectedRun?: RunDetail | null;
+  /** Select a related tick for context details. */
+  onSelectRun?: (run: BotRun) => void;
 }
 
 /** Common props available to every bot detail tab. */
@@ -156,10 +154,3 @@ export interface ImportViewProps {
   /** Called after a successful import. */
   onImported?: () => void;
 }
-
-/** Shape used by detail/tool views when saving the three-state policy. */
-export type ToolPolicyChange = {
-  server: string;
-  tool: string;
-  decision: ToolPolicyDecision;
-};

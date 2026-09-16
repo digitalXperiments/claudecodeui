@@ -2,7 +2,7 @@ import { useEffect, useMemo, useReducer, useState } from 'react';
 import { Check, CheckSquare, Search, X } from 'lucide-react';
 
 import SegmentedControl from '../ui/SegmentedControl';
-import { actionIsSendLike } from '../types';
+import { actionIsSendLike, isInboxActionLocked } from '../types';
 import { Button } from '../../../shared/view/ui';
 
 import InboxItemCard from './InboxItemCard';
@@ -26,7 +26,7 @@ export default function InboxView({
   onRetry,
   onWork,
   onGenerateAssets,
-  keyboard,
+  onNotice,
 }: InboxViewProps) {
   const [filter, setFilter] = useState<InboxFilter>('pending');
   const [botFilter, setBotFilter] = useState('all');
@@ -98,17 +98,23 @@ export default function InboxView({
         if (current.status === 'pending' && action && !(currentBot?.autonomy === 'propose' && actionIsSendLike(action))) onAction(current, action);
       }
     };
-    if (keyboard) return keyboard.register(handleKeyDown);
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [activeItemId, bots, keyboard, onAction, onSelectItem, selection.checkedIds.length, visible]);
+  }, [activeItemId, bots, onAction, onSelectItem, selection.checkedIds.length, visible]);
 
   const batch = (kind: 'approve' | 'dismiss') => {
+    let skipped = 0;
     selection.checkedIds.forEach((id) => {
       const item = items.find((entry) => entry.item_id === id);
+      const bot = item ? bots.find((entry) => entry.section_id === item.section_id) : undefined;
       const action = item?.actions.find((entry) => entry.kind === kind || (kind === 'dismiss' && /dismiss/i.test(entry.label)));
-      if (item && action) onAction(item, action);
+      if (!item || !action || (item.status !== 'pending' && item.status !== 'failed') || isInboxActionLocked(item, bot, action)) {
+        skipped += 1;
+        return;
+      }
+      onAction(item, action);
     });
+    if (skipped > 0) onNotice?.(`${skipped} selected item${skipped === 1 ? '' : 's'} skipped because the action is unavailable or held in Propose mode.`);
     dispatchSelection({ type: 'clear' });
   };
 

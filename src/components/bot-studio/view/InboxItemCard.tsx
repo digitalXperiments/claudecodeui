@@ -5,7 +5,7 @@ import type { McItem } from '../../mission-control/api/missionControlApi';
 import ArticleDraftCard from '../../mission-control/view/subcomponents/ArticleDraftCard';
 import { getActionSemantics } from '../../mission-control/utils/actionSemantics';
 import { isXArticleBody } from '../../mission-control/utils/xArticle';
-import { actionIsSendLike, formatAge, itemHasDraft } from '../types';
+import { formatAge, isInboxActionLocked, itemHasDraft } from '../types';
 import StatusPill from '../ui/StatusPill';
 import { Button } from '../../../shared/view/ui';
 
@@ -91,7 +91,7 @@ export default function InboxItemCard({ item, bot, selected, checked, onSelect, 
       <div className="mt-3 flex flex-wrap items-center gap-1.5" onClick={(event) => event.stopPropagation()}>
         {actionable ? item.actions.map((action) => {
           const semantics = getActionSemantics(action, item.title, { hasDraft: itemHasDraft(item) });
-          const locked = bot?.autonomy === 'propose' && actionIsSendLike(action);
+          const locked = isInboxActionLocked(item, bot, action);
           const variant = action.kind === 'approve' ? 'default' : action.kind === 'dismiss' ? 'ghost' : 'outline';
           return <Button key={action.id} size="sm" variant={variant} disabled={item.status === 'resolving' || locked} onClick={() => runAction(action)} title={locked ? 'Held in Propose mode: review before sending' : semantics.detail}>{locked ? <Lock className="h-3 w-3" /> : action.kind === 'approve' ? <Send className="h-3 w-3" /> : null}{semantics.label}</Button>;
         }) : null}

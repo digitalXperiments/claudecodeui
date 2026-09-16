@@ -4,10 +4,11 @@ export const ACTION_KINDS = ['approve', 'dismiss', 'delete', 'work', 'reply', 'c
 export const ACTION_STYLES = ['primary', 'secondary', 'destructive'] as const;
 export type ActionKind = typeof ACTION_KINDS[number];
 
-const SYSTEM_KINDS = new Set(['delete', 'work']);
+const SYSTEM_ACTION_IDS = new Set(['delete', 'work']);
+const SYSTEM_ACTION_KINDS = new Set(['delete', 'work']);
 
 export function isSystemAction(action: Pick<McAction, 'id' | 'kind'>): boolean {
-  return SYSTEM_KINDS.has(action.kind.toLowerCase()) || SYSTEM_KINDS.has(action.id.toLowerCase());
+  return SYSTEM_ACTION_IDS.has(action.id) || SYSTEM_ACTION_KINDS.has(action.kind);
 }
 
 export function reorderActions(actions: McAction[], from: number, to: number): McAction[] {
