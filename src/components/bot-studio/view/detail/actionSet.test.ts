@@ -22,5 +22,7 @@ test('Delete and Work system actions cannot be edited or removed', () => {
   assert.equal(isSystemAction(actions[1]), true);
   assert.deepEqual(removeAction(actions, 1), actions);
   assert.deepEqual(updateAction(actions, 1, { label: 'Nope', kind: 'custom' }), actions);
-  assert.equal(isSystemAction({ id: 'work-item', kind: 'custom' }), true);
+  assert.equal(isSystemAction({ id: 'work', kind: 'custom' }), true);
+  assert.equal(isSystemAction({ id: 'custom', kind: 'work' }), true);
+  assert.equal(isSystemAction({ id: 'work-item', kind: 'custom' }), false);
 });
