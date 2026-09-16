@@ -28,7 +28,7 @@ function errorMessage(value: unknown, fallback: string): string {
  * this hook owns only view state, optimistic transitions, and the runs cache.
  */
 export function useBotStudio() {
-  const { subscribe } = useWebSocket();
+  const { subscribe, isConnected } = useWebSocket();
   const [sections, setSections] = useState<McSection[]>([]);
   const [items, setItems] = useState<McItem[]>([]);
   const [summary, setSummary] = useState<BotStudioSummary>(EMPTY_SUMMARY);
@@ -40,6 +40,9 @@ export function useBotStudio() {
   const generationRef = useRef(0);
   const runsRef = useRef<Record<string, BotRun[]>>({});
   const runsLoadingRef = useRef(new Set<string>());
+  const [activityLoading, setActivityLoading] = useState(false);
+  const [activityPage, setActivityPage] = useState(0);
+  const activityPageSize = 30;
 
   const refreshItems = useCallback(async (options: { sectionId?: string } = {}) => {
     try {
@@ -71,7 +74,7 @@ export function useBotStudio() {
     }
   }, []);
 
-  const refreshAll = useCallback(async (options: { includeRuns?: boolean } = {}) => {
+  const refreshAll = useCallback(async (_options: { includeRuns?: boolean } = {}) => {
     const generation = ++generationRef.current;
     setLoading(true);
     try {
@@ -86,15 +89,34 @@ export function useBotStudio() {
       setSummary(nextSummary ?? EMPTY_SUMMARY);
       setError(null);
 
-      if (options.includeRuns) {
-        await Promise.all(nextSections.map((section) => loadRuns(section.section_id)));
-      }
+      // Detail tabs load their own runs through runsFor. Activity explicitly
+      // requests the cross-bot feed, so opening Bot Studio never fans out here.
     } catch (nextError) {
       if (generation === generationRef.current) setError(errorMessage(nextError, 'Unable to load Bot Studio'));
     } finally {
       if (generation === generationRef.current) setLoading(false);
     }
-  }, [loadRuns]);
+  }, []);
+
+  const loadActivityRuns = useCallback(async (nextPage = 1) => {
+    if (activityLoading || !sections.length) return;
+    setActivityLoading(true);
+    try {
+      const limit = nextPage * activityPageSize;
+      const queue = [...sections];
+      const workers = Array.from({ length: Math.min(3, queue.length) }, async () => {
+        while (queue.length) {
+          const section = queue.shift();
+          if (!section) return;
+          await loadRuns(section.section_id, limit);
+        }
+      });
+      await Promise.all(workers);
+      setActivityPage(nextPage);
+    } finally {
+      setActivityLoading(false);
+    }
+  }, [activityLoading, loadRuns, sections]);
 
   useEffect(() => {
     void refreshAll({ includeRuns: true });
@@ -275,6 +297,7 @@ export function useBotStudio() {
     setSections,
     setItems,
     mcpServers,
+    isConnected,
     runsBySection,
     refreshAll,
     refreshItems,
@@ -293,6 +316,10 @@ export function useBotStudio() {
     retryItem,
     workItem,
     runsFor,
+    loadActivityRuns,
+    activityPage,
+    activityPageSize,
+    activityLoading,
     // Transitional names used by the current view workers.
     refresh,
     applyAction,

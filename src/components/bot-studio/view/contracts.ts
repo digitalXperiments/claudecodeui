@@ -3,6 +3,8 @@ import type { CreateMcSectionInput, McAction, McItem } from '../../mission-contr
 import type { BotRun } from '../api/botStudioApi';
 import type { Bot, BotAutonomy, ToolPolicyDecision } from '../types';
 
+export type RunDetail = BotRun & { bot_id?: string; bot_title?: string };
+
 /** Shared keyboard registration surface for views that opt into Inbox shortcuts. */
 export interface KeyboardRegistrationApi {
   /** Register a handler and return its cleanup function. */
@@ -77,6 +79,8 @@ export interface ContextPaneProps {
   onBodyChange: (body: Record<string, unknown>) => void;
   /** Close the current context selection. */
   onClose?: () => void;
+  /** Selected tick detail; optional so inbox consumers remain compatible. */
+  selectedRun?: RunDetail | null;
 }
 
 /** Common props available to every bot detail tab. */
@@ -133,6 +137,14 @@ export interface ActivityViewProps {
   runsBySection: Record<string, BotRun[]>;
   /** Whether the runs cache is still loading. */
   isLoading?: boolean;
+  /** Load the first page for every bot when the activity view opens. */
+  onLoad?: () => void;
+  /** Load the next page for every bot. */
+  onLoadMore?: () => void;
+  /** Whether another activity page is available. */
+  hasMore?: boolean;
+  /** Whether a page request is in flight. */
+  isLoadingMore?: boolean;
   /** Select a run for context details. */
   onSelectRun?: (run: BotRun, bot: Bot) => void;
 }
