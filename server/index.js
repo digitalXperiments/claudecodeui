@@ -335,6 +335,24 @@ sessionMailboxService.registerAgentMcp().catch((error) => {
     console.error('[SessionMailbox] Failed to register MCP server for providers', error?.message || error);
 });
 
+// Studio MCP shares the local authenticated bridge with Agent Relay, while its
+// tools derive project/session ownership from the ambient lead-session header.
+void mcpCatalogService.upsert({
+    name: 'cloudcli-studio',
+    scope: 'user',
+    transport: 'stdio',
+    command: agentRelayService.getMcpCommand().command,
+    args: agentRelayService.getMcpCommand().args,
+    env: {
+        CLOUDCLI_AGENT_RELAY_API_URL: agentRelayService.getMcpApiUrl(),
+        CLOUDCLI_AGENT_RELAY_MCP_TOKEN: agentRelayService.getMcpToken(),
+    },
+    envVars: ['CLOUDCLI_LEAD_SESSION_ID'],
+    kind: 'agent-relay',
+}).catch((error) => {
+    console.error('[Studio] Failed to register MCP server for providers', error?.message || error);
+});
+
 // Shell must not resume a provider-native session while Chatbar is still
 // using it. Register before checking isProcessing again so an already-finished
 // run cannot leave the Shell wait unresolved.
