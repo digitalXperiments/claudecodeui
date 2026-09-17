@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 
-import { projectsDb, sessionsDb } from '@/modules/database/index.js';
+import { parseStudioPrototypeIds, projectsDb, sessionsDb } from '@/modules/database/index.js';
 import { chatRunRegistry, shellSessionRegistry } from '@/modules/websocket/index.js';
 import { providerRegistry } from '@/modules/providers/provider.registry.js';
 import { sessionHistoryCache } from '@/modules/providers/services/session-history-cache.service.js';
@@ -43,6 +43,7 @@ type SessionDetails = {
   lastActivity: string | null;
   isArchived: boolean;
   isInternal: boolean;
+  studioPrototypeIds: string[];
   project: {
     projectId: string;
     path: string;
@@ -189,7 +190,7 @@ export const sessionsService = {
   createAppSession(
     provider: LLMProvider,
     projectPath: string,
-    options: { internal?: boolean; permissionMode?: string | null } = {},
+    options: { internal?: boolean; permissionMode?: string | null; studioPrototypeIds?: string[] } = {},
   ): CreateAppSessionResult {
     const normalizedProjectPath = projectPath.trim();
     if (!normalizedProjectPath) {
@@ -240,6 +241,7 @@ export const sessionsService = {
       lastActivity: session.updated_at ?? session.created_at ?? null,
       isArchived: Boolean(session.isArchived),
       isInternal: Boolean(session.is_internal),
+      studioPrototypeIds: parseStudioPrototypeIds(session.studio_prototype_ids),
       project: project && projectPath
         ? {
             projectId: project.project_id,

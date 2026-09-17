@@ -70,6 +70,8 @@ type StudioViewProps = {
   isVisible: boolean;
   onIdeateInChat: (input: { project: Project; prompt: string; title: string }) => void;
   onBackToChat?: () => void;
+  deepLinkProjectId?: string;
+  deepLinkPrototypeId?: string;
 } & StudioChatProps;
 
 type StudioChatSession = ProjectSession & {
@@ -114,6 +116,13 @@ function statusTone(status: StudioPrototype['status']): string {
   return 'bg-sky-500';
 }
 
+function originLabel(item: StudioPrototype): string {
+  if (item.origin === 'chat') return `Came from chat${item.originSessionId ? ` · ${item.originSessionId.slice(0, 8)}` : ''}`;
+  if (item.origin === 'agent') return 'Came from agent';
+  if (item.origin === 'imported') return 'Imported prototype';
+  return 'Created in Studio';
+}
+
 function iterationContext(proto: StudioPrototypeDetail): string {
   return [
     `You are iterating on the active CloudCLI Studio prototype “${proto.title}”.`,
@@ -141,6 +150,8 @@ export default function StudioView({
   onShowSettings,
   externalMessageUpdate,
   newSessionTrigger,
+  deepLinkProjectId,
+  deepLinkPrototypeId,
 }: StudioViewProps) {
   const [mode, setMode] = useState<StudioMode>('prototypes');
   const [projectId, setProjectId] = useState(selectedProject?.projectId ?? projects[0]?.projectId ?? '');
@@ -177,13 +188,21 @@ export default function StudioView({
   }, []);
 
   useEffect(() => {
-    if (selectedProject?.projectId) setProjectId(selectedProject.projectId);
-  }, [selectedProject?.projectId]);
+    if (deepLinkProjectId) setProjectId(deepLinkProjectId);
+    else if (selectedProject?.projectId) setProjectId(selectedProject.projectId);
+  }, [deepLinkProjectId, selectedProject?.projectId]);
 
   useEffect(() => {
     if (!isVisible || !projectId) return;
     void loadList(projectId).catch((err: Error) => setError(err.message));
   }, [isVisible, projectId, loadList]);
+
+  useEffect(() => {
+    if (!isVisible || !deepLinkProjectId || !deepLinkPrototypeId) return;
+    void studioApi.get(deepLinkProjectId, deepLinkPrototypeId)
+      .then(setActive)
+      .catch((err: Error) => setError(err.message));
+  }, [deepLinkProjectId, deepLinkPrototypeId, isVisible]);
 
   const activeId = active?.id;
   const activeProjectId = active?.projectId;
@@ -211,10 +230,25 @@ export default function StudioView({
         stored = null;
       }
 
-      const storedId = typeof stored?.id === 'string' ? stored.id : '';
-      const storedProvider = typeof stored?.provider === 'string' && STUDIO_PROVIDERS.includes(stored.provider as LLMProvider)
+      let storedId = typeof stored?.id === 'string' ? stored.id : '';
+      let storedProvider = typeof stored?.provider === 'string' && STUDIO_PROVIDERS.includes(stored.provider as LLMProvider)
         ? stored.provider as LLMProvider
         : null;
+
+      if (prototype.originSessionId) {
+        try {
+          const metaResponse = await authenticatedFetch(`/api/providers/sessions/${encodeURIComponent(prototype.originSessionId)}/meta`);
+          const metaBody = await metaResponse.json();
+          if (metaResponse.ok && metaBody?.data?.session) {
+            storedId = prototype.originSessionId;
+            storedProvider = STUDIO_PROVIDERS.includes(metaBody.data.session.provider as LLMProvider)
+              ? metaBody.data.session.provider as LLMProvider
+              : 'claude';
+          }
+        } catch {
+          // Fall back to the durable Studio session below if the source session is gone.
+        }
+      }
 
       let sessionId = storedId;
       let provider = storedProvider;
@@ -228,6 +262,7 @@ export default function StudioView({
           body: JSON.stringify({
             provider,
             projectPath: targetProject.fullPath || targetProject.path || '',
+            studioPrototypeIds: [prototype.id],
           }),
         });
         if (!response.ok) {
@@ -242,6 +277,8 @@ export default function StudioView({
           // Session remains usable for the current Studio visit.
         }
       }
+
+      await studioApi.attachSession(targetProject.projectId, prototype.id, sessionId);
 
       if (cancelled || !sessionId || !provider) return;
       setStudioSession({
@@ -607,11 +644,18 @@ export default function StudioView({
                         <span className="min-w-0 flex-1">
                           <span className="block truncate text-sm font-medium">{item.title}</span>
                           <span className="mt-1 block text-[10px] uppercase tracking-wider text-muted-foreground">{statusLabel(item.status)}</span>
+                          <span className="mt-1 block truncate text-[10px] text-muted-foreground">{originLabel(item)}</span>
                         </span>
                       </div>
                     </button>
                     <div className="mt-2 flex items-center justify-between border-t border-border/60 pt-2">
-                      <span className="truncate pr-2 text-[10px] text-muted-foreground">{new Date(item.updatedAt).toLocaleDateString()}</span>
+                      <span className="flex min-w-0 items-center gap-2 truncate pr-2 text-[10px] text-muted-foreground">
+                        {(() => {
+                          const sessionId = item.originSessionId || item.linkedSessionIds[0];
+                          return sessionId ? <a className="shrink-0 text-primary hover:underline" href={`/session/${encodeURIComponent(sessionId)}`}>Open chat</a> : null;
+                        })()}
+                        <span>{new Date(item.updatedAt).toLocaleDateString()}</span>
+                      </span>
                       <button
                         type="button"
                         disabled={item.status === 'generating'}

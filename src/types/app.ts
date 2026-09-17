@@ -57,6 +57,7 @@ export interface ProjectSession {
   __projectId?: string;
   /** Swarm / Agent Relay / automation workers — viewable, not a user chat. */
   isInternal?: boolean;
+  studioPrototypeIds?: string[];
   [key: string]: unknown;
 }
 

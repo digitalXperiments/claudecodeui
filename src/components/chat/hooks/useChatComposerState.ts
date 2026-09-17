@@ -35,6 +35,7 @@ import { escapeRegExp } from '../utils/chatFormatting';
 import { useFileMentions } from './useFileMentions';
 import { type SlashCommand, useSlashCommands } from './useSlashCommands';
 import { expandHookInstruction } from '../utils/hookSlash';
+import { studioApi } from '../../studio/api/studioApi';
 
 const PROVIDER_MODEL_LABELS: Record<LLMProvider, string> = {
   claude: 'Claude',
@@ -463,6 +464,50 @@ export function useChatComposerState({
         const commandMatch = effectiveInput.match(new RegExp(`${escapeRegExp(command.name)}\\s*(.*)`));
         const remainder = commandMatch && commandMatch[1] ? commandMatch[1].trim() : '';
         const args = remainder ? remainder.split(/\s+/) : [];
+
+        if (command.name === '/prototype') {
+          const brief = remainder || 'A clickable prototype based on this conversation';
+          let sessionId = selectedSession?.id || currentSessionId;
+          if (!sessionId) {
+            const sessionResponse = await authenticatedFetch('/api/providers/sessions', {
+              method: 'POST',
+              body: JSON.stringify({
+                provider,
+                projectId: selectedProject.projectId,
+                projectPath: selectedProject.fullPath || selectedProject.path || '',
+                permissionMode: resolvePermissionModeForProvider(provider, permissionMode),
+              }),
+            });
+            if (!sessionResponse.ok) throw new Error(`Failed to create chat session (${sessionResponse.status})`);
+            const sessionBody = await sessionResponse.json();
+            sessionId = sessionBody?.data?.sessionId || null;
+            if (sessionId) {
+              onSessionEstablished?.(sessionId, { provider, project: selectedProject, summary: brief.slice(0, 80) });
+            }
+          }
+          const prototype = await studioApi.create(selectedProject.projectId, {
+            brief,
+            origin: 'chat',
+            originSessionId: sessionId,
+            linkedSessionIds: sessionId ? [sessionId] : [],
+          });
+          addMessage({
+            type: 'assistant',
+            content: `Created prototype “${prototype.title}”.`,
+            timestamp: Date.now(),
+            prototype: {
+              projectId: prototype.projectId,
+              prototypeId: prototype.id,
+              title: prototype.title,
+              status: prototype.status,
+            },
+          });
+          if (!options?.preserveInput) {
+            setInput('');
+            inputValueRef.current = '';
+          }
+          return;
+        }
 
         if (command.type === 'hook' || command.metadata?.type === 'hook') {
           const instruction =

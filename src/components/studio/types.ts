@@ -10,6 +10,8 @@ export const STUDIO_POLL_INTERVAL_MS = 2500;
 
 export type StudioPrototypeStatus = 'draft' | 'generating' | 'ready' | 'failed';
 
+export type StudioPrototypeOrigin = 'studio' | 'chat' | 'agent' | 'imported';
+
 export type StudioVersionKind = 'initial' | 'turn' | 'variant-promotion' | 'revert';
 
 export type StudioGenerationKind = 'turn' | 'variants' | 'tokens' | 'swarm';
@@ -66,6 +68,9 @@ export type StudioPrototype = {
   projectId: string;
   title: string;
   brief: string;
+  origin: StudioPrototypeOrigin;
+  originSessionId: string | null;
+  linkedSessionIds: string[];
   skills: string[];
   status: StudioPrototypeStatus;
   relativeDir: string;

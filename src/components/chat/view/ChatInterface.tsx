@@ -12,6 +12,8 @@ import {
 } from '../../../constants/permissionModeEvents';
 import { writeProviderPermissionModePreference } from '../../../utils/providerPermissionPreference';
 import type { ChatInterfaceProps, PermissionMode, Provider } from '../types/types';
+import type { StudioPrototype } from '../../studio/types';
+import { studioApi } from '../../studio/api/studioApi';
 import { useChatProviderState } from '../hooks/useChatProviderState';
 import { normalizedToChatMessages } from '../hooks/useChatMessages';
 import { useChatSessionState } from '../hooks/useChatSessionState';
@@ -87,6 +89,7 @@ function ChatInterface({
   const { tasksEnabled, isTaskMasterInstalled } = useTasksSettings();
   const { subscribe } = useWebSocket();
   const { t } = useTranslation('chat');
+  const [linkedPrototypes, setLinkedPrototypes] = useState<StudioPrototype[]>([]);
 
   const sessionStore = useSessionStore();
   // Per-session streaming accumulators. This view subscribes to every
@@ -240,6 +243,25 @@ function ChatInterface({
     lastSeqRef,
     sessionStore,
   });
+
+  const linkedSessionId = selectedSession?.id || currentSessionId;
+  useEffect(() => {
+    if (!linkedSessionId) {
+      setLinkedPrototypes([]);
+      return;
+    }
+    let cancelled = false;
+    void studioApi.listForSession(linkedSessionId)
+      .then((prototypes) => {
+        if (!cancelled) setLinkedPrototypes(prototypes);
+      })
+      .catch(() => {
+        if (!cancelled) setLinkedPrototypes([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [linkedSessionId]);
 
   const prepareChatExport = useCallback(async () => {
     if (!allMessagesLoaded) {
@@ -909,6 +931,7 @@ function ChatInterface({
           showRawParameters={showRawParameters}
           showThinking={showThinking}
           selectedProject={selectedProject}
+          linkedPrototypes={linkedPrototypes}
           onPrepareExport={prepareChatExport}
         />
 

@@ -59,7 +59,7 @@ export default function AppContent() {
 
 function AppContentInner() {
   const navigate = useNavigate();
-  const { sessionId } = useParams<{ sessionId?: string }>();
+  const { sessionId, projectId: studioProjectId, prototypeId: studioPrototypeId } = useParams<{ sessionId?: string; projectId?: string; prototypeId?: string }>();
   const { t } = useTranslation('common');
   const { isMobile } = useDeviceSettings({ trackPWA: false });
   const { ws, sendMessage, subscribe } = useWebSocket();
@@ -366,6 +366,8 @@ function AppContentInner() {
           onLoadMoreSessions={loadMoreProjectSessions}
           projects={projects}
           studioActive={studioActive}
+          studioProjectId={studioProjectId}
+          studioPrototypeId={studioPrototypeId}
           onLeaveStudio={leaveStudio}
           botsActive={botsActive}
           onLeaveBots={leaveBots}

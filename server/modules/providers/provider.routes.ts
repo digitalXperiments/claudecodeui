@@ -15,7 +15,7 @@ import {
 } from '@/modules/providers/services/session-handoff.service.js';
 import { getDisabledProviderIds } from '@/modules/providers/services/session-synchronizer.service.js';
 import { sessionsService } from '@/modules/providers/services/sessions.service.js';
-import { projectsDb, sessionsDb } from '@/modules/database/index.js';
+import { parseStudioPrototypeIds, projectsDb, sessionsDb } from '@/modules/database/index.js';
 import {
   cancelAntigravityLogin,
   getAntigravityLoginState,
@@ -733,7 +733,10 @@ router.post(
     }
     const projectPath = resolvedProjectPath || '';
     const permissionMode = parsePermissionMode(provider, body.permissionMode ?? body.permission_mode);
-    const result = sessionsService.createAppSession(provider, projectPath, { permissionMode });
+    const studioPrototypeIds = Array.isArray(body.studioPrototypeIds)
+      ? body.studioPrototypeIds.filter((id): id is string => typeof id === 'string' && id.trim().length > 0)
+      : undefined;
+    const result = sessionsService.createAppSession(provider, projectPath, { permissionMode, studioPrototypeIds });
     res.status(201).json(createApiSuccessResponse(result));
   }),
 );
@@ -773,6 +776,7 @@ router.get(
         projectPath: row.project_path,
         name: row.custom_name || '',
         permissionMode: row.permission_mode,
+        studioPrototypeIds: parseStudioPrototypeIds(row.studio_prototype_ids),
       },
     }));
   }),

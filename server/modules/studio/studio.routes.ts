@@ -2,7 +2,7 @@ import express from 'express';
 
 import studioUniversesRoutes from '@/modules/studio/studio-universes.routes.js';
 import { buildIdeatePrompt, studioService } from '@/modules/studio/studio.service.js';
-import type { StudioSelectedElement, StudioTokensPatch } from '@/modules/studio/studio.types.js';
+import type { StudioPrototypeOrigin, StudioSelectedElement, StudioTokensPatch } from '@/modules/studio/studio.types.js';
 import { AppError, asyncHandler } from '@/shared/utils.js';
 
 const router = express.Router();
@@ -35,6 +35,10 @@ function stringList(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) return undefined;
   return value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
     .map((item) => item.trim());
+}
+
+function originValue(value: unknown): StudioPrototypeOrigin | undefined {
+  return value === 'studio' || value === 'chat' || value === 'agent' || value === 'imported' ? value : undefined;
 }
 
 function intValue(value: unknown): number | undefined {
@@ -73,6 +77,13 @@ function parseTokenPatch(value: unknown): StudioTokensPatch {
 }
 
 router.get(
+  '/sessions/:sessionId/prototypes',
+  asyncHandler(async (req, res) => {
+    res.json({ success: true, prototypes: await studioService.listForSession(stringValue(req.params.sessionId)) });
+  }),
+);
+
+router.get(
   '/:projectId/prototypes',
   asyncHandler(async (req, res) => {
     const projectId = stringValue(req.params.projectId);
@@ -90,11 +101,26 @@ router.post(
       title: stringValue(body.title) || undefined,
       brief: stringValue(body.brief),
       skills: stringList(body.skills),
+      origin: originValue(body.origin),
+      originSessionId: typeof body.originSessionId === 'string' ? body.originSessionId.trim() || null : null,
+      linkedSessionIds: stringList(body.linkedSessionIds),
       tokens: body.tokens && typeof body.tokens === 'object' && !Array.isArray(body.tokens)
         ? body.tokens as StudioTokensPatch
         : undefined,
     });
     res.status(201).json({ success: true, prototype });
+  }),
+);
+
+router.post(
+  '/:projectId/prototypes/:id/sessions/:sessionId',
+  asyncHandler(async (req, res) => {
+    const prototype = await studioService.attachSession(
+      stringValue(req.params.projectId),
+      stringValue(req.params.id),
+      stringValue(req.params.sessionId),
+    );
+    res.json({ success: true, prototype });
   }),
 );
 

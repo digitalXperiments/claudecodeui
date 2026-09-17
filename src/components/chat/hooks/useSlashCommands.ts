@@ -226,6 +226,12 @@ export function useSlashCommands({
         }
 
         const allCommands: SlashCommand[] = [
+          {
+            name: '/prototype',
+            description: 'Create a clickable prototype and link it to this chat',
+            namespace: 'studio',
+            type: 'built-in',
+          },
           ...((data.builtIn || []) as SlashCommand[]).map((command) => ({
             ...command,
             type: 'built-in',

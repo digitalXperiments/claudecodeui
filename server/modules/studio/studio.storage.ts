@@ -3,7 +3,7 @@ import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promise
 import path from 'node:path';
 
 import { DEFAULT_STUDIO_TOKENS, parseStudioTokens } from '@/modules/studio/studio.tokens.js';
-import { STUDIO_FORMAT, type StudioDesignTokens, type StudioPrototype, type StudioVariant, type StudioVersion, type StudioVersionDetail } from '@/modules/studio/studio.types.js';
+import { STUDIO_FORMAT, type StudioDesignTokens, type StudioPrototype, type StudioPrototypeOrigin, type StudioVariant, type StudioVersion, type StudioVersionDetail } from '@/modules/studio/studio.types.js';
 import { AppError } from '@/shared/utils.js';
 
 export const STUDIO_DIR = path.join('.cloudcli', 'studio');
@@ -67,7 +67,18 @@ export async function readManifest(dir: string): Promise<StudioPrototype | null>
     if (parsed.format !== STUDIO_FORMAT) return null;
     if (typeof parsed.id !== 'string' || !parsed.id) return null;
     if (typeof parsed.activeVersionId !== 'string' || !parsed.activeVersionId) return null;
-    return parsed as StudioPrototype;
+    const row = parsed as Partial<StudioPrototype> & { origin?: unknown };
+    const origin: StudioPrototypeOrigin = row.origin === 'chat' || row.origin === 'agent' || row.origin === 'imported'
+      ? row.origin
+      : 'studio';
+    return {
+      ...(parsed as StudioPrototype),
+      origin,
+      originSessionId: typeof row.originSessionId === 'string' ? row.originSessionId : null,
+      linkedSessionIds: Array.isArray(row.linkedSessionIds)
+        ? row.linkedSessionIds.filter((id): id is string => typeof id === 'string')
+        : [],
+    };
   } catch {
     return null;
   }

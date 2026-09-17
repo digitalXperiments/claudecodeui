@@ -3,6 +3,7 @@ import type {
   StudioDesignTokens,
   StudioPrototype,
   StudioPrototypeDetail,
+  StudioPrototypeOrigin,
   StudioSeatProfile,
   StudioSelectedElement,
   StudioTokensPatch,
@@ -51,7 +52,7 @@ export const studioApi = {
 
   async create(
     projectId: string,
-    input: { title?: string; brief: string; skills?: string[]; tokens?: StudioTokensPatch },
+    input: { title?: string; brief: string; skills?: string[]; tokens?: StudioTokensPatch; origin?: StudioPrototypeOrigin; originSessionId?: string | null; linkedSessionIds?: string[] },
   ): Promise<StudioPrototypeDetail> {
     const res = await authenticatedFetch(protoPath(projectId), {
       method: 'POST',
@@ -59,6 +60,20 @@ export const studioApi = {
     });
     const data = await parseJson<{ prototype: StudioPrototypeDetail }>(res);
     return data.prototype;
+  },
+
+  async attachSession(projectId: string, id: string, sessionId: string): Promise<StudioPrototypeDetail> {
+    const res = await authenticatedFetch(`${protoPath(projectId, id)}/sessions/${encodeURIComponent(sessionId)}`, {
+      method: 'POST',
+    });
+    const data = await parseJson<{ prototype: StudioPrototypeDetail }>(res);
+    return data.prototype;
+  },
+
+  async listForSession(sessionId: string): Promise<StudioPrototype[]> {
+    const res = await authenticatedFetch(`/api/studio/sessions/${encodeURIComponent(sessionId)}/prototypes`);
+    const data = await parseJson<{ prototypes: StudioPrototype[] }>(res);
+    return data.prototypes;
   },
 
   async update(

@@ -9,6 +9,8 @@ export const STUDIO_FORMAT = 'cloudcli.studio.v2';
 
 export type StudioPrototypeStatus = 'draft' | 'generating' | 'ready' | 'failed';
 
+export type StudioPrototypeOrigin = 'studio' | 'chat' | 'agent' | 'imported';
+
 export type StudioVersionKind = 'initial' | 'turn' | 'variant-promotion' | 'revert';
 
 export type StudioGenerationKind = 'turn' | 'variants' | 'tokens' | 'swarm';
@@ -63,6 +65,9 @@ export type StudioPrototype = {
   projectId: string;
   title: string;
   brief: string;
+  origin: StudioPrototypeOrigin;
+  originSessionId: string | null;
+  linkedSessionIds: string[];
   skills: string[];
   status: StudioPrototypeStatus;
   relativeDir: string;
@@ -128,6 +133,9 @@ export type CreateStudioPrototypeInput = {
   brief: string;
   skills?: string[];
   tokens?: StudioTokensPatch;
+  origin?: StudioPrototypeOrigin;
+  originSessionId?: string | null;
+  linkedSessionIds?: string[];
 };
 
 export type UpdateStudioPrototypeInput = {

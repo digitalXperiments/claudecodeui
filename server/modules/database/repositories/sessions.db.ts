@@ -12,6 +12,7 @@ type SessionRow = {
   runtime_project_path: string | null;
   jsonl_path: string | null;
   is_internal: number;
+  studio_prototype_ids: string;
   custom_name: string | null;
   isArchived: number;
   created_at: string;
@@ -19,9 +20,18 @@ type SessionRow = {
 };
 
 const SESSION_ROW_COLUMNS =
-  'session_id, provider, provider_session_id, continued_from_session_id, permission_mode, project_path, runtime_project_path, jsonl_path, is_internal, custom_name, isArchived, created_at, updated_at';
+  'session_id, provider, provider_session_id, continued_from_session_id, permission_mode, project_path, runtime_project_path, jsonl_path, is_internal, studio_prototype_ids, custom_name, isArchived, created_at, updated_at';
 
 const SQLITE_UTC_TIMESTAMP_REGEX = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
+
+export function parseStudioPrototypeIds(value: string | null | undefined): string[] {
+  try {
+    const parsed = JSON.parse(value || '[]') as unknown;
+    return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === 'string') : [];
+  } catch {
+    return [];
+  }
+}
 
 function normalizeTimestamp(value?: string): string | null {
   if (!value) return null;
@@ -201,7 +211,7 @@ export const sessionsDb = {
     sessionId: string,
     provider: string,
     projectPath: string,
-    options: { internal?: boolean; permissionMode?: string | null } = {},
+    options: { internal?: boolean; permissionMode?: string | null; studioPrototypeIds?: string[] } = {},
   ): string {
     const db = getConnection();
     const { logicalProjectPath, runtimeProjectPath } = resolveSessionPaths(provider, projectPath);
@@ -209,8 +219,8 @@ export const sessionsDb = {
     projectsDb.createProjectPath(logicalProjectPath);
 
     db.prepare(
-      `INSERT INTO sessions (session_id, provider, provider_session_id, permission_mode, custom_name, project_path, runtime_project_path, jsonl_path, is_internal, isArchived, created_at, updated_at)
-       VALUES (?, ?, NULL, ?, NULL, ?, ?, NULL, ?, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`
+      `INSERT INTO sessions (session_id, provider, provider_session_id, permission_mode, custom_name, project_path, runtime_project_path, jsonl_path, is_internal, studio_prototype_ids, isArchived, created_at, updated_at)
+       VALUES (?, ?, NULL, ?, NULL, ?, ?, NULL, ?, ?, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`
     ).run(
       sessionId,
       provider,
@@ -218,6 +228,7 @@ export const sessionsDb = {
       logicalProjectPath,
       runtimeProjectPath,
       options.internal ? 1 : 0,
+      JSON.stringify([...new Set(options.studioPrototypeIds ?? [])]),
     );
 
     return sessionId;
@@ -378,6 +389,17 @@ export const sessionsDb = {
        SET custom_name = ?
        WHERE session_id = ?`
     ).run(customName, sessionId);
+  },
+
+  addStudioPrototypeId(sessionId: string, prototypeId: string): SessionRow | null {
+    const current = this.getSessionById(sessionId);
+    if (!current) return null;
+    const ids = parseStudioPrototypeIds(current.studio_prototype_ids);
+    if (!ids.includes(prototypeId)) ids.push(prototypeId);
+    const db = getConnection();
+    db.prepare('UPDATE sessions SET studio_prototype_ids = ?, updated_at = CURRENT_TIMESTAMP WHERE session_id = ?')
+      .run(JSON.stringify(ids), sessionId);
+    return this.getSessionById(sessionId);
   },
 
   /** Persists settings that should be inherited by future turns in this chat. */

@@ -18,6 +18,7 @@ export type {
   StudioPrototype,
   StudioPrototypeDetail,
   StudioPrototypeStatus,
+  StudioPrototypeOrigin,
   StudioVersion,
   StudioVersionDetail,
   StudioVersionKind,

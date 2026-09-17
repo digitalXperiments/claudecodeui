@@ -3,6 +3,7 @@ import { memo, useCallback, useMemo } from 'react';
 import type { Dispatch, RefObject, SetStateAction } from 'react';
 
 import type { ChatMessage } from '../../types/types';
+import type { StudioPrototype } from '../../../studio/types';
 import type {
   Project,
   ProjectSession,
@@ -112,6 +113,7 @@ interface ChatMessagesPaneProps {
   showRawParameters?: boolean;
   showThinking?: boolean;
   selectedProject: Project;
+  linkedPrototypes?: StudioPrototype[];
 }
 
 function ChatMessagesPane({
@@ -176,6 +178,7 @@ function ChatMessagesPane({
   showRawParameters,
   showThinking,
   selectedProject,
+  linkedPrototypes = [],
 }: ChatMessagesPaneProps) {
   const { t } = useTranslation('chat');
   // One shared IntersectionObserver for every LazyMessageRow; null where
@@ -243,6 +246,24 @@ function ChatMessagesPane({
         </div>
       )}
       <div data-transcript-content className="mx-auto w-full max-w-[54.25rem] space-y-3 px-4 sm:space-y-4">
+      {linkedPrototypes.length > 0 && (
+        <div className="mb-3 flex flex-wrap gap-2" data-testid="linked-prototypes">
+          {linkedPrototypes.map((prototype) => (
+            <div key={prototype.id} className="flex min-w-56 items-center justify-between gap-3 rounded-xl border border-border bg-card px-3 py-2 shadow-sm">
+              <div className="min-w-0">
+                <div className="truncate text-xs font-semibold">{prototype.title}</div>
+                <div className="text-[10px] capitalize text-muted-foreground">{prototype.status}</div>
+              </div>
+              <a
+                className="shrink-0 text-[10px] font-medium text-primary hover:underline"
+                href={`/studio/${encodeURIComponent(prototype.projectId)}/${encodeURIComponent(prototype.id)}`}
+              >
+                Open in Studio
+              </a>
+            </div>
+          ))}
+        </div>
+      )}
       {isLoadingSessionMessages && chatMessages.length === 0 ? (
         <div className="mt-8 text-center text-gray-500 dark:text-gray-400">
           <div className="flex items-center justify-center space-x-2">

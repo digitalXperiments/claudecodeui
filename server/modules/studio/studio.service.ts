@@ -1,7 +1,7 @@
 import { copyFile, mkdir, readdir, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 
-import { projectsDb } from '@/modules/database/index.js';
+import { parseStudioPrototypeIds, projectsDb, sessionsDb } from '@/modules/database/index.js';
 import { runStudioGenerate, VARIANT_DIRECTIONS } from '@/modules/studio/studio.generate.js';
 import { newStudioVariantId, newStudioVersionId } from '@/modules/studio/studio.ids.js';
 import {
@@ -48,6 +48,7 @@ import type {
   StudioGenerationProgress,
   StudioPrototype,
   StudioPrototypeDetail,
+  StudioPrototypeOrigin,
   StudioSelectedElement,
   StudioVariant,
   StudioVersion,
@@ -57,6 +58,7 @@ import type {
 } from '@/modules/studio/studio.types.js';
 import { swarmService, type SwarmAgentSpec } from '@/modules/swarm/index.js';
 import { workspaceService } from '@/modules/workspaces/index.js';
+import { projectSkillsService } from '@/modules/providers/index.js';
 import { newPrototypeId } from '@/shared/ids.js';
 import { AppError } from '@/shared/utils.js';
 
@@ -72,6 +74,10 @@ const PROMOTE_FILES = [HTML_FILE, NOTES_FILE, HANDOFF_FILE] as const;
 const MAX_VARIANTS = 5;
 const MIN_VARIANTS = 1;
 const DEFAULT_VARIANTS = 3;
+
+function studioOrigin(value: unknown, fallback: StudioPrototypeOrigin = 'studio'): StudioPrototypeOrigin {
+  return value === 'studio' || value === 'chat' || value === 'agent' || value === 'imported' ? value : fallback;
+}
 
 function jobKey(projectId: string, prototypeId: string): string {
   return `${projectId}:${prototypeId}`;
@@ -255,6 +261,14 @@ async function promotePrototypeFromSwarm(projectId: string, prototypeId: string)
 async function ensureSkill(projectPath: string): Promise<void> {
   const skillPath = path.join(studioRoot(projectPath), '_skill', 'clickable-prototype', 'SKILL.md');
   await writeUtf8(skillPath, CLICKABLE_PROTOTYPE_SKILL);
+  try {
+    await projectSkillsService.addProjectSkills({
+      workspacePath: projectPath,
+      entries: [{ directoryName: 'clickable-prototype', content: CLICKABLE_PROTOTYPE_SKILL }],
+    });
+  } catch {
+    // Studio's private copy remains available when no provider skill target is installed.
+  }
 }
 
 function requireManifest(manifest: StudioPrototype | null): StudioPrototype {
@@ -381,6 +395,11 @@ async function readOrMigrateManifest(dir: string): Promise<StudioPrototype | nul
     projectId,
     title,
     brief,
+    origin: studioOrigin(legacy.origin, 'studio'),
+    originSessionId: typeof legacy.originSessionId === 'string' ? legacy.originSessionId : null,
+    linkedSessionIds: Array.isArray(legacy.linkedSessionIds)
+      ? legacy.linkedSessionIds.filter((value): value is string => typeof value === 'string')
+      : [],
     skills: Array.isArray(legacy.skills)
       ? legacy.skills.filter((skill): skill is string => typeof skill === 'string')
       : [],
@@ -647,6 +666,12 @@ export const studioService = {
       projectId: input.projectId,
       title,
       brief,
+      origin: input.origin ?? 'studio',
+      originSessionId: input.originSessionId ?? null,
+      linkedSessionIds: [...new Set([
+        ...(input.linkedSessionIds ?? []),
+        ...(input.originSessionId ? [input.originSessionId] : []),
+      ])],
       skills: input.skills ?? [],
       status: 'ready',
       relativeDir,
@@ -662,7 +687,40 @@ export const studioService = {
 
     await writeTokens(dir, tokens);
     await persistVersion(dir, manifest, version, { html, notes, handoff });
+    for (const sessionId of manifest.linkedSessionIds) {
+      sessionsDb.addStudioPrototypeId(sessionId, id);
+    }
     return this.get(input.projectId, id);
+  },
+
+  async attachSession(projectId: string, id: string, sessionId: string): Promise<StudioPrototypeDetail> {
+    const projectPath = projectPathForId(projectId);
+    const dir = protoDir(projectPath, id);
+    const manifest = requireManifest(await readOrMigrateManifest(dir));
+    const session = sessionsDb.getSessionById(sessionId);
+    if (!session) {
+      throw new AppError(`Session not found: ${sessionId}`, { code: 'SESSION_NOT_FOUND', statusCode: 404 });
+    }
+    if (session.project_path && session.project_path !== projectPath) {
+      throw new AppError('Session belongs to a different project', { code: 'SESSION_PROJECT_MISMATCH', statusCode: 400 });
+    }
+    const linkedSessionIds = [...new Set([...manifest.linkedSessionIds, sessionId])];
+    await writeManifest(dir, { ...manifest, linkedSessionIds, updatedAt: nowIso() });
+    sessionsDb.addStudioPrototypeId(sessionId, id);
+    return this.get(projectId, id);
+  },
+
+  async listForSession(sessionId: string): Promise<StudioPrototype[]> {
+    const session = sessionsDb.getSessionById(sessionId);
+    if (!session) {
+      throw new AppError(`Session not found: ${sessionId}`, { code: 'SESSION_NOT_FOUND', statusCode: 404 });
+    }
+    if (!session.project_path) return [];
+    const project = projectsDb.getProjectPath(session.project_path);
+    if (!project) return [];
+    const ids = new Set(parseStudioPrototypeIds(session.studio_prototype_ids));
+    const prototypes = await this.list(project.project_id);
+    return prototypes.filter((prototype) => ids.has(prototype.id) || prototype.linkedSessionIds.includes(sessionId));
   },
 
   async update(

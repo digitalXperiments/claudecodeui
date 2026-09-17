@@ -65,6 +65,8 @@ export type MainContentProps = {
   isLoadingMoreSessions?: boolean;
   projects?: Project[];
   studioActive?: boolean;
+  studioProjectId?: string;
+  studioPrototypeId?: string;
   onLeaveStudio?: () => void;
   botsActive?: boolean;
   onLeaveBots?: () => void;

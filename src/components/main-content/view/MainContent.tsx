@@ -69,6 +69,8 @@ function MainContent({
   isLoadingMoreSessions = false,
   projects = [],
   studioActive = false,
+  studioProjectId,
+  studioPrototypeId,
   onLeaveStudio,
   botsActive = false,
   onLeaveBots,
@@ -242,6 +244,8 @@ function MainContent({
               externalMessageUpdate={externalMessageUpdate}
               newSessionTrigger={newSessionTrigger}
               isVisible={studioActive}
+              deepLinkProjectId={studioProjectId}
+              deepLinkPrototypeId={studioPrototypeId}
               onIdeateInChat={({ project, prompt, title }) => {
                 sessionStorage.setItem(
                   `cloudcli:pending-prompt:new:${project.projectId}`,

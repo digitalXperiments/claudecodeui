@@ -63,6 +63,12 @@ export interface ChatMessage {
     currentToolIndex: number;
     isComplete: boolean;
   };
+  prototype?: {
+    projectId: string;
+    prototypeId: string;
+    title: string;
+    status: string;
+  };
   [key: string]: unknown;
 }
 

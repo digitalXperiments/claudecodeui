@@ -14,6 +14,7 @@ type SessionSummary = {
   summary: string;
   messageCount: number;
   lastActivity: string;
+  studioPrototypeIds: string[];
 };
 
 type SessionRepositoryRow = {
@@ -24,6 +25,7 @@ type SessionRepositoryRow = {
   updated_at?: string | null;
   created_at?: string | null;
   is_internal?: number | boolean | null;
+  studio_prototype_ids?: string | null;
 };
 
 export type ProjectListItem = {
@@ -122,6 +124,13 @@ function normalizeSessionPagination(options: SessionPaginationOptions = {}): { l
 }
 
 function mapSessionRowToSummary(row: SessionRepositoryRow): SessionSummary {
+  let studioPrototypeIds: string[] = [];
+  try {
+    const parsed = JSON.parse(row.studio_prototype_ids || '[]') as unknown;
+    if (Array.isArray(parsed)) studioPrototypeIds = parsed.filter((id): id is string => typeof id === 'string');
+  } catch {
+    studioPrototypeIds = [];
+  }
   return {
     id: row.session_id,
     provider_session_id: row.provider_session_id ?? null,
@@ -129,6 +138,7 @@ function mapSessionRowToSummary(row: SessionRepositoryRow): SessionSummary {
     summary: row.custom_name || '',
     messageCount: 0,
     lastActivity: row.updated_at ?? row.created_at ?? new Date().toISOString(),
+    studioPrototypeIds,
   };
 }
 

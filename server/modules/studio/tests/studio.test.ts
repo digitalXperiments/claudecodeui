@@ -6,7 +6,7 @@ import test from 'node:test';
 
 import express from 'express';
 
-import { closeConnection, initializeDatabase, projectsDb } from '@/modules/database/index.js';
+import { closeConnection, initializeDatabase, projectsDb, sessionsDb } from '@/modules/database/index.js';
 import {
   buildGenerationPrompt,
   setStudioGenerateFn,
@@ -106,6 +106,31 @@ test('creates a clickable prototype with starter html and skill', async () => {
   });
 });
 
+test('chat-origin prototypes link to a durable session and can be listed from it', async () => {
+  await withTempDb(async (projectId, workspace) => {
+    const sessionId = 'chat-origin-session';
+    sessionsDb.createAppSession(sessionId, 'claude', workspace);
+    const proto = await studioService.create({
+      projectId,
+      brief: 'Chat-created dashboard',
+      origin: 'chat',
+      originSessionId: sessionId,
+      linkedSessionIds: [sessionId],
+    });
+
+    assert.equal(proto.origin, 'chat');
+    assert.equal(proto.originSessionId, sessionId);
+    assert.deepEqual(proto.linkedSessionIds, [sessionId]);
+    assert.deepEqual(sessionsDb.getSessionById(sessionId)?.studio_prototype_ids, JSON.stringify([proto.id]));
+    assert.deepEqual((await studioService.listForSession(sessionId)).map((item) => item.id), [proto.id]);
+
+    sessionsDb.createAppSession('chat-origin-session-2', 'claude', workspace);
+    const attached = await studioService.attachSession(projectId, proto.id, 'chat-origin-session-2');
+    assert.deepEqual(attached.linkedSessionIds, [sessionId, 'chat-origin-session-2']);
+    assert.deepEqual((await studioService.listForSession('chat-origin-session-2')).map((item) => item.id), [proto.id]);
+  });
+});
+
 test('legacy flat prototypes migrate to v2 without disappearing', async () => {
   await withTempDb(async (projectId, workspace) => {
     const id = 'proto_legacy';
@@ -137,6 +162,9 @@ test('legacy flat prototypes migrate to v2 without disappearing', async () => {
     assert.equal(migrated.format, 'cloudcli.studio.v2');
     assert.equal(migrated.versions.length, 1);
     assert.equal(migrated.activeVersion.kind, 'initial');
+    assert.equal(migrated.origin, 'studio');
+    assert.equal(migrated.originSessionId, null);
+    assert.deepEqual(migrated.linkedSessionIds, []);
     assert.match(migrated.html, /legacy page/);
     assert.equal((await readManifest(dir))?.activeVersionId, migrated.activeVersionId);
   });
