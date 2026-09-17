@@ -15,6 +15,7 @@
  */
 
 import path from 'node:path';
+import { readFile } from 'node:fs/promises';
 
 import { agentRelayService } from '@/modules/agent-relay/index.js';
 import type { AgentRelayJob, AgentRelayStatus } from '@/modules/agent-relay/index.js';
@@ -45,6 +46,7 @@ import {
   type UniverseVariantStatus,
 } from '@/modules/studio/studio-universes.types.js';
 import { newStudioUniverseId, newStudioUniverseVariantId } from '@/modules/studio/studio.ids.js';
+import { HANDOFF_FILE, readManifest, STUDIO_DIR } from '@/modules/studio/studio.storage.js';
 import { workspaceService } from '@/modules/workspaces/index.js';
 import { AppError } from '@/shared/utils.js';
 import type { LLMProvider } from '@/shared/types.js';
@@ -115,13 +117,14 @@ function aggregateStatus(variants: UniverseVariant[]): UniverseStatus {
   return 'ready';
 }
 
-function buildVariantTask(goal: string, variant: { label: string; approach: string }): string {
+function buildVariantTask(goal: string, variant: { label: string; approach: string }, prototypeRef?: { id: string; handoff: string }): string {
   return [
     'You are implementing one of several parallel candidate approaches to the same goal, each in its own isolated workspace, so they can be compared side by side.',
     `Approach name: ${variant.label}`,
     '',
     'Goal:',
     goal,
+    ...(prototypeRef ? ['', `Studio prototype reference: ${path.join(STUDIO_DIR, prototypeRef.id)}`, 'Prototype handoff (coding brief):', prototypeRef.handoff] : []),
     '',
     `Approach to take for this attempt (this is what must make it distinct from the other parallel attempt): ${variant.approach}`,
     '',
@@ -224,6 +227,18 @@ export const studioUniversesService = {
       });
     }
     const projectPath = projectPathForId(input.projectId);
+    let prototypeRef: { id: string; handoff: string } | undefined;
+    if (input.prototypeId) {
+      const prototypeDir = path.join(projectPath, STUDIO_DIR, input.prototypeId);
+      const manifest = await readManifest(prototypeDir);
+      if (!manifest || manifest.projectId !== input.projectId) {
+        throw new AppError('Prototype not found for this project.', { code: 'STUDIO_PROTOTYPE_NOT_FOUND', statusCode: 404 });
+      }
+      prototypeRef = {
+        id: manifest.id,
+        handoff: await readFile(path.join(prototypeDir, HANDOFF_FILE), 'utf8').catch(() => ''),
+      };
+    }
 
     type NormalizedApproach = { label: string; approach: string; provider: LLMProvider; model: string };
     const normalizedApproaches: NormalizedApproach[] = input.approaches.map((approach, index) => {
@@ -259,7 +274,7 @@ export const studioUniversesService = {
       projectPath,
       sourceSessionId: sourceSessionId ?? undefined,
       tasks: normalizedApproaches.map((approach) => ({
-        task: buildVariantTask(goal, approach),
+        task: buildVariantTask(goal, approach, prototypeRef),
         label: approach.label,
         provider: approach.provider,
         model: approach.model,
@@ -297,6 +312,7 @@ export const studioUniversesService = {
       format: STUDIO_UNIVERSE_FORMAT,
       id: newStudioUniverseId(),
       projectId: input.projectId,
+      prototypeId: input.prototypeId ?? null,
       goal,
       status: aggregateStatus(variants),
       variants,

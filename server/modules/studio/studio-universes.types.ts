@@ -97,6 +97,7 @@ export type StudioUniverse = {
   format: typeof STUDIO_UNIVERSE_FORMAT;
   id: string;
   projectId: string;
+  prototypeId: string | null;
   goal: string;
   status: UniverseStatus;
   variants: UniverseVariant[];
@@ -113,6 +114,7 @@ export type CreateUniverseApproachInput = {
 
 export type CreateStudioUniverseInput = {
   projectId: string;
+  prototypeId?: string | null;
   goal: string;
   approaches: [CreateUniverseApproachInput, CreateUniverseApproachInput];
   timeoutMs?: number;

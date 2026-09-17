@@ -736,7 +736,11 @@ router.post(
     const studioPrototypeIds = Array.isArray(body.studioPrototypeIds)
       ? body.studioPrototypeIds.filter((id): id is string => typeof id === 'string' && id.trim().length > 0)
       : undefined;
-    const result = sessionsService.createAppSession(provider, projectPath, { permissionMode, studioPrototypeIds });
+    const result = sessionsService.createAppSession(provider, projectPath, {
+      permissionMode,
+      studioPrototypeIds,
+      studioOnly: body.studioOnly === true,
+    });
     res.status(201).json(createApiSuccessResponse(result));
   }),
 );
@@ -773,6 +777,7 @@ router.get(
         id: row.session_id,
         provider: row.provider,
         isInternal: Boolean(row.is_internal),
+        isStudioOnly: Boolean(row.is_studio_only),
         projectPath: row.project_path,
         name: row.custom_name || '',
         permissionMode: row.permission_mode,

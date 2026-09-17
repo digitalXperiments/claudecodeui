@@ -82,6 +82,7 @@ router.post(
     const universe = await studioUniversesService.create(
       {
         projectId,
+        prototypeId: typeof body.prototypeId === 'string' ? body.prototypeId : null,
         goal: stringValue(body.goal),
         approaches,
         timeoutMs: intValue(body.timeoutMs),

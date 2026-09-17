@@ -43,6 +43,7 @@ type SessionDetails = {
   lastActivity: string | null;
   isArchived: boolean;
   isInternal: boolean;
+  isStudioOnly: boolean;
   studioPrototypeIds: string[];
   project: {
     projectId: string;
@@ -190,7 +191,7 @@ export const sessionsService = {
   createAppSession(
     provider: LLMProvider,
     projectPath: string,
-    options: { internal?: boolean; permissionMode?: string | null; studioPrototypeIds?: string[] } = {},
+    options: { internal?: boolean; studioOnly?: boolean; permissionMode?: string | null; studioPrototypeIds?: string[] } = {},
   ): CreateAppSessionResult {
     const normalizedProjectPath = projectPath.trim();
     if (!normalizedProjectPath) {
@@ -241,6 +242,7 @@ export const sessionsService = {
       lastActivity: session.updated_at ?? session.created_at ?? null,
       isArchived: Boolean(session.isArchived),
       isInternal: Boolean(session.is_internal),
+      isStudioOnly: Boolean(session.is_studio_only),
       studioPrototypeIds: parseStudioPrototypeIds(session.studio_prototype_ids),
       project: project && projectPath
         ? {

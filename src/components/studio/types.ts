@@ -63,13 +63,14 @@ export type StudioGenerationProgress = {
 };
 
 export type StudioPrototype = {
-  format?: typeof STUDIO_FORMAT;
+  format: typeof STUDIO_FORMAT;
   id: string;
   projectId: string;
   title: string;
   brief: string;
   origin: StudioPrototypeOrigin;
   originSessionId: string | null;
+  originRunId?: string | null;
   linkedSessionIds: string[];
   skills: string[];
   status: StudioPrototypeStatus;
@@ -121,6 +122,18 @@ export type StudioPrototypeDetail = StudioPrototype & {
   versions: StudioVersionDetail[];
   activeVersion: StudioVersionDetail;
   variants: StudioVariant[];
+};
+
+export type CreateStudioPrototypeInput = {
+  projectId: string;
+  title?: string;
+  brief: string;
+  skills?: string[];
+  tokens?: StudioTokensPatch;
+  origin?: StudioPrototypeOrigin;
+  originSessionId?: string | null;
+  originRunId?: string | null;
+  linkedSessionIds?: string[];
 };
 
 export type StudioTokensPatch = {

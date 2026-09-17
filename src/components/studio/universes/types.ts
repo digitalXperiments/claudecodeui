@@ -72,6 +72,7 @@ export type UniverseVariant = {
 export type StudioUniverse = {
   id: string;
   projectId: string;
+  prototypeId: string | null;
   goal: string;
   status: UniverseStatus;
   variants: UniverseVariant[];

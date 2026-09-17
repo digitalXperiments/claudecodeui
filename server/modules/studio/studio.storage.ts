@@ -9,6 +9,7 @@ import { AppError } from '@/shared/utils.js';
 export const STUDIO_DIR = path.join('.cloudcli', 'studio');
 export const MANIFEST = 'manifest.json';
 export const TOKENS_FILE = 'tokens.json';
+export const PROJECT_TOKENS_FILE = 'tokens.json';
 export const HTML_FILE = 'prototype.html';
 export const NOTES_FILE = 'notes.md';
 export const HANDOFF_FILE = 'handoff.md';
@@ -75,6 +76,7 @@ export async function readManifest(dir: string): Promise<StudioPrototype | null>
       ...(parsed as StudioPrototype),
       origin,
       originSessionId: typeof row.originSessionId === 'string' ? row.originSessionId : null,
+      originRunId: typeof row.originRunId === 'string' ? row.originRunId : null,
       linkedSessionIds: Array.isArray(row.linkedSessionIds)
         ? row.linkedSessionIds.filter((id): id is string => typeof id === 'string')
         : [],
@@ -112,6 +114,14 @@ export async function readTokens(dir: string, fallback = DEFAULT_STUDIO_TOKENS):
   } catch {
     return structuredClone(fallback);
   }
+}
+
+export async function readProjectTokens(studioDir: string, fallback = DEFAULT_STUDIO_TOKENS): Promise<StudioDesignTokens> {
+  return readTokens(studioDir, fallback);
+}
+
+export async function writeProjectTokens(studioDir: string, tokens: StudioDesignTokens): Promise<void> {
+  await writeTokens(studioDir, tokens);
 }
 
 export async function writeTokens(dir: string, tokens: StudioDesignTokens): Promise<void> {

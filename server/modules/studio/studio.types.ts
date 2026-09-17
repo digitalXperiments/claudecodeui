@@ -67,6 +67,7 @@ export type StudioPrototype = {
   brief: string;
   origin: StudioPrototypeOrigin;
   originSessionId: string | null;
+  originRunId: string | null;
   linkedSessionIds: string[];
   skills: string[];
   status: StudioPrototypeStatus;
@@ -135,6 +136,7 @@ export type CreateStudioPrototypeInput = {
   tokens?: StudioTokensPatch;
   origin?: StudioPrototypeOrigin;
   originSessionId?: string | null;
+  originRunId?: string | null;
   linkedSessionIds?: string[];
 };
 

@@ -1,9 +1,12 @@
 import { useTranslation } from 'react-i18next';
-import { memo, useCallback, useMemo } from 'react';
+import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import type { Dispatch, RefObject, SetStateAction } from 'react';
 
 import type { ChatMessage } from '../../types/types';
 import type { StudioPrototype } from '../../../studio/types';
+import type { StudioPrototypeDetail } from '../../../studio/types';
+import { studioApi } from '../../../studio/api/studioApi';
+import StudioPreviewPane from '../../../studio/view/StudioPreviewPane';
 import type {
   Project,
   ProjectSession,
@@ -188,6 +191,26 @@ function ChatMessagesPane({
     () => groupConsecutiveTools(visibleMessages, Boolean(showThinking)),
     [visibleMessages, showThinking],
   );
+  const [previewDetails, setPreviewDetails] = useState<Record<string, StudioPrototypeDetail>>({});
+
+  useEffect(() => {
+    let cancelled = false;
+    if (linkedPrototypes.length === 0) {
+      setPreviewDetails({});
+      return () => { cancelled = true; };
+    }
+    void Promise.all(linkedPrototypes.map(async (prototype) => {
+      try {
+        return await studioApi.get(prototype.projectId, prototype.id);
+      } catch {
+        return null;
+      }
+    })).then((details) => {
+      if (cancelled) return;
+      setPreviewDetails(Object.fromEntries(details.filter((detail): detail is StudioPrototypeDetail => Boolean(detail)).map((detail) => [detail.id, detail])));
+    });
+    return () => { cancelled = true; };
+  }, [linkedPrototypes]);
 
   // Stable, deterministic keys for the messages rendered this pass.
   //
@@ -249,7 +272,8 @@ function ChatMessagesPane({
       {linkedPrototypes.length > 0 && (
         <div className="mb-3 flex flex-wrap gap-2" data-testid="linked-prototypes">
           {linkedPrototypes.map((prototype) => (
-            <div key={prototype.id} className="flex min-w-56 items-center justify-between gap-3 rounded-xl border border-border bg-card px-3 py-2 shadow-sm">
+            <div key={prototype.id} className="min-w-56 rounded-xl border border-border bg-card px-3 py-2 shadow-sm">
+              <div className="flex items-center justify-between gap-3">
               <div className="min-w-0">
                 <div className="truncate text-xs font-semibold">{prototype.title}</div>
                 <div className="text-[10px] capitalize text-muted-foreground">{prototype.status}</div>
@@ -260,6 +284,18 @@ function ChatMessagesPane({
               >
                 Open in Studio
               </a>
+              </div>
+              {previewDetails[prototype.id] ? (
+                <div className="mt-2 h-64 overflow-hidden rounded-lg border border-border/70 bg-muted/20">
+                  <StudioPreviewPane
+                    title={previewDetails[prototype.id].title}
+                    html={previewDetails[prototype.id].html}
+                    frame="desktop"
+                    selectMode={false}
+                    onSelectElement={() => undefined}
+                  />
+                </div>
+              ) : null}
             </div>
           ))}
         </div>

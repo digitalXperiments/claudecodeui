@@ -506,6 +506,11 @@ const addStudioPrototypeIds = (db: Database): void => {
   db.exec("UPDATE sessions SET studio_prototype_ids = '[]' WHERE studio_prototype_ids IS NULL OR trim(studio_prototype_ids) = ''");
 };
 
+const addStudioOnlySessionVisibility = (db: Database): void => {
+  const columnNames = getTableInfo(db, 'sessions').map((column) => column.name);
+  addColumnToTableIfNotExists(db, 'sessions', columnNames, 'is_studio_only', 'BOOLEAN NOT NULL DEFAULT 0');
+};
+
 /**
  * Keeps the provider's actual working directory after the logical project
  * path was introduced. Existing rows initially use the same path for both;
@@ -984,6 +989,7 @@ export const runMigrations = (db: Database) => {
     addSessionRuntimePreferences(db);
     addInternalSessionVisibility(db);
     addStudioPrototypeIds(db);
+    addStudioOnlySessionVisibility(db);
     ensureProjectsForSessionPaths(db);
 
     db.exec('CREATE INDEX IF NOT EXISTS idx_session_ids_lookup ON sessions(session_id)');

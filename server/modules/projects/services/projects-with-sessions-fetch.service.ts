@@ -25,6 +25,7 @@ type SessionRepositoryRow = {
   updated_at?: string | null;
   created_at?: string | null;
   is_internal?: number | boolean | null;
+  is_studio_only?: number | boolean | null;
   studio_prototype_ids?: string | null;
 };
 
@@ -147,7 +148,7 @@ function readProjectSessionsIncludingArchived(projectPath: string): ProjectSessi
   // needs them all), so the internal delegate rows are filtered here — the
   // archived view is a user-facing list like the session picker.
   const rows = (sessionsDb.getSessionsByProjectPathIncludingArchived(projectPath) as SessionRepositoryRow[])
-    .filter((row) => !row.is_internal);
+    .filter((row) => !row.is_internal && !row.is_studio_only);
 
   return {
     sessions: rows.map(mapSessionRowToSummary),

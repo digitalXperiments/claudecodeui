@@ -148,6 +148,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     -- durable for run recovery but must never appear on the interactive chat
     -- surface or be subscribable by a browser client.
     is_internal BOOLEAN NOT NULL DEFAULT 0,
+    -- Studio-only helper chats are durable but must not become main chat rows.
+    is_studio_only BOOLEAN NOT NULL DEFAULT 0,
     -- JSON array of Studio prototype ids linked to this chat session.
     studio_prototype_ids TEXT NOT NULL DEFAULT '[]',
     isArchived BOOLEAN DEFAULT 0,

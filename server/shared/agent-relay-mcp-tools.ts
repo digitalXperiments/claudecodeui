@@ -148,4 +148,49 @@ export const AGENT_RELAY_MCP_TOOLS: ToolDefinition[] = [
     description: 'Call this before any repo work. Lists allowed worker providers, model catalogs, defaults, effort levels, seats (readOnlyPlanSeat, honorsMcpGrants), and hard limits. The lead is an orchestrator: after this call, dispatch with relay_delegate rather than searching or editing locally.',
     inputSchema: { type: 'object', properties: {} },
   },
+  {
+    name: 'studio.create_prototype',
+    description: 'Create a CloudCLI Studio prototype in the current chat project. The ambient lead session is linked automatically.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string' },
+        brief: { type: 'string' },
+        skills: { type: 'array', items: { type: 'string' } },
+      },
+      required: ['brief'],
+    },
+  },
+  {
+    name: 'studio.list_prototypes',
+    description: 'List Studio prototypes for the current chat project.',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'studio.get_prototype',
+    description: 'Read one Studio prototype and its current HTML, notes, handoff, and versions.',
+    inputSchema: {
+      type: 'object',
+      properties: { prototypeId: { type: 'string' } },
+      required: ['prototypeId'],
+    },
+  },
+  {
+    name: 'studio.iterate_prototype',
+    description: 'Request a focused Studio prototype iteration from the current chat.',
+    inputSchema: {
+      type: 'object',
+      properties: { prototypeId: { type: 'string' }, message: { type: 'string' } },
+      required: ['prototypeId', 'message'],
+    },
+  },
+  {
+    name: 'studio.attach_session',
+    description: 'Attach the current ambient chat session to a Studio prototype.',
+    inputSchema: {
+      type: 'object',
+      properties: { prototypeId: { type: 'string' } },
+      required: ['prototypeId'],
+    },
+  },
 ];

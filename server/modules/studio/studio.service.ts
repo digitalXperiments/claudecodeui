@@ -1,4 +1,4 @@
-import { copyFile, mkdir, readdir, rm, stat } from 'node:fs/promises';
+import { copyFile, mkdir, readdir, rename, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 
 import { parseStudioPrototypeIds, projectsDb, sessionsDb } from '@/modules/database/index.js';
@@ -20,6 +20,8 @@ import {
   NOTES_FILE,
   readLegacyManifest,
   readManifest,
+  readProjectTokens,
+  readUtf8,
   readRootArtifacts,
   readTokens,
   readVersionDetail,
@@ -28,6 +30,7 @@ import {
   walkVersionChain,
   writeActiveArtifacts,
   writeManifest,
+  writeProjectTokens,
   writeTokens,
   writeUtf8,
   writeVersion,
@@ -37,7 +40,7 @@ import {
   starterNotes,
   starterPrototypeHtml,
 } from '@/modules/studio/studio.templates.js';
-import { defaultTokensForBrief, mergeStudioTokens } from '@/modules/studio/studio.tokens.js';
+import { DEFAULT_STUDIO_TOKENS, defaultTokensForBrief, mergeStudioTokens } from '@/modules/studio/studio.tokens.js';
 import { STUDIO_FORMAT } from '@/modules/studio/studio.types.js';
 import type {
   AppendStudioTurnInput,
@@ -74,6 +77,47 @@ const PROMOTE_FILES = [HTML_FILE, NOTES_FILE, HANDOFF_FILE] as const;
 const MAX_VARIANTS = 5;
 const MIN_VARIANTS = 1;
 const DEFAULT_VARIANTS = 3;
+
+async function importOrphanDirectories(projectId: string, projectPath: string): Promise<void> {
+  const root = studioRoot(projectPath);
+  let entries: string[];
+  try { entries = await readdir(root); } catch { return; }
+  const used = new Set(entries);
+  for (const name of entries) {
+    if (name.startsWith('_')) continue;
+    const source = path.join(root, name);
+    if (await readManifest(source) || await readLegacyManifest(source)) continue;
+    try {
+      const info = await stat(path.join(source, HTML_FILE));
+      if (!info.isFile()) continue;
+    } catch { continue; }
+    let id = newPrototypeId();
+    while (used.has(id)) id = newPrototypeId();
+    const target = path.join(root, id);
+    await rename(source, target);
+    used.add(id);
+    const brief = titleFromBrief(await readUtf8(path.join(target, HANDOFF_FILE), 'Imported prototype'));
+    const title = titleFromBrief(brief);
+    const createdAt = nowIso();
+    const version: StudioVersion = {
+      id: newStudioVersionId(), parentVersionId: null, kind: 'initial', message: 'Imported prototype',
+      selectedElement: null, createdAt, variantIds: [],
+    };
+    const relativeDir = path.join(STUDIO_DIR, id);
+    const manifest: StudioPrototype = {
+      format: STUDIO_FORMAT, id, projectId, title, brief, origin: 'imported', originSessionId: null,
+      originRunId: null, linkedSessionIds: [], skills: [], status: 'ready', relativeDir,
+      htmlRelativePath: path.join(relativeDir, HTML_FILE), notesRelativePath: path.join(relativeDir, NOTES_FILE),
+      handoffRelativePath: path.join(relativeDir, HANDOFF_FILE), swarmId: null, activeVersionId: version.id,
+      generation: null, createdAt, updatedAt: createdAt,
+    };
+    const artifacts = await readRootArtifacts(target);
+    const tokens = await readProjectTokens(root, DEFAULT_STUDIO_TOKENS);
+    await writeTokens(target, tokens);
+    await writeVersion(target, version, artifacts);
+    await writeManifest(target, manifest);
+  }
+}
 
 function studioOrigin(value: unknown, fallback: StudioPrototypeOrigin = 'studio'): StudioPrototypeOrigin {
   return value === 'studio' || value === 'chat' || value === 'agent' || value === 'imported' ? value : fallback;
@@ -308,7 +352,8 @@ async function toDetail(
   const versions = await listVersionDetails(dir);
   const activeVersion = versions.find((version) => version.id === manifest.activeVersionId)
     ?? await loadActiveVersion(dir, manifest);
-  const tokens = await readTokens(dir, defaultTokensForBrief(manifest.brief));
+  const projectTokens = await readProjectTokens(path.dirname(dir), defaultTokensForBrief(manifest.brief));
+  const tokens = await readTokens(dir, projectTokens);
   const variants = await listVariants(dir, activeVersion.id);
   const root = options.liveRoot ? await readRootArtifacts(dir) : null;
   const html = root?.html || activeVersion.html;
@@ -397,6 +442,7 @@ async function readOrMigrateManifest(dir: string): Promise<StudioPrototype | nul
     brief,
     origin: studioOrigin(legacy.origin, 'studio'),
     originSessionId: typeof legacy.originSessionId === 'string' ? legacy.originSessionId : null,
+    originRunId: typeof legacy.originRunId === 'string' ? legacy.originRunId : null,
     linkedSessionIds: Array.isArray(legacy.linkedSessionIds)
       ? legacy.linkedSessionIds.filter((value): value is string => typeof value === 'string')
       : [],
@@ -490,7 +536,7 @@ async function ingestRootIfNewer(
   await persistVersion(dir, manifest, version, root);
 }
 
-export function buildIdeatePrompt(proto: StudioPrototype): string {
+export function buildIdeatePrompt(proto: StudioPrototype, handoff = ''): string {
   return [
     `You are designing a clickable prototype in CloudCLI Studio.`,
     `Work only in \`${proto.relativeDir}\`. Edits there are the source-of-truth diff for this job.`,
@@ -504,7 +550,36 @@ export function buildIdeatePrompt(proto: StudioPrototype): string {
     ``,
     `Brief:`,
     proto.brief,
+    ``,
+    `Handoff from the prototype (treat this as the coding brief and preserve its decisions):`,
+    handoff.trim() || '(No handoff has been written yet.)',
   ].filter(Boolean).join('\n');
+}
+
+export async function ingestAgentPrototype(input: {
+  projectId: string;
+  html: string;
+  originSessionId?: string | null;
+  originRunId?: string | null;
+  title?: string;
+}): Promise<StudioPrototypeDetail> {
+  const title = input.title?.trim()
+    || /<title[^>]*>([^<]+)<\/title>/i.exec(input.html)?.[1]?.trim()
+    || 'Agent prototype';
+  const prototype = await studioService.create({
+    projectId: input.projectId,
+    title: title.slice(0, 80),
+    brief: `HTML prototype emitted by an agent run ${input.originRunId ?? ''}`.trim(),
+    origin: 'agent',
+    originSessionId: input.originSessionId ?? null,
+    originRunId: input.originRunId ?? null,
+  });
+  return studioService.update(input.projectId, prototype.id, {
+    html: input.html,
+    notes: `Imported from agent run ${input.originRunId ?? 'unknown'}.`,
+    handoff: 'Agent-emitted HTML prototype. Review interactions and continue in Studio.',
+    status: 'ready',
+  });
 }
 
 async function markGenerating(
@@ -598,6 +673,7 @@ export const studioService = {
   async list(projectId: string): Promise<StudioPrototype[]> {
     const projectPath = projectPathForId(projectId);
     const root = studioRoot(projectPath);
+    await importOrphanDirectories(projectId, projectPath);
     let entries: string[] = [];
     try {
       entries = await readdir(root);
@@ -638,13 +714,16 @@ export const studioService = {
 
     const projectPath = projectPathForId(input.projectId);
     await ensureSkill(projectPath);
+    const projectRoot = studioRoot(projectPath);
+    const projectTokens = await readProjectTokens(projectRoot, defaultTokensForBrief(brief));
+    await writeProjectTokens(projectRoot, projectTokens);
 
     const id = newPrototypeId();
     const dir = protoDir(projectPath, id);
     const title = (input.title || titleFromBrief(brief)).trim();
     const createdAt = nowIso();
     const relativeDir = path.join(STUDIO_DIR, id);
-    const tokens = mergeStudioTokens(defaultTokensForBrief(brief), input.tokens);
+    const tokens = mergeStudioTokens(projectTokens, input.tokens);
     const versionId = newStudioVersionId();
     const html = starterPrototypeHtml(title, brief, tokens);
     const notes = starterNotes(title, brief);
@@ -668,6 +747,7 @@ export const studioService = {
       brief,
       origin: input.origin ?? 'studio',
       originSessionId: input.originSessionId ?? null,
+      originRunId: input.originRunId ?? null,
       linkedSessionIds: [...new Set([
         ...(input.linkedSessionIds ?? []),
         ...(input.originSessionId ? [input.originSessionId] : []),
@@ -792,6 +872,9 @@ export const studioService = {
     return detail.tokens;
   },
 
+  buildIdeatePrompt,
+  ingestAgentPrototype,
+
   async updateTokens(
     projectId: string,
     id: string,
@@ -801,7 +884,8 @@ export const studioService = {
     const dir = protoDir(projectPath, id);
     const manifest = requireManifest(await readOrMigrateManifest(dir));
     assertNotBusy(manifest);
-    const currentTokens = await readTokens(dir, defaultTokensForBrief(manifest.brief));
+    const projectTokens = await readProjectTokens(studioRoot(projectPath), defaultTokensForBrief(manifest.brief));
+    const currentTokens = await readTokens(dir, projectTokens);
     const tokens = mergeStudioTokens(currentTokens, input.tokens);
     await writeTokens(dir, tokens);
     await writeManifest(dir, { ...manifest, updatedAt: nowIso() });

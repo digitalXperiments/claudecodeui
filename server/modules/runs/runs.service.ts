@@ -82,6 +82,26 @@ function summarizeRun(run: AgentRun): AgentRunSummary {
   return toSummary(run, { lastActivity, stuckMinutes, toolCallCount });
 }
 
+function queueAgentPrototypeImport(run: AgentRun): void {
+  if (run.status !== 'succeeded' || !run.project_id) return;
+  const events = runsDb.listEvents(run.run_id, { newest: true, limit: 200 });
+  const html = events
+    .map((event) => event.payload?.content)
+    .filter((content): content is string => typeof content === 'string')
+    .join('\n')
+    .match(/<!doctype\s+html[\s\S]*?<\/html>/i)?.[0];
+  if (!html) return;
+  void import('@/modules/studio/index.js')
+    .then(({ ingestAgentPrototype }) => ingestAgentPrototype({
+      projectId: run.project_id!,
+      html,
+      originSessionId: run.app_session_id,
+      originRunId: run.run_id,
+      title: run.title ?? undefined,
+    }))
+    .catch(() => undefined);
+}
+
 // ---------------------------------------------------------------------------
 // Payload redaction (PRD §0.3 / §6.5 — events never store secrets)
 // ---------------------------------------------------------------------------
@@ -373,6 +393,7 @@ export const runService: RunService = {
     const updated = this.get(runId);
     if (updated) {
       broadcastSystemEvent({ kind: 'run_updated', run: summarizeRun(updated) });
+      queueAgentPrototypeImport(updated);
     }
   },
 

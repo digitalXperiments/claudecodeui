@@ -300,9 +300,10 @@ function VariantCard({ projectId, universeId, variant, onChanged }: VariantCardP
 type StudioUniversesPanelProps = {
   project: Project | null;
   isVisible: boolean;
+  prototypeId?: string | null;
 };
 
-export default function StudioUniversesPanel({ project, isVisible }: StudioUniversesPanelProps) {
+export default function StudioUniversesPanel({ project, isVisible, prototypeId = null }: StudioUniversesPanelProps) {
   const [universes, setUniverses] = useState<StudioUniverse[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [active, setActive] = useState<StudioUniverse | null>(null);
@@ -402,6 +403,7 @@ export default function StudioUniversesPanel({ project, isVisible }: StudioUnive
     try {
       const universe = await studioUniversesApi.create(projectId, {
         goal: goal.trim(),
+        prototypeId,
         approaches,
       });
       setUniverses((prev) => [universe, ...prev]);

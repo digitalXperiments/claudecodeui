@@ -3,6 +3,7 @@ export {
   studioService,
   designStudioRoster,
   buildIdeatePrompt,
+  ingestAgentPrototype,
   promotePrototypeFromWorkspace,
   waitForStudioGeneration,
 } from '@/modules/studio/studio.service.js';

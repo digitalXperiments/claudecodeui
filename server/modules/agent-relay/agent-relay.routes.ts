@@ -1,7 +1,8 @@
 import express from 'express';
 
-import { sessionsDb } from '@/modules/database/index.js';
+import { projectsDb, sessionsDb } from '@/modules/database/index.js';
 import { agentRelayService } from '@/modules/agent-relay/agent-relay.service.js';
+import { studioService } from '@/modules/studio/index.js';
 import {
   AGENT_RELAY_PROVIDERS,
   type AgentRelayApproval,
@@ -370,6 +371,17 @@ function requireMcpScope(req: express.Request, input: Record<string, unknown>): 
   return scope;
 }
 
+function studioScope(req: express.Request): { sessionId: string; projectId: string } {
+  const sessionId = optionalString(req.headers['x-cloudcli-lead-session-id']);
+  const session = sessionId ? sessionsDb.getSessionById(sessionId) : null;
+  if (!sessionId || !session || session.is_internal || session.is_studio_only) {
+    throw new AppError('Studio MCP calls require a live user chat session.', { code: 'STUDIO_SOURCE_SESSION_REQUIRED', statusCode: 400 });
+  }
+  const project = session.project_path ? projectsDb.getProjectPath(session.project_path) : null;
+  if (!project) throw new AppError('The current chat is not attached to a CloudCLI project.', { code: 'STUDIO_PROJECT_REQUIRED', statusCode: 400 });
+  return { sessionId, projectId: project.project_id };
+}
+
 agentRelayMcpRoutes.post('/tools/:toolName', asyncHandler(async (req, res) => {
   const input = (req.body && typeof req.body === 'object' ? req.body : {}) as Record<string, unknown>;
   let data: unknown;
@@ -475,6 +487,41 @@ agentRelayMcpRoutes.post('/tools/:toolName', asyncHandler(async (req, res) => {
     case 'relay_capabilities':
       data = await agentRelayService.getCapabilities();
       break;
+    case 'studio.create_prototype': {
+      const scope = studioScope(req);
+      data = await studioService.create({
+        projectId: scope.projectId,
+        title: optionalString(input.title),
+        brief: requiredString(input.brief, 'brief'),
+        skills: stringList(input.skills),
+        origin: 'chat',
+        originSessionId: scope.sessionId,
+        linkedSessionIds: [scope.sessionId],
+      });
+      break;
+    }
+    case 'studio.list_prototypes': {
+      const scope = studioScope(req);
+      data = await studioService.list(scope.projectId);
+      break;
+    }
+    case 'studio.get_prototype': {
+      const scope = studioScope(req);
+      data = await studioService.get(scope.projectId, requiredString(input.prototypeId, 'prototypeId'));
+      break;
+    }
+    case 'studio.iterate_prototype': {
+      const scope = studioScope(req);
+      data = await studioService.appendTurn(scope.projectId, requiredString(input.prototypeId, 'prototypeId'), {
+        message: requiredString(input.message, 'message'),
+      });
+      break;
+    }
+    case 'studio.attach_session': {
+      const scope = studioScope(req);
+      data = await studioService.attachSession(scope.projectId, requiredString(input.prototypeId, 'prototypeId'), scope.sessionId);
+      break;
+    }
     default:
       throw new AppError(`Unknown Agent Relay tool "${req.params.toolName}".`, { code: 'RELAY_TOOL_NOT_FOUND', statusCode: 404 });
   }

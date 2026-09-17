@@ -55,6 +55,8 @@ import { copyTextToClipboard } from '../../utils/clipboard';
 import { SETTINGS_MAIN_TABS } from '../settings/constants/constants';
 import type { AppTab, Project } from '../../types/app';
 import type { SidebarSearchMode } from '../sidebar/types/types';
+import { studioApi } from '../studio/api/studioApi';
+import type { StudioPrototype } from '../studio/types';
 
 import { useSessionsSource } from './sources/useSessionsSource';
 import { useFilesSource } from './sources/useFilesSource';
@@ -64,12 +66,13 @@ import { useBranchesSource } from './sources/useBranchesSource';
 import { useGitActions } from './sources/useGitActions';
 import { useGlobalSkillsSource, useProjectSkillsSource } from './sources/useSkillsSource';
 
-type Page = 'actions' | 'files' | 'sessions' | 'commits' | 'branches' | 'projects' | 'skills';
+type Page = 'actions' | 'files' | 'sessions' | 'prototypes' | 'commits' | 'branches' | 'projects' | 'skills';
 
 const PAGE_LABELS: Record<Page, string> = {
   actions: 'Actions',
   files: 'Files',
   sessions: 'Sessions',
+  prototypes: 'Prototypes',
   commits: 'Commits',
   branches: 'Branches',
   projects: 'Projects',
@@ -114,6 +117,7 @@ export default function CommandPalette({
   const [open, setOpen] = React.useState(false);
   const [search, setSearch] = React.useState('');
   const [pages, setPages] = React.useState<Page[]>([]);
+  const [prototypes, setPrototypes] = React.useState<StudioPrototype[]>([]);
   const { toggleDarkMode, setThemeMode } = useTheme() as {
     toggleDarkMode: () => void;
     setThemeMode: (mode: 'light' | 'dark' | 'system') => void;
@@ -151,6 +155,7 @@ export default function CommandPalette({
 
   const showActions = !page || page === 'actions';
   const showSessions = !page || page === 'sessions';
+  const showPrototypes = !page || page === 'prototypes';
   const showFiles = !page || page === 'files';
   const showCommits = !page || page === 'commits';
   const showBranches = !page || page === 'branches' || page === 'actions';
@@ -158,6 +163,16 @@ export default function CommandPalette({
   const showSkills = !page || page === 'skills';
 
   const sessions = useSessionsSource(projectId, open && showSessions);
+  React.useEffect(() => {
+    if (!open || !projectId || !showPrototypes) return;
+    let cancelled = false;
+    void studioApi.list(projectId).then((next) => {
+      if (!cancelled) setPrototypes(next);
+    }).catch(() => {
+      if (!cancelled) setPrototypes([]);
+    });
+    return () => { cancelled = true; };
+  }, [open, projectId, showPrototypes]);
   const messageMatches = useSessionMessageSearch(projectId, search, open && showSessions);
   const files = useFilesSource(projectId, open && showFiles);
   const commits = useCommitsSource(projectId, open && showCommits);
@@ -218,6 +233,7 @@ export default function CommandPalette({
   const filesShown = page === 'files' ? files : files.slice(0, browseLimit);
   const commitsShown = page === 'commits' ? commits : commits.slice(0, browseLimit);
   const sessionsShown = page === 'sessions' ? sessionRows : sessionRows.slice(0, browseLimit);
+  const prototypesShown = page === 'prototypes' ? prototypes : prototypes.slice(0, browseLimit);
   const branchesShown = page === 'branches' ? branches : branches.slice(0, browseLimit);
   const projectsShown = page === 'projects' ? projects : projects.slice(0, browseLimit);
   const skillsShown = page === 'skills' ? skillRows : skillRows.slice(0, browseLimit);
@@ -515,6 +531,27 @@ export default function CommandPalette({
                 ))}
                 {!page && sessionRows.length > browseLimit && (
                   <BrowseAllItem label={`Browse all sessions (${sessionRows.length})`} onSelect={() => pushPage('sessions')} />
+                )}
+              </CommandGroup>
+            )}
+
+            {showPrototypes && projectId && prototypesShown.length > 0 && (
+              <CommandGroup heading="Prototypes">
+                {prototypesShown.map((prototype) => (
+                  <CommandItem
+                    key={prototype.id}
+                    value={`${prototype.title} ${prototype.brief} ${prototype.id}`.trim()}
+                    onSelect={() => run(() => navigate(`/studio/${encodeURIComponent(prototype.projectId)}/${encodeURIComponent(prototype.id)}`))}
+                  >
+                    <Palette className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
+                    <div className="flex min-w-0 flex-1 flex-col">
+                      <span className="truncate">{prototype.title}</span>
+                      <span className="truncate text-xs text-muted-foreground">{prototype.status}</span>
+                    </div>
+                  </CommandItem>
+                ))}
+                {!page && prototypes.length > browseLimit && (
+                  <BrowseAllItem label={`Browse all prototypes (${prototypes.length})`} onSelect={() => pushPage('prototypes')} />
                 )}
               </CommandGroup>
             )}

@@ -121,7 +121,7 @@ const isUntitledGrokWatcherShadow = (session: ProjectSession): boolean => {
 
 export const getAllSessions = (project: Project): SessionWithProvider[] => {
   return (project.sessions || [])
-    .filter((session) => !session.isInternal && !isUntitledGrokWatcherShadow(session))
+    .filter((session) => !session.isInternal && !session.isStudioOnly && !isUntitledGrokWatcherShadow(session))
     .map((session) => ({
       ...session,
       __provider: getSessionProvider(session),

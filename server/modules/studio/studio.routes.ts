@@ -103,6 +103,7 @@ router.post(
       skills: stringList(body.skills),
       origin: originValue(body.origin),
       originSessionId: typeof body.originSessionId === 'string' ? body.originSessionId.trim() || null : null,
+      originRunId: typeof body.originRunId === 'string' ? body.originRunId.trim() || null : null,
       linkedSessionIds: stringList(body.linkedSessionIds),
       tokens: body.tokens && typeof body.tokens === 'object' && !Array.isArray(body.tokens)
         ? body.tokens as StudioTokensPatch
@@ -171,7 +172,7 @@ router.get(
   '/:projectId/prototypes/:id/ideate-prompt',
   asyncHandler(async (req, res) => {
     const prototype = await studioService.get(stringValue(req.params.projectId), stringValue(req.params.id));
-    res.json({ success: true, prompt: buildIdeatePrompt(prototype), prototype });
+    res.json({ success: true, prompt: buildIdeatePrompt(prototype, prototype.handoff), prototype });
   }),
 );
 

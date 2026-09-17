@@ -12,6 +12,7 @@ type SessionRow = {
   runtime_project_path: string | null;
   jsonl_path: string | null;
   is_internal: number;
+  is_studio_only: number;
   studio_prototype_ids: string;
   custom_name: string | null;
   isArchived: number;
@@ -20,7 +21,7 @@ type SessionRow = {
 };
 
 const SESSION_ROW_COLUMNS =
-  'session_id, provider, provider_session_id, continued_from_session_id, permission_mode, project_path, runtime_project_path, jsonl_path, is_internal, studio_prototype_ids, custom_name, isArchived, created_at, updated_at';
+  'session_id, provider, provider_session_id, continued_from_session_id, permission_mode, project_path, runtime_project_path, jsonl_path, is_internal, is_studio_only, studio_prototype_ids, custom_name, isArchived, created_at, updated_at';
 
 const SQLITE_UTC_TIMESTAMP_REGEX = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
 
@@ -211,7 +212,7 @@ export const sessionsDb = {
     sessionId: string,
     provider: string,
     projectPath: string,
-    options: { internal?: boolean; permissionMode?: string | null; studioPrototypeIds?: string[] } = {},
+    options: { internal?: boolean; studioOnly?: boolean; permissionMode?: string | null; studioPrototypeIds?: string[] } = {},
   ): string {
     const db = getConnection();
     const { logicalProjectPath, runtimeProjectPath } = resolveSessionPaths(provider, projectPath);
@@ -219,8 +220,8 @@ export const sessionsDb = {
     projectsDb.createProjectPath(logicalProjectPath);
 
     db.prepare(
-      `INSERT INTO sessions (session_id, provider, provider_session_id, permission_mode, custom_name, project_path, runtime_project_path, jsonl_path, is_internal, studio_prototype_ids, isArchived, created_at, updated_at)
-       VALUES (?, ?, NULL, ?, NULL, ?, ?, NULL, ?, ?, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`
+      `INSERT INTO sessions (session_id, provider, provider_session_id, permission_mode, custom_name, project_path, runtime_project_path, jsonl_path, is_internal, is_studio_only, studio_prototype_ids, isArchived, created_at, updated_at)
+       VALUES (?, ?, NULL, ?, NULL, ?, ?, NULL, ?, ?, ?, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`
     ).run(
       sessionId,
       provider,
@@ -228,6 +229,7 @@ export const sessionsDb = {
       logicalProjectPath,
       runtimeProjectPath,
       options.internal ? 1 : 0,
+      options.studioOnly ? 1 : 0,
       JSON.stringify([...new Set(options.studioPrototypeIds ?? [])]),
     );
 
@@ -558,7 +560,7 @@ export const sessionsDb = {
       .prepare(
         `SELECT ${SESSION_ROW_COLUMNS}
          FROM sessions
-         WHERE isArchived = 0 AND is_internal = 0`
+         WHERE isArchived = 0 AND is_internal = 0 AND is_studio_only = 0`
       )
       .all() as SessionRow[];
 
@@ -594,7 +596,7 @@ export const sessionsDb = {
       .prepare(
         `SELECT ${SESSION_ROW_COLUMNS}
          FROM sessions
-         WHERE isArchived = 1 AND is_internal = 0
+         WHERE isArchived = 1 AND is_internal = 0 AND is_studio_only = 0
          ORDER BY datetime(COALESCE(updated_at, created_at)) DESC, session_id DESC`
       )
       .all() as SessionRow[];
@@ -612,7 +614,8 @@ export const sessionsDb = {
          FROM sessions
          WHERE project_path = ?
            AND isArchived = 0
-           AND is_internal = 0`
+           AND is_internal = 0
+           AND is_studio_only = 0`
       )
       .all(normalizedProjectPath) as SessionRow[];
 
@@ -657,6 +660,7 @@ export const sessionsDb = {
          WHERE project_path = ?
            AND isArchived = 0
            AND is_internal = 0
+           AND is_studio_only = 0
          ORDER BY datetime(COALESCE(updated_at, created_at)) DESC, session_id DESC
          LIMIT ? OFFSET ?`
       )
@@ -675,7 +679,8 @@ export const sessionsDb = {
          FROM sessions
          WHERE project_path = ?
            AND isArchived = 0
-           AND is_internal = 0`
+           AND is_internal = 0
+           AND is_studio_only = 0`
       )
       .get(normalizedProjectPath) as { count: number } | undefined;
 

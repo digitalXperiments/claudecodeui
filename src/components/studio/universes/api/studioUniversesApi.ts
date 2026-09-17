@@ -45,7 +45,7 @@ export const studioUniversesApi = {
 
   async create(
     projectId: string,
-    input: { goal: string; approaches: [CreateUniverseApproachDraft, CreateUniverseApproachDraft]; timeoutMs?: number },
+    input: { goal: string; prototypeId?: string | null; approaches: [CreateUniverseApproachDraft, CreateUniverseApproachDraft]; timeoutMs?: number },
   ): Promise<StudioUniverse> {
     const res = await authenticatedFetch(basePath(projectId), {
       method: 'POST',

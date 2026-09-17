@@ -263,6 +263,7 @@ export default function StudioView({
             provider,
             projectPath: targetProject.fullPath || targetProject.path || '',
             studioPrototypeIds: [prototype.id],
+            studioOnly: true,
           }),
         });
         if (!response.ok) {
@@ -576,7 +577,7 @@ export default function StudioView({
 
       {mode === 'universes' ? (
         <div className="min-h-0 flex-1">
-          <StudioUniversesPanel project={project ?? null} isVisible={isVisible} />
+          <StudioUniversesPanel project={project ?? null} isVisible={isVisible} prototypeId={active?.id ?? null} />
         </div>
       ) : (
       <div
@@ -735,6 +736,10 @@ export default function StudioView({
                   >
                     <MousePointer2 className="h-3.5 w-3.5" />
                     <span className="hidden sm:inline">{selectMode ? 'Selecting' : 'Select'}</span>
+                  </Button>
+                  <Button size="sm" variant="ghost" onClick={() => setMode('universes')} title="Explore two coding approaches from this handoff">
+                    <Rocket className="h-3.5 w-3.5" />
+                    <span className="hidden sm:inline">Explore approaches</span>
                   </Button>
                   <Button
                     size="sm"
