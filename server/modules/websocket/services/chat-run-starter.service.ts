@@ -5,6 +5,16 @@ import { getGlobalImageAssetsDir, normalizeImageDescriptors } from '@/shared/ima
 import type { AnyRecord, LLMProvider, NormalizedMessage, RealtimeClientConnection } from '@/shared/types.js';
 
 /**
+ * How long to wait before retrying a session's run lock when both the lock
+ * and mid-run injection failed. Covers the gap between the provider closing
+ * its stdin channel (RUN_DRAIN_GRACE_MS in claude-sdk.js) and the terminal
+ * `complete` event that flips the registry lock to `completed` — comfortably
+ * longer than the microtask-scale work in between, short enough that a
+ * genuinely busy session still fails fast.
+ */
+const RUN_LOCK_RETRY_DELAY_MS = 300;
+
+/**
  * One provider runtime entry point. All provider runtimes share this signature,
  * which lets both the chat websocket handler and the kanban runner dispatch
  * through a provider-keyed map instead of provider-specific branches.
@@ -135,14 +145,16 @@ export async function startProviderRun(params: StartProviderRunParams): Promise<
     projectPath: params.projectPath ?? params.options.projectPath,
   });
 
-  const run = chatRunRegistry.startRun({
+  const startRunArgs = {
     appSessionId: params.appSessionId,
     provider: params.provider,
     providerSessionId: params.providerSessionId,
     connection: params.connection,
     userId: params.userId,
     onEvent: params.onEvent,
-  });
+  };
+
+  let run = chatRunRegistry.startRun(startRunArgs);
 
   if (!run) {
     // A run is already active for this session. Providers with a mid-run
@@ -164,7 +176,26 @@ export async function startProviderRun(params: StartProviderRunParams): Promise<
         return { ok: true, injected: true, completion: Promise.resolve() };
       }
     }
-    return { ok: false, code: 'RUN_IN_PROGRESS' };
+
+    // The registry can briefly still say "running" for a session whose
+    // provider process already finished: the runtime closes its stdin
+    // channel first and only sends the terminal `complete` event (which
+    // flips the registry to `completed`) a tick later, and inject failed
+    // because the channel is already closed. Retry the lock once, short
+    // delay, before telling the user their message was rejected — this
+    // covers exactly that landing-vs-teardown gap instead of surfacing a
+    // false RUN_IN_PROGRESS for a session that isn't actually stuck.
+    await new Promise((resolve) => setTimeout(resolve, RUN_LOCK_RETRY_DELAY_MS));
+    run = chatRunRegistry.startRun(startRunArgs);
+
+    if (!run) {
+      console.warn('[Chat] Session still locked after retry; rejecting send with RUN_IN_PROGRESS', {
+        appSessionId: params.appSessionId,
+        provider: params.provider,
+        hadInjectFn: Boolean(params.injectFn),
+      });
+      return { ok: false, code: 'RUN_IN_PROGRESS' };
+    }
   }
 
   const runtimeOptions = buildRuntimeOptions(params.providerSessionId);

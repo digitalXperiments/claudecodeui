@@ -1,5 +1,5 @@
 import type { Project } from '../../../types/app';
-import type { CreateMcSectionInput, McAction, McItem } from '../../mission-control/api/missionControlApi';
+import type { CreateMcSectionInput, McAction, McItem, WorkProjectMatch } from '../../mission-control/api/missionControlApi';
 import type { BotRun } from '../api/botStudioApi';
 import type { Bot, BotAutonomy } from '../types';
 
@@ -75,6 +75,14 @@ export interface ContextPaneProps {
   onGenerateAssets?: (item: McItem, force: boolean) => Promise<{ generated: number; skipped: number; failed: number; messages: string[] }>;
   /** Close the current context selection. */
   onClose?: () => void;
+  /** Candidate projects for the explicit work-chat handoff. */
+  workCandidates?: WorkProjectMatch[] | null;
+  /** Whether project matching is in flight. */
+  workLoading?: boolean;
+  /** Project matching or handoff error. */
+  workError?: string | null;
+  /** Find projects or open a chat in the selected project. */
+  onWork?: (item: McItem, projectId?: string) => void;
   /** Selected tick detail; optional so inbox consumers remain compatible. */
   selectedRun?: RunDetail | null;
   /** Select a related tick for context details. */
@@ -101,6 +109,10 @@ export interface BotDetailTabProps {
 export interface BotDetailViewProps {
   /** Bot represented by the detail page. */
   bot: Bot;
+  /** Display name for the configured project, when the project is still registered. */
+  projectName?: string | null;
+  /** Display name for the configured Work this destination. */
+  workProjectName?: string | null;
   /** Inbox items produced by this bot. */
   items: McItem[];
   /** Tick runs cached for this bot. */
@@ -109,6 +121,8 @@ export interface BotDetailViewProps {
   onUpdate: (patch: Partial<CreateMcSectionInput>) => Promise<void>;
   /** Run one tick immediately. */
   onRun: () => Promise<{ created: number; skipped?: number }>;
+  /** Cancel an in-progress tick, killing its underlying process. */
+  onCancelRun?: (run: BotRun) => void;
   /** Delete the bot after confirmation. */
   onDelete: () => Promise<void>;
   /** Create a disabled copy of the bot. */

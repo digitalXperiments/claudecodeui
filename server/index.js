@@ -23,7 +23,7 @@ import {
     configureMemoryCurationRuntimes,
     mcpCatalogService,
 } from '@/modules/providers/index.js';
-import { createWebSocketServer, shellSessionRegistry } from '@/modules/websocket/index.js';
+import { createWebSocketServer, shellSessionRegistry, configureProviderAbortFns } from '@/modules/websocket/index.js';
 
 import {
     interruptsRoutes,
@@ -152,13 +152,9 @@ import secretsRoutes from './modules/secrets/secrets.routes.js';
 import deliveryGraphRoutes from './modules/delivery-graph/delivery-graph.routes.js';
 import shipRoutes from './modules/ship/ship.routes.js';
 import contextPacksRoutes from './modules/context-packs/context-packs.routes.js';
-import automationRoutes, { startAutomationKernel, stopAutomationKernel } from './modules/automation/index.js';
+import automationRoutes, { startAutomationKernel, stopAutomationKernel, configureAutomationRuntimes } from './modules/automation/index.js';
 import { studioRoutes } from './modules/studio/index.js';
-import swarmRoutes, {
-    configureSwarmRuntimes,
-    configureSwarmAbortFns,
-    recoverActiveSwarms,
-} from './modules/swarm/index.js';
+import { modelRegistryRoutes } from './modules/model-registry/index.js';
 import failoverRoutes from './modules/failover/failover.routes.js';
 import {
     configureFailoverApprovalResolver,
@@ -187,6 +183,7 @@ import {
     configureAgentRelayRuntimes,
 } from './modules/agent-relay/index.js';
 import { configureAgentRelayLeadWake } from './modules/agent-relay/lead-session-wake.service.js';
+import { decisioningRoutes } from './modules/decisioning/index.js';
 import webhooksRoutes from './modules/webhooks/webhooks.routes.js';
 import { hooksRoutes } from './modules/hooks/index.js';
 import webhooksIngestRoutes from './modules/webhooks/webhooks-ingest.routes.js';
@@ -312,9 +309,6 @@ configureMissionControlRuntimes(providerSpawnFns);
 // Eval Center AI-assisted suite authoring uses the same authenticated provider runtimes.
 configureEvalRuntimes(providerSpawnFns);
 
-// Review swarm: multi-role headless agent runs on the same runtime map.
-configureSwarmRuntimes(providerSpawnFns);
-configureSwarmAbortFns(providerAbortFns);
 
 // Webhooks: source-routed headless agent runs (dictation, external tools, …).
 configureWebhookRuntimes(providerSpawnFns);
@@ -390,6 +384,23 @@ interruptsService.configureMcItemResolver((itemId, decision) => {
     console.warn('[Interrupts] MC item action failed', error?.message || error);
   });
 });
+// Shared with the /api/runs abort endpoint (runs.routes.ts) via
+// configureProviderAbortFns, so a REST cancel can kill the same underlying
+// provider process as the interactive `chat.abort` websocket message.
+const abortFns = {
+    claude: abortClaudeSDKSession,
+    cursor: abortCursorSession,
+    codex: abortCodexSession,
+    opencode: abortOpenCodeSession,
+    kilo: abortKiloSession,
+    cline: abortClineSession,
+    grok: abortGrokSession,
+    kimi: abortKimiSession,
+    pi: abortPiSession,
+    omp: abortOmpSession,
+};
+configureProviderAbortFns(abortFns);
+
 const wss = createWebSocketServer(server, {
     verifyClient: {
         isPlatform: IS_PLATFORM,
@@ -402,18 +413,7 @@ const wss = createWebSocketServer(server, {
         injectFns: {
             claude: injectClaudeMessage,
         },
-        abortFns: {
-            claude: abortClaudeSDKSession,
-            cursor: abortCursorSession,
-            codex: abortCodexSession,
-            opencode: abortOpenCodeSession,
-            kilo: abortKiloSession,
-            cline: abortClineSession,
-            grok: abortGrokSession,
-            kimi: abortKimiSession,
-            pi: abortPiSession,
-            omp: abortOmpSession,
-        },
+        abortFns,
         resolveToolApproval,
         getPendingApprovalsForSession,
         isShellSessionActive: (appSessionId) => shellSessionRegistry.isActive(appSessionId),
@@ -526,8 +526,9 @@ app.use('/api', authenticateToken, deliveryGraphRoutes);
 app.use('/api', authenticateToken, shipRoutes);
 app.use('/api', authenticateToken, contextPacksRoutes);
 app.use('/api', authenticateToken, automationRoutes);
-app.use('/api', authenticateToken, swarmRoutes);
+app.use('/api', authenticateToken, modelRegistryRoutes);
 app.use('/api/agent-relay', authenticateToken, agentRelayRoutes);
+app.use('/api/jev', authenticateToken, decisioningRoutes);
 app.use('/api/studio', authenticateToken, studioRoutes);
 app.use('/api', authenticateToken, failoverRoutes);
 app.use('/api', authenticateToken, continuityRoutes);
@@ -2125,10 +2126,6 @@ async function startServer() {
             console.error('[CloudCLI] run/workspace reconciliation failed:', error.message);
         }
 
-        // Agent Swarm is retired: abort leftover in-flight rows instead of resuming.
-        void recoverActiveSwarms().catch((error) => {
-            console.error('[Swarm] retired abort on boot failed:', error.message);
-        });
 
         // Fail any kanban runs left "running" by a previous process (crash/restart),
         // re-enqueue anything persisted as "queued", and start the cron scheduler.

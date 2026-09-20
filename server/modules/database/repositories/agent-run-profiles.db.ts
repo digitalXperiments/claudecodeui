@@ -56,8 +56,6 @@ export type AgentRunProfileRow = {
   permission_mode: string;
   tools_json: string;
   permission_intent: string;
-  swarm_roles: string | null;
-  swarm_level: string | null;
   enabled: number;
   created_at: string;
   updated_at: string;
@@ -65,11 +63,9 @@ export type AgentRunProfileRow = {
 
 export type AgentRunProfile = Omit<
   AgentRunProfileRow,
-  'tools_json' | 'swarm_roles' | 'swarm_level' | 'enabled'
+  'tools_json' | 'enabled'
 > & {
   tools: AgentRunProfileTools;
-  swarm_roles: SwarmProfileRole[];
-  swarm_level: SwarmProfileLevel;
   /** false = kept for explicit use, but excluded from automatic seat selection. */
   enabled: boolean;
 };
@@ -83,8 +79,6 @@ export type CreateAgentRunProfileInput = {
   permissionMode?: string;
   tools?: AgentRunProfileTools;
   permissionIntent?: string;
-  swarmRoles?: SwarmProfileRole[];
-  swarmLevel?: SwarmProfileLevel;
   enabled?: boolean;
 };
 
@@ -97,8 +91,6 @@ export type UpdateAgentRunProfileInput = {
   permissionMode?: string;
   tools?: AgentRunProfileTools;
   permissionIntent?: string;
-  swarmRoles?: SwarmProfileRole[];
-  swarmLevel?: SwarmProfileLevel;
   enabled?: boolean;
 };
 
@@ -111,51 +103,8 @@ function parseTools(toolsJson: string): AgentRunProfileTools {
   }
 }
 
-/** Parse a stored swarm_roles JSON array, dropping unknown values and duplicates. */
-function parseSwarmRoles(swarmRolesJson: string | null): SwarmProfileRole[] {
-  if (!swarmRolesJson) {
-    return [];
-  }
-  try {
-    const parsed = JSON.parse(swarmRolesJson);
-    if (!Array.isArray(parsed)) {
-      return [];
-    }
-    return [...new Set(parsed.filter(isSwarmProfileRole))];
-  } catch {
-    return [];
-  }
-}
-
-/**
- * Validate and normalize a swarmRoles input list. Throws on unknown role
- * strings; dedupes valid ones. Returns the JSON string to store, or NULL for
- * an empty list (= not available to swarms).
- */
-function serializeSwarmRoles(roles: SwarmProfileRole[]): string | null {
-  const invalid = roles.filter((role) => !isSwarmProfileRole(role));
-  if (invalid.length > 0) {
-    throw new Error(
-      `Invalid swarm role(s): ${invalid.join(', ')}. Valid roles: ${SWARM_PROFILE_ROLES.join(', ')}`,
-    );
-  }
-  const deduped = [...new Set(roles)];
-  return deduped.length > 0 ? JSON.stringify(deduped) : null;
-}
-
-/** Validate a swarmLevel input. Throws on unknown tiers; undefined → default. */
-function serializeSwarmLevel(level: SwarmProfileLevel | undefined): string {
-  if (level === undefined) return DEFAULT_SWARM_PROFILE_LEVEL;
-  if (!isSwarmProfileLevel(level)) {
-    throw new Error(
-      `Invalid swarm level: ${String(level)}. Valid levels: ${SWARM_PROFILE_LEVELS.join(', ')}`,
-    );
-  }
-  return level;
-}
-
 function mapProfile(row: AgentRunProfileRow): AgentRunProfile {
-  const { tools_json, swarm_roles, swarm_level, enabled, ...rest } = row;
+  const { tools_json, enabled, ...rest } = row;
   return {
     ...rest,
     // Rows written before the column existed read as enabled.
@@ -166,8 +115,6 @@ function mapProfile(row: AgentRunProfileRow): AgentRunProfile {
     permission_mode: rest.permission_mode || 'default',
     permission_intent: rest.permission_intent ?? '',
     tools: parseTools(tools_json),
-    swarm_roles: parseSwarmRoles(swarm_roles),
-    swarm_level: isSwarmProfileLevel(swarm_level) ? swarm_level : DEFAULT_SWARM_PROFILE_LEVEL,
   };
 }
 
@@ -255,8 +202,6 @@ const SEED_PROFILES: CreateAgentRunProfileInput[] = [
     provider: 'claude',
     effort: 'medium',
     permissionMode: 'acceptEdits',
-    swarmRoles: ['implementer'],
-    swarmLevel: 'medium',
   },
   {
     name: 'Claude High Effort',
@@ -265,8 +210,6 @@ const SEED_PROFILES: CreateAgentRunProfileInput[] = [
     effort: 'high',
     permissionMode: 'acceptEdits',
     permissionIntent: 'Allow git, npm, read and write project files; deny rm and network downloads',
-    swarmRoles: ['implementer'],
-    swarmLevel: 'advanced',
   },
   {
     name: 'Grok Low Effort',
@@ -275,8 +218,6 @@ const SEED_PROFILES: CreateAgentRunProfileInput[] = [
     effort: 'low',
     permissionMode: 'default',
     permissionIntent: 'Allow git status/diff, read files; deny rm and sudo',
-    swarmRoles: ['explorer'],
-    swarmLevel: 'basic',
   },
   {
     name: 'Strict Review',
@@ -285,17 +226,12 @@ const SEED_PROFILES: CreateAgentRunProfileInput[] = [
     effort: 'medium',
     permissionMode: 'plan',
     permissionIntent: 'Read-only: git status/diff/log, read files; deny rm and network',
-    swarmRoles: ['reviewer'],
-    swarmLevel: 'advanced',
   },
 ];
 
 export const agentRunProfilesDb = {
   list(filter?: {
-    swarmRole?: SwarmProfileRole;
-    /** Keep only profiles at or above this capability tier. */
-    minSwarmLevel?: SwarmProfileLevel;
-    /** Keep only enabled profiles — every automatic seat selection sets this. */
+    /** Keep only enabled profiles. */
     enabledOnly?: boolean;
   }): AgentRunProfile[] {
     const db = getConnection();
@@ -305,25 +241,6 @@ export const agentRunProfilesDb = {
     let profiles = rows.map(mapProfile);
     if (filter?.enabledOnly) {
       profiles = profiles.filter((profile) => profile.enabled);
-    }
-    const swarmRole = filter?.swarmRole;
-    const minSwarmLevel = filter?.minSwarmLevel;
-    if (swarmRole !== undefined) {
-      if (!isSwarmProfileRole(swarmRole)) {
-        throw new Error(
-          `Invalid swarm role: ${String(swarmRole)}. Valid roles: ${SWARM_PROFILE_ROLES.join(', ')}`,
-        );
-      }
-      profiles = profiles.filter((profile) => profile.swarm_roles.includes(swarmRole));
-    }
-    if (minSwarmLevel !== undefined) {
-      if (!isSwarmProfileLevel(minSwarmLevel)) {
-        throw new Error(
-          `Invalid swarm level: ${String(minSwarmLevel)}. Valid levels: ${SWARM_PROFILE_LEVELS.join(', ')}`,
-        );
-      }
-      const floor = SWARM_LEVEL_RANK[minSwarmLevel];
-      profiles = profiles.filter((profile) => SWARM_LEVEL_RANK[profile.swarm_level] >= floor);
     }
     return profiles;
   },
@@ -357,8 +274,8 @@ export const agentRunProfilesDb = {
     db.prepare(
       `INSERT INTO agent_run_profiles (
          profile_id, name, description, provider, model, effort,
-         permission_mode, tools_json, permission_intent, swarm_roles, swarm_level, enabled
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         permission_mode, tools_json, permission_intent, enabled
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       profileId,
       input.name.trim(),
@@ -369,8 +286,6 @@ export const agentRunProfilesDb = {
       permissionMode,
       JSON.stringify(toolsJson),
       input.permissionIntent ?? '',
-      serializeSwarmRoles(input.swarmRoles ?? []),
-      serializeSwarmLevel(input.swarmLevel),
       input.enabled === false ? 0 : 1,
     );
     return agentRunProfilesDb.get(profileId)!;
@@ -399,15 +314,13 @@ export const agentRunProfilesDb = {
       }
     }
 
-    const swarmRoles = patch.swarmRoles !== undefined ? patch.swarmRoles : existing.swarm_roles;
-    const swarmLevel = patch.swarmLevel !== undefined ? patch.swarmLevel : existing.swarm_level;
 
     const db = getConnection();
     db.prepare(
       `UPDATE agent_run_profiles SET
          name = ?, description = ?, provider = ?, model = ?, effort = ?,
-         permission_mode = ?, tools_json = ?, permission_intent = ?, swarm_roles = ?,
-         swarm_level = ?, enabled = ?, updated_at = CURRENT_TIMESTAMP
+         permission_mode = ?, tools_json = ?, permission_intent = ?,
+         enabled = ?, updated_at = CURRENT_TIMESTAMP
        WHERE profile_id = ?`,
     ).run(
       (patch.name ?? existing.name).trim(),
@@ -418,8 +331,6 @@ export const agentRunProfilesDb = {
       permissionMode,
       JSON.stringify(tools ?? {}),
       permissionIntent,
-      serializeSwarmRoles(swarmRoles ?? []),
-      serializeSwarmLevel(swarmLevel),
       (patch.enabled !== undefined ? patch.enabled : existing.enabled) ? 1 : 0,
       profileId,
     );

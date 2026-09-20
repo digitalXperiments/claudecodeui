@@ -17,7 +17,6 @@ function hoursAgoIso(hours: number): string {
 
 export type ShiftReport = {
   windowHours: number;
-  prs: Array<{ swarmId: string; goal: string; prUrl: string }>;
   waiting: number;
   spendUsd: number;
   restartDeaths: number;
@@ -27,13 +26,6 @@ export type ShiftReport = {
 export function collectShiftReport(windowHours = SHIFT_HOURS): ShiftReport {
   const db = getConnection();
   const since = hoursAgoIso(windowHours);
-
-  const prs = db.prepare(
-    `SELECT swarm_id, goal, pr_url
-     FROM swarm_runs
-     WHERE pr_url IS NOT NULL AND trim(pr_url) <> ''
-       AND COALESCE(updated_at, created_at) >= ?`,
-  ).all(since) as Array<{ swarm_id: string; goal: string; pr_url: string }>;
 
   const waiting = db.prepare(
     `SELECT COUNT(*) AS n FROM interrupts WHERE status = 'open' AND kind != 'shift_report'`,
@@ -63,7 +55,6 @@ export function collectShiftReport(windowHours = SHIFT_HOURS): ShiftReport {
 
   return {
     windowHours,
-    prs: prs.map((row) => ({ swarmId: row.swarm_id, goal: row.goal, prUrl: row.pr_url })),
     waiting: Number(waiting?.n ?? 0),
     spendUsd: Number(spend?.cost ?? 0),
     restartDeaths: Number(deaths?.n ?? 0),
@@ -72,15 +63,9 @@ export function collectShiftReport(windowHours = SHIFT_HOURS): ShiftReport {
 }
 
 export function formatShiftReport(report: ShiftReport): { title: string; body: string } {
-  const prLines = report.prs.length
-    ? report.prs.map((row) => `- ${row.prUrl} — ${row.goal.slice(0, 80)}`).join('\n')
-    : '- No PRs opened in this window.';
-  const title = `Shift report · ${report.prs.length} PR${report.prs.length === 1 ? '' : 's'} · $${report.spendUsd.toFixed(2)}`;
+  const title = `Shift report · $${report.spendUsd.toFixed(2)}`;
   const body = [
     `Last ${report.windowHours} hours.`,
-    '',
-    '## Finished with PRs',
-    prLines,
     '',
     '## Waiting on you',
     `${report.waiting} open Needs you item${report.waiting === 1 ? '' : 's'}.`,

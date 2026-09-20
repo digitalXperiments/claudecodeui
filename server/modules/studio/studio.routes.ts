@@ -157,17 +157,6 @@ router.delete(
   }),
 );
 
-router.post(
-  '/:projectId/prototypes/:id/swarm',
-  asyncHandler(async (req, res) => {
-    const result = await studioService.launchSwarm(
-      stringValue(req.params.projectId),
-      stringValue(req.params.id),
-    );
-    res.status(201).json({ success: true, ...result });
-  }),
-);
-
 router.get(
   '/:projectId/prototypes/:id/ideate-prompt',
   asyncHandler(async (req, res) => {

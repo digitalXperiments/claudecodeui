@@ -25,6 +25,7 @@ type SectionRow = {
   enabled: number;
   scope: string;
   project_id: string | null;
+  work_project_id: string | null;
   mode: string;
   schedule_cron: string | null;
   provider: string;
@@ -39,7 +40,6 @@ type SectionRow = {
   tool_policy_json: string | null;
   actions_json: string;
   create_kanban_task: number | null;
-  create_swarm_on_approve: number | null;
   kanban_assignee_provider: string | null;
   kanban_review_provider: string | null;
   kanban_mcp_tools_json: string | null;
@@ -154,6 +154,7 @@ function mapSection(row: SectionRow): McSection {
     enabled: Boolean(row.enabled),
     scope: (row.scope === 'project' ? 'project' : 'global') as McSectionScope,
     project_id: row.project_id,
+    work_project_id: row.work_project_id ?? null,
     mode: (row.mode === 'fire_and_forget' ? 'fire_and_forget' : 'review') as McSectionMode,
     schedule_cron: row.schedule_cron || null,
     provider: (row.provider || 'claude') as McProvider,
@@ -168,7 +169,6 @@ function mapSection(row: SectionRow): McSection {
     tool_policy: parseToolPolicy(row.tool_policy_json),
     actions: parseActions(row.actions_json),
     create_kanban_task: Boolean(row.create_kanban_task),
-    create_swarm_on_approve: Boolean(row.create_swarm_on_approve),
     kanban_assignee_provider: (row.kanban_assignee_provider || null) as McProvider | null,
     kanban_review_provider: (row.kanban_review_provider || null) as McProvider | null,
     kanban_mcp_tools: parseTools(row.kanban_mcp_tools_json),
@@ -203,6 +203,34 @@ function mapItem(row: ItemRow): McItem {
 
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+const STALE_RESOLVING_AFTER_MS = 30 * 60 * 1000;
+
+/** Recover actions orphaned by a dead provider process or dropped request. */
+function recoverStaleResolvingItems(): void {
+  const db = getConnection();
+  const cutoff = new Date(Date.now() - STALE_RESOLVING_AFTER_MS).toISOString();
+  const rows = db
+    .prepare(
+      `SELECT item_id FROM mc_items WHERE status = 'resolving' AND updated_at < ?`,
+    )
+    .all(cutoff) as Array<{ item_id: string }>;
+  if (rows.length === 0) return;
+
+  const updatedAt = nowIso();
+  const error = 'The previous resolve run did not finish. Retry to start it again.';
+  const update = db.prepare(
+    `UPDATE mc_items SET status = 'failed', error = ?, updated_at = ? WHERE item_id = ? AND status = 'resolving'`,
+  );
+  const transaction = db.transaction((items: Array<{ item_id: string }>) => {
+    for (const row of items) update.run(error, updatedAt, row.item_id);
+  });
+  transaction(rows);
+  for (const row of rows) {
+    const item = missionControlDb.getItem(row.item_id);
+    if (item) broadcastSystemEvent({ kind: 'mc_item_updated', item });
+  }
 }
 
 export const missionControlDb = {
@@ -278,16 +306,16 @@ export const missionControlDb = {
     const actions = input.actions?.length ? input.actions : DEFAULT_MC_ACTIONS;
     db.prepare(
       `INSERT INTO mc_sections (
-        section_id, title, icon, sort_order, enabled, scope, project_id, mode,
+        section_id, title, icon, sort_order, enabled, scope, project_id, work_project_id, mode,
         schedule_cron, provider, model, permission_mode, dry_run, auto_approve,
         produce_prompt, produce_tools_json, resolve_prompt, resolve_tools_json,
-        tool_policy_json, actions_json, create_kanban_task, create_swarm_on_approve, kanban_assignee_provider, kanban_review_provider,
+        tool_policy_json, actions_json, create_kanban_task, kanban_assignee_provider, kanban_review_provider,
         kanban_mcp_tools_json, created_at, updated_at
       ) VALUES (
-        ?, ?, ?, ?, ?, ?, ?, ?,
+        ?, ?, ?, ?, ?, ?, ?, ?, ?,
         ?, ?, ?, ?, ?, ?,
         ?, ?, ?, ?,
-        ?, ?, ?, ?, ?, ?,
+        ?, ?, ?, ?, ?,
         ?, ?, ?
       )`,
     ).run(
@@ -298,6 +326,7 @@ export const missionControlDb = {
       input.enabled === false ? 0 : 1,
       input.scope === 'project' ? 'project' : 'global',
       input.project_id ?? null,
+      input.work_project_id ?? null,
       input.mode === 'fire_and_forget' ? 'fire_and_forget' : 'review',
       input.schedule_cron?.trim() || null,
       input.provider ?? 'claude',
@@ -312,7 +341,6 @@ export const missionControlDb = {
       JSON.stringify(input.tool_policy ?? {}),
       JSON.stringify(actions),
       input.create_kanban_task ? 1 : 0,
-      input.create_swarm_on_approve ? 1 : 0,
       input.kanban_assignee_provider ?? null,
       input.kanban_review_provider ?? null,
       JSON.stringify(input.kanban_mcp_tools ?? []),
@@ -335,6 +363,8 @@ export const missionControlDb = {
       scope: input.scope !== undefined ? input.scope : existing.scope,
       project_id:
         input.project_id !== undefined ? input.project_id : existing.project_id,
+      work_project_id:
+        input.work_project_id !== undefined ? input.work_project_id : existing.work_project_id,
       mode: input.mode !== undefined ? input.mode : existing.mode,
       schedule_cron:
         input.schedule_cron !== undefined
@@ -367,10 +397,6 @@ export const missionControlDb = {
         input.create_kanban_task !== undefined
           ? input.create_kanban_task
           : existing.create_kanban_task,
-      create_swarm_on_approve:
-        input.create_swarm_on_approve !== undefined
-          ? input.create_swarm_on_approve
-          : existing.create_swarm_on_approve,
       kanban_assignee_provider:
         input.kanban_assignee_provider !== undefined
           ? input.kanban_assignee_provider
@@ -388,11 +414,11 @@ export const missionControlDb = {
     const db = getConnection();
     db.prepare(
       `UPDATE mc_sections SET
-        title = ?, icon = ?, sort_order = ?, enabled = ?, scope = ?, project_id = ?,
+        title = ?, icon = ?, sort_order = ?, enabled = ?, scope = ?, project_id = ?, work_project_id = ?,
         mode = ?, schedule_cron = ?, provider = ?, model = ?, permission_mode = ?,
         dry_run = ?, auto_approve = ?, produce_prompt = ?, produce_tools_json = ?,
         resolve_prompt = ?, resolve_tools_json = ?, tool_policy_json = ?, actions_json = ?,
-        create_kanban_task = ?, create_swarm_on_approve = ?, kanban_assignee_provider = ?, kanban_review_provider = ?,
+        create_kanban_task = ?, kanban_assignee_provider = ?, kanban_review_provider = ?,
         kanban_mcp_tools_json = ?,
         updated_at = ?
        WHERE section_id = ?`,
@@ -403,6 +429,7 @@ export const missionControlDb = {
       next.enabled ? 1 : 0,
       next.scope,
       next.project_id,
+      next.work_project_id ?? null,
       next.mode,
       next.schedule_cron,
       next.provider,
@@ -417,7 +444,6 @@ export const missionControlDb = {
       JSON.stringify(next.tool_policy),
       JSON.stringify(next.actions),
       next.create_kanban_task ? 1 : 0,
-      next.create_swarm_on_approve ? 1 : 0,
       next.kanban_assignee_provider ?? null,
       next.kanban_review_provider ?? null,
       JSON.stringify(next.kanban_mcp_tools ?? []),
@@ -467,6 +493,7 @@ export const missionControlDb = {
     limit?: number;
   }): McItem[] {
     const db = getConnection();
+    recoverStaleResolvingItems();
     const limit = Math.min(Math.max(options?.limit ?? 100, 1), 500);
     const clauses: string[] = [];
     const params: unknown[] = [];
@@ -531,6 +558,7 @@ export const missionControlDb = {
     }>;
   } {
     const db = getConnection();
+    recoverStaleResolvingItems();
     const rows = db.prepare(
       `SELECT s.section_id,
           COALESCE(SUM(CASE WHEN i.status = 'pending' THEN 1 ELSE 0 END), 0) AS pending,

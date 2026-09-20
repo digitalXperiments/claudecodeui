@@ -1,5 +1,5 @@
 /**
- * "Work this" — open a scoped chat from a Mission Control card.
+ * "Open work chat" — open a scoped chat from a Mission Control card.
  *
  * Jira Drafts and TL Tasks already carry enough context (ticket body, Trello
  * card, suggested path). This matches that to a CloudCLI project and returns
@@ -125,6 +125,19 @@ function scoreProject(
 }
 
 export function matchProjectsForItem(item: McItem, section: McSection | null): WorkThisMatch[] {
+  if (section?.work_project_id) {
+    const workProject = projectsDb.getProjectById(section.work_project_id);
+    if (workProject && !workProject.isArchived) {
+      return [{
+        projectId: workProject.project_id,
+        projectPath: workProject.project_path,
+        name: workProject.custom_project_name || path.basename(workProject.project_path),
+        score: 100,
+        reason: 'bot work project',
+      }];
+    }
+    return [];
+  }
   if (section?.scope === 'project' && section.project_id) {
     const scoped = projectsDb.getProjectById(section.project_id);
     if (scoped && !scoped.isArchived) {
@@ -206,6 +219,12 @@ export function workThisItem(itemId: string, projectId?: string): WorkThisResult
 
   const section = missionControlDb.getSection(item.section_id);
   const candidates = matchProjectsForItem(item, section);
+  if (section?.work_project_id && projectId && projectId !== section.work_project_id) {
+    throw new AppError('This bot is configured to open Work this in its assigned work project.', {
+      code: 'MC_WORK_PROJECT_MISMATCH',
+      statusCode: 409,
+    });
+  }
   const chosen = projectId
     ? candidates.find((row) => row.projectId === projectId) ?? (() => {
       const forced = projectsDb.getProjectById(projectId);

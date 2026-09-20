@@ -37,10 +37,12 @@ test('filters by status, bot, and bot-aware search and counts grouped statuses',
     item('mail', { summary: 'Customer reply' }),
     item('issue', { section_id: 'two', status: 'resolved', actions: [] }),
     item('dismissed', { status: 'dismissed', actions: [] }),
+    item('failed', { status: 'failed' }),
   ];
   assert.deepEqual(filterInboxItems(items, bots, 'pending', 'all', 'github'), []);
+  assert.deepEqual(filterInboxItems(items, bots, 'needs_attention', 'all', '').map((entry) => entry.item_id), ['mail', 'failed']);
   assert.deepEqual(filterInboxItems(items, bots, 'resolved', 'two', 'issue').map((entry) => entry.item_id), ['issue']);
-  assert.deepEqual(getInboxCounts(items), { pending: 1, resolving: 0, resolved: 2, failed: 0, all: 3 });
+  assert.deepEqual(getInboxCounts(items), { needs_attention: 2, pending: 1, resolving: 0, resolved: 2, failed: 1, all: 4 });
 });
 
 test('sorts needs-decision items first and then newest first', () => {

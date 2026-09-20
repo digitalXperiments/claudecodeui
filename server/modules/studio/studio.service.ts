@@ -8,6 +8,7 @@ import {
   getStudioSeats,
   saveStudioSeats,
   seatsToRoster,
+  type StudioRosterSeat,
   type StudioSeatProfile,
 } from '@/modules/studio/studio.profiles.js';
 import { CLICKABLE_PROTOTYPE_SKILL } from '@/modules/studio/studio.skill.js';
@@ -59,13 +60,12 @@ import type {
   UpdateStudioPrototypeInput,
   UpdateStudioTokensInput,
 } from '@/modules/studio/studio.types.js';
-import { swarmService, type SwarmAgentSpec } from '@/modules/swarm/index.js';
 import { workspaceService } from '@/modules/workspaces/index.js';
 import { projectSkillsService } from '@/modules/providers/index.js';
 import { newPrototypeId } from '@/shared/ids.js';
 import { AppError } from '@/shared/utils.js';
 
-export function designStudioRoster(): SwarmAgentSpec[] {
+export function designStudioRoster(): StudioRosterSeat[] {
   return seatsToRoster();
 }
 
@@ -169,47 +169,6 @@ async function withPrototypeLock<T>(
   }
 }
 
-function watchSwarm(projectId: string, prototypeId: string, swarmId: string): void {
-  if (watching.has(swarmId)) return;
-  watching.add(swarmId);
-  const tick = async () => {
-    try {
-      const swarm = swarmService.get(swarmId);
-      const status = swarm?.status;
-      if (status === 'succeeded') {
-        await promotePrototypeFromSwarm(projectId, prototypeId);
-        await ingestRootIfNewer(projectId, prototypeId, 'Design swarm');
-        await studioService.update(projectId, prototypeId, {
-          status: 'ready',
-          generation: null,
-        });
-        watching.delete(swarmId);
-        return;
-      }
-      if (status === 'failed' || status === 'aborted') {
-        await studioService.update(projectId, prototypeId, {
-          status: 'failed',
-          generation: {
-            kind: 'swarm',
-            startedAt: new Date().toISOString(),
-            message: null,
-            error: `Design swarm ${status}`,
-          },
-        });
-        watching.delete(swarmId);
-        return;
-      }
-    } catch {
-      // keep polling until the swarm row exists or finishes
-    }
-    setTimeout(() => {
-      void tick();
-    }, 4000);
-  };
-  setTimeout(() => {
-    void tick();
-  }, 4000);
-}
 
 function projectPathForId(projectId: string): string {
   const projectPath = projectsDb.getProjectPathById(projectId);
@@ -287,20 +246,6 @@ export async function promotePrototypeFromWorkspace(
   return copied;
 }
 
-async function promotePrototypeFromSwarm(projectId: string, prototypeId: string): Promise<void> {
-  const projectPath = projectPathForId(projectId);
-  const destDir = protoDir(projectPath, prototypeId);
-  const manifest = await readManifest(destDir);
-  if (!manifest?.swarmId) return;
-  const swarm = swarmService.get(manifest.swarmId);
-  if (!swarm?.workspace_id) return;
-  try {
-    const workPath = workspaceService.resolveCwd(swarm.workspace_id);
-    await promotePrototypeFromWorkspace(destDir, workPath, prototypeId);
-  } catch {
-    // worktree may already be discarded; leave checkout files as-is
-  }
-}
 
 async function ensureSkill(projectPath: string): Promise<void> {
   const skillPath = path.join(studioRoot(projectPath), '_skill', 'clickable-prototype', 'SKILL.md');
@@ -335,13 +280,31 @@ async function loadActiveVersion(dir: string, manifest: StudioPrototype): Promis
   const active = await readVersionDetail(dir, manifest.activeVersionId);
   if (active) return active;
   const versions = await listVersionDetails(dir);
-  if (versions.length === 0) {
+  if (versions.length > 0) return versions[versions.length - 1];
+
+  // Prototypes hand-written straight to disk (agents dropping prototype.html
+  // outside the persistVersion() path) can point activeVersionId at a
+  // versions/<id>/ folder that was never created. The root files are still
+  // the real source of truth for what's on screen, so synthesize the missing
+  // snapshot from them instead of 404ing the whole preview.
+  const root = await readRootArtifacts(dir);
+  if (!root.html) {
     throw new AppError('Prototype has no versions', {
       code: 'STUDIO_VERSION_NOT_FOUND',
       statusCode: 404,
     });
   }
-  return versions[versions.length - 1];
+  const synthesized: StudioVersion = {
+    id: manifest.activeVersionId,
+    parentVersionId: null,
+    kind: 'initial',
+    message: manifest.brief,
+    selectedElement: null,
+    createdAt: manifest.updatedAt || manifest.createdAt,
+    variantIds: [],
+  };
+  await writeVersion(dir, synthesized, root);
+  return { ...synthesized, ...root };
 }
 
 async function toDetail(
@@ -473,6 +436,31 @@ async function readOrMigrateManifest(dir: string): Promise<StudioPrototype | nul
   await writeVersion(dir, version, artifacts);
   await writeManifest(dir, manifest);
   return manifest;
+}
+
+/**
+ * `get()`/`protoDir()` always look a prototype up by joining the project's
+ * studio root with `id`, i.e. the directory name IS the id. A manifest
+ * hand-written (or copied) with an `id` that doesn't match its own folder
+ * name is unreachable by that id forever — every open/iterate call 404s with
+ * "Prototype not found" even though `list()` happily shows it. Repair that
+ * drift here, the one place that sees both the real folder name and the
+ * manifest's claimed id, by making the manifest agree with its folder.
+ */
+async function reconcileManifestDirectory(dir: string, manifest: StudioPrototype): Promise<StudioPrototype> {
+  const expectedId = path.basename(dir);
+  if (manifest.id === expectedId) return manifest;
+  const relativeDir = path.join(STUDIO_DIR, expectedId);
+  const fixed: StudioPrototype = {
+    ...manifest,
+    id: expectedId,
+    relativeDir,
+    htmlRelativePath: path.join(relativeDir, HTML_FILE),
+    notesRelativePath: path.join(relativeDir, NOTES_FILE),
+    handoffRelativePath: path.join(relativeDir, HANDOFF_FILE),
+  };
+  await writeManifest(dir, fixed);
+  return fixed;
 }
 
 function historyFromChain(chain: StudioVersionDetail[]): StudioGenerateRequest['history'] {
@@ -625,21 +613,6 @@ async function reconcileInterruptedGeneration(
     return manifest;
   }
 
-  if (manifest.generation?.kind === 'swarm' && manifest.swarmId) {
-    const swarmStatus = swarmService.get(manifest.swarmId)?.status;
-    if (swarmStatus === 'succeeded') {
-      await promotePrototypeFromSwarm(projectId, prototypeId);
-      const ready = { ...manifest, status: 'ready' as const, generation: null, updatedAt: nowIso() };
-      await writeManifest(dir, ready);
-      await ingestRootIfNewer(projectId, prototypeId, 'Design swarm');
-      return requireManifest(await readManifest(dir));
-    }
-    if (swarmStatus !== 'failed' && swarmStatus !== 'aborted') {
-      watchSwarm(projectId, prototypeId, manifest.swarmId);
-      return manifest;
-    }
-  }
-
   const failed: StudioPrototype = {
     ...manifest,
     status: 'failed',
@@ -649,8 +622,10 @@ async function reconcileInterruptedGeneration(
         startedAt: manifest.updatedAt,
         message: null,
       }),
+      // A prototype left mid-generation by the removed design-swarm path can
+      // never finish; report it honestly instead of polling forever.
       error: manifest.generation?.kind === 'swarm'
-        ? 'Design swarm stopped before completion'
+        ? 'Design swarms are no longer available; regenerate this prototype in Studio chat.'
         : 'Generation was interrupted by a server restart',
     },
     updatedAt: nowIso(),
@@ -684,8 +659,9 @@ export const studioService = {
     const items: StudioPrototype[] = [];
     for (const name of entries) {
       if (name.startsWith('_')) continue;
-      const manifest = await readOrMigrateManifest(path.join(root, name));
-      if (manifest) items.push(manifest);
+      const dir = path.join(root, name);
+      const manifest = await readOrMigrateManifest(dir);
+      if (manifest) items.push(await reconcileManifestDirectory(dir, manifest));
     }
     items.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
     return items;
@@ -695,7 +671,6 @@ export const studioService = {
     const projectPath = projectPathForId(projectId);
     const dir = protoDir(projectPath, id);
     const manifest = requireManifest(await readOrMigrateManifest(dir));
-    await promotePrototypeFromSwarm(projectId, id);
     const latest = requireManifest(await readManifest(dir));
     const reconciled = await reconcileInterruptedGeneration(projectId, id, dir, latest);
     if (reconciled.status === 'generating') {
@@ -781,7 +756,9 @@ export const studioService = {
     if (!session) {
       throw new AppError(`Session not found: ${sessionId}`, { code: 'SESSION_NOT_FOUND', statusCode: 404 });
     }
-    if (session.project_path && session.project_path !== projectPath) {
+    const project = projectsDb.getProjectById(projectId);
+    const sessionProjectPaths = new Set([session.project_path, session.runtime_project_path].filter(Boolean));
+    if (project?.project_path && sessionProjectPaths.size > 0 && !sessionProjectPaths.has(project.project_path)) {
       throw new AppError('Session belongs to a different project', { code: 'SESSION_PROJECT_MISMATCH', statusCode: 400 });
     }
     const linkedSessionIds = [...new Set([...manifest.linkedSessionIds, sessionId])];
@@ -796,10 +773,18 @@ export const studioService = {
       throw new AppError(`Session not found: ${sessionId}`, { code: 'SESSION_NOT_FOUND', statusCode: 404 });
     }
     if (!session.project_path) return [];
-    const project = projectsDb.getProjectPath(session.project_path);
-    if (!project) return [];
     const ids = new Set(parseStudioPrototypeIds(session.studio_prototype_ids));
-    const prototypes = await this.list(project.project_id);
+    const projectIds = new Set(
+      [session.project_path, session.runtime_project_path]
+        .filter((projectPath): projectPath is string => Boolean(projectPath))
+        .map((projectPath) => projectsDb.getProjectPath(projectPath)?.project_id)
+        .filter((projectId): projectId is string => Boolean(projectId)),
+    );
+    if (projectIds.size === 0) return [];
+
+    const prototypes = (await Promise.all([...projectIds].map((projectId) => this.list(projectId))))
+      .flat()
+      .filter((prototype, index, all) => all.findIndex((candidate) => candidate.id === prototype.id) === index);
     return prototypes.filter((prototype) => ids.has(prototype.id) || prototype.linkedSessionIds.includes(sessionId));
   },
 
@@ -858,13 +843,6 @@ export const studioService = {
     const manifest = requireManifest(await readOrMigrateManifest(dir));
     assertNotBusy(manifest);
     await rm(dir, { recursive: true, force: true });
-  },
-
-  async launchSwarm(_projectId: string, _prototypeId: string): Promise<{ swarmId: string; prototype: StudioPrototypeDetail }> {
-    throw new AppError(
-      'Agent Swarm is retired. Use Agent Relay from a provider chat, or iterate this prototype in Studio chat.',
-      { code: 'SWARM_RETIRED', statusCode: 410 },
-    );
   },
 
   async getTokens(projectId: string, id: string): Promise<StudioDesignTokens> {

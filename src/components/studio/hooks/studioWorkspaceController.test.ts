@@ -257,7 +257,6 @@ function mount(seed: StudioPrototypeDetail = detail()) {
       });
       return current;
     },
-    launchSwarm: async () => ({ swarmId: 'swarm_1', prototype: current }),
     ideatePrompt: async () => ({ prompt: 'ideate', prototype: current }),
   };
 

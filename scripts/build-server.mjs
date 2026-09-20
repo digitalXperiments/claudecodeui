@@ -66,10 +66,10 @@ fs.cpSync(
 );
 
 // Copy model benchmarks snapshot so compiled runtime has access to model capability profiles
-const snapshotSrc = path.join(root, 'server', 'modules', 'swarm', 'model-benchmarks.snapshot.json');
+const snapshotSrc = path.join(root, 'server', 'modules', 'model-registry', 'model-benchmarks.snapshot.json');
 if (fs.existsSync(snapshotSrc)) {
-  fs.mkdirSync(path.join(staging, 'server', 'modules', 'swarm'), { recursive: true });
-  fs.cpSync(snapshotSrc, path.join(staging, 'server', 'modules', 'swarm', 'model-benchmarks.snapshot.json'));
+  fs.mkdirSync(path.join(staging, 'server', 'modules', 'model-registry'), { recursive: true });
+  fs.cpSync(snapshotSrc, path.join(staging, 'server', 'modules', 'model-registry', 'model-benchmarks.snapshot.json'));
 }
 
 rm(previous);

@@ -680,6 +680,75 @@
   .scrollbar-hide::-webkit-scrollbar {
     display: none;
   }
+
+  /*
+   * Bot Studio form primitives. The Architect wizard and templates gallery
+   * use these short class names; scope them so `.button` / `.field` never
+   * leak into unrelated markup. `:where()` keeps specificity at one class so
+   * per-element utilities (lg:hidden, border-red-500, min-h-8) still win.
+   */
+  :where(.bot-studio-controls) .button {
+    @apply inline-flex min-h-9 items-center justify-center gap-1.5 rounded-lg border border-border bg-background px-3 text-xs font-medium text-foreground transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50;
+  }
+
+  :where(.bot-studio-controls) .button-primary {
+    @apply border-primary bg-primary text-primary-foreground hover:bg-primary/90;
+  }
+
+  :where(.bot-studio-controls) .icon-button {
+    @apply inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring;
+  }
+
+  :where(.bot-studio-controls) .field {
+    @apply block w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground shadow-sm transition-colors placeholder:text-muted-foreground/70 focus:border-primary focus:outline-none focus:ring-2 focus:ring-ring/40 disabled:cursor-not-allowed disabled:opacity-50;
+  }
+
+  /* Choice cards: leading icon/label stay inline, trailing <span> wraps to a muted description line. */
+  :where(.bot-studio-controls) .choice {
+    @apply flex flex-wrap items-center gap-x-1.5 gap-y-0.5 rounded-xl border border-border/70 bg-background p-3 text-left text-sm font-medium text-foreground transition-colors hover:border-primary/40 hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring;
+  }
+
+  :where(.bot-studio-controls .choice) > span:last-child {
+    @apply basis-full text-[11px] font-normal leading-snug text-muted-foreground;
+  }
+
+  :where(.bot-studio-controls) .choice-active {
+    @apply border-primary bg-primary/[0.06] ring-1 ring-primary/40;
+  }
+
+  /* Wizard step rail */
+  :where(.bot-studio-controls) .step-button {
+    @apply flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-left text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring;
+  }
+
+  :where(.bot-studio-controls) .step-active {
+    @apply bg-primary/[0.08] text-foreground;
+  }
+
+  :where(.bot-studio-controls) .step-number {
+    @apply flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-border bg-background text-[10px] font-semibold text-muted-foreground;
+  }
+
+  :where(.bot-studio-controls .step-active) .step-number {
+    @apply border-primary bg-primary text-primary-foreground;
+  }
+
+  /* Switch */
+  :where(.bot-studio-controls) .toggle {
+    @apply relative inline-flex h-5 w-9 shrink-0 rounded-full bg-muted-foreground/30 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring;
+  }
+
+  :where(.bot-studio-controls .toggle) > span {
+    @apply absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform;
+  }
+
+  :where(.bot-studio-controls) .toggle-on {
+    @apply bg-primary;
+  }
+
+  :where(.bot-studio-controls .toggle-on) > span {
+    @apply translate-x-4;
+  }
 }
 
 /*

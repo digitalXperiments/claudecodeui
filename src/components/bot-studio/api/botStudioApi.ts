@@ -46,12 +46,17 @@ export const botStudioApi = {
   previewItem: missionControlApi.previewItem,
   generateAssets: missionControlApi.generateAssets,
   workThis: missionControlApi.workThis,
+  workMatches: missionControlApi.workMatches,
   importFromLegacy: missionControlApi.importFromLegacy,
   importDefaultPath: missionControlApi.importDefaultPath,
   bulkUpdate: missionControlApi.bulkUpdate,
   listRuns: async (sectionId: string, limit = 30): Promise<BotRun[]> => {
     const result = await missionControlApi.listRuns(sectionId, limit);
     return result.runs ?? [];
+  },
+  async cancelRun(runId: string): Promise<{ success: boolean }> {
+    const response = await authenticatedFetch(`/api/runs/${encodeURIComponent(runId)}/abort`, { method: 'POST' });
+    return readJson(response);
   },
   async listMcpTools(name: string): Promise<McpToolsResult> {
     const response = await authenticatedFetch(`/api/providers/mcp/catalog/${encodeURIComponent(name)}/tools`);

@@ -215,16 +215,6 @@ export const interruptsService = {
         resolved = interruptsDb.resolve(id, 'resolved', input.actor ?? null, input.key)!;
         break;
       }
-      case 'approve_swarm':
-      case 'reject_swarm':
-      case 'approve_swarm_plan':
-      case 'reject_swarm_plan':
-      case 'abort_swarm': {
-        throw new CloudError(
-          'INTERRUPT_ACTION_REQUIRES_WAIT',
-          `Swarm action ${input.key} must be executed with actAndWait`,
-        );
-      }
       case 'approve_relay':
       case 'deny_relay': {
         const approvalId =
@@ -260,70 +250,15 @@ export const interruptsService = {
   },
 
   /**
-   * Execute an interrupt action whose underlying side effect must complete
-   * before the interrupt is resolved. Swarm actions are durable control-plane
-   * commands: resolving their notification first would acknowledge an action
-   * that may subsequently fail or be rejected as stale.
+   * Async-capable entry point for interrupt actions.
    *
-   * Non-swarm actions retain the existing synchronous behavior.
+   * It existed for Agent Swarm, whose durable control-plane commands had to
+   * land before the notification was resolved. Swarm is gone and every
+   * remaining action is synchronous, so this now simply delegates — the route
+   * and its callers keep working unchanged.
    */
   async actAndWait(id: string, input: InterruptActionInput): Promise<Interrupt> {
-    const swarmActions = new Set([
-      'approve_swarm',
-      'reject_swarm',
-      'approve_swarm_plan',
-      'reject_swarm_plan',
-      'abort_swarm',
-    ]);
-    if (!swarmActions.has(input.key)) {
-      return this.act(id, input);
-    }
-
-    const interrupt = this.requireActionable(id);
-    const swarmId =
-      typeof interrupt.meta.swarmId === 'string'
-        ? interrupt.meta.swarmId
-        : typeof interrupt.meta.swarm_id === 'string'
-          ? interrupt.meta.swarm_id
-          : null;
-    if (!swarmId) {
-      throw new CloudError('INTERRUPT_NOT_FOUND', 'Swarm id missing on interrupt');
-    }
-
-    // Dynamic import avoids the interrupt-queue <-> swarm module cycle.
-    const { swarmService } = await import('@/modules/swarm/index.js');
-    switch (input.key) {
-      case 'approve_swarm':
-        await swarmService.approve(swarmId);
-        break;
-      case 'reject_swarm':
-        await swarmService.reject(swarmId);
-        break;
-      case 'approve_swarm_plan':
-        await swarmService.approvePlan(swarmId);
-        break;
-      case 'reject_swarm_plan':
-        await swarmService.rejectPlan(swarmId);
-        break;
-      case 'abort_swarm':
-        await swarmService.abort(swarmId);
-        break;
-    }
-
-    // Re-read to close the race with another actor resolving this interrupt.
-    const current = interruptsDb.get(id);
-    if (!current || current.status === 'resolved' || current.status === 'dismissed' || current.status === 'expired') {
-      if (!current) {
-        throw new CloudError('INTERRUPT_NOT_FOUND', `Interrupt not found: ${id}`);
-      }
-      return current;
-    }
-    const resolved = interruptsDb.resolve(id, 'resolved', input.actor ?? null, input.key);
-    if (!resolved) {
-      throw new CloudError('INTERRUPT_ALREADY_RESOLVED', `Interrupt ${id} was resolved concurrently`);
-    }
-    emitInterrupt('interrupt_updated', resolved);
-    return resolved;
+    return this.act(id, input);
   },
 
   snooze(id: string, until: string, actor?: string | null): Interrupt {
@@ -401,8 +336,6 @@ export const interruptsService = {
    *  - run terminal → resolve run-lifetime kinds (see resolveForRun)
    *  - approval window elapsed → expire; legacy permission_pending rows
    *    without a deadline expire once older than the default TTL
-   *  - ci_failed stays while its swarm exists (it is the user's pointer to
-   *    the failure report) and resolves only when the swarm is deleted
    */
   sweep(): { resolved: number; expired: number } {
     let resolved = 0;
@@ -416,19 +349,6 @@ export const interruptsService = {
     };
 
     for (const { interrupt, runExists, runStatus, expired: pastDeadline } of interruptsDb.listActiveForSweep()) {
-      if (interrupt.kind === 'ci_failed') {
-        const swarmId =
-          typeof interrupt.meta.swarmId === 'string'
-            ? interrupt.meta.swarmId
-            : typeof interrupt.meta.swarm_id === 'string'
-              ? interrupt.meta.swarm_id
-              : null;
-        if (swarmId && !interruptsDb.swarmExists(swarmId)) {
-          settle(interrupt, interruptsDb.resolve(interrupt.interrupt_id, 'resolved', 'system', 'swarm_deleted'), false);
-        }
-        continue;
-      }
-
       if (interrupt.kind === 'approval_pending') {
         const itemId =
           typeof interrupt.meta.itemId === 'string'

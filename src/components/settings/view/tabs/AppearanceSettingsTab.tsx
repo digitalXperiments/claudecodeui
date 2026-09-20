@@ -208,7 +208,7 @@ export default function AppearanceSettingsTab({
           <SettingsRow
             label={t('appearanceSettings.spend.soft.label', { defaultValue: 'Soft cap (USD)' })}
             description={t('appearanceSettings.spend.soft.description', {
-              defaultValue: 'Downgrade the next swarm seat (Opus → Sonnet → Haiku) once this swarm or chat crosses the cap. Empty = off.',
+              defaultValue: 'Downgrade the next run (Opus → Sonnet → Haiku) once this chat crosses the cap. Empty = off.',
             })}
           >
             <input
@@ -227,7 +227,7 @@ export default function AppearanceSettingsTab({
           <SettingsRow
             label={t('appearanceSettings.spend.hard.label', { defaultValue: 'Hard cap (USD)' })}
             description={t('appearanceSettings.spend.hard.description', {
-              defaultValue: 'Pause the swarm and put a Needs you card up. Empty = off.',
+              defaultValue: 'Pause the run and put a Needs you card up. Empty = off.',
             })}
           >
             <input

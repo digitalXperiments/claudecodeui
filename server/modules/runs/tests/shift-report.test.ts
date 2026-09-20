@@ -26,7 +26,6 @@ async function withTempDb(fn: () => Promise<void> | void): Promise<void> {
 test('collectShiftReport is empty on a fresh database', async () => {
   await withTempDb(() => {
     const report = collectShiftReport();
-    assert.equal(report.prs.length, 0);
     assert.equal(report.waiting, 0);
     assert.equal(report.spendUsd, 0);
     const formatted = formatShiftReport(report);

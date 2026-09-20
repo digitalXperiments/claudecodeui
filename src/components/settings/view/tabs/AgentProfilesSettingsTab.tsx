@@ -9,11 +9,8 @@ import SessionProviderLogo from '../../../llm-logo-provider/SessionProviderLogo'
 import { FALLBACK_PROVIDER_EFFORT_VALUES } from '../../../chat/constants/providerEffort';
 import {
   agentProfilesApi,
-  SWARM_PROFILE_ROLES,
   type AgentRunProfile,
   type AgentRunProfileInput,
-  type SwarmProfileLevel,
-  type SwarmProfileRole,
 } from '../../api/agentProfilesApi';
 import { AGENT_NAMES, AGENT_PROVIDERS } from '../../constants/constants';
 
@@ -25,35 +22,7 @@ const PERMISSION_MODES = [
   { value: 'bypassPermissions', label: 'Bypass permissions' },
 ];
 
-const SWARM_ROLE_LABELS: Record<SwarmProfileRole, string> = {
-  explorer: 'Explorer',
-  implementer: 'Implementer',
-  reviewer: 'Reviewer',
-  tester: 'Tester',
-  security: 'Security',
-  docs: 'Docs',
-};
-
-/** What each capability tier means to the orchestrator when it assigns work. */
-const SWARM_LEVEL_OPTIONS: Array<{ value: SwarmProfileLevel; label: string; hint: string }> = [
-  { value: 'basic', label: 'Basic (1/3)', hint: 'Mechanical, well-specified, low-ambiguity work' },
-  { value: 'medium', label: 'Medium (2/3)', hint: 'Ordinary feature work needing some judgement' },
-  { value: 'advanced', label: 'Advanced (3/3)', hint: 'Architecture, subtle debugging, high-stakes review' },
-];
-
-const SWARM_LEVEL_SHORT: Record<SwarmProfileLevel, string> = {
-  basic: 'Basic 1/3',
-  medium: 'Medium 2/3',
-  advanced: 'Advanced 3/3',
-};
-
-const SWARM_LEVEL_BADGE: Record<SwarmProfileLevel, string> = {
-  basic: 'border-border bg-muted/60 text-muted-foreground',
-  medium: 'border-sky-500/40 bg-sky-500/10 text-sky-700 dark:text-sky-300',
-  advanced: 'border-violet-500/40 bg-violet-500/10 text-violet-700 dark:text-violet-300',
-};
-
-type ProfileFilter = 'all' | 'enabled' | 'swarm';
+type ProfileFilter = 'all' | 'enabled';
 
 const labelClass = 'text-xs font-medium text-muted-foreground';
 const selectClass =
@@ -71,8 +40,6 @@ type Draft = {
   permissionIntent: string;
   allowedText: string;
   disallowedText: string;
-  swarmRoles: SwarmProfileRole[];
-  swarmLevel: SwarmProfileLevel;
 };
 
 const emptyDraft = (provider: LLMProvider = 'claude'): Draft => ({
@@ -85,8 +52,6 @@ const emptyDraft = (provider: LLMProvider = 'claude'): Draft => ({
   permissionIntent: '',
   allowedText: '',
   disallowedText: '',
-  swarmRoles: [],
-  swarmLevel: 'medium',
 });
 
 function profileToDraft(profile: AgentRunProfile): Draft {
@@ -100,8 +65,6 @@ function profileToDraft(profile: AgentRunProfile): Draft {
     permissionIntent: profile.permission_intent ?? '',
     allowedText: (profile.tools?.allowedCommands ?? []).join('\n'),
     disallowedText: (profile.tools?.disallowedCommands ?? []).join('\n'),
-    swarmRoles: profile.swarm_roles ?? [],
-    swarmLevel: profile.swarm_level ?? 'medium',
   };
 }
 
@@ -127,8 +90,6 @@ function draftToInput(draft: Draft): AgentRunProfileInput {
       allowedCommands: allowed,
       disallowedCommands: disallowed,
     },
-    swarmRoles: draft.swarmRoles,
-    swarmLevel: draft.swarmLevel,
   };
 }
 
@@ -334,14 +295,12 @@ export default function AgentProfilesSettingsTab() {
     return profiles
       .filter((profile) => {
         if (filter === 'enabled' && !profile.enabled) return false;
-        if (filter === 'swarm' && (profile.swarm_roles?.length ?? 0) === 0) return false;
         if (!normalizedQuery) return true;
         const searchable = [
           profile.name,
           profile.description,
           profile.provider,
           profile.model ?? '',
-          ...(profile.swarm_roles ?? []),
         ].join(' ').toLowerCase();
         return searchable.includes(normalizedQuery);
       })
@@ -350,7 +309,6 @@ export default function AgentProfilesSettingsTab() {
 
   const profileFilterLabel = (id: ProfileFilter) => {
     if (id === 'enabled') return `Enabled ${profiles.filter((profile) => profile.enabled).length}`;
-    if (id === 'swarm') return `Swarm ${profiles.filter((profile) => (profile.swarm_roles?.length ?? 0) > 0).length}`;
     return `All ${profiles.length}`;
   };
 
@@ -418,7 +376,7 @@ export default function AgentProfilesSettingsTab() {
 
           <div className="rounded-lg border border-border bg-muted/20 p-3">
             <p className="text-xs text-muted-foreground">
-              Save reusable provider, model, effort, permission, and swarm-routing settings in one place.
+              Save reusable provider, model, effort, and permission settings in one place.
             </p>
           </div>
 
@@ -515,41 +473,6 @@ export default function AgentProfilesSettingsTab() {
               </select>
             </div>
 
-            <div className="flex flex-col gap-1 sm:col-span-2">
-              <span className={labelClass}>Swarm roles</span>
-              <div className="flex flex-wrap gap-x-4 gap-y-2">
-                {SWARM_PROFILE_ROLES.map((role) => (
-                  <label key={role} className="flex cursor-pointer items-center gap-2 text-sm text-foreground">
-                    <input
-                      type="checkbox"
-                      className="h-4 w-4 rounded border-input accent-primary"
-                      checked={draft.swarmRoles.includes(role)}
-                      onChange={(e) => setDraft((d) => ({
-                        ...d,
-                        swarmRoles: e.target.checked
-                          ? [...d.swarmRoles, role]
-                          : d.swarmRoles.filter((currentRole) => currentRole !== role),
-                      }))}
-                    />
-                    {SWARM_ROLE_LABELS[role]}
-                  </label>
-                ))}
-              </div>
-              <p className="text-[11px] text-muted-foreground">Leave all unchecked to keep this profile out of automatic swarms.</p>
-            </div>
-
-            <div className="flex flex-col gap-1 sm:col-span-2">
-              <label className={labelClass} htmlFor="profile-swarm-level">Capability level</label>
-              <select
-                id="profile-swarm-level"
-                className={selectClass}
-                value={draft.swarmLevel}
-                onChange={(e) => setDraft((d) => ({ ...d, swarmLevel: e.target.value as SwarmProfileLevel }))}
-              >
-                {SWARM_LEVEL_OPTIONS.map((level) => <option key={level.value} value={level.value}>{level.label} — {level.hint}</option>)}
-              </select>
-              <p className="text-[11px] text-muted-foreground">The orchestrator only assigns work at this level or lower, and escalates on retries.</p>
-            </div>
           </div>
 
           <div className="space-y-2 rounded-lg border border-border bg-background p-3">
@@ -676,21 +599,6 @@ export default function AgentProfilesSettingsTab() {
 
         <section className="rounded-lg border border-border">
           <div className="border-b border-border px-3 py-2.5">
-            <h4 className="text-sm font-medium text-foreground">Swarm routing</h4>
-            <p className="mt-0.5 text-xs text-muted-foreground">Where the orchestrator can use this profile automatically.</p>
-          </div>
-          <div className="flex flex-wrap items-center gap-2 p-3">
-            {(profile.swarm_roles?.length ?? 0) > 0 ? profile.swarm_roles.map((role) => (
-              <span key={role} className="rounded-full border border-border bg-muted/60 px-2 py-1 text-xs text-muted-foreground">{SWARM_ROLE_LABELS[role]}</span>
-            )) : <span className="text-sm text-muted-foreground">Not assigned to automatic swarms</span>}
-            {(profile.swarm_roles?.length ?? 0) > 0 ? (
-              <span className={`rounded-full border px-2 py-1 text-xs font-medium ${SWARM_LEVEL_BADGE[profile.swarm_level ?? 'medium']}`}>{SWARM_LEVEL_SHORT[profile.swarm_level ?? 'medium']}</span>
-            ) : null}
-          </div>
-        </section>
-
-        <section className="rounded-lg border border-border">
-          <div className="border-b border-border px-3 py-2.5">
             <h4 className="text-sm font-medium text-foreground">Tool rules</h4>
             <p className="mt-0.5 text-xs text-muted-foreground">Review the exact allow and deny lists saved with this profile.</p>
           </div>
@@ -714,7 +622,7 @@ export default function AgentProfilesSettingsTab() {
       <div className="flex flex-shrink-0 items-start justify-between gap-3 border-b border-border px-3 py-3 md:px-4">
         <div className="min-w-0">
           <h3 className="text-base font-semibold text-foreground">Agent profiles</h3>
-          <p className="mt-1 max-w-2xl text-sm text-muted-foreground">Reusable provider, model, effort, and permission presets for Kanban and Agent Swarm runs.</p>
+          <p className="mt-1 max-w-2xl text-sm text-muted-foreground">Reusable provider, model, effort, and permission presets for Kanban and webhook runs.</p>
         </div>
         <Button size="sm" onClick={openCreate} className="shrink-0">
           <Plus className="mr-1 h-4 w-4" /> New profile
@@ -731,7 +639,7 @@ export default function AgentProfilesSettingsTab() {
               <Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search profiles" aria-label="Search profiles" className="h-8 bg-background pl-8 text-sm shadow-none" />
             </div>
             <div className="flex flex-wrap gap-1">
-              {(['all', 'enabled', 'swarm'] as ProfileFilter[]).map((id) => (
+              {(['all', 'enabled'] as ProfileFilter[]).map((id) => (
                 <button key={id} type="button" onClick={() => setFilter(id)} className={cn('rounded-full border px-2 py-0.5 text-[11px] font-medium transition-colors', filter === id ? 'border-foreground bg-foreground text-background' : 'border-border bg-background text-muted-foreground hover:text-foreground')}>
                   {profileFilterLabel(id)}
                 </button>

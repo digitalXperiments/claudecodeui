@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 
 import { injectSelectBridge, parseSelectMessage, selectModeMessage, STUDIO_FRAME_WIDTHS } from '../preview/selectBridge';
 import type { StudioPreviewFrame, StudioSelectedElement } from '../types';
@@ -19,7 +19,7 @@ export default function StudioPreviewPane({
   onSelectElement,
 }: StudioPreviewPaneProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
-  const srcDoc = injectSelectBridge(html);
+  const srcDoc = useMemo(() => injectSelectBridge(html), [html]);
   const width = STUDIO_FRAME_WIDTHS[frame];
 
   useEffect(() => {

@@ -48,6 +48,13 @@ export default defineConfig(({ mode }) => {
       }
     },
     build: {
+      // Keep old hashed chunks available for tabs that loaded an older entry
+      // graph before a rebuild and only request a lazy view afterwards. Without
+      // this, a stale tab asks for the previous StudioView/vendor chunk and the
+      // browser reports "Failed to fetch dynamically imported module".
+      // Hashed assets are immutable; deployments can prune old generations
+      // during their normal artifact-retention window.
+      emptyOutDir: false,
       outDir: 'dist',
       // Chat shell stays eager (~1.2 MB). Heavy views and vendors are split out.
       chunkSizeWarningLimit: 1500,

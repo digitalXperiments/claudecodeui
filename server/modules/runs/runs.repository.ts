@@ -522,21 +522,6 @@ export const runsDb = {
           status = 'failed', error_summary = ?, finished_at = ?, updated_at = ?
         WHERE status IN (
             'queued', 'starting', 'running', 'waiting_permission', 'waiting_approval'
-          )
-          AND NOT (
-            source = 'swarm'
-            AND EXISTS (
-              SELECT 1
-              FROM swarm_runs AS swarm
-              WHERE swarm.status IN (
-                'queued', 'planning', 'awaiting_plan_approval',
-                'running', 'handing_off', 'awaiting_approval'
-              )
-                AND (
-                  swarm.parent_run_id = agent_runs.run_id
-                  OR swarm.parent_run_id = agent_runs.parent_run_id
-                )
-            )
           )`,
       )
       .run(ORPHAN_ERROR_SUMMARY, now, now);

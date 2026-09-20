@@ -178,7 +178,7 @@ export const getProjectSessionsWithActivity = (
 
   const loadedSessionIds = new Set(projectSessions.map((session) => String(session.id)));
   const projectProcessingSessions = Array.from(activeSessions.entries()).filter(
-    // Internal runs (swarm members, Agent Relay workers, automation) are live
+    // Internal runs (Agent Relay workers, automation) are live
     // and belong in the Running rail, but they are not the user's sessions —
     // synthesizing rows for them is what leaked delegate prompts such as
     // "You are a delegated sidekick…" into this project's session picker.

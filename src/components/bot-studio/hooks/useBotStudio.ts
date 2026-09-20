@@ -41,6 +41,7 @@ export function useBotStudio() {
   const runsRef = useRef<Record<string, BotRun[]>>({});
   const runsLoadingRef = useRef(new Set<string>());
   const sectionsRef = useRef<McSection[]>([]);
+  const itemsRef = useRef<McItem[]>([]);
   const activityLoadingRef = useRef(false);
   const activityExhaustedRef = useRef<Record<string, boolean>>({});
   const activityHasMoreRef = useRef(false);
@@ -48,6 +49,10 @@ export function useBotStudio() {
   const [activityPage, setActivityPage] = useState(0);
   const [activityHasMore, setActivityHasMore] = useState(false);
   const activityPageSize = 30;
+
+  useEffect(() => {
+    itemsRef.current = items;
+  }, [items]);
 
   useEffect(() => {
     sectionsRef.current = sections;
@@ -163,8 +168,21 @@ export function useBotStudio() {
       void refreshAll();
     } else if (kind === 'websocket_reconnected') {
       void refreshAll({ includeRuns: true });
+    } else if (kind === 'run_updated') {
+      // Ticks (produce/resolve runs) live in the run spine, not mission
+      // control's own tables, so their websocket lifecycle events land here
+      // instead of mc_item_updated/mc_section_updated. Refresh the owning
+      // bot's cached runs so "Run now" disables/re-enables promptly and a
+      // cancelled tick's status flips without waiting for the 30s poll.
+      const run = (event as { run?: { source?: string; source_ref?: string | null } }).run;
+      if (run?.source === 'mission_control' && run.source_ref) {
+        const sectionId = sectionsRef.current.some((section) => section.section_id === run.source_ref)
+          ? run.source_ref
+          : itemsRef.current.find((item) => item.item_id === run.source_ref)?.section_id;
+        if (sectionId) void loadRuns(sectionId);
+      }
     }
-  }), [refreshAll, refreshItems, subscribe]);
+  }), [loadRuns, refreshAll, refreshItems, subscribe]);
 
   useEffect(() => {
     let cancelled = false;
@@ -228,6 +246,11 @@ export function useBotStudio() {
     return result;
   }, [refreshAll]);
 
+  const cancelRun = useCallback(async (sectionId: string, runId: string) => {
+    await botStudioApi.cancelRun(runId);
+    await loadRuns(sectionId);
+  }, [loadRuns]);
+
   const saveBot = useCallback(async (idOrPatch: string | SaveBotPatch, maybePatch?: SaveBotPatch) => {
     const sectionId = typeof idOrPatch === 'string' ? idOrPatch : idOrPatch.section_id;
     if (!sectionId) throw new Error('A bot id is required to save a bot.');
@@ -265,6 +288,7 @@ export function useBotStudio() {
       enabled: false,
       scope: source.scope,
       project_id: source.project_id,
+      work_project_id: source.work_project_id,
       mode: source.mode,
       schedule_cron: source.schedule_cron,
       provider: source.provider,
@@ -278,7 +302,6 @@ export function useBotStudio() {
       resolve_tools: source.resolve_tools,
       actions: source.actions,
       create_kanban_task: source.create_kanban_task,
-      create_swarm_on_approve: source.create_swarm_on_approve,
       kanban_assignee_provider: source.kanban_assignee_provider,
       kanban_review_provider: source.kanban_review_provider,
       kanban_mcp_tools: source.kanban_mcp_tools,
@@ -299,6 +322,7 @@ export function useBotStudio() {
 
   const previewItem = useCallback((itemId: string, actionId?: string, body?: Record<string, unknown>) => botStudioApi.previewItem(itemId, actionId, body), []);
   const workItem = useCallback((itemId: string, projectId?: string) => botStudioApi.workThis(itemId, projectId), []);
+  const workMatches = useCallback((itemId: string) => botStudioApi.workMatches(itemId), []);
   const runsFor = useCallback((sectionId: string, limit = 30) => {
     if (!runsRef.current[sectionId]) void loadRuns(sectionId, limit);
     return runsRef.current[sectionId] ?? [];
@@ -322,6 +346,7 @@ export function useBotStudio() {
     refreshAll,
     refreshItems,
     runBot,
+    cancelRun,
     setAutonomy,
     setEnabled,
     saveBot,
@@ -333,6 +358,7 @@ export function useBotStudio() {
     previewItem,
     retryItem,
     workItem,
+    workMatches,
     runsFor,
     loadActivityRuns,
     activityPage,

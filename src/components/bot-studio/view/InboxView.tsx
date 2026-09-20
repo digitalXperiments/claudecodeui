@@ -28,7 +28,7 @@ export default function InboxView({
   onGenerateAssets,
   onNotice,
 }: InboxViewProps) {
-  const [filter, setFilter] = useState<InboxFilter>('pending');
+  const [filter, setFilter] = useState<InboxFilter>('needs_attention');
   const [botFilter, setBotFilter] = useState('all');
   const [selection, dispatchSelection] = useReducer(inboxKeyboardReducer, {
     selectedItemId,
@@ -84,18 +84,18 @@ export default function InboxView({
       if (key === 'a') {
         const action = current.actions.find((entry) => entry.kind === 'approve');
         const currentBot = bots.find((bot) => bot.section_id === current.section_id);
-        if (current.status === 'pending' && action && !(currentBot?.autonomy === 'propose' && actionIsSendLike(action))) onAction(current, action);
+        if ((current.status === 'pending' || current.status === 'failed') && action && !(currentBot?.autonomy === 'propose' && actionIsSendLike(action))) onAction(current, action);
         return;
       }
       if (key === 'd') {
         const action = current.actions.find((entry) => entry.kind === 'dismiss' || /dismiss/i.test(entry.label));
-        if (current.status === 'pending' && action) onAction(current, action);
+        if ((current.status === 'pending' || current.status === 'failed') && action) onAction(current, action);
         return;
       }
       if (key === 'r') {
-        const action = current.actions.find((entry) => !['approve', 'dismiss'].includes(entry.kind) && !entry.terminal);
+        const action = current.actions.find((entry) => !['approve', 'dismiss', 'work'].includes(entry.kind) && !entry.terminal);
         const currentBot = bots.find((bot) => bot.section_id === current.section_id);
-        if (current.status === 'pending' && action && !(currentBot?.autonomy === 'propose' && actionIsSendLike(action))) onAction(current, action);
+        if ((current.status === 'pending' || current.status === 'failed') && action && !(currentBot?.autonomy === 'propose' && actionIsSendLike(action))) onAction(current, action);
       }
     };
     window.addEventListener('keydown', handleKeyDown);
@@ -125,9 +125,9 @@ export default function InboxView({
           value={filter}
           onChange={setFilter}
           label="Inbox status"
-          options={(['pending', 'resolving', 'resolved', 'failed', 'all'] as InboxFilter[]).map((value) => ({
+          options={(['needs_attention', 'pending', 'resolving', 'resolved', 'failed', 'all'] as InboxFilter[]).map((value) => ({
             value,
-            label: value[0].toUpperCase() + value.slice(1),
+            label: value === 'needs_attention' ? 'Needs attention' : value[0].toUpperCase() + value.slice(1),
             count: counts[value],
           }))}
         />
@@ -174,7 +174,7 @@ export default function InboxView({
           <div className="mx-auto flex max-w-md flex-col items-center justify-center py-20 text-center">
             <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-primary/10 text-primary"><Check className="h-5 w-5" /></div>
             <h2 className="mt-4 text-sm font-semibold">{search.trim() ? 'No matching inbox items' : 'Inbox is clear'}</h2>
-            <p className="mt-1 text-xs leading-5 text-muted-foreground">{search.trim() ? `Nothing matches “${search.trim()}”.` : `No ${filter === 'all' ? '' : filter} items match the current filters.`}</p>
+            <p className="mt-1 text-xs leading-5 text-muted-foreground">{search.trim() ? `Nothing matches “${search.trim()}”.` : filter === 'all' ? 'No inbox items match the current filters.' : filter === 'needs_attention' ? 'No items need attention right now.' : `No ${filter} items match the current filters.`}</p>
           </div>
         )}
       </div>

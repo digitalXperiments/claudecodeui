@@ -4,18 +4,32 @@ import type {
   AgentRelayApprovalPolicy,
   AgentRelayMode,
 } from '@/modules/agent-relay/agent-relay.types.js';
-// Relay reuses the swarm module's tested permission classifier (exported from
-// its barrel) rather than forking a second policy engine. The classifier is
-// pure: it maps a request to read / workspace-write / risky. Relay layers its
-// own envelope rules on top, because a relay worker's contract is the task
-// `mode`, not a swarm roster seat.
-import { classifyPermissionRequest, extractPermissionRequestDetails } from '@/modules/swarm/index.js';
+// Relay layers its envelope rules on top of the shared permission classifier
+// rather than forking a second policy engine. The classifier is pure: it maps
+// a request to read / workspace-write / risky. Relay decides what that means
+// for a worker whose contract is the task `mode`.
+import {
+  adjudicatePermission,
+  applyPermissionAdvice,
+  type JevPermissionAdvice,
+} from '@/modules/agent-relay/jev-relay.service.js';
+import type { JevSettings } from '@/modules/decisioning/index.js';
+import { classifyPermissionRequest, extractPermissionRequestDetails } from '@/modules/permissions/index.js';
 import { newRelayApprovalId } from '@/shared/ids.js';
 import type { AnyRecord, LLMProvider } from '@/shared/types.js';
 
 /** Seat kinds used purely to drive the shared classifier's two views. */
 const READ_ONLY_VIEW_SEAT = 'explorer';
 const WRITER_VIEW_SEAT = 'implementer';
+
+/**
+ * The largest share of a request's approval window a Jev consultation may
+ * spend. The whole consultation is paid for out of that window rather than
+ * added to it, so the lead keeps at least the remaining three quarters and a
+ * parked worker is never held for longer than `approvalTimeoutMs` in total.
+ */
+const JEV_APPROVAL_BUDGET_FRACTION = 4;
+const MIN_JEV_BUDGET_MS = 250;
 
 export type RelayPermissionDecision = {
   allow: boolean;
@@ -35,6 +49,13 @@ export type RelayPermissionContext = {
   sourceSessionId: string | null;
   /** How long an escalation waits for the lead before it is denied. */
   approvalTimeoutMs: number;
+  /** The assignment, so Jev can judge whether a request even belongs to it. */
+  task?: string | null;
+  /**
+   * Jev settings snapshot. Absent (or disabled) means the escalation path
+   * behaves exactly as it did before Jev existed.
+   */
+  jev?: JevSettings | null;
 };
 
 export type RelayPermissionOutcome = {
@@ -42,9 +63,16 @@ export type RelayPermissionOutcome = {
   relayId: string;
   allow: boolean;
   reason: string;
-  via: 'policy' | 'lead' | 'operator' | 'timeout';
+  /** `jev` marks a request the sidecar actually settled, not merely advised on. */
+  via: 'policy' | 'lead' | 'operator' | 'timeout' | 'jev';
   approvalId: string | null;
   latencyMs: number;
+  /**
+   * The Jev recommendation for this request, recorded whether or not it was
+   * acted on. Present only for escalation-tier requests with Jev enabled, and
+   * carries `error` when the call failed and existing behavior was preserved.
+   */
+  jevAdvice?: JevPermissionAdvice | null;
 };
 
 export type RelayPermissionTier = 'approve' | 'deny' | 'escalate';
@@ -208,6 +236,7 @@ export const agentRelayPermissionBroker = {
     let reason = 'relay permission broker internal error';
     let via: RelayPermissionOutcome['via'] = 'policy';
     let approvalId: string | null = null;
+    let jevAdvice: JevPermissionAdvice | null = null;
 
     try {
       const details = extractPermissionRequestDetails(message);
@@ -229,11 +258,53 @@ export const agentRelayPermissionBroker = {
         allow = false;
         reason = classification.reason;
       } else {
-        const escalated = await this.escalate(ctx, requestId, details, classification.reason);
-        allow = escalated.allow;
-        reason = escalated.reason;
-        via = escalated.via;
-        approvalId = escalated.approvalId;
+        // Jev only ever sees the residue: everything the classifier called
+        // safe is already approved above, and everything it called unsafe is
+        // already denied. It cannot reopen either of those.
+        const consultStartedAt = Date.now();
+        const budgetMs = Math.max(
+          MIN_JEV_BUDGET_MS,
+          Math.floor(ctx.approvalTimeoutMs / JEV_APPROVAL_BUDGET_FRACTION),
+        );
+        const jevConfig = ctx.jev ?? null;
+        jevAdvice = jevConfig ? await adjudicatePermission(jevConfig, {
+          mode: ctx.mode,
+          approvalPolicy: ctx.approvalPolicy ?? 'auto',
+          provider: ctx.provider,
+          envelopeRoot: ctx.envelopeRoot,
+          classifierReason: classification.reason,
+          toolName: details.toolName,
+          command: details.command,
+          paths: details.paths,
+          cwd: details.cwd,
+          task: ctx.task ?? null,
+          // Bound the call so the consultation is paid for out of the lead's
+          // answering window rather than added on top of it.
+          maxTimeoutMs: budgetMs,
+        }) : null;
+        const settlement = applyPermissionAdvice(jevConfig, jevAdvice);
+        if (settlement.settle) {
+          allow = settlement.settle === 'approve';
+          reason = `${settlement.reason} — ${classification.reason}`;
+          via = 'jev';
+        } else {
+          // Advisory mode, low confidence, or a failed call: the lead answers
+          // exactly as before. Time already spent asking Jev comes out of the
+          // lead's window rather than being added to it, so consulting the
+          // sidecar can never keep a worker parked for longer.
+          const spentMs = Date.now() - consultStartedAt;
+          const remainingMs = Math.max(1, ctx.approvalTimeoutMs - spentMs);
+          const escalated = await this.escalate(
+            { ...ctx, approvalTimeoutMs: remainingMs },
+            requestId,
+            details,
+            classification.reason,
+          );
+          allow = escalated.allow;
+          reason = escalated.reason;
+          via = escalated.via;
+          approvalId = escalated.approvalId;
+        }
       }
     } catch (error) {
       allow = false;
@@ -259,6 +330,7 @@ export const agentRelayPermissionBroker = {
       via,
       approvalId,
       latencyMs: Date.now() - startedAt,
+      jevAdvice,
     };
     notify('onSettled', outcome);
     return outcome;

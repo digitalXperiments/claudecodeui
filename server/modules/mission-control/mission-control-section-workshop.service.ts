@@ -194,7 +194,6 @@ export async function runSectionWorkshop(input: {
     tool_policy: {},
     actions: [],
     create_kanban_task: false,
-    create_swarm_on_approve: false,
     kanban_assignee_provider: null,
     kanban_review_provider: null,
     kanban_mcp_tools: [],

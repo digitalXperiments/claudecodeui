@@ -181,226 +181,214 @@ function MainContent({
     return <MainContentStateView mode="loading" isMobile={isMobile} onMenuClick={onMenuClick} />;
   }
 
-  if (studioActive || botsActive) {
-    return (
-      <div className="flex h-full min-h-0 flex-col">
-        {/* Keep the normal chat session alive while Studio owns the visible
-            surface. Its websocket subscription and processing state must not
-            disappear just because this route changes the main view. */}
-        {selectedProject ? (
-          <div className="hidden" aria-hidden="true">
-            <ErrorBoundary showDetails>
-              <ChatInterface
-                selectedProject={selectedProject}
-                selectedSession={selectedSession}
-                ws={ws}
-                sendMessage={sendMessage}
-                onFileOpen={handleFileOpen}
-                onInputFocusChange={onInputFocusChange}
-                onSessionProcessing={onSessionProcessing}
-                onSessionIdle={onSessionIdle}
-                processingSessions={processingSessions}
-                onNavigateToSession={onNavigateToSession}
-                onSessionEstablished={onSessionEstablished}
-                onShowSettings={onShowSettings}
-                showRawParameters={showRawParameters}
-                showThinking={showThinking}
-                sendByCtrlEnter={sendByCtrlEnter}
-                externalMessageUpdate={externalMessageUpdate}
-                newSessionTrigger={newSessionTrigger}
-                onShowAllTasks={tasksEnabled ? () => setActiveTab('tasks') : null}
-              />
-            </ErrorBoundary>
-          </div>
-        ) : null}
-        {isMobile ? (
-          <div className="pwa-header-safe flex-shrink-0 border-b border-border/50 bg-background/80 p-2 backdrop-blur-sm sm:p-3">
-            <MobileMenuButton onMenuClick={onMenuClick} compact />
-          </div>
-        ) : null}
-        <div className="min-h-0 flex-1 overflow-hidden">
-          <ErrorBoundary showDetails>
-            <Suspense fallback={null}>
-            {botsActive ? (
-              <BotStudioView
-                projects={projects.length > 0 ? projects : selectedProject ? [selectedProject] : []}
-                isMobile={isMobile}
-                onMenuClick={onMenuClick}
-                onBackToChat={onLeaveBots ?? (() => undefined)}
-                onWorkThis={onWorkThis}
-              />
-            ) : <StudioView
-              selectedProject={selectedProject}
-              projects={projects.length > 0 ? projects : selectedProject ? [selectedProject] : []}
-              ws={ws}
-              sendMessage={sendMessage}
-              onInputFocusChange={onInputFocusChange}
-              onSessionProcessing={onSessionProcessing}
-              onSessionIdle={onSessionIdle}
-              processingSessions={processingSessions}
-              onNavigateToSession={onNavigateToSession}
-              onSessionEstablished={onSessionEstablished}
-              onShowSettings={onShowSettings}
-              externalMessageUpdate={externalMessageUpdate}
-              newSessionTrigger={newSessionTrigger}
-              isVisible={studioActive}
-              deepLinkProjectId={studioProjectId}
-              deepLinkPrototypeId={studioPrototypeId}
-              onIdeateInChat={({ project, prompt, title }) => {
-                sessionStorage.setItem(
-                  `cloudcli:pending-prompt:new:${project.projectId}`,
-                  JSON.stringify({
-                    prompt,
-                    summary: title,
-                    provider: localStorage.getItem('selected-provider') || 'claude',
-                  }),
-                );
-                onNewSession(project);
-              }}
-              onBackToChat={onLeaveStudio}
-            />}
-            </Suspense>
-          </ErrorBoundary>
-        </div>
-      </div>
-    );
-  }
+  const isStudioOrBots = studioActive || botsActive;
 
-  if (!selectedProject) {
+  if (!selectedProject && !isStudioOrBots) {
     return <MainContentStateView mode="empty" isMobile={isMobile} onMenuClick={onMenuClick} />;
   }
 
   return (
-    <div className="flex h-full flex-col">
-      <MainContentHeader
-        activeTab={activeTab}
-        setActiveTab={setActiveTab}
-        selectedProject={selectedProject}
-        selectedSession={selectedSession}
-        shouldShowTasksTab={shouldShowTasksTab}
-        shouldShowBrowserTab={shouldShowBrowserTab}
-        isMobile={isMobile}
-        onMenuClick={onMenuClick}
-        onSessionSelect={onSessionSelect}
-        onArchiveSession={onArchiveSession}
-        onDeleteSession={onDeleteSession}
-        onNewSession={onNewSession}
-        onShowSettings={onShowSettings}
-        onLoadMoreSessions={onLoadMoreSessions}
-        isLoadingMoreSessions={isLoadingMoreSessions}
-        processingSessions={processingSessions}
-      />
+    <div className="flex h-full min-h-0 flex-col">
+      {!isStudioOrBots && selectedProject ? (
+        <MainContentHeader
+          activeTab={activeTab}
+          setActiveTab={setActiveTab}
+          selectedProject={selectedProject}
+          selectedSession={selectedSession}
+          shouldShowTasksTab={shouldShowTasksTab}
+          shouldShowBrowserTab={shouldShowBrowserTab}
+          isMobile={isMobile}
+          onMenuClick={onMenuClick}
+          onSessionSelect={onSessionSelect}
+          onArchiveSession={onArchiveSession}
+          onDeleteSession={onDeleteSession}
+          onNewSession={onNewSession}
+          onShowSettings={onShowSettings}
+          onLoadMoreSessions={onLoadMoreSessions}
+          isLoadingMoreSessions={isLoadingMoreSessions}
+          processingSessions={processingSessions}
+        />
+      ) : null}
+
+      {isStudioOrBots && isMobile ? (
+        <div className="pwa-header-safe flex-shrink-0 border-b border-border/50 bg-background/80 p-2 backdrop-blur-sm sm:p-3">
+          <MobileMenuButton onMenuClick={onMenuClick} compact />
+        </div>
+      ) : null}
 
       <div className="flex min-h-0 flex-1 overflow-hidden">
-        <div className={`flex min-h-0 min-w-[200px] flex-col overflow-hidden ${editorExpanded ? 'hidden' : ''} flex-1`}>
-          <div className={`h-full ${activeTab === 'chat' ? 'block' : 'hidden'}`}>
-            <ErrorBoundary showDetails>
-              <ChatInterface
-                selectedProject={selectedProject}
-                selectedSession={selectedSession}
-                ws={ws}
-                sendMessage={sendMessage}
-                onFileOpen={handleFileOpen}
-                onInputFocusChange={onInputFocusChange}
-                onSessionProcessing={onSessionProcessing}
-                onSessionIdle={onSessionIdle}
-                processingSessions={processingSessions}
-                onNavigateToSession={onNavigateToSession}
-                onSessionEstablished={onSessionEstablished}
-                onShowSettings={onShowSettings}
-                showRawParameters={showRawParameters}
-                showThinking={showThinking}
-                sendByCtrlEnter={sendByCtrlEnter}
-                externalMessageUpdate={externalMessageUpdate}
-                newSessionTrigger={newSessionTrigger}
-                onShowAllTasks={tasksEnabled ? () => setActiveTab('tasks') : null}
-              />
-            </ErrorBoundary>
-          </div>
-
-          {/* Keep shell mounted after first open (CSS hide) so xterm is not disposed on tab switch.
-              Mount when active OR already opened (effect latches shellEverOpened for subsequent hides). */}
-          {(shellEverOpened || activeTab === 'shell') && (
-            <div className={`h-full w-full overflow-hidden ${activeTab === 'shell' ? 'block' : 'hidden'}`}>
-              <Suspense fallback={null}>
-              <StandaloneShell
-                project={selectedProject}
-                session={selectedSession}
-                showHeader={false}
-                isActive={activeTab === 'shell'}
-                autoConnect={!selectedSessionIsProcessing}
-                waitForChat={selectedSessionIsProcessing}
-              />
-              </Suspense>
+        <div
+          className={`flex min-h-0 min-w-[200px] flex-col overflow-hidden ${
+            editorExpanded && !isStudioOrBots ? 'hidden' : ''
+          } flex-1`}
+        >
+          {/* Single stable ChatInterface instance, CSS-hidden (never unmounted)
+              outside the Chat tab. Studio/Bot Studio used to render a second,
+              separate ChatInterface element in a different branch of this
+              return, which meant switching between Studio/Bots and Chat tore
+              one instance down and mounted a fresh one — resetting in-memory
+              state such as the picked permission mode back to its default. */}
+          {selectedProject ? (
+            <div className={`h-full ${!isStudioOrBots && activeTab === 'chat' ? 'block' : 'hidden'}`}>
+              <ErrorBoundary showDetails>
+                <ChatInterface
+                  selectedProject={selectedProject}
+                  selectedSession={selectedSession}
+                  ws={ws}
+                  sendMessage={sendMessage}
+                  onFileOpen={handleFileOpen}
+                  onInputFocusChange={onInputFocusChange}
+                  onSessionProcessing={onSessionProcessing}
+                  onSessionIdle={onSessionIdle}
+                  processingSessions={processingSessions}
+                  onNavigateToSession={onNavigateToSession}
+                  onSessionEstablished={onSessionEstablished}
+                  onShowSettings={onShowSettings}
+                  showRawParameters={showRawParameters}
+                  showThinking={showThinking}
+                  sendByCtrlEnter={sendByCtrlEnter}
+                  externalMessageUpdate={externalMessageUpdate}
+                  newSessionTrigger={newSessionTrigger}
+                  onShowAllTasks={tasksEnabled ? () => setActiveTab('tasks') : null}
+                />
+              </ErrorBoundary>
             </div>
-          )}
+          ) : null}
 
-          {activeTab === 'files' && (
+          {isStudioOrBots ? (
             <div className="h-full overflow-hidden">
-              <Suspense fallback={null}>
-              <FileTree selectedProject={selectedProject} onFileOpen={handleFileOpen} />
-              </Suspense>
+              <ErrorBoundary showDetails>
+                <Suspense fallback={null}>
+                {botsActive ? (
+                  <BotStudioView
+                    projects={projects.length > 0 ? projects : selectedProject ? [selectedProject] : []}
+                    isMobile={isMobile}
+                    onMenuClick={onMenuClick}
+                    onBackToChat={onLeaveBots ?? (() => undefined)}
+                    onWorkThis={onWorkThis}
+                  />
+                ) : <StudioView
+                  selectedProject={selectedProject}
+                  projects={projects.length > 0 ? projects : selectedProject ? [selectedProject] : []}
+                  ws={ws}
+                  sendMessage={sendMessage}
+                  onInputFocusChange={onInputFocusChange}
+                  onSessionProcessing={onSessionProcessing}
+                  onSessionIdle={onSessionIdle}
+                  processingSessions={processingSessions}
+                  onNavigateToSession={onNavigateToSession}
+                  onSessionEstablished={onSessionEstablished}
+                  onShowSettings={onShowSettings}
+                  externalMessageUpdate={externalMessageUpdate}
+                  newSessionTrigger={newSessionTrigger}
+                  isVisible={studioActive}
+                  deepLinkProjectId={studioProjectId}
+                  deepLinkPrototypeId={studioPrototypeId}
+                  onIdeateInChat={({ project, prompt, title }) => {
+                    sessionStorage.setItem(
+                      `cloudcli:pending-prompt:new:${project.projectId}`,
+                      JSON.stringify({
+                        prompt,
+                        summary: title,
+                        provider: localStorage.getItem('selected-provider') || 'claude',
+                      }),
+                    );
+                    onNewSession(project);
+                  }}
+                  onBackToChat={onLeaveStudio}
+                />}
+                </Suspense>
+              </ErrorBoundary>
             </div>
-          )}
+          ) : selectedProject ? (
+            <>
+              {/* Keep shell mounted after first open (CSS hide) so xterm is not disposed on tab switch.
+                  Mount when active OR already opened (effect latches shellEverOpened for subsequent hides). */}
+              {(shellEverOpened || activeTab === 'shell') && (
+                <div className={`h-full w-full overflow-hidden ${activeTab === 'shell' ? 'block' : 'hidden'}`}>
+                  <Suspense fallback={null}>
+                  <StandaloneShell
+                    project={selectedProject}
+                    session={selectedSession}
+                    showHeader={false}
+                    isActive={activeTab === 'shell'}
+                    autoConnect={!selectedSessionIsProcessing}
+                    waitForChat={selectedSessionIsProcessing}
+                  />
+                  </Suspense>
+                </div>
+              )}
 
-          {activeTab === 'git' && (
-            <div className="h-full overflow-hidden">
-              <Suspense fallback={null}>
-              <GitPanel selectedProject={selectedProject} isMobile={isMobile} onFileOpen={handleFileOpen} />
-              </Suspense>
-            </div>
-          )}
+              {activeTab === 'files' && (
+                <div className="h-full overflow-hidden">
+                  <Suspense fallback={null}>
+                  <FileTree selectedProject={selectedProject} onFileOpen={handleFileOpen} />
+                  </Suspense>
+                </div>
+              )}
 
-          {activeTab === 'operations' && (
-            <div className="h-full overflow-hidden">
-              <Suspense fallback={null}>
-              <OperationsView selectedProject={selectedProject} />
-              </Suspense>
-            </div>
-          )}
+              {activeTab === 'git' && (
+                <div className="h-full overflow-hidden">
+                  <Suspense fallback={null}>
+                  <GitPanel selectedProject={selectedProject} isMobile={isMobile} onFileOpen={handleFileOpen} />
+                  </Suspense>
+                </div>
+              )}
 
-          {shouldShowTasksTab && (
-            <Suspense fallback={null}>
-              <TaskMasterPanel isVisible={activeTab === 'tasks'} />
-            </Suspense>
-          )}
+              {activeTab === 'operations' && (
+                <div className="h-full overflow-hidden">
+                  <Suspense fallback={null}>
+                  <OperationsView selectedProject={selectedProject} />
+                  </Suspense>
+                </div>
+              )}
 
-          {shouldShowBrowserTab && activeTab === 'browser' && (
-            <div className="h-full overflow-hidden">
-              <Suspense fallback={null}>
-              <BrowserUsePanel isVisible={activeTab === 'browser'} onShowSettings={onShowSettings} />
-              </Suspense>
-            </div>
-          )}
+              {shouldShowTasksTab && (
+                <Suspense fallback={null}>
+                  <TaskMasterPanel isVisible={activeTab === 'tasks'} />
+                </Suspense>
+              )}
 
-          {activeTab.startsWith('plugin:') && (
-            <div className="h-full overflow-hidden">
-              <Suspense fallback={null}>
-              <PluginTabContent
-                pluginName={activeTab.replace('plugin:', '')}
-                selectedProject={selectedProject}
-                selectedSession={selectedSession}
-              />
-              </Suspense>
-            </div>
-          )}
+              {shouldShowBrowserTab && activeTab === 'browser' && (
+                <div className="h-full overflow-hidden">
+                  <Suspense fallback={null}>
+                  <BrowserUsePanel isVisible={activeTab === 'browser'} onShowSettings={onShowSettings} />
+                  </Suspense>
+                </div>
+              )}
+
+              {activeTab.startsWith('plugin:') && (
+                <div className="h-full overflow-hidden">
+                  <Suspense fallback={null}>
+                  <PluginTabContent
+                    pluginName={activeTab.replace('plugin:', '')}
+                    selectedProject={selectedProject}
+                    selectedSession={selectedSession}
+                  />
+                  </Suspense>
+                </div>
+              )}
+            </>
+          ) : null}
         </div>
 
-        <Suspense fallback={null}>
-        <EditorSidebar
-          editingFile={editingFile}
-          isMobile={isMobile}
-          editorExpanded={editorExpanded}
-          editorWidth={editorWidth}
-          hasManualWidth={hasManualWidth}
-          resizeHandleRef={resizeHandleRef}
-          onResizeStart={handleResizeStart}
-          onCloseEditor={handleCloseEditor}
-          onToggleEditorExpand={handleToggleEditorExpand}
-          projectPath={selectedProject.path}
-          fillSpace={activeTab === 'files'}
-        />
-        </Suspense>
+        {!isStudioOrBots && selectedProject ? (
+          <Suspense fallback={null}>
+          <EditorSidebar
+            editingFile={editingFile}
+            isMobile={isMobile}
+            editorExpanded={editorExpanded}
+            editorWidth={editorWidth}
+            hasManualWidth={hasManualWidth}
+            resizeHandleRef={resizeHandleRef}
+            onResizeStart={handleResizeStart}
+            onCloseEditor={handleCloseEditor}
+            onToggleEditorExpand={handleToggleEditorExpand}
+            projectPath={selectedProject.path}
+            fillSpace={activeTab === 'files'}
+          />
+          </Suspense>
+        ) : null}
       </div>
     </div>
   );

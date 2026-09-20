@@ -17,6 +17,13 @@ export {
   type ParsedWorkerResult,
 } from '@/modules/agent-relay/agent-relay.service.js';
 export { agentRelayDb } from '@/modules/agent-relay/agent-relay.repository.js';
+export {
+  adjudicatePermission,
+  adjudicateResult,
+  applyPermissionAdvice,
+  type JevPermissionAdvice,
+  type JevResultAdvice,
+} from '@/modules/agent-relay/jev-relay.service.js';
 export { agentRelayRoutes, agentRelayMcpRoutes, resolveAgentRelayMcpScope } from '@/modules/agent-relay/agent-relay.routes.js';
 export {
   agentRelayPermissionBroker,

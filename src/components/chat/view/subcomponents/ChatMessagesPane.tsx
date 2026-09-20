@@ -1,10 +1,10 @@
 import { useTranslation } from 'react-i18next';
 import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import type { Dispatch, RefObject, SetStateAction } from 'react';
+import { Link } from 'react-router-dom';
 
 import type { ChatMessage } from '../../types/types';
-import type { StudioPrototype } from '../../../studio/types';
-import type { StudioPrototypeDetail } from '../../../studio/types';
+import type { StudioPrototype, StudioPrototypeDetail } from '../../../studio/types';
 import { studioApi } from '../../../studio/api/studioApi';
 import StudioPreviewPane from '../../../studio/view/StudioPreviewPane';
 import type {
@@ -191,6 +191,7 @@ function ChatMessagesPane({
     () => groupConsecutiveTools(visibleMessages, Boolean(showThinking)),
     [visibleMessages, showThinking],
   );
+  const ignorePreviewSelection = useCallback(() => undefined, []);
   const [previewDetails, setPreviewDetails] = useState<Record<string, StudioPrototypeDetail>>({});
 
   useEffect(() => {
@@ -278,12 +279,12 @@ function ChatMessagesPane({
                 <div className="truncate text-xs font-semibold">{prototype.title}</div>
                 <div className="text-[10px] capitalize text-muted-foreground">{prototype.status}</div>
               </div>
-              <a
+              <Link
                 className="shrink-0 text-[10px] font-medium text-primary hover:underline"
-                href={`/studio/${encodeURIComponent(prototype.projectId)}/${encodeURIComponent(prototype.id)}`}
+                to={`/studio/${encodeURIComponent(prototype.projectId)}/${encodeURIComponent(prototype.id)}`}
               >
                 Open in Studio
-              </a>
+              </Link>
               </div>
               {previewDetails[prototype.id] ? (
                 <div className="mt-2 h-64 overflow-hidden rounded-lg border border-border/70 bg-muted/20">
@@ -292,7 +293,7 @@ function ChatMessagesPane({
                     html={previewDetails[prototype.id].html}
                     frame="desktop"
                     selectMode={false}
-                    onSelectElement={() => undefined}
+                    onSelectElement={ignorePreviewSelection}
                   />
                 </div>
               ) : null}

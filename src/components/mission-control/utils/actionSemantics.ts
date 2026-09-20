@@ -76,8 +76,8 @@ export function getActionSemantics(
   if (action.kind === 'work') {
     return {
       scope: 'local',
-      label: action.label,
-      detail: 'Opens a local work session',
+      label: 'Open work chat',
+      detail: 'Opens a project-scoped chat with this item’s brief prefilled',
       confirmation: null,
     };
   }

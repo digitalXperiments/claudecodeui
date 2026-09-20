@@ -529,6 +529,7 @@ export function useChatSessionState({
       setHasMoreMessages(false);
       setTotalMessages(0);
       setTokenBudget(null);
+      setIsLoadingSessionMessages(false);
       lastLoadedSessionKeyRef.current = null;
       lastSubscribedSessionRef.current = null;
       return;
@@ -628,21 +629,29 @@ export function useChatSessionState({
     refreshCoordinatorRef.current?.discardPending(selectedSessionId);
 
     // Fetch from server → store updates → chatMessages re-derives automatically
+    // `cancelled` scopes the loading flag to *this* effect run so a superseded
+    // request can never leave the spinner stuck: `activeSessionIdRef` alone
+    // isn't enough, since it can churn (e.g. Studio's session bootstrap briefly
+    // nulling `selectedSession`) between this fetch starting and settling.
+    let cancelled = false;
     setIsLoadingSessionMessages(true);
     sessionStore.fetchFromServer(selectedSessionId, {
       limit: SESSION_MESSAGES_PAGE_SIZE,
       offset: 0,
     }).then(slot => {
-      if (activeSessionIdRef.current !== selectedSessionId) return;
-      if (slot) {
+      if (cancelled) return;
+      if (activeSessionIdRef.current === selectedSessionId && slot) {
         setHasMoreMessages(slot.hasMore);
         setTotalMessages(slot.total);
         if (slot.tokenUsage) setTokenBudget(slot.tokenUsage as Record<string, unknown>);
       }
       setIsLoadingSessionMessages(false);
     }).catch(() => {
-      if (activeSessionIdRef.current === selectedSessionId) setIsLoadingSessionMessages(false);
+      if (!cancelled) setIsLoadingSessionMessages(false);
     });
+    return () => {
+      cancelled = true;
+    };
   }, [
     resetStreamingState,
     requestLatestMessages,

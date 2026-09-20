@@ -1,3 +1,4 @@
+import type { JevResultAdvice } from '@/modules/agent-relay/jev-relay.service.js';
 import type { LLMProvider } from '@/shared/types.js';
 
 export const AGENT_RELAY_PROVIDERS: LLMProvider[] = [
@@ -84,6 +85,12 @@ export type AgentRelayStructuredResult = {
   structuredOutput?: unknown;
   /** Validation verdict for `structuredOutput` against the declared schema. */
   outputValidation?: { valid: boolean; errors: string[] };
+  /**
+   * Advisory Jev assessment of this finished report. Attached after the job
+   * has already reached a terminal status, so it never influences the
+   * lifecycle — it exists for the lead and for rollout measurement.
+   */
+  jevAssessment?: JevResultAdvice;
 };
 
 export type AgentRelayResult = AgentRelayStructuredResult & {
@@ -240,6 +247,7 @@ export type AgentRelayJobSummary = {
     openQuestions: string[];
     structuredOutput?: unknown;
     outputValidation?: { valid: boolean; errors: string[] };
+    jevAssessment?: JevResultAdvice;
     hasFullOutput: boolean;
     workspace?: { workspaceId: string; featureBranch: string; files: number; additions: number; deletions: number };
   } | null;

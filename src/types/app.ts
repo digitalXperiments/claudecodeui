@@ -55,7 +55,7 @@ export interface ProjectSession {
   // Tags the session with the owning project's DB `projectId` so UI handlers
   // (session switching, sidebar focus, etc.) can match against selectedProject.
   __projectId?: string;
-  /** Swarm / Agent Relay / automation workers — viewable, not a user chat. */
+  /** Agent Relay / automation workers — viewable, not a user chat. */
   isInternal?: boolean;
   isStudioOnly?: boolean;
   studioPrototypeIds?: string[];

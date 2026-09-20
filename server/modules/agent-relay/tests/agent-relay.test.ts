@@ -6,7 +6,7 @@ import test from 'node:test';
 import { agentRelayDb, agentRelayService, allowedWorkerModelsFor, catalogEffortValuesForModel, configureAgentRelayRuntimes, configureRelayModelRegistry, providerHonorsRelayMcpGrants, providerSupportsReadOnlyRelay, relayPermissionMode, resolveAgentRelayMcpScope, resolveCatalogModelId, resolveRelayEffort, resolveRelayModelIdentity, resolveRelayWorkerModel, sanitizeWorkerMcpServers } from '@/modules/agent-relay/index.js';
 import { appConfigDb, closeConnection, getConnection, initializeDatabase, projectsDb, sessionsDb } from '@/modules/database/index.js';
 import { providerModelsService, sessionsService } from '@/modules/providers/index.js';
-import { upsertModelCapability } from '@/modules/swarm/index.js';
+import { upsertModelCapability } from '@/modules/model-registry/index.js';
 import { runService } from '@/modules/runs/index.js';
 import { chatRunRegistry } from '@/modules/websocket/index.js';
 import { newRelayBatchId, newRelayJobId } from '@/shared/ids.js';

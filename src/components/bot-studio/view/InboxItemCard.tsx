@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Eye, ExternalLink, Lock, RefreshCw, Send } from 'lucide-react';
+import { Eye, ExternalLink, Lock, MessageSquare, RefreshCw, Send } from 'lucide-react';
 
 import type { McItem } from '../../mission-control/api/missionControlApi';
 import ArticleDraftCard from '../../mission-control/view/subcomponents/ArticleDraftCard';
@@ -11,18 +11,21 @@ import BotIcon from '../ui/BotIcon';
 import { Button } from '../../../shared/view/ui';
 
 import type { InboxItemCardProps } from './contracts';
+import { getItemContentPreview } from './inbox/itemContent';
 
 function sourceExcerpt(item: McItem): string {
   const source = item.source ?? {};
   for (const key of ['excerpt', 'text', 'content', 'title']) {
     if (typeof source[key] === 'string' && source[key].trim()) return source[key].trim();
   }
-  return 'No source excerpt was provided.';
+  return 'No separate source excerpt was provided; the item brief is shown below.';
 }
 
 function sourceUrl(item: McItem): string | null {
-  const value = item.source?.url;
-  return typeof value === 'string' && /^https?:\/\//i.test(value) ? value : null;
+  for (const value of [item.source?.url, item.body?.url, item.body?.sourcePermalink, item.body?.trelloUrl, item.body?.jiraUrl]) {
+    if (typeof value === 'string' && /^https?:\/\//i.test(value.trim())) return value.trim();
+  }
+  return null;
 }
 
 function draftText(item: McItem): string | null {
@@ -36,6 +39,11 @@ export default function InboxItemCard({ item, bot, selected, checked, onSelect, 
   const actionable = item.status === 'pending' || item.status === 'failed';
   const draft = draftText(item);
   const originalUrl = sourceUrl(item);
+  const contentPreview = getItemContentPreview(item);
+  const previewAction = item.actions.find((action) => action.kind === 'approve' && action.terminal !== false)
+    ?? item.actions.find((action) => action.kind !== 'work')
+    ?? item.actions[0];
+  const previewable = item.status !== 'resolving' && item.status !== 'expired';
 
   useEffect(() => {
     if (!selected || !cardRef.current) return;
@@ -86,19 +94,21 @@ export default function InboxItemCard({ item, bot, selected, checked, onSelect, 
         <p className="mt-1 line-clamp-2 break-words text-xs text-muted-foreground">{sourceExcerpt(item)}</p>
       </div>
 
+      {contentPreview ? <div className="mt-3 rounded-lg border border-border/70 bg-muted/20 p-3"><p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-foreground">{contentPreview.label}</p>{contentPreview.text ? <p className="mt-1 line-clamp-4 whitespace-pre-wrap break-words text-xs leading-5 text-muted-foreground">{contentPreview.text}</p> : null}{contentPreview.actionItems ? <ul className="mt-2 list-disc space-y-1 pl-4 text-xs leading-5 text-muted-foreground">{contentPreview.actionItems.slice(0, 3).map((actionItem) => <li key={actionItem}>{actionItem}</li>)}{contentPreview.actionItems.length > 3 ? <li>+{contentPreview.actionItems.length - 3} more</li> : null}</ul> : null}</div> : null}
+
       {isXArticleBody(item.body) ? <div className="mt-3" onClick={(event) => event.stopPropagation()}><ArticleDraftCard article={item.body} itemId={item.item_id} onGenerateAssets={onGenerateAssets} /></div> : draft ? <div className="mt-3 rounded-lg border border-primary/20 bg-primary/5 p-3"><p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-primary">Draft preview</p><p className="mt-1 line-clamp-3 whitespace-pre-wrap text-xs leading-5">{draft}</p></div> : null}
       {item.error ? <p className="mt-3 rounded-lg bg-destructive/10 px-3 py-2 text-xs text-destructive" role="alert">{item.error}</p> : null}
 
       <div className="mt-3 flex flex-wrap items-center gap-1.5" onClick={(event) => event.stopPropagation()}>
-        {actionable ? item.actions.map((action) => {
+        {actionable ? item.actions.filter((action) => action.kind !== 'work').map((action) => {
           const semantics = getActionSemantics(action, item.title, { hasDraft: itemHasDraft(item) });
           const locked = isInboxActionLocked(item, bot, action);
           const variant = action.kind === 'approve' ? 'default' : action.kind === 'dismiss' ? 'ghost' : 'outline';
           return <Button key={action.id} size="sm" variant={variant} disabled={item.status === 'resolving' || locked} onClick={() => runAction(action)} title={locked ? 'Held in Propose mode: review before sending' : semantics.detail}>{locked ? <Lock className="h-3 w-3" /> : action.kind === 'approve' ? <Send className="h-3 w-3" /> : null}{semantics.label}</Button>;
         }) : null}
-        <Button size="sm" variant="ghost" onClick={() => onPreview(item, item.actions[0])}><Eye className="h-3 w-3" />Preview</Button>
+        <Button size="sm" variant="ghost" disabled={!previewable || !previewAction} onClick={() => previewAction && onPreview(item, previewAction)} title={previewable ? 'Preview the selected action without executing it' : 'Preview is unavailable while this item is resolving'}><Eye className="h-3 w-3" />Preview</Button>
         {item.status === 'failed' ? <Button size="sm" variant="ghost" onClick={() => onRetry(item)}><RefreshCw className="h-3 w-3" />Retry</Button> : null}
-        <Button size="sm" variant="ghost" onClick={() => onWork(item)}><ExternalLink className="h-3 w-3" />Work this ↗</Button>
+        <Button size="sm" variant="ghost" disabled={!actionable} onClick={() => onWork(item)} title={actionable ? "Open a project-scoped work chat with this item's brief" : 'Work chat is available for pending or failed items'}><MessageSquare className="h-3 w-3" />Open work chat</Button>
       </div>
     </article>
   );

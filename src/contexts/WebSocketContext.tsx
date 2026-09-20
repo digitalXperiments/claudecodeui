@@ -71,9 +71,10 @@ const useWebSocketProviderState = (): WebSocketContextType => {
    */
   const listenersRef = useRef(new Set<ServerEventListener>());
   const [isConnected, setIsConnected] = useState(false);
-  const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const heartbeatIntervalRef = useRef<NodeJS.Timeout | null>(null);
-  const heartbeatTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const heartbeatIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const heartbeatTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reconnectAttemptRef = useRef(0);
   const { token } = useAuth();
 
   const stopHeartbeat = useCallback(() => {
@@ -123,27 +124,17 @@ const useWebSocketProviderState = (): WebSocketContextType => {
     }
   }, []);
 
-  useEffect(() => {
-    // The cleanup below sets unmountedRef = true. Without this reset, every
-    // re-run of the effect (e.g. on token refresh) would short-circuit connect()
-    // at its unmounted guard and leave the socket permanently disconnected.
-    unmountedRef.current = false;
-    connect();
-
-    return () => {
-      unmountedRef.current = true;
-      if (reconnectTimeoutRef.current) {
-        clearTimeout(reconnectTimeoutRef.current);
-      }
-      stopHeartbeat();
-      if (wsRef.current) {
-        wsRef.current.close();
-      }
-    };
-  }, [token, stopHeartbeat]); // everytime token changes, we reconnect
-
   const connect = useCallback(() => {
     if (unmountedRef.current) return; // Prevent connection if unmounted
+    if (wsRef.current && (wsRef.current.readyState === WebSocket.OPEN || wsRef.current.readyState === WebSocket.CONNECTING)) {
+      return;
+    }
+
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current);
+      reconnectTimeoutRef.current = null;
+    }
+
     try {
       // Construct WebSocket URL
       const wsUrl = buildWebSocketUrl(token);
@@ -151,10 +142,17 @@ const useWebSocketProviderState = (): WebSocketContextType => {
       if (!wsUrl) return console.warn('No authentication token found for WebSocket connection');
 
       const websocket = new WebSocket(wsUrl);
+      // Set this before onopen so a late close from an older socket cannot
+      // clear or restart a newer connection after a token refresh.
+      wsRef.current = websocket;
 
       websocket.onopen = () => {
+        if (wsRef.current !== websocket) {
+          websocket.close();
+          return;
+        }
         setIsConnected(true);
-        wsRef.current = websocket;
+        reconnectAttemptRef.current = 0;
         if (hasConnectedRef.current) {
           // This is a reconnect — signal so components can catch up on missed messages
           dispatch({ kind: 'websocket_reconnected', timestamp: Date.now() });
@@ -181,15 +179,22 @@ const useWebSocketProviderState = (): WebSocketContextType => {
       };
 
       websocket.onclose = () => {
+        if (wsRef.current !== websocket) {
+          return;
+        }
         setIsConnected(false);
         wsRef.current = null;
         stopHeartbeat();
 
-        // Attempt to reconnect after 3 seconds
+        // Back off during an outage instead of creating a tight reconnect
+        // storm. The online event below resets this immediately when possible.
+        const delay = Math.min(30_000, 1_000 * 2 ** reconnectAttemptRef.current);
+        reconnectAttemptRef.current += 1;
         reconnectTimeoutRef.current = setTimeout(() => {
+          reconnectTimeoutRef.current = null;
           if (unmountedRef.current) return; // Prevent reconnection if unmounted
           connect();
-        }, 3000);
+        }, delay);
       };
 
       websocket.onerror = (error) => {
@@ -197,9 +202,41 @@ const useWebSocketProviderState = (): WebSocketContextType => {
       };
 
     } catch (error) {
+      wsRef.current = null;
       console.error('Error creating WebSocket connection:', error);
     }
   }, [token, dispatch, startHeartbeat, stopHeartbeat]); // everytime token changes, we reconnect
+
+  useEffect(() => {
+    // The cleanup below sets unmountedRef = true. Without this reset, every
+    // re-run of the effect (e.g. on token refresh) would short-circuit connect()
+    // at its unmounted guard and leave the socket permanently disconnected.
+    unmountedRef.current = false;
+    connect();
+
+    return () => {
+      unmountedRef.current = true;
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = null;
+      }
+      stopHeartbeat();
+      if (wsRef.current) {
+        wsRef.current.close();
+        wsRef.current = null;
+      }
+    };
+  }, [connect, stopHeartbeat]);
+
+  useEffect(() => {
+    const reconnectNow = () => {
+      if (unmountedRef.current || wsRef.current) return;
+      reconnectAttemptRef.current = 0;
+      connect();
+    };
+    window.addEventListener('online', reconnectNow);
+    return () => window.removeEventListener('online', reconnectNow);
+  }, [connect]);
 
   const sendMessage = useCallback((message: unknown): boolean => {
     const socket = wsRef.current;
@@ -212,7 +249,6 @@ const useWebSocketProviderState = (): WebSocketContextType => {
         return false;
       }
     }
-    console.warn('WebSocket not connected');
     return false;
   }, []);
 

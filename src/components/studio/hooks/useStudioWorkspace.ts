@@ -77,7 +77,6 @@ export function useStudioWorkspace({
     promoteVariant: controller.promoteVariant,
     revertToVersion: controller.revertToVersion,
     applyTokens: controller.applyTokens,
-    launchSwarm: controller.launchSwarm,
     ideatePrompt: controller.ideatePrompt,
   };
 }

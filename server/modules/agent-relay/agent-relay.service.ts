@@ -25,7 +25,9 @@ import {
   type AgentRelayStructuredResult,
 } from '@/modules/agent-relay/agent-relay.types.js';
 import { normalizeDeclaredSchema, validateJsonSchema } from '@/shared/json-schema-lite.js';
+import { adjudicateResult as jevAdjudicateResult } from '@/modules/agent-relay/jev-relay.service.js';
 import { appConfigDb, projectsDb, sessionsDb } from '@/modules/database/index.js';
+import { capabilityMode, readJevSettings } from '@/modules/decisioning/index.js';
 import {
   globalSkillsService,
   mcpCatalogService,
@@ -46,7 +48,7 @@ import { expandMcpSelectionsToTools } from '@/shared/mcp-tool-expand.js';
 import { newRelayBatchId, newRelayJobId } from '@/shared/ids.js';
 import { TERMINAL_RUN_STATUSES, type RunStatus } from '@/shared/run-events.js';
 import type { AnyRecord, LLMProvider, NormalizedMessage, ProviderModelsDefinition } from '@/shared/types.js';
-import { enabledRegistryModelIdsForProvider } from '@/modules/swarm/index.js';
+import { enabledRegistryModelIdsForProvider } from '@/modules/model-registry/index.js';
 import { notifyAgentRelayTerminal } from '@/modules/agent-relay/lead-session-wake.service.js';
 import { AppError } from '@/shared/utils.js';
 import { findAppRoot, findServerRoot, getModuleDir } from '@/utils/runtime-paths.js';
@@ -1083,6 +1085,48 @@ function buildRuntimeOptions(job: AgentRelayJob, cwd: string): AnyRecord {
   return options;
 }
 
+/**
+ * Advisory Jev assessment of a finished worker report.
+ *
+ * Deliberately post-terminal: it reads the persisted result back, attaches the
+ * advice, and re-broadcasts an update event. It never calls `publish`, because
+ * that would re-fire the lead-wake notification for a job the lead has already
+ * been told about.
+ */
+async function assessFinishedResultWithJev(relayId: string, attempt: number): Promise<void> {
+  const jevSettings = readJevSettings();
+  if (capabilityMode(jevSettings, 'relay_results') === 'off') return;
+  try {
+    const finished = agentRelayDb.get(relayId);
+    if (!finished?.result || !AGENT_RELAY_TERMINAL_STATUSES.has(finished.status)) return;
+    const advice = await jevAdjudicateResult(jevSettings, {
+      provider: finished.provider,
+      model: finished.runtime_resolved_model ?? finished.catalog_resolved_model ?? finished.model,
+      mode: finished.mode,
+      task: finished.task,
+      status: finished.result.status,
+      summary: finished.result.summary,
+      evidence: finished.result.evidence,
+      filesTouched: finished.result.filesTouched,
+      testsRun: finished.result.testsRun,
+      openQuestions: finished.result.openQuestions,
+      outputValidation: finished.result.outputValidation ?? null,
+      attempt: finished.attempt,
+      retryCount: finished.retry_count,
+    });
+    if (!advice) return;
+    // A follow-up or retry may have restarted this job while Jev was thinking.
+    // Attaching stale advice to a newer report would be worse than none.
+    const current = agentRelayDb.get(relayId);
+    if (!current?.result || current.attempt !== attempt) return;
+    if (!AGENT_RELAY_TERMINAL_STATUSES.has(current.status)) return;
+    const patched = agentRelayDb.patchResult(relayId, { ...current.result, jevAssessment: advice });
+    if (patched) broadcastSystemEvent({ kind: 'agent_relay_updated', job: patched });
+  } catch (error) {
+    console.warn('[AgentRelayJev] Result assessment failed', error);
+  }
+}
+
 function publish(job: AgentRelayJob | null): void {
   if (!job) return;
   broadcastSystemEvent({ kind: 'agent_relay_updated', job });
@@ -1353,6 +1397,10 @@ async function executeJob(relayId: string): Promise<void> {
       envelopeRoot: cwd,
       sourceSessionId: job.source_session_id,
       approvalTimeoutMs: effectiveApprovalTimeoutMs(job),
+      // Snapshotted at register time, exactly like the approval timeout: the
+      // broker must never reach back into the relay service mid-decision.
+      task: job.task,
+      jev: readJevSettings(),
     });
 
     runService.updateStatus(canonicalRun.run_id, 'starting');
@@ -1488,6 +1536,10 @@ async function executeJob(relayId: string): Promise<void> {
     const error = errorChunks.join('\n').trim().slice(0, 20_000) || null;
     closeCanonicalRun(canonicalRun.run_id, providerFailed ? 'failed' : 'succeeded', error);
     publish(agentRelayDb.finish(job.relay_id, providerFailed ? 'failed' : 'completed', { result, error }));
+    // Fire-and-forget, strictly after the job is already terminal and already
+    // published. A slow or failing sidecar can never hold a finished result
+    // back from the lead, and the assessment cannot change the lifecycle.
+    void assessFinishedResultWithJev(job.relay_id, job.attempt);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     closeCanonicalRun(canonicalRunId, 'failed', message.slice(0, 20_000));
@@ -2097,6 +2149,7 @@ export const agentRelayService = {
           openQuestions: job.result.openQuestions.slice(0, 10),
           ...(structuredOutput !== undefined ? { structuredOutput } : {}),
           ...(job.result.outputValidation ? { outputValidation: job.result.outputValidation } : {}),
+          ...(job.result.jevAssessment ? { jevAssessment: job.result.jevAssessment } : {}),
           hasFullOutput: Boolean(job.result.output),
           ...(job.result.workspace
             ? {
@@ -2367,6 +2420,8 @@ export const agentRelayService = {
   },
 
   getMcpToken: getOrCreateMcpToken,
+  getMcpCommand,
+  getMcpApiUrl: getApiUrl,
 
   async purgeExpiredJobs(retentionDays = AGENT_RELAY_RETENTION_DAYS): Promise<{ jobsDeleted: number; workspacesDiscarded: number }> {
     const expired = agentRelayDb.listTerminalOlderThan(retentionDays);

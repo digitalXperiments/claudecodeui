@@ -16,7 +16,10 @@ import { interruptsService } from '@/modules/interrupt-queue/index.js';
 import { kanbanDb } from '@/modules/kanban/index.js';
 import { enqueueTask } from '@/modules/kanban/index.js';
 import { projectsDb, systemNotificationsDb } from '@/modules/database/index.js';
-import { runService, redactPayload } from '@/modules/runs/index.js';
+import { runService, redactPayload, recordNormalizedRunEvent } from '@/modules/runs/index.js';
+import { sessionsService } from '@/modules/providers/index.js';
+import { DETACHED_CONNECTION, startProviderRun, type ProviderSpawnFn } from '@/modules/websocket/index.js';
+import type { LLMProvider } from '@/shared/types.js';
 import { secretsService } from '@/modules/secrets/index.js';
 import { CloudError } from '@/shared/run-events.js';
 
@@ -33,6 +36,12 @@ export type AutomationFireResult = {
   automationRun: AutomationRun;
   actionResults: Array<Record<string, unknown>>;
 };
+
+let runtimeSpawnFns: Partial<Record<LLMProvider, ProviderSpawnFn>> = {};
+
+export function configureAutomationRuntimes(spawnFns: Partial<Record<LLMProvider, ProviderSpawnFn>>): void {
+  runtimeSpawnFns = spawnFns;
+}
 
 const TRIGGER_TYPES: readonly AutomationTrigger['type'][] = [
   'cron',
@@ -243,7 +252,47 @@ async function executeAction(
           payload: redactPayload(payload),
         } as Record<string, unknown>,
       });
-      return { action: action.type, runId: run.run_id };
+
+      const provider = action.provider as LLMProvider | undefined;
+      const prompt = action.prompt ?? '';
+      let appSessionId: string | null = null;
+
+      if (provider && projectId) {
+        const project = projectsDb.getProjectById(projectId);
+        const projectPath = project?.project_path;
+        if (projectPath) {
+          try {
+            const created = sessionsService.createAppSession(provider, projectPath, {
+              internal: false,
+            });
+            appSessionId = created.sessionId;
+            sessionsService.renameSessionById(appSessionId, action.title ?? recipe.name);
+            runService.linkSession(run.run_id, appSessionId);
+
+            const spawnFn = runtimeSpawnFns[provider];
+            if (spawnFn && prompt) {
+              startProviderRun({
+                appSessionId,
+                provider,
+                providerSessionId: null,
+                projectPath,
+                spawnFn,
+                content: prompt,
+                options: { unattended: true, model: action.model ?? undefined },
+                connection: DETACHED_CONNECTION,
+                userId: null,
+                onEvent: (message) => recordNormalizedRunEvent(run.run_id, message, 'automation'),
+              }).catch((err) => {
+                console.error('[Automation] Failed to execute scheduled provider run:', err);
+              });
+            }
+          } catch (err) {
+            console.error('[Automation] Failed to create session for automation run:', err);
+          }
+        }
+      }
+
+      return { action: action.type, runId: run.run_id, ...(appSessionId ? { appSessionId } : {}) };
     }
     case 'enqueue_kanban_task': {
       const taskId =

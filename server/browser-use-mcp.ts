@@ -99,7 +99,7 @@ const tools: ToolDefinition[] = [
   },
   {
     name: 'browser_navigate',
-    description: 'Navigate a Browser session to an HTTP or HTTPS URL.',
+    description: 'Navigate a Browser session to an HTTP or HTTPS URL. When a `pageState` field comes back it already reports whether the page is ready, still loading, blocked by a dialog, an error, or needs a human, and whether the action took effect — do not call browser_snapshot just to check that.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -111,7 +111,7 @@ const tools: ToolDefinition[] = [
   },
   {
     name: 'browser_click',
-    description: 'Click an element by CSS selector, visible text, or x/y coordinates.',
+    description: 'Click an element by CSS selector, visible text, or x/y coordinates. When a `pageState` field comes back it already reports whether the page is ready, still loading, blocked by a dialog, an error, or needs a human, and whether the action took effect — do not call browser_snapshot just to check that.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -126,7 +126,7 @@ const tools: ToolDefinition[] = [
   },
   {
     name: 'browser_type',
-    description: 'Type text into the focused page or fill a CSS selector. Set submit to press Enter after typing.',
+    description: 'Type text into the focused page or fill a CSS selector. Set submit to press Enter after typing. When a `pageState` field comes back it already reports whether the page is ready, still loading, blocked by a dialog, an error, or needs a human, and whether the action took effect — do not call browser_snapshot just to check that.',
     inputSchema: {
       type: 'object',
       properties: {

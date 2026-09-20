@@ -8,6 +8,7 @@ import express from 'express';
 import { runService } from '@/modules/runs/runs.service.js';
 import { evaluateSpend } from '@/modules/runs/spend-governor.service.js';
 import type { GlobalStatsFilter } from '@/modules/runs/runs.types.js';
+import { chatRunRegistry, getProviderAbortFn } from '@/modules/websocket/index.js';
 import { AppError, asyncHandler } from '@/shared/utils.js';
 import {
   CloudError,
@@ -258,10 +259,39 @@ router.post(
         statusCode: 409,
       });
     }
-    try {
-      runService.markTerminal(runId, { status: 'aborted', errorSummary: 'aborted by user' });
-    } catch (error) {
-      rethrowAsHttpError(error);
+
+    // Best-effort process kill first: a run with a live chatRunRegistry entry
+    // (chat, mission control ticks, or any other startProviderRun caller)
+    // can be cancelled the same way `chat.abort` cancels an interactive turn.
+    // completeRun's synthetic `complete` event flows back through the run's
+    // own onEvent handler and marks it terminal in the DB, so by the time
+    // this call returns the status is already committed.
+    const appSessionId = run.app_session_id;
+    const registryRun = appSessionId ? chatRunRegistry.getRun(appSessionId) : undefined;
+    if (appSessionId && registryRun && registryRun.status === 'running') {
+      const abortFn = run.provider ? getProviderAbortFn(run.provider) : undefined;
+      const abortTarget = registryRun.providerSessionId || appSessionId;
+      let success = false;
+      if (abortFn) {
+        try {
+          success = Boolean(await abortFn(abortTarget));
+        } catch (error) {
+          console.error(`[Runs] provider abort failed for run ${runId}:`, error);
+        }
+      }
+      chatRunRegistry.completeRun(appSessionId, { exitCode: success ? 0 : 1, aborted: true });
+    }
+
+    // Fallback (and safety net for the race above): a run with no live
+    // registry entry — already exited, or a source that never registered —
+    // still needs its DB status flipped.
+    const current = runService.get(runId);
+    if (current && !TERMINAL_RUN_STATUSES.has(current.status)) {
+      try {
+        runService.markTerminal(runId, { status: 'aborted', errorSummary: 'aborted by user' });
+      } catch (error) {
+        rethrowAsHttpError(error);
+      }
     }
     res.json({ success: true, run: runService.get(runId) });
   }),

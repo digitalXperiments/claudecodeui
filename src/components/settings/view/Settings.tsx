@@ -26,6 +26,7 @@ import PluginSettingsTab from '../../plugins/view/PluginSettingsTab';
 import SecuritySettingsTab from '../view/tabs/security-settings/SecuritySettingsTab';
 import AboutTab from '../view/tabs/AboutTab';
 import ContinuitySettingsTab from '../view/tabs/ContinuitySettingsTab';
+import JevSettingsTab from '../view/tabs/JevSettingsTab';
 import BackupsSettingsTab from '../view/tabs/BackupsSettingsTab';
 import ErrorBoundary from '../../main-content/view/ErrorBoundary';
 import { useSettingsController } from '../hooks/useSettingsController';
@@ -306,6 +307,8 @@ function Settings({ isOpen, onClose, projects = [], initialTab = 'agents' }: Set
               {activeTab === 'agent-profiles' && <AgentProfilesSettingsTab />}
 
               {activeTab === 'continuity' && <ContinuitySettingsTab />}
+
+              {activeTab === 'jev' && <JevSettingsTab />}
 
               {activeTab === 'studio' && <StudioSettingsTab />}
 

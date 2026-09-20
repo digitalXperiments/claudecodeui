@@ -18,7 +18,6 @@ import { closeConnection, initializeDatabase, projectsDb } from '@/modules/datab
 import { redactPayload, runService } from '@/modules/runs/runs.service.js';
 import runsRoutes from '@/modules/runs/runs.routes.js';
 import { ORPHAN_ERROR_SUMMARY } from '@/modules/runs/runs.types.js';
-import { swarmDb } from '@/modules/swarm/index.js';
 import { CloudError } from '@/shared/run-events.js';
 
 type TempDb = { directory: string; restore: () => Promise<void> };
@@ -318,48 +317,6 @@ test('reconcileOrphans fails runs parked on an approval nothing can answer anymo
       assert.equal(run?.status, 'failed');
       assert.equal(run?.error_summary, ORPHAN_ERROR_SUMMARY);
     }
-  } finally {
-    await db.restore();
-  }
-});
-
-test('reconcileOrphans leaves resumable swarm runs for the swarm recovery worker', async () => {
-  const db = await useTempDatabase();
-  try {
-    const project = projectsDb.createProjectPath(db.directory).project!;
-    const parent = runService.create({
-      source: 'swarm',
-      projectId: project.project_id,
-      status: 'running',
-      trigger: 'swarm.start',
-    });
-    const swarm = swarmDb.create({
-      projectId: project.project_id,
-      goal: 'Resume after restart',
-      parentRunId: parent.run_id,
-      roles: [],
-      status: 'running',
-      approvalStatus: null,
-    });
-    const child = runService.create({
-      source: 'swarm',
-      projectId: project.project_id,
-      parentRunId: parent.run_id,
-      rootRunId: parent.run_id,
-      status: 'running',
-      trigger: `swarm:${swarm.swarm_id}:step-1`,
-    });
-    const ordinary = runService.create({ source: 'chat', status: 'running' });
-
-    assert.equal(runService.reconcileOrphans(), 1);
-    assert.equal(runService.get(ordinary.run_id)?.status, 'failed');
-    assert.equal(runService.get(parent.run_id)?.status, 'running');
-    assert.equal(runService.get(child.run_id)?.status, 'running');
-
-    swarmDb.update(swarm.swarm_id, { status: 'failed', finished: true });
-    assert.equal(runService.reconcileOrphans(), 2);
-    assert.equal(runService.get(parent.run_id)?.status, 'failed');
-    assert.equal(runService.get(child.run_id)?.status, 'failed');
   } finally {
     await db.restore();
   }

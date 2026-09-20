@@ -52,7 +52,7 @@ export const SETTINGS_MAIN_TABS: SettingsMainTabMeta[] = [
   {
     id: 'studio',
     label: 'Studio',
-    keywords: 'studio design prototype swarm seats architect builder reviewer',
+    keywords: 'studio design prototype seats architect builder reviewer',
     icon: Palette,
   },
   { id: 'evals', label: 'Eval Center', keywords: 'evals evaluation suites tests harness', icon: FlaskConical },

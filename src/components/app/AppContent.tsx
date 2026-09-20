@@ -62,9 +62,10 @@ function AppContentInner() {
   const { sessionId, projectId: studioProjectId, prototypeId: studioPrototypeId } = useParams<{ sessionId?: string; projectId?: string; prototypeId?: string }>();
   const { t } = useTranslation('common');
   const { isMobile } = useDeviceSettings({ trackPWA: false });
-  const { ws, sendMessage, subscribe } = useWebSocket();
+  const { ws, sendMessage, subscribe, isConnected } = useWebSocket();
   const { panelWidth, sidebarRef, handleResizeStart } = useSidebarResize(isMobile);
   const runningSessionLastSeqRef = useRef(new Map<string, number>());
+  const runningSessionsRequestRef = useRef<Promise<void> | null>(null);
 
   const {
     processingSessions,
@@ -140,17 +141,22 @@ function AppContentInner() {
   }, [subscribe]);
 
   const refreshRunningSessions = useCallback(async () => {
-    try {
-      const response = await api.runningSessions();
-      if (!response.ok) {
-        return;
-      }
+    if (runningSessionsRequestRef.current) {
+      return runningSessionsRequestRef.current;
+    }
 
-      const payload = (await response.json()) as RunningSessionsApiPayload;
-      const sessions = Array.isArray(payload.data?.sessions) ? payload.data.sessions : [];
+    const request = (async () => {
+      try {
+        const response = await api.runningSessions();
+        if (!response.ok) {
+          return;
+        }
 
-      const normalizedSessions = sessions
-        .map((session) => {
+        const payload = (await response.json()) as RunningSessionsApiPayload;
+        const sessions = Array.isArray(payload.data?.sessions) ? payload.data.sessions : [];
+
+        const normalizedSessions = sessions
+          .map((session) => {
           if (typeof session.sessionId !== 'string' || !session.sessionId) {
             return null;
           }
@@ -173,24 +179,39 @@ function AppContentInner() {
             provider: typeof session.provider === 'string' ? session.provider : undefined,
             isInternal: session.isInternal === true,
           };
-        })
-        .filter((session): session is NonNullable<typeof session> => Boolean(session));
+          })
+          .filter((session): session is NonNullable<typeof session> => Boolean(session));
 
-      syncProcessingSessions(normalizedSessions);
+        syncProcessingSessions(normalizedSessions);
 
-      if (normalizedSessions.some((session) => session.source === 'chat')) {
-        sendMessage({
-          type: 'chat.subscribe',
-          sessions: normalizedSessions.filter((session) => session.source === 'chat').map((session) => ({
-            sessionId: session.sessionId,
-            lastSeq: runningSessionLastSeqRef.current.get(session.sessionId) ?? 0,
-          })),
-        });
+        if (isConnected && normalizedSessions.some((session) => session.source === 'chat')) {
+          sendMessage({
+            type: 'chat.subscribe',
+            sessions: normalizedSessions.filter((session) => session.source === 'chat').map((session) => ({
+              sessionId: session.sessionId,
+              lastSeq: runningSessionLastSeqRef.current.get(session.sessionId) ?? 0,
+            })),
+          });
+        }
+      } catch (error) {
+        // A server restart/network transition is expected while the WebSocket
+        // reconnects. Keep the console quiet for that transient fetch failure;
+        // the next poll will reconcile the authoritative state.
+        if (isConnected) {
+          console.warn('[AppContent] Failed to sync running sessions:', error);
+        }
       }
-    } catch (error) {
-      console.error('[AppContent] Failed to sync running sessions:', error);
+    })();
+
+    runningSessionsRequestRef.current = request;
+    try {
+      await request;
+    } finally {
+      if (runningSessionsRequestRef.current === request) {
+        runningSessionsRequestRef.current = null;
+      }
     }
-  }, [sendMessage, syncProcessingSessions]);
+  }, [isConnected, sendMessage, syncProcessingSessions]);
 
   useEffect(() => {
     void refreshRunningSessions();

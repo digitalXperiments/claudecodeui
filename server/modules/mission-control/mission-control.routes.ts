@@ -9,7 +9,7 @@ import {
   retryItem,
   runSectionProduce,
 } from '@/modules/mission-control/mission-control-runner.service.js';
-import { workThisItem } from '@/modules/mission-control/mission-control-work.service.js';
+import { matchProjectsForItem, workThisItem } from '@/modules/mission-control/mission-control-work.service.js';
 import { syncMissionControlSchedules } from '@/modules/mission-control/mission-control-scheduler.service.js';
 import {
   DEFAULT_MC_ACTIONS,
@@ -167,6 +167,12 @@ function parseSectionBody(body: Record<string, unknown>, partial: boolean): Crea
       : body.project_id !== undefined
         ? readString(body.project_id) || null
         : undefined;
+  const workProjectId =
+    body.work_project_id === null
+      ? null
+      : body.work_project_id !== undefined
+        ? readString(body.work_project_id) || null
+        : undefined;
 
   if (scope === 'project' && !projectId && !partial) {
     throw new AppError('project_id is required when scope is project', {
@@ -182,6 +188,7 @@ function parseSectionBody(body: Record<string, unknown>, partial: boolean): Crea
     ...(body.enabled !== undefined ? { enabled: readBoolean(body.enabled, true) } : {}),
     ...(scope !== undefined ? { scope } : {}),
     ...(projectId !== undefined ? { project_id: projectId } : {}),
+    ...(workProjectId !== undefined ? { work_project_id: workProjectId } : {}),
     ...(mode !== undefined ? { mode } : {}),
     ...(body.schedule_cron !== undefined
       ? { schedule_cron: readString(body.schedule_cron) || null }
@@ -213,9 +220,6 @@ function parseSectionBody(body: Record<string, unknown>, partial: boolean): Crea
     ...(body.actions !== undefined ? { actions: parseActions(body.actions) } : {}),
     ...(body.create_kanban_task !== undefined
       ? { create_kanban_task: readBoolean(body.create_kanban_task, false) }
-      : {}),
-    ...(body.create_swarm_on_approve !== undefined
-      ? { create_swarm_on_approve: readBoolean(body.create_swarm_on_approve, false) }
       : {}),
     ...(body.kanban_assignee_provider !== undefined
       ? { kanban_assignee_provider: parseKanbanProvider(body.kanban_assignee_provider) }
@@ -510,7 +514,27 @@ router.post(
   }),
 );
 
-// POST /items/:id/work — open a scoped chat in the matching project
+// GET /items/:id/work/projects — explain the project match before opening chat
+router.get(
+  '/items/:id/work/projects',
+  asyncHandler(async (req, res) => {
+    const itemId = paramId(req.params.id);
+    const item = missionControlDb.getItem(itemId);
+    if (!item) {
+      throw new AppError('Item not found', { code: 'MC_ITEM_NOT_FOUND', statusCode: 404 });
+    }
+    if (item.status !== 'pending' && item.status !== 'failed') {
+      throw new AppError(`Item is '${item.status}', not actionable`, {
+        code: 'MC_ITEM_NOT_ACTIONABLE',
+        statusCode: 400,
+      });
+    }
+    const section = missionControlDb.getSection(item.section_id);
+    res.json({ candidates: matchProjectsForItem(item, section) });
+  }),
+);
+
+// POST /items/:id/work — open a scoped chat in the selected project
 router.post(
   '/items/:id/work',
   asyncHandler(async (req, res) => {

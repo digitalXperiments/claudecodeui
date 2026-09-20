@@ -17,6 +17,7 @@ export type McSection = {
   enabled: boolean;
   scope: 'global' | 'project';
   project_id: string | null;
+  work_project_id?: string | null;
   mode: 'review' | 'fire_and_forget';
   schedule_cron: string | null;
   provider: string;
@@ -30,7 +31,6 @@ export type McSection = {
   resolve_tools: string[];
   actions: McAction[];
   create_kanban_task: boolean;
-  create_swarm_on_approve: boolean;
   kanban_assignee_provider: string | null;
   kanban_review_provider: string | null;
   kanban_mcp_tools: string[];
@@ -48,6 +48,7 @@ export type CreateMcSectionInput = {
   enabled?: boolean;
   scope?: 'global' | 'project';
   project_id?: string | null;
+  work_project_id?: string | null;
   mode?: 'review' | 'fire_and_forget';
   schedule_cron?: string | null;
   provider?: string;
@@ -61,7 +62,6 @@ export type CreateMcSectionInput = {
   resolve_tools?: string[];
   actions?: McAction[];
   create_kanban_task?: boolean;
-  create_swarm_on_approve?: boolean;
   kanban_assignee_provider?: string | null;
   kanban_review_provider?: string | null;
   kanban_mcp_tools?: string[];

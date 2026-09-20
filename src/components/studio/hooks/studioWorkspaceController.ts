@@ -32,10 +32,6 @@ export type StudioWorkspaceApi = {
     id: string,
     input: { tokens: StudioTokensPatch; regenerate?: boolean },
   ) => Promise<StudioPrototypeDetail>;
-  launchSwarm: (
-    projectId: string,
-    id: string,
-  ) => Promise<{ swarmId: string; prototype: StudioPrototypeDetail }>;
   ideatePrompt: (
     projectId: string,
     id: string,
@@ -310,19 +306,6 @@ export function createStudioWorkspaceController(options: StudioWorkspaceControll
     });
   };
 
-  const launchSwarm = async () => {
-    const active = state.active;
-    if (!active) return null;
-    return run(async () => {
-      const result = await api.launchSwarm(active.projectId, active.id);
-      const prototype = normalizeDetail(result.prototype);
-      emit({
-        active: prototype,
-        items: mergeItems(state.items, prototype),
-      });
-      return { ...result, prototype };
-    });
-  };
 
   const ideatePrompt = async () => {
     const active = state.active;
@@ -367,7 +350,6 @@ export function createStudioWorkspaceController(options: StudioWorkspaceControll
     promoteVariant,
     revertToVersion,
     applyTokens,
-    launchSwarm,
     ideatePrompt,
     destroy: () => {
       destroyed = true;

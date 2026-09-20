@@ -23,7 +23,12 @@ import ProviderBindingMatrix, {
   FANOUT_PROVIDERS,
   PROVIDER_LABELS,
 } from '../../shared/view/ProviderBindingMatrix';
-import { DEFAULT_MCP_FORM, MCP_SUPPORTED_TRANSPORTS } from '../constants';
+import {
+  DEFAULT_MCP_FORM,
+  MCP_GLOBAL_SUPPORTED_SCOPES,
+  MCP_GLOBAL_SUPPORTED_TRANSPORTS,
+  MCP_SUPPORTED_TRANSPORTS,
+} from '../constants';
 import { useMcpCatalog } from '../hooks/useMcpCatalog';
 import { formStateFromTemplate, MCP_TEMPLATES, type McpTemplate } from '../templates';
 import type {
@@ -815,8 +820,8 @@ export default function McpCatalogPanel({ currentProjects }: McpCatalogPanelProp
         title={formTitle}
         description="Saved once in the CloudCLI catalog, then projected into each checked provider’s native config. Unchecked providers never receive this server."
         submitLabel={formSubmitLabel}
-        supportedScopes={['user', 'project']}
-        supportedTransports={['stdio', 'http', 'sse']}
+        supportedScopes={MCP_GLOBAL_SUPPORTED_SCOPES}
+        supportedTransports={MCP_GLOBAL_SUPPORTED_TRANSPORTS}
         extraFields={(
           <ProviderBindingMatrix
             selected={formProviders}

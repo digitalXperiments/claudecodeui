@@ -17,8 +17,13 @@
 import path from 'node:path';
 import { readFile } from 'node:fs/promises';
 
-import { agentRelayService } from '@/modules/agent-relay/index.js';
-import type { AgentRelayJob, AgentRelayStatus } from '@/modules/agent-relay/index.js';
+// This is intentionally a leaf import: the agent-relay barrel also exports
+// routes that import Studio, so using it here would recreate a module cycle
+// while the Universes router is being initialized.
+// eslint-disable-next-line boundaries/dependencies
+import { agentRelayService } from '@/modules/agent-relay/agent-relay.service.js';
+// eslint-disable-next-line boundaries/dependencies
+import type { AgentRelayJob, AgentRelayStatus } from '@/modules/agent-relay/agent-relay.types.js';
 import { projectsDb } from '@/modules/database/index.js';
 import {
   reconcilePreviewState,

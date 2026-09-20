@@ -8,6 +8,14 @@ export type McAction = {
   terminal?: boolean;
 };
 
+export type WorkProjectMatch = {
+  projectId: string;
+  projectPath: string;
+  name: string;
+  score: number;
+  reason: string;
+};
+
 export type McSection = {
   section_id: string;
   title: string;
@@ -16,6 +24,7 @@ export type McSection = {
   enabled: boolean;
   scope: 'global' | 'project';
   project_id: string | null;
+  work_project_id?: string | null;
   mode: 'review' | 'fire_and_forget';
   schedule_cron: string | null;
   provider: string;
@@ -29,7 +38,6 @@ export type McSection = {
   resolve_tools: string[];
   actions: McAction[];
   create_kanban_task: boolean;
-  create_swarm_on_approve: boolean;
   kanban_assignee_provider: string | null;
   kanban_review_provider: string | null;
   kanban_mcp_tools: string[];
@@ -67,6 +75,7 @@ export type McSectionInput = {
   enabled?: boolean;
   scope?: 'global' | 'project';
   project_id?: string | null;
+  work_project_id?: string | null;
   mode?: 'review' | 'fire_and_forget';
   schedule_cron?: string | null;
   provider?: string;
@@ -80,7 +89,6 @@ export type McSectionInput = {
   resolve_tools?: string[];
   actions?: McAction[];
   create_kanban_task?: boolean;
-  create_swarm_on_approve?: boolean;
   kanban_assignee_provider?: string | null;
   kanban_review_provider?: string | null;
   kanban_mcp_tools?: string[];
@@ -227,7 +235,7 @@ export const missionControlApi = {
     projectPath: string;
     prompt: string;
     matchReason: string;
-    candidates: Array<{ projectId: string; projectPath: string; name: string; score: number; reason: string }>;
+    candidates: WorkProjectMatch[];
     pendingCount: number;
   }> {
     const res = await authenticatedFetch(
@@ -236,6 +244,13 @@ export const missionControlApi = {
         method: 'POST',
         body: JSON.stringify(projectId ? { projectId } : {}),
       },
+    );
+    return parseJson(res);
+  },
+
+  async workMatches(itemId: string): Promise<{ candidates: WorkProjectMatch[] }> {
+    const res = await authenticatedFetch(
+      `/api/mission-control/items/${encodeURIComponent(itemId)}/work/projects`,
     );
     return parseJson(res);
   },

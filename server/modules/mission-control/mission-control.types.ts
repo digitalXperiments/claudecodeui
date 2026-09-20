@@ -57,7 +57,7 @@ export const MC_DELETE_ACTION: McAction = {
 
 export const MC_WORK_ACTION: McAction = {
   id: 'work',
-  label: 'Work this',
+  label: 'Open work chat',
   kind: 'work',
   style: 'secondary',
   terminal: false,
@@ -97,6 +97,8 @@ export type McSection = {
   enabled: boolean;
   scope: McSectionScope;
   project_id: string | null;
+  /** Project used when an operator opens Work this for an item. */
+  work_project_id?: string | null;
   mode: McSectionMode;
   schedule_cron: string | null;
   provider: McProvider;
@@ -113,7 +115,6 @@ export type McSection = {
   /** On approve, also create a card on the global kanban backlog. */
   create_kanban_task: boolean;
   /** On approve, also launch an autonomous swarm for this item. */
-  create_swarm_on_approve: boolean;
   /** Default implementation agent pre-assigned to bridged kanban cards. */
   kanban_assignee_provider: McProvider | null;
   /** Default review agent pre-assigned to bridged kanban cards. */
@@ -156,6 +157,7 @@ export type CreateMcSectionInput = {
   enabled?: boolean;
   scope?: McSectionScope;
   project_id?: string | null;
+  work_project_id?: string | null;
   mode?: McSectionMode;
   schedule_cron?: string | null;
   provider?: McProvider;
@@ -170,7 +172,6 @@ export type CreateMcSectionInput = {
   tool_policy?: McToolPolicy;
   actions?: McAction[];
   create_kanban_task?: boolean;
-  create_swarm_on_approve?: boolean;
   kanban_assignee_provider?: McProvider | null;
   kanban_review_provider?: McProvider | null;
   kanban_mcp_tools?: string[];

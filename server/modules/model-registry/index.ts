@@ -1,0 +1,31 @@
+export {
+  BENCHMARK_HALF_LIFE_DAYS,
+  MIN_OUTCOME_SAMPLES,
+  canonicalizeCatalogModels,
+  capabilityScoreForTask,
+  effectiveScore,
+  enabledRegistryModelIdsForProvider,
+  exportSnapshot,
+  getStaffingPrefs,
+  listModelCapabilities,
+  matchBenchmarkFamily,
+  outcomeCorrection,
+  rankCandidatesForTask,
+  refreshModelRegistry,
+  registryIsStale,
+  setModelEnabled,
+  setStaffingPrefs,
+  upsertModelCapability,
+  type ModelCapability,
+  type ModelRegistryPrefs,
+  type StaffingQuery,
+} from '@/modules/model-registry/model-registry.service.js';
+export {
+  MIN_LEDGER_SAMPLES,
+  buildCostLedger,
+  candidateValueScore,
+  formatCostStats,
+  type CostLedger,
+  type ProfileCostStats,
+} from '@/modules/model-registry/cost-ledger.service.js';
+export { default, modelRegistryRoutes } from '@/modules/model-registry/model-registry.routes.js';

@@ -9,6 +9,7 @@ import {
   buildWorkThisPrompt,
   matchProjectsForItem,
 } from '@/modules/mission-control/mission-control-work.service.js';
+import { missionControlDb } from '@/modules/mission-control/mission-control.repository.js';
 import type { McItem } from '@/modules/mission-control/mission-control.types.js';
 
 async function withTempDb(fn: () => Promise<void> | void): Promise<void> {
@@ -71,6 +72,36 @@ test('matchProjectsForItem uses a Jira ticket prefix', async () => {
       null,
     );
     assert.equal(matches[0]?.name, 'DE-Warehouse');
+  });
+});
+
+test('matchProjectsForItem uses the bot Work this project independently from its run project', async () => {
+  await withTempDb(() => {
+    const runProject = projectsDb.createProjectPath('/Users/test/Work/Runtime', 'Runtime');
+    const workProject = projectsDb.createProjectPath('/Users/test/Work/Delivery', 'Delivery');
+    assert.ok(runProject.project);
+    assert.ok(workProject.project);
+
+    const section = missionControlDb.createSection({
+      title: 'Two project bot',
+      scope: 'project',
+      project_id: runProject.project.project_id,
+      work_project_id: workProject.project.project_id,
+    });
+    assert.equal(section.project_id, runProject.project.project_id);
+    assert.equal(section.work_project_id, workProject.project.project_id);
+
+    const matches = matchProjectsForItem(fakeItem({ suggestedProjectPath: runProject.project.project_path }), section);
+    assert.deepEqual(matches, [{
+      projectId: workProject.project.project_id,
+      projectPath: workProject.project.project_path,
+      name: 'Delivery',
+      score: 100,
+      reason: 'bot work project',
+    }]);
+
+    const updated = missionControlDb.updateSection(section.section_id, { work_project_id: null });
+    assert.equal(updated?.work_project_id, null);
   });
 });
 

@@ -8,7 +8,6 @@ import {
   AUTOMATION_TABLE_SCHEMA_SQL,
   FAILOVER_PLAYBOOKS_TABLE_SCHEMA_SQL,
   CONTINUITY_SCHEMA_SQL,
-  SWARM_TABLE_SCHEMA_SQL,
   KANBAN_SCHEMA_SQL,
   LAST_SCANNED_AT_SQL,
   MISSION_CONTROL_SCHEMA_SQL,
@@ -713,6 +712,14 @@ const ensureMissionControlKanbanBridgeSchema = (db: Database): void => {
   addColumnToTableIfNotExists(db, 'mc_sections', columns, 'tool_policy_json', "TEXT NOT NULL DEFAULT '{}'");
 };
 
+/** Separate the bot's execution project from its Work this destination. */
+const ensureMissionControlWorkProjectSchema = (db: Database): void => {
+  if (!tableExists(db, 'mc_sections')) return;
+  const columns = getTableInfo(db, 'mc_sections').map((column) => column.name);
+  addColumnToTableIfNotExists(db, 'mc_sections', columns, 'work_project_id', 'TEXT');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_mc_sections_work_project ON mc_sections(work_project_id)');
+};
+
 /** Remove tables from the never-shipped standalone Bot Studio prototype. */
 export const dropAbandonedBotStudioPrototypeTables = (db: Database): void => {
   // Child tables must be removed before their parents while foreign_keys is on.
@@ -784,6 +791,56 @@ const ensureWebhookRetrySchema = (db: Database): void => {
  * kanban_tasks.workspace_id, kanban_runs/MC items/webhook deliveries agent_run_id,
  * user_credentials.secret_id. Idempotent.
  */
+/**
+ * Agent Swarm was removed; Agent Relay is the only delegation path. Drop the
+ * orchestration tables and the agent-profile columns that only fed swarm seat
+ * selection. `model_registry_prefs` is deliberately NOT dropped — the model
+ * registry still owns it, so its old `swarm_staffing_prefs` row is carried
+ * over before that table goes.
+ */
+function dropRetiredSwarmSchema(db: Database): void {
+  if (tableExists(db, 'swarm_staffing_prefs')) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS model_registry_prefs (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        allowed_providers TEXT,
+        default_orchestrator_provider TEXT,
+        default_orchestrator_model TEXT,
+        updated_at TEXT NOT NULL
+      );
+      INSERT OR IGNORE INTO model_registry_prefs
+        (id, allowed_providers, default_orchestrator_provider, default_orchestrator_model, updated_at)
+        SELECT id, allowed_providers, default_orchestrator_provider, default_orchestrator_model, updated_at
+        FROM swarm_staffing_prefs;
+      DROP TABLE swarm_staffing_prefs;
+    `);
+  }
+  // Children first: several carry ON DELETE CASCADE foreign keys to swarm_runs.
+  for (const table of [
+    'swarm_events',
+    'swarm_artifacts',
+    'swarm_messages',
+    'swarm_step_attempts',
+    'swarm_members',
+    'swarm_runs',
+  ]) {
+    db.exec(`DROP TABLE IF EXISTS ${table}`);
+  }
+  for (const [table, dropped] of [
+    ['agent_run_profiles', ['swarm_roles', 'swarm_level']],
+    // Mission Control's "start a swarm on approve" bridge.
+    ['mc_sections', ['create_swarm_on_approve']],
+  ] as Array<[string, string[]]>) {
+    if (!tableExists(db, table)) continue;
+    const columns = getTableInfo(db, table).map((c) => c.name);
+    for (const column of dropped) {
+      if (columns.includes(column)) {
+        db.exec(`ALTER TABLE ${table} DROP COLUMN ${column}`);
+      }
+    }
+  }
+}
+
 const ensureRunSpineBridgeSchema = (db: Database): void => {
   if (tableExists(db, 'kanban_tasks')) {
     let columns = getTableInfo(db, 'kanban_tasks').map((column) => column.name);
@@ -1017,7 +1074,6 @@ export const runMigrations = (db: Database) => {
 
     // Named agent run profiles + in-app notification inbox (additive).
     db.exec(AGENT_RUN_PROFILES_TABLE_SCHEMA_SQL);
-    ensureAgentProfileSwarmRolesSchema(db);
     db.exec(SYSTEM_NOTIFICATIONS_TABLE_SCHEMA_SQL);
     db.exec(INTERRUPTS_TABLE_SCHEMA_SQL);
     ensureInterruptDedupeSchema(db);
@@ -1032,6 +1088,7 @@ export const runMigrations = (db: Database) => {
     // Mission Control (sections + reviewable items).
     db.exec(MISSION_CONTROL_SCHEMA_SQL);
     ensureMissionControlKanbanBridgeSchema(db);
+    ensureMissionControlWorkProjectSchema(db);
     dropAbandonedBotStudioPrototypeTables(db);
 
     // Inbound webhooks (source-routed headless agent runs).
@@ -1047,8 +1104,7 @@ export const runMigrations = (db: Database) => {
     db.exec(FAILOVER_PLAYBOOKS_TABLE_SCHEMA_SQL);
     db.exec(CONTINUITY_SCHEMA_SQL);
     ensureContinuitySchema(db);
-    db.exec(SWARM_TABLE_SCHEMA_SQL);
-    ensureSwarmAgentSchema(db);
+    dropRetiredSwarmSchema(db);
     ensureRunSpineBridgeSchema(db);
     ensureAutomationGraphSchema(db);
     db.exec(EVALS_SCHEMA_SQL);
@@ -1059,23 +1115,6 @@ export const runMigrations = (db: Database) => {
     throw error;
   }
 };
-
-/**
- * Additive agent_run_profiles.swarm_roles column: JSON array of swarm roles
- * ("explorer" | "implementer" | "reviewer") a profile may serve when the
- * swarm orchestrator auto-selects its roster. NULL = not available to swarms.
- */
-function ensureAgentProfileSwarmRolesSchema(db: Database): void {
-  if (!tableExists(db, 'agent_run_profiles')) return;
-  const columns = getTableInfo(db, 'agent_run_profiles').map((column) => column.name);
-  addColumnToTableIfNotExists(db, 'agent_run_profiles', columns, 'swarm_roles', 'TEXT DEFAULT NULL');
-  // Capability tier ("basic" | "medium" | "advanced") the orchestrator uses to
-  // match seat strength to step difficulty. NULL on upgraded rows = "medium".
-  addColumnToTableIfNotExists(db, 'agent_run_profiles', columns, 'swarm_level', 'TEXT DEFAULT NULL');
-  // 0 = disabled: excluded from every automatic seat selection (swarm
-  // auto-roster, retry reassignment) while staying available for explicit use.
-  addColumnToTableIfNotExists(db, 'agent_run_profiles', columns, 'enabled', 'INTEGER NOT NULL DEFAULT 1');
-}
 
 /** Durable interrupt dedupe key used by atomic open/snoozed upserts. */
 function ensureInterruptDedupeSchema(db: Database): void {
@@ -1102,87 +1141,4 @@ function ensureInterruptLifecycleSchema(db: Database): void {
   db.exec(
     `CREATE INDEX IF NOT EXISTS idx_interrupts_expiry ON interrupts(status, expires_at)`,
   );
-}
-
-/** Additive columns for Agent Swarm orchestration (plan, blackboard, per-agent config). */
-function ensureSwarmAgentSchema(db: Database): void {
-  if (!tableExists(db, 'swarm_runs')) return;
-  const runCols = getTableInfo(db, 'swarm_runs').map((c) => c.name);
-  addColumnToTableIfNotExists(db, 'swarm_runs', runCols, 'plan_json', 'TEXT');
-  addColumnToTableIfNotExists(db, 'swarm_runs', runCols, 'blackboard_json', "TEXT DEFAULT '[]'");
-  addColumnToTableIfNotExists(db, 'swarm_runs', runCols, 'skills_json', "TEXT DEFAULT '[]'");
-  addColumnToTableIfNotExists(db, 'swarm_runs', runCols, 'config_json', 'TEXT');
-  addColumnToTableIfNotExists(db, 'swarm_runs', runCols, 'goal_card_json', 'TEXT');
-  addColumnToTableIfNotExists(db, 'swarm_runs', runCols, 'attachments_json', "TEXT DEFAULT '[]'");
-  addColumnToTableIfNotExists(db, 'swarm_runs', runCols, 'workspace_id', 'TEXT');
-  addColumnToTableIfNotExists(db, 'swarm_runs', runCols, 'pr_url', 'TEXT');
-  addColumnToTableIfNotExists(db, 'swarm_runs', runCols, 'feature_branch', 'TEXT');
-  addColumnToTableIfNotExists(db, 'swarm_runs', runCols, 'archived_at', 'DATETIME');
-  addColumnToTableIfNotExists(db, 'swarm_runs', runCols, 'version', 'INTEGER NOT NULL DEFAULT 0');
-  addColumnToTableIfNotExists(db, 'swarm_runs', runCols, 'cancel_requested_at', 'DATETIME');
-  addColumnToTableIfNotExists(db, 'swarm_runs', runCols, 'lease_owner', 'TEXT');
-  addColumnToTableIfNotExists(db, 'swarm_runs', runCols, 'lease_expires_at', 'DATETIME');
-  addColumnToTableIfNotExists(db, 'swarm_runs', runCols, 'idempotency_key', 'TEXT');
-  addColumnToTableIfNotExists(db, 'swarm_runs', runCols, 'last_error', 'TEXT');
-  db.exec(
-    `CREATE INDEX IF NOT EXISTS idx_swarm_runs_created ON swarm_runs(created_at DESC)`,
-  );
-  db.exec(
-    `CREATE INDEX IF NOT EXISTS idx_swarm_runs_archived ON swarm_runs(archived_at)`,
-  );
-  db.exec(
-    `CREATE UNIQUE INDEX IF NOT EXISTS idx_swarm_runs_idempotency
-       ON swarm_runs(project_id, idempotency_key) WHERE idempotency_key IS NOT NULL`,
-  );
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS swarm_messages (
-      message_id TEXT PRIMARY KEY NOT NULL,
-      swarm_id TEXT NOT NULL,
-      seq INTEGER NOT NULL,
-      from_agent TEXT NOT NULL,
-      to_agent TEXT,
-      kind TEXT NOT NULL,
-      content TEXT NOT NULL,
-      step_id TEXT,
-      at DATETIME NOT NULL,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      UNIQUE(swarm_id, seq),
-      FOREIGN KEY (swarm_id) REFERENCES swarm_runs(swarm_id) ON DELETE CASCADE
-    );
-    CREATE INDEX IF NOT EXISTS idx_swarm_messages_swarm_seq ON swarm_messages(swarm_id, seq);
-    CREATE TABLE IF NOT EXISTS swarm_artifacts (
-      artifact_id TEXT PRIMARY KEY NOT NULL,
-      swarm_id TEXT NOT NULL,
-      step_id TEXT,
-      attempt_id TEXT,
-      kind TEXT NOT NULL,
-      label TEXT NOT NULL,
-      content TEXT,
-      path TEXT,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (swarm_id) REFERENCES swarm_runs(swarm_id) ON DELETE CASCADE
-    );
-    CREATE INDEX IF NOT EXISTS idx_swarm_artifacts_swarm ON swarm_artifacts(swarm_id, created_at);
-    CREATE TABLE IF NOT EXISTS swarm_events (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      swarm_id TEXT NOT NULL,
-      seq INTEGER NOT NULL,
-      kind TEXT NOT NULL,
-      step_id TEXT,
-      level TEXT NOT NULL DEFAULT 'info',
-      data TEXT NOT NULL DEFAULT '{}',
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      UNIQUE(swarm_id, seq),
-      FOREIGN KEY (swarm_id) REFERENCES swarm_runs(swarm_id) ON DELETE CASCADE
-    );
-    CREATE INDEX IF NOT EXISTS idx_swarm_events_swarm_seq ON swarm_events(swarm_id, seq);
-  `);
-
-  if (!tableExists(db, 'swarm_members')) return;
-  const memberCols = getTableInfo(db, 'swarm_members').map((c) => c.name);
-  addColumnToTableIfNotExists(db, 'swarm_members', memberCols, 'kind', 'TEXT');
-  addColumnToTableIfNotExists(db, 'swarm_members', memberCols, 'effort', 'TEXT');
-  addColumnToTableIfNotExists(db, 'swarm_members', memberCols, 'permission_mode', 'TEXT');
-  addColumnToTableIfNotExists(db, 'swarm_members', memberCols, 'skills_json', 'TEXT');
-  addColumnToTableIfNotExists(db, 'swarm_members', memberCols, 'step_id', 'TEXT');
 }

@@ -159,7 +159,6 @@ export function startRunMaintenance(): () => void {
       const report = publishShiftReport();
       if (report) {
         console.log('[Runs] published overnight shift report', {
-          prs: report.prs.length,
           spendUsd: report.spendUsd,
         });
       }

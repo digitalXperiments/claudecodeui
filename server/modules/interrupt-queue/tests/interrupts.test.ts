@@ -212,23 +212,3 @@ test('approve permission and abort run actions call their server handlers', asyn
     interruptsService.configurePermissionResolver(null);
   });
 });
-
-test('failed swarm actions remain open instead of acknowledging a side effect that did not happen', async () => {
-  await withDatabase(async () => {
-    const interrupt = interruptsService.create({
-      kind: 'approval_pending',
-      title: 'Missing swarm approval',
-      actions: [{ id: 'approve_swarm', label: 'Approve' }],
-      meta: { swarmId: 'swarm_missing' },
-    });
-
-    await assert.rejects(
-      interruptsService.actAndWait(interrupt.interrupt_id, {
-        key: 'approve_swarm',
-        actor: 'user-1',
-      }),
-      /Swarm not found/,
-    );
-    assert.equal(interruptsService.get(interrupt.interrupt_id)?.status, 'open');
-  });
-});

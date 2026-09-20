@@ -3,6 +3,11 @@ export { createWebSocketServer } from './services/websocket-server.service.js';
 export { broadcastSystemEvent } from './services/system-broadcast.service.js';
 export { chatRunRegistry, broadcastSessionRemoved } from './services/chat-run-registry.service.js';
 export {
+  configureProviderAbortFns,
+  getProviderAbortFn,
+} from './services/provider-abort-registry.service.js';
+export type { ProviderAbortFn } from './services/provider-abort-registry.service.js';
+export {
   buildSessionUpsertedEvent,
   broadcastSessionUpserted,
   broadcastSessionUpsertedBatch,

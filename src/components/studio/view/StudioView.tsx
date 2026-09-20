@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from 'react';
+import { Link } from 'react-router-dom';
 import {
   ArrowLeft,
   Bot,
@@ -206,19 +207,25 @@ export default function StudioView({
 
   const activeId = active?.id;
   const activeProjectId = active?.projectId;
+  // Session allocation should follow identity, not the object references used
+  // by the catalog. Session-upsert events refresh project objects while a chat
+  // is running; using `active`/`project` directly here tears down and recreates
+  // the right-hand Studio chat on every such refresh.
+  const activeOriginSessionId = active?.originSessionId ?? null;
+  const activeTitle = active?.title ?? 'Studio prototype';
+  const studioProjectId = project?.projectId ?? null;
+  const studioProjectPath = project?.fullPath || project?.path || '';
 
   useEffect(() => {
     let cancelled = false;
-    const prototype = active;
-    const targetProject = project;
-    if (!prototype || !targetProject || prototype.projectId !== targetProject.projectId) {
+    if (!activeId || !activeProjectId || !studioProjectId || studioProjectId !== activeProjectId) {
       setStudioSession(null);
       return () => {
         cancelled = true;
       };
     }
 
-    const storageKey = `${STUDIO_CHAT_SESSION_PREFIX}${targetProject.projectId}:${prototype.id}`;
+    const storageKey = `${STUDIO_CHAT_SESSION_PREFIX}${activeProjectId}:${activeId}`;
     setStudioSession(null);
 
     const createOrRestoreStudioSession = async () => {
@@ -235,12 +242,12 @@ export default function StudioView({
         ? stored.provider as LLMProvider
         : null;
 
-      if (prototype.originSessionId) {
+      if (activeOriginSessionId) {
         try {
-          const metaResponse = await authenticatedFetch(`/api/providers/sessions/${encodeURIComponent(prototype.originSessionId)}/meta`);
+          const metaResponse = await authenticatedFetch(`/api/providers/sessions/${encodeURIComponent(activeOriginSessionId)}/meta`);
           const metaBody = await metaResponse.json();
           if (metaResponse.ok && metaBody?.data?.session) {
-            storedId = prototype.originSessionId;
+            storedId = activeOriginSessionId;
             storedProvider = STUDIO_PROVIDERS.includes(metaBody.data.session.provider as LLMProvider)
               ? metaBody.data.session.provider as LLMProvider
               : 'claude';
@@ -261,8 +268,8 @@ export default function StudioView({
           method: 'POST',
           body: JSON.stringify({
             provider,
-            projectPath: targetProject.fullPath || targetProject.path || '',
-            studioPrototypeIds: [prototype.id],
+            projectPath: studioProjectPath,
+            studioPrototypeIds: [activeId],
             studioOnly: true,
           }),
         });
@@ -279,15 +286,15 @@ export default function StudioView({
         }
       }
 
-      await studioApi.attachSession(targetProject.projectId, prototype.id, sessionId);
+      await studioApi.attachSession(activeProjectId, activeId, sessionId);
 
       if (cancelled || !sessionId || !provider) return;
       setStudioSession({
         id: sessionId,
         __provider: provider,
-        __projectId: targetProject.projectId,
-        __studioPrototypeId: prototype.id,
-        summary: `Studio · ${prototype.title}`,
+        __projectId: activeProjectId,
+        __studioPrototypeId: activeId,
+        summary: `Studio · ${activeTitle}`,
       });
     };
 
@@ -297,7 +304,7 @@ export default function StudioView({
     return () => {
       cancelled = true;
     };
-  }, [active, project]);
+  }, [activeId, activeOriginSessionId, activeProjectId, activeTitle, studioProjectId, studioProjectPath]);
 
   // A chat iteration writes prototype.html in the project checkout. Keep the
   // iframe live while the agent works so the user can see the change land.
@@ -653,7 +660,7 @@ export default function StudioView({
                       <span className="flex min-w-0 items-center gap-2 truncate pr-2 text-[10px] text-muted-foreground">
                         {(() => {
                           const sessionId = item.originSessionId || item.linkedSessionIds[0];
-                          return sessionId ? <a className="shrink-0 text-primary hover:underline" href={`/session/${encodeURIComponent(sessionId)}`}>Open chat</a> : null;
+                          return sessionId ? <Link className="shrink-0 text-primary hover:underline" to={`/session/${encodeURIComponent(sessionId)}`}>Open chat</Link> : null;
                         })()}
                         <span>{new Date(item.updatedAt).toLocaleDateString()}</span>
                       </span>

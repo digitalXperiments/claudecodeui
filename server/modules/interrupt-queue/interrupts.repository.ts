@@ -392,21 +392,6 @@ export const interruptsDb = {
     });
   },
 
-  /** Cross-module existence probe used by the ci_failed sweep rule. */
-  swarmExists(swarmId: string): boolean {
-    if (!swarmId.trim()) return false;
-    const db = getConnection();
-    try {
-      const row = db.prepare(`SELECT 1 AS present FROM swarm_runs WHERE swarm_id = ?`).get(swarmId) as
-        | { present: number }
-        | undefined;
-      return Boolean(row);
-    } catch {
-      // swarm tables are optional in some deployments; treat as still present
-      // so informational pointers are never resolved on a transient error.
-      return true;
-    }
-  },
 
   /** State probe used to retire Mission Control approvals whose item is gone or settled. */
   missionControlItemState(itemId: string): 'actionable' | 'settled' | 'missing' | 'unknown' {

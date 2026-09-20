@@ -1,3 +1,10 @@
+const ACTIVE_RUN_STATUSES = new Set(['queued', 'starting', 'running', 'waiting_permission', 'waiting_approval']);
+
+/** Whether a tick is still in flight (not yet succeeded/failed/aborted/timed out). */
+export function isRunActive(status: string): boolean {
+  return ACTIVE_RUN_STATUSES.has(status.toLowerCase());
+}
+
 export function formatDuration(durationMs: number | null | undefined): string {
   if (durationMs == null || !Number.isFinite(durationMs)) return '—';
   const totalSeconds = Math.max(0, Math.round(durationMs / 1000));

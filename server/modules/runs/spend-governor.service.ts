@@ -7,7 +7,7 @@
 
 import { getAppFeatures } from '@/modules/app-features/index.js';
 import { interruptsService } from '@/modules/interrupt-queue/index.js';
-import { rankCandidatesForTask } from '@/modules/swarm/index.js';
+import { rankCandidatesForTask } from '@/modules/model-registry/index.js';
 
 export type SpendVerdict = {
   spentUsd: number;

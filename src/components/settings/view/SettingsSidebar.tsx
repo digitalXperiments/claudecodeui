@@ -24,6 +24,7 @@ import {
   UserCog,
   Webhook,
   Archive,
+  Zap,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
@@ -55,8 +56,9 @@ const NAV_GROUPS: NavGroup[] = [
     label: 'Agents & intelligence',
     items: [
       { id: 'agents', labelKey: 'mainTabs.agents', fallbackLabel: 'Agents', keywords: 'providers login models permissions', icon: Bot },
-      { id: 'agent-profiles', labelKey: 'mainTabs.agentProfiles', fallbackLabel: 'Agent profiles', keywords: 'presets roles swarm', icon: UserCog },
+      { id: 'agent-profiles', labelKey: 'mainTabs.agentProfiles', fallbackLabel: 'Agent profiles', keywords: 'presets roles permissions', icon: UserCog },
       { id: 'continuity', labelKey: 'mainTabs.continuity', fallbackLabel: 'Continuity', keywords: 'resume limits fallback handoff retry', icon: Route },
+      { id: 'jev', labelKey: 'mainTabs.jev', fallbackLabel: 'Jev', keywords: 'typesafe classifier decisions permissions routing confidence system one', icon: Zap },
       { id: 'studio', labelKey: 'mainTabs.studio', fallbackLabel: 'Studio', keywords: 'design prototype', icon: Palette },
       { id: 'evals', labelKey: 'mainTabs.evals', fallbackLabel: 'Eval Center', keywords: 'tests evaluation quality', icon: FlaskConical },
     ],

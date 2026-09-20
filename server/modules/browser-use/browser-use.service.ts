@@ -29,6 +29,11 @@ import {
   PendingInputStore,
   type CreateBrowserHumanPromptInput,
 } from '@/modules/browser-use/browser-use.prompts.js';
+import {
+  assessPageState,
+  browserPageStateEnabled,
+  type BrowserPageAssessment,
+} from '@/modules/browser-use/jev-browser.service.js';
 
 const require = createRequire(import.meta.url);
 const __dirname = getModuleDir(import.meta.url);
@@ -468,6 +473,43 @@ function normalizeUrl(rawUrl: string): string {
   }
 
   return parsed.toString();
+}
+
+/**
+ * Page text used only to answer "is it ready / did that work". Read at most
+ * twice per action (before and after), and only while the capability is on, so
+ * a disabled sidecar costs nothing.
+ */
+async function pageTextForAssessment(handle: RuntimeHandle | undefined): Promise<string | null> {
+  if (!handle?.page) return null;
+  if (!browserPageStateEnabled()) return null;
+  return handle.page.locator('body').innerText({ timeout: 2_000 }).catch(() => '');
+}
+
+/**
+ * Answers, inside the tool call, the two questions the agent would otherwise
+ * spend a turn and a full snapshot on. Never throws and never blocks the
+ * action's result: a failure just means no assessment is attached.
+ */
+async function assessAfterAction(
+  handle: RuntimeHandle | undefined,
+  session: BrowserUseSession,
+  action: string,
+  previousText: string | null,
+): Promise<BrowserPageAssessment | null> {
+  if (!handle?.page || previousText === null) return null;
+  try {
+    const text = await handle.page.locator('body').innerText({ timeout: 2_000 }).catch(() => '');
+    return await assessPageState({
+      action,
+      url: session.url ?? '',
+      title: session.title ?? '',
+      text,
+      previousText,
+    });
+  } catch {
+    return null;
+  }
 }
 
 function publicSession(session: BrowserUseSession): PublicBrowserUseSession {
@@ -984,11 +1026,15 @@ export const browserUseService = {
     }
 
     const url = normalizeUrl(rawUrl);
+    const before = await pageTextForAssessment(handle);
     await handle.page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30_000 });
     session.lastAction = `navigate:${url}`;
     session.cursor = null;
     await captureSession(session, handle.page);
-    return publicSession(session);
+    // `domcontentloaded` fires before an SPA is usable, which is exactly why
+    // the agent used to need a second look. Report readiness here instead.
+    const pageState = await assessAfterAction(handle, session, `navigate:${url}`, before);
+    return { ...publicSession(session), ...(pageState ? { pageState } : {}) };
   },
 
   async agentSnapshot(sessionId: string) {
@@ -1035,6 +1081,7 @@ export const browserUseService = {
       throw new Error('Browser runtime handle is not available.');
     }
     const point = await getActionPoint(handle.page, input);
+    const before = await pageTextForAssessment(handle);
 
     if (input.selector) {
       await handle.page.locator(input.selector).first().click({ timeout: 10_000 });
@@ -1049,7 +1096,8 @@ export const browserUseService = {
     session.lastAction = 'click';
     session.cursor = point ? { ...point, actor: 'agent' } : null;
     await captureSession(session, handle.page);
-    return publicSession(session);
+    const pageState = await assessAfterAction(handle, session, 'click', before);
+    return { ...publicSession(session), ...(pageState ? { pageState } : {}) };
   },
 
   async agentType(sessionId: string, input: { selector?: string; text: string; submit?: boolean }) {
@@ -1060,6 +1108,7 @@ export const browserUseService = {
       throw new Error('Browser runtime handle is not available.');
     }
 
+    const before = await pageTextForAssessment(handle);
     if (input.selector) {
       await handle.page.locator(input.selector).first().fill(input.text, { timeout: 10_000 });
       session.cursor = await getActionPoint(handle.page, input).then((point) => (
@@ -1074,7 +1123,10 @@ export const browserUseService = {
 
     session.lastAction = 'type';
     await captureSession(session, handle.page);
-    return publicSession(session);
+    // A submit is a navigation in disguise, so this is where "did it work"
+    // matters most — a failed form usually looks identical but for an error.
+    const pageState = await assessAfterAction(handle, session, input.submit ? 'type+submit' : 'type', before);
+    return { ...publicSession(session), ...(pageState ? { pageState } : {}) };
   },
 
   async agentTypeSecret(sessionId: string, input: { selector?: string; secretHandle: string; submit?: boolean }) {

@@ -396,7 +396,7 @@ function ChatInterface({
   // sending before that would stamp the message onto the old session.
   const [pendingHandoffSend, setPendingHandoffSend] = useState<PendingHandoffSend | null>(null);
 
-  // Mission Control "Work this" parks the implementer prompt in sessionStorage
+  // Mission Control "Open work chat" parks the implementer prompt in sessionStorage
   // so this view can send it after /session/:id mounts.
   useEffect(() => {
     const sessionId = selectedSession?.id || currentSessionId;

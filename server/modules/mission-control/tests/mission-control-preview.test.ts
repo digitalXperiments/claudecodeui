@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { closeConnection, initializeDatabase } from '@/modules/database/index.js';
+import { closeConnection, getConnection, initializeDatabase } from '@/modules/database/index.js';
 import { configureMissionControlRuntimes } from '@/modules/mission-control/mission-control-agent.service.js';
 import { missionControlDb } from '@/modules/mission-control/mission-control.repository.js';
 import { previewItemResolution } from '@/modules/mission-control/mission-control-runner.service.js';
@@ -204,6 +204,36 @@ test('preview on a resolving item errors', async () => {
     missionControlDb.setItemStatus(item.item_id, 'resolving', { body: item.body });
 
     await assert.rejects(() => previewItemResolution(item.item_id), /not actionable/);
+  });
+});
+
+test('preview on a resolved item remains available as a read-only inspection', async () => {
+  await withIsolatedDatabase(async () => {
+    const section = seedSection();
+    const item = insertItem(section, { fix: 'cart null check' });
+    missionControlDb.setItemStatus(item.item_id, 'resolved', {
+      result: { approved: true },
+      resolvedAt: new Date().toISOString(),
+    });
+
+    const result = await previewItemResolution(item.item_id);
+
+    assert.equal(result.success, true);
+    if (result.success) assert.deepEqual(result.preview.body, { fix: 'cart null check' });
+  });
+});
+
+test('listItems recovers a stale resolving item as retryable failure', async () => {
+  await withIsolatedDatabase(async () => {
+    const section = seedSection();
+    const item = insertItem(section);
+    const stale = new Date(Date.now() - 31 * 60 * 1000).toISOString();
+    getConnection().prepare(`UPDATE mc_items SET status = 'resolving', updated_at = ? WHERE item_id = ?`).run(stale, item.item_id);
+
+    const listed = missionControlDb.listItems({ sectionId: section.section_id });
+
+    assert.equal(listed[0]?.status, 'failed');
+    assert.match(listed[0]?.error ?? '', /previous resolve run did not finish/i);
   });
 });
 

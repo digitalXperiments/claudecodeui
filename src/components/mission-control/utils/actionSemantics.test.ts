@@ -37,16 +37,18 @@ describe('getActionSemantics', () => {
     assert.match(result.detail, /nothing is sent/i);
   });
 
-  it('keeps the configured label for every non-draft action', () => {
+  it('uses a clear label for the project-scoped work chat action', () => {
     for (const configured of [
       action({ id: 'send_reply', label: 'Send reply', kind: 'send_reply' }),
       action({ id: 'dismiss', label: 'Dismiss', kind: 'dismiss' }),
       action({ id: 'delete', label: 'Delete', kind: 'delete', style: 'destructive' }),
-      action({ id: 'work', label: 'Work this', kind: 'work' }),
       action({ id: 'approve', label: 'Approve' }),
     ]) {
       assert.equal(getActionSemantics(configured, 'Item').label, configured.label);
     }
+    const work = getActionSemantics(action({ id: 'work', label: 'Work this', kind: 'work' }), 'Item');
+    assert.equal(work.label, 'Open work chat');
+    assert.match(work.detail, /brief prefilled/i);
   });
 
   it('confirms sending, archiving, and marking read as remote mutations', () => {

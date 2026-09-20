@@ -167,12 +167,6 @@ export const studioApi = {
     return data.prototype;
   },
 
-  async launchSwarm(projectId: string, id: string): Promise<{ swarmId: string; prototype: StudioPrototypeDetail }> {
-    const res = await authenticatedFetch(`${protoPath(projectId, id)}/swarm`, {
-      method: 'POST',
-    });
-    return parseJson<{ swarmId: string; prototype: StudioPrototypeDetail }>(res);
-  },
 
   async ideatePrompt(projectId: string, id: string): Promise<{ prompt: string; prototype: StudioPrototypeDetail }> {
     const res = await authenticatedFetch(`${protoPath(projectId, id)}/ideate-prompt`);

@@ -1,5 +1,4 @@
 import { appConfigDb } from '@/modules/database/index.js';
-import type { SwarmAgentSpec } from '@/modules/swarm/index.js';
 
 export const STUDIO_ROSTER_CONFIG_KEY = 'studio_design_roster';
 
@@ -114,7 +113,26 @@ export function saveStudioSeats(input: unknown): StudioSeatProfile[] {
   return seats;
 }
 
-export function seatsToRoster(seats = getStudioSeats()): SwarmAgentSpec[] {
+/**
+ * One Studio seat, in the shape the roster is published in. Previously
+ * `SwarmAgentSpec`, inlined when Agent Swarm was removed — Studio is the only
+ * remaining consumer.
+ */
+export type StudioRosterSeat = {
+  id?: string;
+  kind: string;
+  label: string;
+  provider?: string | null;
+  model?: string | null;
+  effort?: string | null;
+  permissionMode?: string | null;
+  skills?: string[];
+  focus?: string;
+  level?: string | null;
+  profileId?: string | null;
+};
+
+export function seatsToRoster(seats = getStudioSeats()): StudioRosterSeat[] {
   return seats
     .filter((seat) => seat.enabled)
     .map((seat) => ({
