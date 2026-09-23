@@ -16,6 +16,7 @@ import { workspaceDb } from '@/modules/workspaces/workspace.repository.js';
 import {
   deleteBranch,
   revParse,
+  repositoryRoot,
   runGit,
   statusPorcelain,
   worktreeAdd,
@@ -150,6 +151,7 @@ async function filterOverlayOnlyDirt(
   primaryPath: string,
   workspacePath: string,
   dirtyFiles: Array<{ path: string; status: string }>,
+  projectRelativePath: string,
 ): Promise<Array<{ path: string; status: string }>> {
   const blocking: Array<{ path: string; status: string }> = [];
   for (const file of dirtyFiles) {
@@ -157,18 +159,25 @@ async function filterOverlayOnlyDirt(
       blocking.push(file);
       continue;
     }
+    const relative = projectRelativePath
+      ? path.relative(projectRelativePath, path.normalize(file.path))
+      : path.normalize(file.path);
+    if (!relative || relative === '..' || relative.startsWith(`..${path.sep}`)) {
+      blocking.push(file);
+      continue;
+    }
     try {
       const [workspaceInfo, primaryInfo] = await Promise.all([
-        lstat(path.join(workspacePath, file.path)),
-        lstat(path.join(primaryPath, file.path)),
+        lstat(path.join(workspacePath, projectRelativePath, relative)),
+        lstat(path.join(primaryPath, relative)),
       ]);
       if (!workspaceInfo.isFile() || !primaryInfo.isFile()) {
         blocking.push(file);
         continue;
       }
       const [workspaceContent, primaryContent] = await Promise.all([
-        readFile(path.join(workspacePath, file.path)),
-        readFile(path.join(primaryPath, file.path)),
+        readFile(path.join(workspacePath, projectRelativePath, relative)),
+        readFile(path.join(primaryPath, relative)),
       ]);
       if (!workspaceContent.equals(primaryContent)) blocking.push(file);
     } catch {
@@ -285,6 +294,10 @@ export function createIntegrationRehearsalService(options: IntegrationRehearsalS
       throw new CloudError('WORKSPACE_NOT_FOUND', `Project not found: ${input.projectId}`);
     }
     const primaryPath = path.resolve(registered);
+    const repository = await repositoryRoot(primaryPath);
+    const projectRelativePath = repository
+      ? path.relative(repository, primaryPath)
+      : '';
 
     const resolvedBase = await revParse(primaryPath, requestedBase);
     if (!resolvedBase || !SHA_RE.test(resolvedBase)) {
@@ -302,7 +315,12 @@ export function createIntegrationRehearsalService(options: IntegrationRehearsalS
       }
       if (workspaceExists) {
         const live = await statusPorcelain(workspace.root_path);
-        const blockingDirty = await filterOverlayOnlyDirt(primaryPath, workspace.root_path, live.dirtyFiles);
+        const blockingDirty = await filterOverlayOnlyDirt(
+          primaryPath,
+          workspace.root_path,
+          live.dirtyFiles,
+          projectRelativePath,
+        );
         if (blockingDirty.length > 0) {
           throw new CloudError(
             'WORKSPACE_DIRTY_CONFLICT',
@@ -331,6 +349,22 @@ export function createIntegrationRehearsalService(options: IntegrationRehearsalS
         throw new CloudError(
           'WORKSPACE_CREATE_FAILED',
           `Base ${resolvedBase} is not an ancestor of ${workspace.feature_branch} (${tip})`,
+        );
+      }
+      const changedPaths = (await runGit(primaryPath, ['diff', '--name-only', resolvedBase, tip])).stdout
+        .split('\n')
+        .map((entry) => entry.trim())
+        .filter(Boolean);
+      const outsideProject = changedPaths.filter((entry) => {
+        const relative = projectRelativePath
+          ? path.relative(projectRelativePath, path.normalize(entry))
+          : path.normalize(entry);
+        return !relative || relative === '..' || relative.startsWith(`..${path.sep}`);
+      });
+      if (outsideProject.length > 0) {
+        throw new CloudError(
+          'WORKSPACE_CREATE_FAILED',
+          `Workspace ${workspace.workspace_id} changes files outside the declared project: ${outsideProject.join(', ')}`,
         );
       }
       inputs.push({
@@ -378,10 +412,14 @@ export function createIntegrationRehearsalService(options: IntegrationRehearsalS
       }
 
       if (outcome !== 'merge_conflict') {
-        const ship = await loadShipTestCommand(rehearsalPath);
+        const rehearsalProjectPath = path.join(rehearsalPath, projectRelativePath);
+        const ship = await loadShipTestCommand(rehearsalProjectPath);
         const { file, args } = tokenizeCommand(ship.command);
-        const cwd = path.resolve(rehearsalPath, ship.relativeCwd?.trim() || '.');
-        if (cwd !== rehearsalPath && !cwd.startsWith(`${rehearsalPath}${path.sep}`)) {
+        const cwd = path.resolve(rehearsalProjectPath, ship.relativeCwd?.trim() || '.');
+        if (
+          cwd !== rehearsalProjectPath &&
+          !cwd.startsWith(`${rehearsalProjectPath}${path.sep}`)
+        ) {
           throw new CloudError('WORKSPACE_CREATE_FAILED', 'Ship test cwd must stay inside the rehearsal worktree');
         }
         const testStartedAt = nowIso();

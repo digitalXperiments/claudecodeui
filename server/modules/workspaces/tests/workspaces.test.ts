@@ -376,6 +376,81 @@ test('uses sandbox_copy when explicitly requested and detects an orphan', async 
   });
 });
 
+test('getDiff reports sandbox additions, modifications, deletions, and bounded patches', async () => {
+  await withDatabase(async (taskRoot) => {
+    const projectPath = path.join(taskRoot, 'sandbox-diff-project');
+    await mkdir(projectPath, { recursive: true });
+    await writeFile(path.join(projectPath, 'modified.txt'), 'before\n');
+    await writeFile(path.join(projectPath, 'deleted.txt'), 'remove me\n');
+    const projectId = projectsDb.createProjectPath(projectPath).project!.project_id;
+    const service = createWorkspaceService({ tmpRoot: path.join(taskRoot, 'fallback') });
+    const workspace = await service.create({ projectId, projectPath, mode: 'sandbox_copy' });
+
+    await writeFile(path.join(workspace.root_path, 'modified.txt'), 'after\n');
+    await rm(path.join(workspace.root_path, 'deleted.txt'));
+    await writeFile(path.join(workspace.root_path, 'added.txt'), 'new\n');
+
+    const diff = await service.getDiff(workspace.workspace_id);
+    assert.deepEqual(
+      diff.files.map((file) => [file.path, file.status]).sort(),
+      [
+        ['added.txt', 'added'],
+        ['deleted.txt', 'deleted'],
+        ['modified.txt', 'modified'],
+      ],
+    );
+    assert.equal(diff.summary.additions, 2);
+    assert.equal(diff.summary.deletions, 2);
+    assert.ok(diff.files.every((file) => file.patch && file.patch.length <= 256 * 1024));
+
+    await service.discard(workspace.workspace_id);
+  });
+});
+
+test('git workspaces registered below a repository stay scoped to the project directory', async () => {
+  await withDatabase(async (taskRoot) => {
+    const repositoryPath = path.join(taskRoot, 'monorepo');
+    const projectPath = path.join(repositoryPath, 'packages', 'app');
+    await mkdir(projectPath, { recursive: true });
+    await initGitRepo(repositoryPath);
+    await writeFile(path.join(projectPath, 'app.txt'), 'app base\n');
+    await writeFile(path.join(repositoryPath, 'root-only.txt'), 'root base\n');
+    assert.equal(runGit(repositoryPath, ['add', '.']).status, 0);
+    assert.equal(runGit(repositoryPath, ['commit', '-m', 'add nested app']).status, 0);
+
+    const projectId = projectsDb.createProjectPath(projectPath).project!.project_id;
+    const service = createWorkspaceService({ tmpRoot: path.join(taskRoot, 'fallback') });
+    const workspace = await service.create({
+      projectId,
+      projectPath,
+      branchName: 'feat/nested-app',
+    });
+
+    assert.equal(workspace.mode, 'git_worktree');
+    assert.equal(await pathExists(path.join(projectPath, '.git')), false);
+    const projectCwd = service.resolveCwd(workspace.workspace_id);
+    assert.equal(projectCwd, path.join(workspace.root_path, 'packages', 'app'));
+    assert.equal(await readFile(path.join(projectCwd, 'app.txt'), 'utf8'), 'app base\n');
+
+    await writeFile(path.join(projectCwd, 'app.txt'), 'app changed\n');
+    await writeFile(path.join(workspace.root_path, 'root-only.txt'), 'must not escape\n');
+    await writeFile(path.join(projectCwd, 'new.txt'), 'new app file\n');
+
+    const diff = await service.getDiff(workspace.workspace_id);
+    assert.deepEqual(diff.files.map((file) => file.path), ['app.txt']);
+    assert.equal(diff.files[0].status, 'modified');
+
+    const applied = await service.applyToPrimary(workspace.workspace_id);
+    assert.deepEqual(applied.skipped, []);
+    assert.deepEqual([...applied.applied].sort(), ['app.txt', 'new.txt']);
+    assert.equal(await readFile(path.join(projectPath, 'app.txt'), 'utf8'), 'app changed\n');
+    assert.equal(await readFile(path.join(projectPath, 'new.txt'), 'utf8'), 'new app file\n');
+    assert.equal(await readFile(path.join(repositoryPath, 'root-only.txt'), 'utf8'), 'root base\n');
+
+    await service.discard(workspace.workspace_id, { deleteBranch: true });
+  });
+});
+
 test('auto-inits a plain non-git project so it gets real, mergeable git_worktree isolation', async () => {
   await withDatabase(async (taskRoot) => {
     const projectPath = path.join(taskRoot, 'plain-project');

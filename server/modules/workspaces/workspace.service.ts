@@ -269,6 +269,38 @@ async function realpathOrSelf(target: string): Promise<string> {
 
 type ChangedFile = { path: string; status: string };
 
+type ProjectScope = {
+  /** Repository checkout root used by git worktrees, or the project itself. */
+  repositoryRoot: string;
+  /** Project path relative to repositoryRoot, using the host separator. */
+  projectRelativePath: string;
+};
+
+function isSafeRelativePath(relativePath: string): boolean {
+  if (!relativePath || path.isAbsolute(relativePath)) return false;
+  const normalized = path.normalize(relativePath);
+  return normalized !== '..' && !normalized.startsWith(`..${path.sep}`);
+}
+
+function projectRelativeFromRepoPath(
+  repositoryPath: string,
+  scope: ProjectScope,
+): string | null {
+  const normalized = path.normalize(repositoryPath);
+  const projectRelative = scope.projectRelativePath
+    ? path.relative(scope.projectRelativePath, normalized)
+    : normalized;
+  return isSafeRelativePath(projectRelative) ? projectRelative : null;
+}
+
+function workspacePathForProjectRelative(
+  workspaceRootPath: string,
+  projectRelativePath: string,
+  scope: ProjectScope,
+): string {
+  return path.join(workspaceRootPath, scope.projectRelativePath, projectRelativePath);
+}
+
 /** Excludes the same dirs `copySandboxTree`/`prepareWorkspaceScratch` write, plus VCS/lock dirs. */
 function isExcludedRelPath(relPath: string): boolean {
   const segments = relPath.split(path.sep);
@@ -349,6 +381,49 @@ async function diffSandboxTree(primaryPath: string, workspaceRootPath: string): 
   return changed;
 }
 
+const SANDBOX_PATCH_MAX_BYTES = 256 * 1024;
+
+/** Add bounded no-index patches and line totals to a sandbox tree diff. */
+async function computeSandboxDiff(
+  primaryPath: string,
+  workspaceRootPath: string,
+): Promise<DiffResult> {
+  const changed = await diffSandboxTree(primaryPath, workspaceRootPath);
+  const files = await Promise.all(
+    changed.map(async (file) => {
+      const primaryFilePath = path.join(primaryPath, file.path);
+      const workspaceFilePath = path.join(workspaceRootPath, file.path);
+      const oldPath = file.status === 'added' ? '/dev/null' : primaryFilePath;
+      const newPath = file.status === 'deleted' ? '/dev/null' : workspaceFilePath;
+      const result = await git.runGit(
+        primaryPath,
+        ['diff', '--no-index', '--no-color', '--unified=3', '--', oldPath, newPath],
+        { maxOutputBytes: SANDBOX_PATCH_MAX_BYTES },
+      );
+      const numstat = await git.runGit(
+        primaryPath,
+        ['diff', '--no-index', '--numstat', '--no-color', '--', oldPath, newPath],
+        { maxOutputBytes: 4 * 1024 },
+      );
+      const [additions, deletions] = (numstat.stdout.trim().split('\t') ?? []).map(Number);
+      return {
+        path: file.path,
+        status: file.status,
+        patch: result.stdout || undefined,
+        additions: Number.isFinite(additions) ? additions : 0,
+        deletions: Number.isFinite(deletions) ? deletions : 0,
+      };
+    }),
+  );
+  return {
+    files: files.map(({ path: filePath, status, patch }) => ({ path: filePath, status, patch })),
+    summary: {
+      additions: files.reduce((total, file) => total + file.additions, 0),
+      deletions: files.reduce((total, file) => total + file.deletions, 0),
+    },
+  };
+}
+
 export function createWorkspaceService(options: WorkspaceServiceOptions = {}): WorkspaceService {
   const onEvent: WorkspaceEventHandler = options.onEvent ?? (() => {});
   const tmpRoot = options.tmpRoot ?? path.resolve('tmp/cloudcli');
@@ -394,6 +469,23 @@ export function createWorkspaceService(options: WorkspaceServiceOptions = {}): W
       'WORKSPACE_NOT_FOUND',
       `Cannot resolve the primary project path for workspace ${workspace.workspace_id}`,
     );
+  };
+
+  const resolveProjectScope = async (projectPath: string): Promise<ProjectScope> => {
+    const repositoryRoot = (await git.repositoryRoot(projectPath)) ?? path.resolve(projectPath);
+    const canonicalRepositoryRoot = await realpathOrSelf(repositoryRoot);
+    const canonicalProjectPath = await realpathOrSelf(projectPath);
+    const projectRelativePath = path.relative(canonicalRepositoryRoot, canonicalProjectPath);
+    if (!isSafeRelativePath(projectRelativePath) && projectRelativePath !== '') {
+      throw new CloudError(
+        'WORKSPACE_CREATE_FAILED',
+        `Registered project path is outside its git repository: ${projectPath}`,
+      );
+    }
+    return {
+      repositoryRoot: canonicalRepositoryRoot,
+      projectRelativePath,
+    };
   };
 
   /**
@@ -541,6 +633,7 @@ export function createWorkspaceService(options: WorkspaceServiceOptions = {}): W
   const prepareWorkspaceScratch = async (
     projectPath: string,
     rootPath: string,
+    projectRelativePath = '',
   ): Promise<void> => {
     try {
       await mkdir(path.join(rootPath, ...SCRATCH_SUBPATH), { recursive: true });
@@ -551,7 +644,7 @@ export function createWorkspaceService(options: WorkspaceServiceOptions = {}): W
       });
     }
 
-    const workspaceModules = path.join(rootPath, 'node_modules');
+    const workspaceModules = path.join(rootPath, projectRelativePath, 'node_modules');
     const targetPath = path.join(projectPath, 'node_modules');
     try {
       if (path.resolve(workspaceModules) === path.resolve(targetPath)) {
@@ -649,8 +742,17 @@ export function createWorkspaceService(options: WorkspaceServiceOptions = {}): W
   };
 
   /** Overlay the primary checkout's non-ignored dirty files onto a new worktree. */
-  const overlayDirtyFiles = async (projectPath: string, rootPath: string): Promise<void> => {
-    const status = await git.runGit(projectPath, ['status', '--porcelain=v1', '-z', '--untracked-files=all']);
+  const overlayDirtyFiles = async (
+    projectPath: string,
+    rootPath: string,
+    scope: ProjectScope,
+  ): Promise<void> => {
+    const status = await git.runGit(scope.repositoryRoot, [
+      'status',
+      '--porcelain=v1',
+      '-z',
+      '--untracked-files=all',
+    ]);
     if (status.code !== 0) throw new Error(`could not inspect primary checkout: ${status.stderr.trim()}`);
 
     const records = status.stdout.split('\0');
@@ -661,11 +763,12 @@ export function createWorkspaceService(options: WorkspaceServiceOptions = {}): W
       // For renames/copies, porcelain -z reports the destination first and
       // the source as a second NUL-delimited path. The destination is what we
       // need to overlay; deleted paths have no source to copy.
-      const relative = record.slice(3);
+      const repositoryRelative = record.slice(3);
       if (xy[0] === 'R' || xy[0] === 'C' || xy[1] === 'R' || xy[1] === 'C') index += 1;
+      const relative = projectRelativeFromRepoPath(repositoryRelative, scope);
       if (xy.includes('D') || !relative) continue;
       const source = path.join(projectPath, relative);
-      const destination = path.join(rootPath, relative);
+      const destination = workspacePathForProjectRelative(rootPath, relative, scope);
       try {
         const info = await lstat(source);
         if (info.isFile()) {
@@ -701,6 +804,7 @@ export function createWorkspaceService(options: WorkspaceServiceOptions = {}): W
     projectPath: string,
     rootPath: string,
     dirtyFiles: WorkspaceDirtyFile[],
+    scope: ProjectScope,
   ): Promise<WorkspaceDirtyFile[]> => {
     const blocking: WorkspaceDirtyFile[] = [];
     for (const file of dirtyFiles) {
@@ -708,18 +812,23 @@ export function createWorkspaceService(options: WorkspaceServiceOptions = {}): W
         blocking.push(file);
         continue;
       }
+      const relative = projectRelativeFromRepoPath(file.path, scope);
+      if (!relative) {
+        blocking.push(file);
+        continue;
+      }
       try {
         const [worktreeInfo, primaryInfo] = await Promise.all([
-          lstat(path.join(rootPath, file.path)),
-          lstat(path.join(projectPath, file.path)),
+          lstat(workspacePathForProjectRelative(rootPath, relative, scope)),
+          lstat(path.join(projectPath, relative)),
         ]);
         if (!worktreeInfo.isFile() || !primaryInfo.isFile()) {
           blocking.push(file);
           continue;
         }
         const [worktreeContent, primaryContent] = await Promise.all([
-          readFile(path.join(rootPath, file.path)),
-          readFile(path.join(projectPath, file.path)),
+          readFile(workspacePathForProjectRelative(rootPath, relative, scope)),
+          readFile(path.join(projectPath, relative)),
         ]);
         if (!worktreeContent.equals(primaryContent)) {
           blocking.push(file);
@@ -783,6 +892,10 @@ export function createWorkspaceService(options: WorkspaceServiceOptions = {}): W
           `Project is not a git repository; use sandbox_copy mode: ${projectPath}`,
         );
       }
+      const projectScope: ProjectScope =
+        mode === 'git_worktree'
+          ? await resolveProjectScope(projectPath)
+          : { repositoryRoot: projectPath, projectRelativePath: '' };
       // sandbox_copy forced on a git repo is allowed (explicit opt-out of isolation).
       const rootPath = await chooseRootPath(projectPath, input.projectId, workspaceId);
       assertRootAllowed(rootPath, projectPath, input.projectId);
@@ -855,8 +968,8 @@ export function createWorkspaceService(options: WorkspaceServiceOptions = {}): W
         if (add.code !== 0) {
           throw new Error(`git worktree add failed: ${add.stderr.trim().slice(0, 500)}`);
         }
-        await overlayDirtyFiles(projectPath, rootPath);
-        await prepareWorkspaceScratch(projectPath, rootPath);
+        await overlayDirtyFiles(projectPath, rootPath, projectScope);
+        await prepareWorkspaceScratch(projectPath, rootPath, projectScope.projectRelativePath);
         workspaceDb.setHeadSha(workspaceId, await git.revParse(rootPath, 'HEAD'));
         workspaceDb.setStatus(workspaceId, 'active');
         const workspace = requireWorkspace(workspaceId);
@@ -913,6 +1026,15 @@ export function createWorkspaceService(options: WorkspaceServiceOptions = {}): W
       git.statusPorcelain(workspace.root_path),
       git.aheadBehind(workspace.root_path, workspace.base_branch, 'HEAD'),
     ]);
+    const scope = await resolveProjectScope(resolveProjectPath(workspace));
+    const dirtyFiles = status.dirtyFiles.flatMap((file) => {
+      const relative = projectRelativeFromRepoPath(file.path, scope);
+      return relative ? [{ ...file, path: relative }] : [];
+    });
+    const conflicts = status.conflicts.flatMap((filePath) => {
+      const relative = projectRelativeFromRepoPath(filePath, scope);
+      return relative ? [relative] : [];
+    });
     workspaceDb.setHeadSha(workspaceId, headSha);
     const refreshed = requireWorkspace(workspaceId);
     emit('workspace.updated', refreshed);
@@ -922,8 +1044,8 @@ export function createWorkspaceService(options: WorkspaceServiceOptions = {}): W
       head_sha: headSha,
       ahead: counts.ahead,
       behind: counts.behind,
-      dirty_files: status.dirtyFiles,
-      conflicts: status.conflicts,
+      dirty_files: dirtyFiles,
+      conflicts,
     };
   };
 
@@ -931,8 +1053,10 @@ export function createWorkspaceService(options: WorkspaceServiceOptions = {}): W
     const workspace = requireWorkspace(workspaceId);
     assertWorkspaceRootAllowed(workspace);
     if (workspace.mode === 'sandbox_copy') {
-      return { files: [], summary: { additions: 0, deletions: 0 } };
+      return computeSandboxDiff(resolveProjectPath(workspace), workspace.root_path);
     }
+    const projectPath = resolveProjectPath(workspace);
+    const scope = await resolveProjectScope(projectPath);
     const fromRef =
       opts?.base === 'base_sha'
         ? (workspace.base_sha ??
@@ -945,7 +1069,16 @@ export function createWorkspaceService(options: WorkspaceServiceOptions = {}): W
         `Cannot resolve a diff base for workspace ${workspaceId}`,
       );
     }
-    return git.computeDiff(workspace.root_path, fromRef);
+    const diff = await git.computeDiff(
+      workspace.root_path,
+      fromRef,
+      scope.projectRelativePath || undefined,
+    );
+    const files = diff.files.flatMap((file) => {
+      const relative = projectRelativeFromRepoPath(file.path, scope);
+      return relative ? [{ ...file, path: relative }] : [];
+    });
+    return { files, summary: diff.summary };
   };
 
   const mergeToBase = async (
@@ -973,8 +1106,27 @@ export function createWorkspaceService(options: WorkspaceServiceOptions = {}): W
     return withProjectLock(
       workspace.project_id,
       async () => {
+      const scope = await resolveProjectScope(projectPath);
+      const mergeBase = workspace.base_sha ?? workspace.base_branch;
+      const branchChanges = await git.changedFilesSinceRef(workspace.root_path, mergeBase);
+      const outsideProject = branchChanges.filter(
+        (file) => projectRelativeFromRepoPath(file.path, scope) === null,
+      );
+      if (outsideProject.length > 0) {
+        throw new CloudError(
+          'WORKSPACE_DIRTY_CONFLICT',
+          `Workspace ${workspaceId} changes files outside the declared project: ${outsideProject
+            .map((file) => file.path)
+            .join(', ')}`,
+        );
+      }
       const dirty = await git.statusPorcelain(workspace.root_path);
-      const blockingDirty = await filterOverlayOnlyDirt(projectPath, workspace.root_path, dirty.dirtyFiles);
+      const blockingDirty = await filterOverlayOnlyDirt(
+        projectPath,
+        workspace.root_path,
+        dirty.dirtyFiles,
+        scope,
+      );
       if (blockingDirty.length > 0) {
         throw new CloudError(
           'WORKSPACE_DIRTY_CONFLICT',
@@ -1054,6 +1206,10 @@ export function createWorkspaceService(options: WorkspaceServiceOptions = {}): W
         `Workspace directory is missing: ${workspace.root_path}`,
       );
     }
+    const projectScope: ProjectScope =
+      workspace.mode === 'sandbox_copy'
+        ? { repositoryRoot: projectPath, projectRelativePath: '' }
+        : await resolveProjectScope(projectPath);
 
     return withProjectLock(
       workspace.project_id,
@@ -1072,16 +1228,28 @@ export function createWorkspaceService(options: WorkspaceServiceOptions = {}): W
 
         const primaryIsGit = await git.isGitRepo(projectPath);
         const dirtyPrimaryPaths = primaryIsGit
-          ? new Set((await git.statusPorcelain(projectPath)).dirtyFiles.map((file) => file.path))
+          ? new Set(
+              (await git.statusPorcelain(projectScope.repositoryRoot)).dirtyFiles.flatMap((file) => {
+                const relative = projectRelativeFromRepoPath(file.path, projectScope);
+                return relative ? [relative] : [];
+              }),
+            )
           : new Set<string>();
 
         const applied: string[] = [];
         const skipped: ApplyToPrimarySkip[] = [];
 
         for (const file of changed) {
-          const relPath = file.path;
+          const relPath =
+            workspace.mode === 'sandbox_copy'
+              ? file.path
+              : projectRelativeFromRepoPath(file.path, projectScope);
+          if (!relPath || !isSafeRelativePath(relPath)) continue;
           const primaryFilePath = path.join(projectPath, relPath);
-          const workspaceFilePath = path.join(workspace.root_path, relPath);
+          const workspaceFilePath =
+            workspace.mode === 'sandbox_copy'
+              ? path.join(workspace.root_path, relPath)
+              : workspacePathForProjectRelative(workspace.root_path, relPath, projectScope);
           const primaryDirty = dirtyPrimaryPaths.has(relPath);
 
           if (file.status === 'deleted') {
@@ -1204,8 +1372,18 @@ export function createWorkspaceService(options: WorkspaceServiceOptions = {}): W
 
   const resolveCwd = (workspaceId: string): string => {
     const workspace = requireWorkspace(workspaceId);
-    assertWorkspaceRootAllowed(workspace);
-    return workspace.root_path;
+    const projectPath = assertWorkspaceRootAllowed(workspace);
+    if (workspace.mode !== 'git_worktree') return workspace.root_path;
+    const repositoryRoot = git.repositoryRootSync(projectPath);
+    if (!repositoryRoot) return workspace.root_path;
+    const projectRelativePath = path.relative(path.resolve(repositoryRoot), path.resolve(projectPath));
+    if (!isSafeRelativePath(projectRelativePath) && projectRelativePath !== '') {
+      throw new CloudError(
+        'WORKSPACE_CREATE_FAILED',
+        `Registered project path is outside its git repository: ${projectPath}`,
+      );
+    }
+    return path.join(workspace.root_path, projectRelativePath);
   };
 
   const bindRun = (workspaceId: string, runId: string | null): AgentWorkspace => {

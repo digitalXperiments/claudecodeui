@@ -7,6 +7,7 @@
  * instead of rejecting on non-zero exit, so callers decide what is fatal.
  */
 
+import { spawnSync } from 'node:child_process';
 import { realpath, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
@@ -149,19 +150,32 @@ async function canonicalPath(target: string): Promise<string> {
 }
 
 export async function isGitRepo(projectPath: string): Promise<boolean> {
+  return (await repositoryRoot(projectPath)) !== null;
+}
+
+/** Resolve the repository root containing a path, including nested projects. */
+export async function repositoryRoot(projectPath: string): Promise<string | null> {
   const result = await runGit(projectPath, ['rev-parse', '--show-toplevel']);
   if (result.code !== 0) {
-    return false;
+    return null;
   }
-  // A project may live inside another repository (tests and monorepos do this
-  // frequently). Worktree isolation must not accidentally operate on the
-  // ancestor repository, so only the repository root itself is eligible for
-  // git_worktree mode; nested paths use sandbox_copy.
-  // Compare via realpath: git often prints the canonical path while callers
-  // pass the non-canonical form (e.g. /var/... vs /private/var/... on macOS).
-  const toplevel = await canonicalPath(result.stdout.trim());
-  const project = await canonicalPath(projectPath);
-  return toplevel === project;
+  return canonicalPath(result.stdout.trim());
+}
+
+/** Synchronous counterpart used by the resolveCwd API, whose contract is sync. */
+export function repositoryRootSync(projectPath: string): string | null {
+  try {
+    const result = spawnSync('git', ['rev-parse', '--show-toplevel'], {
+      cwd: projectPath,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    if (result.status !== 0) return null;
+    const root = String(result.stdout ?? '').trim();
+    return root ? path.resolve(root) : null;
+  } catch {
+    return null;
+  }
 }
 
 const AUTO_INIT_GITIGNORE = [
@@ -176,7 +190,7 @@ const AUTO_INIT_GITIGNORE = [
 ].join('\n');
 
 /**
- * Turn a plain (non-git, or nested-inside-another-repo) project directory
+ * Turn a plain (non-git) project directory
  * into its own git repository with one commit, so it becomes eligible for
  * `git_worktree` mode instead of the merge-dead-end `sandbox_copy` fallback.
  * Idempotent: safe to call on a path that already has an initialized-but-
@@ -257,7 +271,9 @@ export async function resolveGitPath(cwd: string, gitPath: string): Promise<stri
   const result = await runGit(cwd, ['rev-parse', '--git-path', gitPath]);
   if (result.code !== 0 || !result.stdout.trim()) return null;
   const resolved = result.stdout.trim();
-  return path.isAbsolute(resolved) ? resolved : path.resolve(cwd, resolved);
+  if (path.isAbsolute(resolved)) return resolved;
+  const root = (await repositoryRoot(cwd)) ?? cwd;
+  return path.resolve(root, resolved);
 }
 
 /** `git worktree add -b <branch> <rootPath> <base>` — creates branch + worktree. */
@@ -390,8 +406,14 @@ const NAME_STATUS_MAP: Record<string, string> = {
 export async function diffNameStatus(
   worktreePath: string,
   fromRef: string,
+  pathspec?: string,
 ): Promise<{ path: string; status: string }[]> {
-  const result = await runGit(worktreePath, ['diff', '--name-status', fromRef]);
+  const result = await runGit(worktreePath, [
+    'diff',
+    '--name-status',
+    fromRef,
+    ...(pathspec ? ['--', pathspec] : []),
+  ]);
   if (result.code !== 0) {
     return [];
   }
@@ -491,8 +513,14 @@ export async function diffFilePatch(
 export async function diffSummary(
   worktreePath: string,
   fromRef: string,
+  pathspec?: string,
 ): Promise<{ additions: number; deletions: number }> {
-  const result = await runGit(worktreePath, ['diff', '--numstat', fromRef]);
+  const result = await runGit(worktreePath, [
+    'diff',
+    '--numstat',
+    fromRef,
+    ...(pathspec ? ['--', pathspec] : []),
+  ]);
   if (result.code !== 0) {
     return { additions: 0, deletions: 0 };
   }
@@ -512,10 +540,14 @@ export type DiffComputation = {
 };
 
 /** Full diff: name-status + per-file patch + numstat summary. */
-export async function computeDiff(worktreePath: string, fromRef: string): Promise<DiffComputation> {
+export async function computeDiff(
+  worktreePath: string,
+  fromRef: string,
+  pathspec?: string,
+): Promise<DiffComputation> {
   const [nameStatus, summary] = await Promise.all([
-    diffNameStatus(worktreePath, fromRef),
-    diffSummary(worktreePath, fromRef),
+    diffNameStatus(worktreePath, fromRef, pathspec),
+    diffSummary(worktreePath, fromRef, pathspec),
   ]);
   const files: DiffFile[] = await Promise.all(
     nameStatus.map(async (file) => ({

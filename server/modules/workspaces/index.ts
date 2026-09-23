@@ -10,6 +10,8 @@ export {
   runGit,
   runGitOrThrow,
   isGitRepo,
+  repositoryRoot,
+  repositoryRootSync,
   currentBranch,
   parseRemoteSlug,
   remoteRepoSlug,
