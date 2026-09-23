@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, rm } from 'node:fs/promises';
+import { access as accessFile, mkdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
 
@@ -9,6 +9,7 @@ import { providerModelsService, sessionsService } from '@/modules/providers/inde
 import { upsertModelCapability } from '@/modules/model-registry/index.js';
 import { runService } from '@/modules/runs/index.js';
 import { chatRunRegistry } from '@/modules/websocket/index.js';
+import { workspaceService } from '@/modules/workspaces/index.js';
 import { newRelayBatchId, newRelayJobId } from '@/shared/ids.js';
 import { makeScratchDir } from '@/shared/scratch.js';
 
@@ -239,6 +240,128 @@ test('Agent Relay schema is additive and boot recovery preserves never-started j
     assert.equal(agentRelayDb.list({ active: true }).length, 1);
     assert.equal(agentRelayDb.list({ active: true })[0]?.status, 'queued');
   } finally {
+    closeConnection();
+    if (previousDatabasePath === undefined) delete process.env.DATABASE_PATH;
+    else process.env.DATABASE_PATH = previousDatabasePath;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('Agent Relay batch inserts are atomic on a durable write failure', async () => {
+  const previousDatabasePath = process.env.DATABASE_PATH;
+  const root = await makeScratchDir('agent-relay-atomic-batch-');
+  closeConnection();
+  process.env.DATABASE_PATH = path.join(root, 'auth.db');
+  await initializeDatabase();
+  try {
+    const project = projectsDb.createProjectPath(process.cwd()).project!;
+    const relayId = newRelayJobId();
+    const base = {
+      batchId: newRelayBatchId(),
+      projectId: project.project_id,
+      projectPath: project.project_path,
+      provider: 'claude' as const,
+      mode: 'read_only' as const,
+      task: 'atomic test',
+      prompt: 'atomic test',
+      mcpServers: [],
+      timeoutMs: 60_000,
+    };
+    assert.throws(() => agentRelayDb.createBatch([
+      { ...base, relayId },
+      { ...base, relayId },
+    ]), /UNIQUE|constraint/i);
+    assert.equal((getConnection().prepare('SELECT COUNT(*) AS count FROM agent_relay_jobs WHERE relay_id = ?').get(relayId) as { count: number }).count, 0);
+  } finally {
+    closeConnection();
+    if (previousDatabasePath === undefined) delete process.env.DATABASE_PATH;
+    else process.env.DATABASE_PATH = previousDatabasePath;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('malformed durable relay grants and dependencies are quarantined fail-closed', async () => {
+  const previousDatabasePath = process.env.DATABASE_PATH;
+  const root = await makeScratchDir('agent-relay-durable-json-');
+  closeConnection();
+  process.env.DATABASE_PATH = path.join(root, 'auth.db');
+  await initializeDatabase();
+  try {
+    const project = projectsDb.createProjectPath(process.cwd()).project!;
+    const relayId = newRelayJobId();
+    agentRelayDb.create({
+      relayId,
+      batchId: newRelayBatchId(),
+      projectId: project.project_id,
+      projectPath: project.project_path,
+      provider: 'claude',
+      mode: 'read_only',
+      task: 'quarantine malformed durable fields',
+      prompt: 'quarantine malformed durable fields',
+      mcpServers: [],
+      dependsOn: [],
+      outputSchema: { type: 'object' },
+      timeoutMs: 60_000,
+    });
+    getConnection().prepare('UPDATE agent_relay_jobs SET mcp_servers_json = ?, depends_on_json = ?, output_schema_json = ? WHERE relay_id = ?')
+      .run('{not-json}', '{"wrong":"shape"}', '[]', relayId);
+    const quarantined = agentRelayDb.get(relayId)!;
+    assert.equal(quarantined.status, 'failed');
+    assert.match(quarantined.error ?? '', /Malformed durable Agent Relay data quarantined/);
+    assert.equal(agentRelayDb.list({ active: true }).some((job) => job.relay_id === relayId), false);
+  } finally {
+    closeConnection();
+    if (previousDatabasePath === undefined) delete process.env.DATABASE_PATH;
+    else process.env.DATABASE_PATH = previousDatabasePath;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('retention preserves an expired isolated workspace with dirty work', async () => {
+  const previousDatabasePath = process.env.DATABASE_PATH;
+  const root = await makeScratchDir('agent-relay-retention-');
+  closeConnection();
+  process.env.DATABASE_PATH = path.join(root, 'auth.db');
+  await initializeDatabase();
+  let workspaceId: string | null = null;
+  try {
+    const project = projectsDb.createProjectPath(process.cwd()).project!;
+    const workspace = await workspaceService.create({
+      projectId: project.project_id,
+      projectPath: project.project_path,
+      taskId: `retention-${Date.now()}`,
+      branchName: `relay/retention-${Date.now()}`,
+      mode: 'git_worktree',
+    });
+    workspaceId = workspace.workspace_id;
+    await writeFile(path.join(workspace.root_path, 'retention-dirty.txt'), 'preserve me');
+    const relayId = newRelayJobId();
+    agentRelayDb.create({
+      relayId,
+      batchId: newRelayBatchId(),
+      projectId: project.project_id,
+      projectPath: project.project_path,
+      provider: 'claude',
+      mode: 'isolated_write',
+      task: 'retain dirty work',
+      prompt: 'retain dirty work',
+      mcpServers: [],
+      timeoutMs: 60_000,
+    });
+    agentRelayDb.setWorkspace(relayId, workspace.workspace_id);
+    agentRelayDb.finish(relayId, 'completed', { result: {
+      status: 'completed', summary: 'done', evidence: [], filesTouched: [], testsRun: [], openQuestions: [], output: '',
+    } });
+    getConnection().prepare("UPDATE agent_relay_jobs SET finished_at = '2000-01-01 00:00:00' WHERE relay_id = ?").run(relayId);
+    const purged = await agentRelayService.purgeExpiredJobs(1);
+    assert.equal(purged.jobsDeleted, 0);
+    assert.equal(workspaceService.get(workspace.workspace_id)?.status, 'active');
+    await accessFile(path.join(workspace.root_path, 'retention-dirty.txt'));
+    assert.equal(agentRelayService.get(relayId)?.status, 'completed');
+  } finally {
+    if (workspaceId && workspaceService.get(workspaceId)?.status !== 'discarded') {
+      await workspaceService.discard(workspaceId, { deleteBranch: true }).catch(() => undefined);
+    }
     closeConnection();
     if (previousDatabasePath === undefined) delete process.env.DATABASE_PATH;
     else process.env.DATABASE_PATH = previousDatabasePath;

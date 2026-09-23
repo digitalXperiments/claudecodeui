@@ -76,6 +76,7 @@ const DEFAULT_APPROVAL_TIMEOUT_MS = 3 * 60 * 1000;
 const MIN_APPROVAL_TIMEOUT_MS = 15_000;
 const MAX_APPROVAL_TIMEOUT_MS = 30 * 60 * 1000;
 const MAX_ALLOWED_MODELS_PER_PROVIDER = 200;
+const ABORT_CLEANUP_TIMEOUT_MS = 5_000;
 /** Finished jobs older than this are deleted on boot. */
 export const AGENT_RELAY_RETENTION_DAYS = 14;
 
@@ -857,6 +858,7 @@ export type ParsedWorkerResult = {
   result: AgentRelayStructuredResult;
   /** Whether the tagged JSON contract was honored. `malformed` = tag present but unparseable. */
   contract: 'valid' | 'malformed' | 'missing';
+  contractErrors?: string[];
 };
 
 /**
@@ -935,8 +937,27 @@ function recoverJsonResultFromOutput(output: string): Record<string, unknown> | 
   return null;
 }
 
+function standardResultErrors(parsed: unknown): string[] {
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return ['$: result must be a JSON object'];
+  const value = parsed as AnyRecord;
+  const errors: string[] = [];
+  if (value.status !== 'completed' && value.status !== 'failed' && value.status !== 'blocked') {
+    errors.push('$.status must be one of completed, failed, or blocked');
+  }
+  if (typeof value.summary !== 'string') errors.push('$.summary must be a string');
+  for (const key of ['evidence', 'filesTouched', 'testsRun', 'openQuestions']) {
+    const entries = value[key];
+    if (!Array.isArray(entries) || entries.some((entry) => typeof entry !== 'string')) {
+      errors.push(`$.${key} must be an array of strings`);
+    }
+  }
+  return errors;
+}
+
 function structuredResultFromParsedJson(parsed: Record<string, unknown>, output: string): AgentRelayStructuredResult {
-  const status = parsed.status === 'failed' || parsed.status === 'blocked' ? parsed.status : 'completed';
+  const status = parsed.status === 'failed' || parsed.status === 'blocked' || parsed.status === 'completed'
+    ? parsed.status
+    : 'failed';
   return {
     status,
     summary: typeof parsed.summary === 'string' ? parsed.summary.trim().slice(0, 20_000) : output.slice(0, 20_000),
@@ -963,20 +984,37 @@ export function parseStructuredResult(output: string, failed: boolean): ParsedWo
   const raw = matches.at(-1)?.[1];
   if (raw) {
     try {
-      const parsed = JSON.parse(stripJsonFences(raw)) as Record<string, unknown>;
-      return { contract: 'valid', result: structuredResultFromParsedJson(parsed, output) };
+      const parsedValue: unknown = JSON.parse(stripJsonFences(raw));
+      const parsed = parsedValue && typeof parsedValue === 'object' && !Array.isArray(parsedValue)
+        ? parsedValue as Record<string, unknown>
+        : null;
+      const errors = standardResultErrors(parsed);
+      if (errors.length === 0) return { contract: 'valid', result: structuredResultFromParsedJson(parsed!, output) };
+      return {
+        contract: 'malformed',
+        contractErrors: errors,
+        result: structuredResultFromParsedJson(parsed ?? {}, output),
+      };
     } catch {
       // Fall through to a useful unstructured result.
     }
   } else {
     const recovered = recoverJsonResultFromOutput(output);
-    if (recovered) {
+    if (recovered && standardResultErrors(recovered).length === 0) {
       return { contract: 'valid', result: structuredResultFromParsedJson(recovered, output) };
+    }
+    if (recovered) {
+      return {
+        contract: 'malformed',
+        contractErrors: standardResultErrors(recovered),
+        result: structuredResultFromParsedJson(recovered, output),
+      };
     }
   }
   const cleaned = output.replace(/<agent_relay_result>[\s\S]*?<\/agent_relay_result>/gi, '').trim();
   return {
     contract: raw ? 'malformed' : 'missing',
+    contractErrors: raw ? ['the <agent_relay_result> tag was present but its JSON did not parse'] : ['the <agent_relay_result> tag was missing or unparseable'],
     result: {
       status: failed ? 'failed' : 'completed',
       summary: (cleaned || output || (failed ? 'The provider run failed.' : 'The delegate completed without a text result.')).slice(0, 20_000),
@@ -1188,7 +1226,12 @@ async function abortLiveJob(job: AgentRelayJob): Promise<void> {
   const providerSessionId = live?.providerSessionId ?? sessionsDb.getSessionById(job.app_session_id)?.provider_session_id;
   const abortFn = providerSessionId ? runtimeAbortFns[job.provider] : undefined;
   if (abortFn && providerSessionId) {
-    await Promise.resolve(abortFn(providerSessionId)).catch(() => false);
+    // Provider runtimes can hang while acknowledging an abort. Cleanup is
+    // deliberately bounded so callers never inherit that process lifetime.
+    await Promise.race([
+      Promise.resolve(abortFn(providerSessionId)).catch(() => false),
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), ABORT_CLEANUP_TIMEOUT_MS)),
+    ]);
   }
   chatRunRegistry.completeRun(job.app_session_id, { exitCode: 1, aborted: true });
 }
@@ -1428,7 +1471,10 @@ async function executeJob(relayId: string): Promise<void> {
     const timeout = new Promise<void>((resolve) => {
       timeoutHandle = setTimeout(() => {
         timedOut = true;
-        void abortLiveJob(agentRelayDb.get(job!.relay_id) ?? job!).finally(resolve);
+        // Resolve the execution timeout immediately. Abort/reaping is a
+        // bounded background task and must not hold an active scheduler slot.
+        void abortLiveJob(agentRelayDb.get(job!.relay_id) ?? job!).catch(() => undefined);
+        resolve();
       }, job!.timeout_ms);
     });
     await Promise.race([started.completion, timeout]);
@@ -1488,14 +1534,21 @@ async function executeJob(relayId: string): Promise<void> {
     }
 
     const parsed = parseStructuredResult(output, providerFailed);
+    parsed.result.contractValidation = {
+      valid: parsed.contract === 'valid',
+      errors: parsed.contractErrors ?? [],
+    };
     const verdict = applyOutputValidation(job, parsed);
     // One automatic repair turn on a broken structured contract: either the
     // declared schema failed to validate, or the worker produced prose with a
     // present-but-unparseable result tag. The repair resumes the same session,
     // so the worker fixes its reply instead of redoing the assignment.
-    const contractBroken = (verdict !== null && !verdict.valid) || (parsed.contract === 'malformed' && output.length > 0);
+    const contractBroken = (verdict !== null && !verdict.valid) || parsed.contract !== 'valid';
     if (!providerFailed && contractBroken) {
-      const repair = agentRelayDb.queueSchemaRepair(job.relay_id, buildSchemaRepairPrompt(job, verdict?.errors ?? []));
+      const repair = agentRelayDb.queueSchemaRepair(job.relay_id, buildSchemaRepairPrompt(job, [
+        ...(verdict?.errors ?? []),
+        ...(parsed.contractErrors ?? []),
+      ]));
       if (repair) {
         closeCanonicalRun(canonicalRun.run_id, 'succeeded', null);
         publish(repair);
@@ -1567,8 +1620,10 @@ async function executeJob(relayId: string): Promise<void> {
 
 /**
  * Whether a queued job's in-batch dependencies allow it to start. A failed,
- * cancelled, or timed-out dependency fails the dependent fast — matching
- * pipeline semantics where a broken stage drops everything built on it.
+ * cancelled, or timed-out dependency, a semantic failed/blocked result, or a
+ * result that failed either envelope/schema validation fails the dependent
+ * fast — matching pipeline semantics where a broken stage drops everything
+ * built on it.
  */
 function dependencyGate(job: AgentRelayJob): { state: 'ready' | 'waiting' | 'dependency_failed'; reason?: string } {
   for (const depId of job.depends_on) {
@@ -1580,6 +1635,20 @@ function dependencyGate(job: AgentRelayJob): { state: 'ready' | 'waiting' | 'dep
       return {
         state: 'dependency_failed',
         reason: `Dependency "${name}" ended ${dep.status}${dep.error ? `: ${dep.error.slice(0, 300)}` : '.'}`,
+      };
+    }
+    if (!dep.result || dep.result.status !== 'completed') {
+      const name = dep.label || dep.relay_id;
+      return {
+        state: 'dependency_failed',
+        reason: `Dependency "${name}" reported ${dep.result?.status ?? 'no result'}; downstream work is quarantined.`,
+      };
+    }
+    if (dep.result.contractValidation?.valid === false || dep.result.outputValidation?.valid === false) {
+      const name = dep.label || dep.relay_id;
+      return {
+        state: 'dependency_failed',
+        reason: `Dependency "${name}" returned an invalid result contract; downstream work is quarantined.`,
       };
     }
   }
@@ -2025,9 +2094,9 @@ export const agentRelayService = {
     // Ids are generated up front so in-batch dependency indices can be
     // resolved to durable relay ids before any row is written.
     const relayIds = normalizedTasks.map(() => newRelayJobId());
-    const jobs = normalizedTasks.map((task, index) => {
+    const jobInputs = normalizedTasks.map((task, index) => {
       const { dependsOnIndices, ...rest } = task;
-      return agentRelayDb.create({
+      return {
         relayId: relayIds[index]!,
         batchId,
         projectId: project.project_id,
@@ -2035,8 +2104,9 @@ export const agentRelayService = {
         sourceSessionId: input.sourceSessionId ?? null,
         dependsOn: dependsOnIndices.map((dep) => relayIds[dep]!),
         ...rest,
-      });
+      };
     });
+    const jobs = agentRelayDb.createBatch(jobInputs);
     jobs.forEach(publish);
     void drainQueue();
     return { batchId, jobs };
@@ -2148,6 +2218,7 @@ export const agentRelayService = {
           testsRun: job.result.testsRun.slice(0, 10),
           openQuestions: job.result.openQuestions.slice(0, 10),
           ...(structuredOutput !== undefined ? { structuredOutput } : {}),
+          ...(job.result.contractValidation ? { contractValidation: job.result.contractValidation } : {}),
           ...(job.result.outputValidation ? { outputValidation: job.result.outputValidation } : {}),
           ...(job.result.jevAssessment ? { jevAssessment: job.result.jevAssessment } : {}),
           hasFullOutput: Boolean(job.result.output),
@@ -2427,22 +2498,49 @@ export const agentRelayService = {
     const expired = agentRelayDb.listTerminalOlderThan(retentionDays);
     let workspacesDiscarded = 0;
     const seenWorkspaces = new Set<string>();
+    const safeWorkspaces = new Set<string>();
+    const activeWorkspaces = new Set(agentRelayDb.listActive().map((job) => job.workspace_id).filter((id): id is string => Boolean(id)));
+    const deletableRelayIds: string[] = [];
     for (const job of expired) {
       const workspaceId = job.workspace_id;
-      if (!workspaceId || seenWorkspaces.has(workspaceId)) continue;
+      if (!workspaceId) {
+        continue;
+      }
+      if (seenWorkspaces.has(workspaceId)) continue;
       seenWorkspaces.add(workspaceId);
+      if (activeWorkspaces.has(workspaceId)) continue;
       const workspace = workspaceService.get(workspaceId);
+      // A missing workspace cannot be proven clean. Keep the durable relay row
+      // so retention never destroys the only pointer to unlanded work.
       if (!workspace) continue;
-      // Isolated relay worktrees only — never the user's primary checkout.
-      if (workspace.mode !== 'git_worktree' && workspace.mode !== 'sandbox_copy') continue;
+      // Sandbox copies do not expose a complete dirty/commit diff, so they are
+      // retained indefinitely rather than force-deleted merely due to age.
+      if (workspace.mode === 'sandbox_copy') continue;
+      if (workspace.mode !== 'git_worktree') continue;
+      if (workspace.status === 'merged' || workspace.status === 'discarded') {
+        safeWorkspaces.add(workspaceId);
+        continue;
+      }
       try {
+        const status = await workspaceService.refreshStatus(workspaceId);
+        if (status.status !== 'active' || status.dirty_files.length > 0 || status.conflicts.length > 0 || status.ahead > 0) {
+          // Dirty files, conflicts, commits ahead of base, and uncertain
+          // lifecycle states are all unlanded work; preserve them.
+          continue;
+        }
         await workspaceService.discard(workspaceId, { deleteBranch: true });
         workspacesDiscarded += 1;
+        safeWorkspaces.add(workspaceId);
       } catch (error) {
         console.warn('[Agent Relay] failed to discard expired workspace', workspaceId, error);
       }
     }
-    const jobsDeleted = agentRelayDb.purgeTerminalOlderThan(retentionDays);
+    // A shared workspace can be referenced by more than one historical job;
+    // only remove rows whose workspace was proven safe above.
+    for (const job of expired) {
+      if (!job.workspace_id || safeWorkspaces.has(job.workspace_id)) deletableRelayIds.push(job.relay_id);
+    }
+    const jobsDeleted = agentRelayDb.purgeTerminalOlderThan(retentionDays, deletableRelayIds);
     return { jobsDeleted, workspacesDiscarded };
   },
 

@@ -135,8 +135,8 @@ test('a declared outputSchema is enforced with one automatic repair turn', async
         relayWriter.setSessionId(`schema-native-${prompts.length}`);
         const reply = prompts.length === 1
           // First turn: contract present but "data" violates the schema.
-          ? '<agent_relay_result>{"status":"completed","summary":"first pass","data":{"verdict":"maybe"}}</agent_relay_result>'
-          : '<agent_relay_result>{"status":"completed","summary":"repaired","data":{"verdict":"refuted","reason":"stale line number"}}</agent_relay_result>';
+          ? '<agent_relay_result>{"status":"completed","summary":"first pass","evidence":[],"filesTouched":[],"testsRun":[],"openQuestions":[],"data":{"verdict":"maybe"}}</agent_relay_result>'
+          : '<agent_relay_result>{"status":"completed","summary":"repaired","evidence":[],"filesTouched":[],"testsRun":[],"openQuestions":[],"data":{"verdict":"refuted","reason":"stale line number"}}</agent_relay_result>';
         relayWriter.send({ kind: 'text', provider: 'claude', content: reply });
         relayWriter.send({ kind: 'complete', provider: 'claude', exitCode: 0, success: true });
       },
@@ -186,7 +186,7 @@ test('output that stays invalid after the repair turn is reported, not hidden', 
         relayWriter.send({
           kind: 'text',
           provider: 'claude',
-          content: '<agent_relay_result>{"status":"completed","summary":"still no data key"}</agent_relay_result>',
+          content: '<agent_relay_result>{"status":"completed","summary":"still no data key","evidence":[],"filesTouched":[],"testsRun":[],"openQuestions":[]}</agent_relay_result>',
         });
         relayWriter.send({ kind: 'complete', provider: 'claude', exitCode: 0, success: true });
       },
@@ -218,7 +218,7 @@ test('dependsOn forms a pipeline: gated start, injected results, fail-fast on br
         relayWriter.send({
           kind: 'text',
           provider: 'claude',
-          content: `<agent_relay_result>{"status":"completed","summary":"stage ${stage} done","data":{"stage":"${stage}"}}</agent_relay_result>`,
+          content: `<agent_relay_result>{"status":"completed","summary":"stage ${stage} done","evidence":[],"filesTouched":[],"testsRun":[],"openQuestions":[],"data":{"stage":"${stage}"}}</agent_relay_result>`,
         });
         relayWriter.send({ kind: 'complete', provider: 'claude', exitCode: 0, success: true });
       },
@@ -275,6 +275,69 @@ test('dependsOn forms a pipeline: gated start, injected results, fail-fast on br
     assert.equal(failedWait.jobs[0]?.status, 'failed');
     assert.equal(failedWait.jobs[1]?.status, 'failed');
     assert.match(failedWait.jobs[1]?.error ?? '', /Dependency "broken-stage" ended failed/);
+
+    // A provider can complete its transport successfully while reporting a
+    // semantic blocker. That outcome must still gate downstream work.
+    const semanticPrompts: string[] = [];
+    configureAgentRelayRuntimes({
+      claude: async (command, _options, writer) => {
+        semanticPrompts.push(command);
+        const relayWriter = writer as RelayWriter;
+        relayWriter.setSessionId(`semantic-${semanticPrompts.length}`);
+        const blocked = command.includes('SEMANTIC-BLOCKED');
+        relayWriter.send({
+          kind: 'text',
+          provider: 'claude',
+          content: `<agent_relay_result>{"status":"${blocked ? 'blocked' : 'completed'}","summary":"${blocked ? 'blocked by a missing prerequisite' : 'downstream ran unexpectedly'}","evidence":[],"filesTouched":[],"testsRun":[],"openQuestions":[]}</agent_relay_result>`,
+        });
+        relayWriter.send({ kind: 'complete', provider: 'claude', exitCode: 0, success: true });
+      },
+    }, {});
+    const semantic = await agentRelayService.submitBatch({
+      projectPath,
+      tasks: [
+        { task: 'SEMANTIC-BLOCKED prerequisite.', provider: 'claude', label: 'semantic-blocked' },
+        { task: 'Must not run after a blocked result.', provider: 'claude', label: 'semantic-downstream', dependsOn: [0] },
+      ],
+    });
+    const semanticWait = await agentRelayService.wait(semantic.jobs.map((job) => job.relay_id), { returnWhen: 'all', timeoutMs: 10_000 });
+    assert.equal(semanticWait.jobs[0]?.status, 'completed');
+    assert.equal(semanticWait.jobs[0]?.result?.status, 'blocked');
+    assert.equal(semanticWait.jobs[1]?.status, 'failed');
+    assert.match(semanticWait.jobs[1]?.error ?? '', /reported blocked/);
+    assert.equal(semanticPrompts.some((prompt) => prompt.includes('Must not run after')), false);
+
+    // A schema repair that remains invalid is also a failed prerequisite, even
+    // though the transport/lifecycle status is completed.
+    let invalidSchemaCalls = 0;
+    configureAgentRelayRuntimes({
+      claude: async (command, _options, writer) => {
+        invalidSchemaCalls += 1;
+        const relayWriter = writer as RelayWriter;
+        relayWriter.setSessionId(`invalid-schema-${invalidSchemaCalls}`);
+        relayWriter.send({
+          kind: 'text',
+          provider: 'claude',
+          content: command.includes('INVALID-SCHEMA')
+            ? '<agent_relay_result>{"status":"completed","summary":"still invalid","evidence":[],"filesTouched":[],"testsRun":[],"openQuestions":[],"data":{"verdict":"nope"}}</agent_relay_result>'
+            : '<agent_relay_result>{"status":"completed","summary":"downstream ran unexpectedly","evidence":[],"filesTouched":[],"testsRun":[],"openQuestions":[]}</agent_relay_result>',
+        });
+        relayWriter.send({ kind: 'complete', provider: 'claude', exitCode: 0, success: true });
+      },
+    }, {});
+    const invalidSchema = await agentRelayService.submitBatch({
+      projectPath,
+      tasks: [
+        { task: 'INVALID-SCHEMA prerequisite.', provider: 'claude', outputSchema: { type: 'object', required: ['verdict'], properties: { verdict: { enum: ['yes'] } } } },
+        { task: 'Must not run after invalid schema.', provider: 'claude', dependsOn: [0] },
+      ],
+    });
+    const invalidWait = await agentRelayService.wait(invalidSchema.jobs.map((job) => job.relay_id), { returnWhen: 'all', timeoutMs: 10_000 });
+    assert.equal(invalidWait.jobs[0]?.status, 'completed');
+    assert.equal(invalidWait.jobs[0]?.result?.outputValidation?.valid, false);
+    assert.equal(invalidWait.jobs[1]?.status, 'failed');
+    assert.match(invalidWait.jobs[1]?.error ?? '', /invalid result contract/);
+    assert.equal(invalidSchemaCalls, 2, 'only the prerequisite repair turn should run');
   });
 });
 
@@ -297,7 +360,7 @@ test('a retry budget re-dispatches an infra failure on a fresh worker session', 
         relayWriter.send({
           kind: 'text',
           provider: 'claude',
-          content: '<agent_relay_result>{"status":"completed","summary":"second try worked"}</agent_relay_result>',
+          content: '<agent_relay_result>{"status":"completed","summary":"second try worked","evidence":[],"filesTouched":[],"testsRun":[],"openQuestions":[]}</agent_relay_result>',
         });
         relayWriter.send({ kind: 'complete', provider: 'claude', exitCode: 0, success: true });
       },
@@ -352,7 +415,7 @@ test('a malformed result tag gets one repair turn instead of silently passing as
           provider: 'claude',
           content: calls === 1
             ? 'Here is my analysis. <agent_relay_result>{not valid json}</agent_relay_result>'
-            : '<agent_relay_result>{"status":"completed","summary":"clean second reply"}</agent_relay_result>',
+            : '<agent_relay_result>{"status":"completed","summary":"clean second reply","evidence":[],"filesTouched":[],"testsRun":[],"openQuestions":[]}</agent_relay_result>',
         });
         relayWriter.send({ kind: 'complete', provider: 'claude', exitCode: 0, success: true });
       },

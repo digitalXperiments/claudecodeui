@@ -207,6 +207,51 @@ test('relay_follow_up on a queued job merges directly into its first attempt pro
   });
 });
 
+test('pending follow-ups are cleared when a job is cancelled and never replayed by a new follow-up', async () => {
+  await withRelayDb(async (projectPath) => {
+    relaySettings({ workerProviders: ['codex'], leadProviders: ['codex'] });
+    const release: { run: (() => void) | null } = { run: null };
+    let calls = 0;
+    configureAgentRelayRuntimes({
+      codex: async (_command, _options, writer) => {
+        calls += 1;
+        const relayWriter = writer as RelayWriter;
+        relayWriter.setSessionId('relay-stale-follow-up');
+        if (calls === 1) await new Promise<void>((resolve) => { release.run = resolve; });
+        relayWriter.send({
+          kind: 'text',
+          provider: 'codex',
+          content: '<agent_relay_result>{"status":"completed","summary":"late output","evidence":[],"filesTouched":[],"testsRun":[],"openQuestions":[]}</agent_relay_result>',
+        });
+        relayWriter.send({ kind: 'complete', provider: 'codex', exitCode: 0, success: true });
+      },
+    }, {});
+
+    const submitted = await agentRelayService.submitBatch({
+      projectPath,
+      tasks: [{ task: 'Cancel after a queued follow-up.', provider: 'codex' }],
+    });
+    const relayId = submitted.jobs[0]!.relay_id;
+    await waitForStatus(relayId, 'running');
+    const queued = await agentRelayService.followUp(relayId, 'This must not replay after cancellation.');
+    assert.equal(queued.pending_follow_up, 'This must not replay after cancellation.');
+    const cancelled = await agentRelayService.cancel(relayId);
+    assert.equal(cancelled.status, 'cancelled');
+    assert.equal(cancelled.pending_follow_up, null);
+    release.run?.();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // An explicit new follow-up starts from its own prompt, never the stale
+    // cancelled instruction.
+    const resumed = await agentRelayService.followUp(relayId, 'Fresh explicit follow-up.');
+    assert.equal(resumed.pending_follow_up, null);
+    assert.match(resumed.last_prompt, /Fresh explicit follow-up/);
+    assert.doesNotMatch(resumed.last_prompt, /must not replay/);
+    const waited = await agentRelayService.wait([relayId], { returnWhen: 'all', timeoutMs: 5_000 });
+    assert.equal(waited.jobs[0]?.status, 'completed');
+  });
+});
+
 test('parseStructuredResult recovers tagged JSON wrapped in a markdown fence', () => {
   const output = [
     'Investigated the failing test.',

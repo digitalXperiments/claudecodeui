@@ -17,12 +17,18 @@ type AgentRelayRow = Omit<AgentRelayJob, 'mcp_servers' | 'result' | 'provider' |
   result_json: string | null;
 };
 
-function parseStringArray(raw: string | null | undefined): string[] {
+type DurableParse = { value: string[]; error?: string };
+
+function parseStringArray(raw: string | null | undefined, field: string): DurableParse {
+  if (typeof raw !== 'string') return { value: [], error: `${field} is missing` };
   try {
-    const value = JSON.parse(raw || '[]');
-    return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string') : [];
-  } catch {
-    return [];
+    const value = JSON.parse(raw);
+    if (!Array.isArray(value) || value.some((entry) => typeof entry !== 'string')) {
+      return { value: [], error: `${field} must be a JSON array of strings` };
+    }
+    return { value };
+  } catch (error) {
+    return { value: [], error: `${field} is malformed JSON${error instanceof Error ? `: ${error.message}` : ''}` };
   }
 }
 
@@ -46,78 +52,125 @@ function mapApprovalRow(row: AgentRelayApprovalRow): AgentRelayApproval {
   return {
     ...rest,
     status: row.status as AgentRelayApproval['status'],
-    paths: parseStringArray(row.paths_json),
+    paths: parseStringArray(row.paths_json, 'approval.paths_json').value,
   };
 }
 
-function parseObject(raw: string | null | undefined): Record<string, unknown> | null {
-  if (!raw) return null;
+type ParsedJob = { job: AgentRelayJob; durableError: string | null };
+
+function parseObject(raw: string | null | undefined, field: string): { value: Record<string, unknown> | null; error?: string } {
+  if (raw === null || raw === undefined || raw === '') return { value: null };
   try {
     const value = JSON.parse(raw);
-    return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
-  } catch {
-    return null;
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return { value: null, error: `${field} must be a JSON object` };
+    }
+    return { value: value as Record<string, unknown> };
+  } catch (error) {
+    return { value: null, error: `${field} is malformed JSON${error instanceof Error ? `: ${error.message}` : ''}` };
   }
 }
 
-function mapRow(row: AgentRelayRow): AgentRelayJob {
+function mapRow(row: AgentRelayRow): ParsedJob {
   const { mcp_servers_json: _mcp, output_schema_json: _schema, depends_on_json: _deps, result_json: _result, ...rest } = row;
-  return {
+  const mcpServers = parseStringArray(row.mcp_servers_json, 'mcp_servers_json');
+  const dependsOn = parseStringArray(row.depends_on_json, 'depends_on_json');
+  const outputSchema = parseObject(row.output_schema_json, 'output_schema_json');
+  const errors = [mcpServers.error, dependsOn.error, outputSchema.error].filter((error): error is string => Boolean(error));
+  const durableError = errors.length > 0
+    ? `Malformed durable Agent Relay data quarantined: ${errors.join('; ')}`
+    : null;
+  const job: AgentRelayJob = {
     ...rest,
     provider: row.provider as AgentRelayJob['provider'],
-    mcp_servers: parseStringArray(row.mcp_servers_json),
-    output_schema: parseObject(row.output_schema_json),
-    depends_on: parseStringArray(row.depends_on_json),
+    mcp_servers: mcpServers.value,
+    output_schema: outputSchema.value,
+    depends_on: dependsOn.value,
     result: parseResult(row.result_json),
   };
+  if (durableError) {
+    job.status = 'failed';
+    job.error = durableError;
+    job.finished_at = job.finished_at ?? new Date().toISOString();
+  }
+  return { job, durableError };
+}
+
+function mapRows(rows: AgentRelayRow[]): AgentRelayJob[] {
+  const parsed = rows.map(mapRow);
+  const db = getConnection();
+  const quarantine = db.prepare(`
+    UPDATE agent_relay_jobs
+    SET status = 'failed', error = ?, finished_at = COALESCE(finished_at, CURRENT_TIMESTAMP), updated_at = CURRENT_TIMESTAMP
+    WHERE relay_id = ? AND status != 'failed'
+  `);
+  for (const entry of parsed) {
+    if (entry.durableError) quarantine.run(entry.job.error, entry.job.relay_id);
+  }
+  return parsed.map(({ job }) => job);
+}
+
+function insertJob(db: ReturnType<typeof getConnection>, input: CreateAgentRelayJobInput): void {
+  db.prepare(`
+    INSERT INTO agent_relay_jobs (
+      relay_id, batch_id, project_id, project_path, source_session_id,
+      provider, model, requested_model, model_label, catalog_default_model,
+      catalog_resolved_model, model_selection_source, effort, mode, approval_policy, status, label, task, last_prompt,
+      mcp_servers_json, output_schema_json, depends_on_json, retries,
+      timeout_ms, attempt
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, 0)
+  `).run(
+    input.relayId,
+    input.batchId,
+    input.projectId,
+    input.projectPath,
+    input.sourceSessionId ?? null,
+    input.provider,
+    input.model ?? null,
+    input.requestedModel ?? null,
+    input.modelLabel ?? null,
+    input.catalogDefaultModel ?? null,
+    input.catalogResolvedModel ?? null,
+    input.modelSelectionSource ?? null,
+    input.effort ?? null,
+    input.mode,
+    input.approvalPolicy ?? 'auto',
+    input.label ?? null,
+    input.task,
+    input.prompt,
+    JSON.stringify(input.mcpServers),
+    input.outputSchema ? JSON.stringify(input.outputSchema) : null,
+    JSON.stringify(input.dependsOn ?? []),
+    Math.max(0, Math.trunc(input.retries ?? 0)),
+    input.timeoutMs,
+  );
 }
 
 export const agentRelayDb = {
   create(input: CreateAgentRelayJobInput): AgentRelayJob {
     const db = getConnection();
-    db.prepare(`
-      INSERT INTO agent_relay_jobs (
-        relay_id, batch_id, project_id, project_path, source_session_id,
-        provider, model, requested_model, model_label, catalog_default_model,
-        catalog_resolved_model, model_selection_source, effort, mode, approval_policy, status, label, task, last_prompt,
-        mcp_servers_json, output_schema_json, depends_on_json, retries,
-        timeout_ms, attempt
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, 0)
-    `).run(
-      input.relayId,
-      input.batchId,
-      input.projectId,
-      input.projectPath,
-      input.sourceSessionId ?? null,
-      input.provider,
-      input.model ?? null,
-      input.requestedModel ?? null,
-      input.modelLabel ?? null,
-      input.catalogDefaultModel ?? null,
-      input.catalogResolvedModel ?? null,
-      input.modelSelectionSource ?? null,
-      input.effort ?? null,
-      input.mode,
-      input.approvalPolicy ?? 'auto',
-      input.label ?? null,
-      input.task,
-      input.prompt,
-      JSON.stringify(input.mcpServers),
-      input.outputSchema ? JSON.stringify(input.outputSchema) : null,
-      JSON.stringify(input.dependsOn ?? []),
-      Math.max(0, Math.trunc(input.retries ?? 0)),
-      input.timeoutMs,
-    );
+    insertJob(db, input);
     const created = this.get(input.relayId);
     if (!created) throw new Error('Failed to create Agent Relay job.');
     return created;
+  },
+
+  /** Inserts a complete batch atomically so no partial pipeline can escape. */
+  createBatch(inputs: CreateAgentRelayJobInput[]): AgentRelayJob[] {
+    const db = getConnection();
+    db.transaction(() => {
+      for (const input of inputs) insertJob(db, input);
+    })();
+    const jobs = inputs.map((input) => this.get(input.relayId));
+    if (jobs.some((job): job is null => job === null)) throw new Error('Failed to create the complete Agent Relay batch.');
+    return jobs as AgentRelayJob[];
   },
 
   get(relayId: string): AgentRelayJob | null {
     const row = getConnection()
       .prepare('SELECT * FROM agent_relay_jobs WHERE relay_id = ?')
       .get(relayId) as AgentRelayRow | undefined;
-    return row ? mapRow(row) : null;
+    return row ? mapRows([row])[0] ?? null : null;
   },
 
   list(input: {
@@ -162,20 +215,20 @@ export const agentRelayDb = {
     const limit = Math.min(Math.max(Math.trunc(input.limit ?? 50), 1), 200);
     const sql = `SELECT * FROM agent_relay_jobs ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
       ORDER BY created_at DESC, relay_id DESC LIMIT ?`;
-    return (getConnection().prepare(sql).all(...params, limit) as AgentRelayRow[]).map(mapRow);
+    return mapRows(getConnection().prepare(sql).all(...params, limit) as AgentRelayRow[]);
   },
 
   listQueued(limit = 100): AgentRelayJob[] {
-    return (getConnection().prepare(
+    return mapRows((getConnection().prepare(
       "SELECT * FROM agent_relay_jobs WHERE status = 'queued' ORDER BY created_at, relay_id LIMIT ?",
-    ).all(Math.min(Math.max(limit, 1), 500)) as AgentRelayRow[]).map(mapRow);
+    ).all(Math.min(Math.max(limit, 1), 500)) as AgentRelayRow[]));
   },
 
   /** FIFO queue scan for the scheduler; unlike listQueued this is not a UI-sized page. */
   listAllQueued(): AgentRelayJob[] {
-    return (getConnection().prepare(
+    return mapRows((getConnection().prepare(
       "SELECT * FROM agent_relay_jobs WHERE status = 'queued' ORDER BY created_at, relay_id",
-    ).all() as AgentRelayRow[]).map(mapRow);
+    ).all() as AgentRelayRow[]));
   },
 
   /**
@@ -193,9 +246,9 @@ export const agentRelayDb = {
 
   /** All open jobs for lifecycle operations that must never truncate at a UI page size. */
   listActive(): AgentRelayJob[] {
-    return (getConnection().prepare(
+    return mapRows((getConnection().prepare(
       "SELECT * FROM agent_relay_jobs WHERE status IN ('queued', 'running', 'waiting_approval') ORDER BY created_at, relay_id",
-    ).all() as AgentRelayRow[]).map(mapRow);
+    ).all() as AgentRelayRow[]));
   },
 
   attachExecution(relayId: string, input: {
@@ -237,7 +290,7 @@ export const agentRelayDb = {
     getConnection().prepare(`
       UPDATE agent_relay_jobs
       SET status = ?, result_json = ?, error = ?, finished_at = CURRENT_TIMESTAMP,
-          updated_at = CURRENT_TIMESTAMP
+          pending_follow_up = NULL, updated_at = CURRENT_TIMESTAMP
       WHERE relay_id = ? AND status IN ('queued', 'running', 'waiting_approval')
     `).run(
       status,
@@ -284,7 +337,7 @@ export const agentRelayDb = {
     getConnection().prepare(`
       UPDATE agent_relay_jobs
       SET status = 'queued', last_prompt = ?, result_json = NULL, error = NULL,
-          run_id = NULL, finished_at = NULL, schema_retry_count = 0,
+          pending_follow_up = NULL, run_id = NULL, finished_at = NULL, schema_retry_count = 0,
           timeout_ms = COALESCE(?, timeout_ms), updated_at = CURRENT_TIMESTAMP
       WHERE relay_id = ? AND status IN ('completed', 'failed', 'timed_out', 'cancelled')
     `).run(prompt, timeoutMs ?? null, relayId);
@@ -485,26 +538,30 @@ export const agentRelayDb = {
 
   listTerminalOlderThan(retentionDays: number): AgentRelayJob[] {
     const days = Math.min(Math.max(Math.trunc(retentionDays), 1), 365);
-    return (getConnection().prepare(`
+    return mapRows((getConnection().prepare(`
       SELECT * FROM agent_relay_jobs
       WHERE status IN ('completed', 'failed', 'cancelled', 'timed_out')
         AND finished_at IS NOT NULL
         AND datetime(finished_at) < datetime('now', ?)
-    `).all(`-${days} days`) as AgentRelayRow[]).map(mapRow);
+    `).all(`-${days} days`) as AgentRelayRow[]));
   },
 
   /**
    * Drop finished jobs (and cascaded approvals) older than `retentionDays`.
    * Active rows are never deleted.
    */
-  purgeTerminalOlderThan(retentionDays: number): number {
+  purgeTerminalOlderThan(retentionDays: number, relayIds?: string[]): number {
     const days = Math.min(Math.max(Math.trunc(retentionDays), 1), 365);
+    const ids = [...new Set((relayIds ?? []).filter(Boolean))];
+    if (ids.length === 0) return 0;
+    const placeholders = ids.map(() => '?').join(', ');
     return Number(getConnection().prepare(`
       DELETE FROM agent_relay_jobs
       WHERE status IN ('completed', 'failed', 'cancelled', 'timed_out')
         AND finished_at IS NOT NULL
         AND datetime(finished_at) < datetime('now', ?)
-    `).run(`-${days} days`).changes);
+        AND relay_id IN (${placeholders})
+    `).run(`-${days} days`, ...ids).changes);
   },
 
   expireAllPendingApprovals(reason: string): number {

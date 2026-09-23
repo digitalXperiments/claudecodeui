@@ -85,6 +85,8 @@ export type AgentRelayStructuredResult = {
   structuredOutput?: unknown;
   /** Validation verdict for `structuredOutput` against the declared schema. */
   outputValidation?: { valid: boolean; errors: string[] };
+  /** Validation verdict for the standard relay result envelope. */
+  contractValidation?: { valid: boolean; errors: string[] };
   /**
    * Advisory Jev assessment of this finished report. Attached after the job
    * has already reached a terminal status, so it never influences the
@@ -247,6 +249,7 @@ export type AgentRelayJobSummary = {
     openQuestions: string[];
     structuredOutput?: unknown;
     outputValidation?: { valid: boolean; errors: string[] };
+    contractValidation?: { valid: boolean; errors: string[] };
     jevAssessment?: JevResultAdvice;
     hasFullOutput: boolean;
     workspace?: { workspaceId: string; featureBranch: string; files: number; additions: number; deletions: number };
