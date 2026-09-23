@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Bot,
   CheckCircle2,
@@ -16,7 +16,8 @@ import { agentRelayApi } from '../api/agentRelayApi';
 import type { AgentRelayRuntimeStatus, AgentRelaySettings, AgentRelayWorkerProfile } from '../types';
 import type { LLMProvider } from '../../../types/app';
 import { authenticatedFetch } from '../../../utils/api';
-import { Button } from '../../../shared/view/ui';
+import { Button, Dialog, DialogContent, DialogTitle } from '../../../shared/view/ui';
+import { useWebSocket } from '../../../contexts/WebSocketContext';
 import { AGENT_NAMES, AGENT_PROVIDERS } from '../../settings/constants/constants';
 import SettingsSection from '../../settings/view/SettingsSection';
 import SettingsToggle from '../../settings/view/SettingsToggle';
@@ -103,7 +104,18 @@ function workerRuntimeHint(runtime: AgentRelayRuntimeStatus['providers'][number]
   return { dot: 'bg-emerald-500', title: 'Authenticated and available', label: 'ready' };
 }
 
+export function activeRelayJobCount(status: AgentRelayRuntimeStatus | null): number {
+  return (status?.activeCount ?? 0) + (status?.queuedCount ?? 0);
+}
+
+export function disableRelayImpactMessage(status: AgentRelayRuntimeStatus | null): string | null {
+  const count = activeRelayJobCount(status);
+  if (count === 0) return null;
+  return `Disabling Agent Relay will cancel ${count} active or queued worker ${count === 1 ? 'job' : 'jobs'}. This cannot be undone.`;
+}
+
 export default function AgentRelaySettingsForm() {
+  const { subscribe } = useWebSocket();
   const [settings, setSettings] = useState<AgentRelaySettings | null>(null);
   const [savedSettings, setSavedSettings] = useState<AgentRelaySettings | null>(null);
   const [status, setStatus] = useState<AgentRelayRuntimeStatus | null>(null);
@@ -111,7 +123,9 @@ export default function AgentRelaySettingsForm() {
   const [saving, setSaving] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [syncError, setSyncError] = useState<string | null>(null);
   const [syncWarnings, setSyncWarnings] = useState<string[]>([]);
+  const [disableConfirmOpen, setDisableConfirmOpen] = useState(false);
   const [catalogs, setCatalogs] = useState<Partial<Record<LLMProvider, WorkerModelCatalog>>>({});
   const [catalogsLoading, setCatalogsLoading] = useState(false);
   const [modelSearch, setModelSearch] = useState<Partial<Record<LLMProvider, string>>>({});
@@ -119,6 +133,7 @@ export default function AgentRelaySettingsForm() {
   const [mcpCatalogLoading, setMcpCatalogLoading] = useState(false);
   const [honorsMcpGrants, setHonorsMcpGrants] = useState<Partial<Record<LLMProvider, boolean>>>({});
   const [registryCapabilities, setRegistryCapabilities] = useState<RegistryCapability[]>([]);
+  const statusRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const refresh = useCallback(async () => {
     const [nextSettings, nextStatus] = await Promise.all([
@@ -137,6 +152,26 @@ export default function AgentRelaySettingsForm() {
       .catch((caught) => setError(caught instanceof Error ? caught.message : 'Could not load Agent Relay.'))
       .finally(() => setLoading(false));
   }, [refresh]);
+
+  useEffect(() => {
+    const unsubscribe = subscribe((event) => {
+      if (event.kind !== 'agent_relay_updated' && event.kind !== 'agent_relay_approval_updated') return;
+      if (statusRefreshTimerRef.current) return;
+      statusRefreshTimerRef.current = setTimeout(() => {
+        statusRefreshTimerRef.current = null;
+        void agentRelayApi.getStatus()
+          .then(setStatus)
+          .catch(() => undefined);
+      }, 250);
+    });
+    return () => {
+      unsubscribe();
+      if (statusRefreshTimerRef.current) {
+        clearTimeout(statusRefreshTimerRef.current);
+        statusRefreshTimerRef.current = null;
+      }
+    };
+  }, [subscribe]);
 
   useEffect(() => {
     let cancelled = false;
@@ -177,19 +212,68 @@ export default function AgentRelaySettingsForm() {
     }
     setSaving(true);
     setError(null);
+    setSyncError(null);
+    setSyncWarnings([]);
+    let persisted: AgentRelaySettings;
+    try {
+      persisted = hydrateSettings(await agentRelayApi.updateSettings(settings));
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Could not save Agent Relay settings.');
+      setSaving(false);
+      return;
+    }
+
+    // Persisted settings are authoritative even if the optional integration
+    // fan-out fails. Notify activity panels immediately so they can reflect
+    // the saved enabled state without waiting for a successful sync.
+    setSettings(persisted);
+    setSavedSettings(persisted);
+    window.dispatchEvent(new Event('agentRelaySettingsChanged'));
+    void agentRelayApi.getStatus()
+      .then(setStatus)
+      .catch(() => undefined);
+
+    try {
+      const synced = await agentRelayApi.sync();
+      setSyncWarnings(synced.warnings);
+      setSyncError(null);
+    } catch (caught) {
+      setSyncError(caught instanceof Error ? caught.message : 'Could not sync Agent Relay integrations.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleEnabledChange = (enabled: boolean) => {
+    if (!enabled && settings?.enabled && disableRelayImpactMessage(status)) {
+      setDisableConfirmOpen(true);
+      return;
+    }
+    setSettings((current) => current ? { ...current, enabled } : current);
+  };
+
+  const confirmDisable = () => {
+    setDisableConfirmOpen(false);
+    setSettings((current) => current ? { ...current, enabled: false } : current);
+  };
+
+  const runSync = async () => {
+    setSyncing(true);
+    setError(null);
+    setSyncError(null);
     setSyncWarnings([]);
     try {
-      const next = hydrateSettings(await agentRelayApi.updateSettings(settings));
-      setSettings(next);
-      setSavedSettings(next);
-      setStatus(await agentRelayApi.getStatus());
       const synced = await agentRelayApi.sync();
       setSyncWarnings(synced.warnings);
       window.dispatchEvent(new Event('agentRelaySettingsChanged'));
+      void agentRelayApi.getStatus()
+        .then(setStatus)
+        .catch(() => undefined);
+      setSyncError(null);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'Could not save Agent Relay settings.');
+      setSyncError(caught instanceof Error ? caught.message : 'Could not sync Agent Relay integrations.');
     } finally {
-      setSaving(false);
+      setSyncing(false);
     }
   };
 
@@ -400,21 +484,6 @@ export default function AgentRelaySettingsForm() {
     });
   };
 
-  const runSync = async () => {
-    setSyncing(true);
-    setError(null);
-    setSyncWarnings([]);
-    try {
-      const synced = await agentRelayApi.sync();
-      setSyncWarnings(synced.warnings);
-      await refresh();
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'Could not sync Agent Relay integrations.');
-    } finally {
-      setSyncing(false);
-    }
-  };
-
   const statusByProvider = useMemo(
     () => new Map(status?.providers.map((entry) => [entry.provider, entry]) ?? []),
     [status],
@@ -475,7 +544,7 @@ export default function AgentRelaySettingsForm() {
               </div>
               <SettingsToggle
                 checked={settings.enabled}
-                onChange={(enabled) => setSettings((current) => current ? { ...current, enabled } : current)}
+                onChange={handleEnabledChange}
                 disabled={saving || syncing}
                 ariaLabel="Enable Agent Relay"
               />
@@ -502,6 +571,19 @@ export default function AgentRelaySettingsForm() {
           <div className="flex items-start gap-2 rounded-xl border border-red-500/25 bg-red-500/10 p-3 text-sm text-red-700 dark:text-red-300">
             <CircleAlert className="mt-0.5 h-4 w-4 shrink-0" />
             {error}
+          </div>
+        ) : null}
+
+        {syncError ? (
+          <div className="flex flex-wrap items-start justify-between gap-3 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-800 dark:text-amber-200">
+            <div className="flex items-start gap-2">
+              <CircleAlert className="mt-0.5 h-4 w-4 shrink-0" />
+              <span>Settings saved, but provider bindings could not be refreshed: {syncError}</span>
+            </div>
+            <Button variant="outline" size="sm" onClick={() => void runSync()} disabled={syncing || saving}>
+              {syncing ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
+              Retry integration sync
+            </Button>
           </div>
         ) : null}
 
@@ -935,12 +1017,12 @@ export default function AgentRelaySettingsForm() {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
             {dirty ? <CircleAlert className="h-4 w-4 text-amber-500" /> : savedSettings?.enabled ? <CheckCircle2 className="h-4 w-4 text-emerald-500" /> : <CircleAlert className="h-4 w-4" />}
-            {dirty ? 'Save to apply these selections.' : savedSettings?.enabled ? 'Bindings are active. Start a new lead chat so the MCP server and skill load.' : 'Enable Agent Relay to write provider-native bindings.'}
+            {dirty ? 'Save to apply these selections.' : savedSettings?.enabled ? 'Bindings are saved for new lead chats. Start a new lead chat after changing provider bindings so the MCP server and skill load.' : 'Enable Agent Relay to write provider-native bindings.'}
           </div>
           <div className="flex flex-wrap gap-2">
             <Button variant="outline" onClick={() => void runSync()} disabled={syncing || saving || dirty}>
               {syncing ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
-              Resync MCP & skill
+              {syncError ? 'Retry integration sync' : 'Resync MCP & skill'}
             </Button>
             <Button onClick={() => void save()} disabled={saving || syncing || !dirty}>
               {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
@@ -949,6 +1031,26 @@ export default function AgentRelaySettingsForm() {
           </div>
         </div>
       </SettingsSection>
+
+      <Dialog open={disableConfirmOpen} onOpenChange={setDisableConfirmOpen}>
+        <DialogContent className="w-[calc(100vw-2rem)] max-w-lg p-0">
+          <DialogTitle>Disable Agent Relay</DialogTitle>
+          <div className="border-b border-border/60 px-4 py-4">
+            <div className="text-base font-medium text-foreground">Disable Agent Relay?</div>
+            <p className="mt-1 text-sm leading-6 text-muted-foreground">
+              {disableRelayImpactMessage(status)} Provider-native MCP and skill bindings will be removed when you save. A new lead chat will be needed if you enable Relay again.
+            </p>
+          </div>
+          <div className="flex items-center justify-end gap-2 px-4 py-3">
+            <Button type="button" variant="outline" size="sm" onClick={() => setDisableConfirmOpen(false)}>
+              Keep enabled
+            </Button>
+            <Button type="button" variant="destructive" size="sm" onClick={confirmDisable}>
+              Disable Relay
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
