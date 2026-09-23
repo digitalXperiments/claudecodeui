@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Check, Copy, MoreHorizontal, Pencil, Play, Power, Trash2 } from 'lucide-react';
+import { Check, Copy, FlaskConical, MoreHorizontal, Pencil, Play, Power, Trash2 } from 'lucide-react';
 
 import type { CreateMcSectionInput } from '../../mission-control/api/missionControlApi';
 import { Button } from '../../../shared/view/ui';
@@ -18,11 +18,16 @@ import ToolsTab from './tabs/ToolsTab';
 import TriggersTab from './tabs/TriggersTab';
 import OutputsActionsTab from './tabs/OutputsActionsTab';
 import TicksTab from './tabs/TicksTab';
+import SimulatorTab from './tabs/SimulatorTab';
+import VersionsTab from './tabs/VersionsTab';
+import MemoryTab from './tabs/MemoryTab';
+import TrustTab from './tabs/TrustTab';
+import IterateTab from './tabs/IterateTab';
 import DangerTab from './tabs/DangerTab';
 import type { BotDetailViewProps } from './contracts';
 
-export type DetailTab = 'overview' | 'inbox' | 'brief' | 'tools' | 'triggers' | 'outputs' | 'ticks' | 'danger';
-const DETAIL_TABS: DetailTab[] = ['overview', 'inbox', 'brief', 'tools', 'triggers', 'outputs', 'ticks', 'danger'];
+export type DetailTab = 'overview' | 'inbox' | 'brief' | 'tools' | 'triggers' | 'outputs' | 'ticks' | 'simulator' | 'versions' | 'memory' | 'trust' | 'iterate' | 'danger';
+const DETAIL_TABS: DetailTab[] = ['overview', 'inbox', 'brief', 'tools', 'triggers', 'outputs', 'ticks', 'simulator', 'versions', 'memory', 'trust', 'iterate', 'danger'];
 
 export default function BotDetailView({ bot, projectName, workProjectName, items, runs, onUpdate, onRun, onCancelRun, onDelete, onDuplicate, onEdit, onSelectItem, selectedTab, onTabChange, onSelectRun }: BotDetailViewProps) {
   const initialTab = DETAIL_TABS.includes(selectedTab as DetailTab) ? selectedTab as DetailTab : 'overview';
@@ -58,6 +63,7 @@ export default function BotDetailView({ bot, projectName, workProjectName, items
           </div>
           <div className="flex shrink-0 basis-auto items-center gap-2 max-[720px]:basis-full max-[720px]:justify-end">
             <Button size="sm" variant="ghost" onClick={onEdit} title="Edit in Architect"><Pencil className="h-3.5 w-3.5" /><span className="hidden md:inline">Architect</span></Button>
+            <Button size="sm" variant="outline" onClick={() => changeTab('simulator')} title="Simulate a bot tick"><FlaskConical className="h-3.5 w-3.5" /><span className="hidden md:inline">Simulate</span></Button>
             <Button size="sm" onClick={() => void run()} disabled={busy || hasActiveRun} title={hasActiveRun ? 'A tick is already running' : 'Run bot now'}><Play className="h-3.5 w-3.5" /><span className="hidden md:inline">Run now</span></Button>
             <div className="relative">
               <Button size="icon" variant="ghost" onClick={() => setMenuOpen((open) => !open)} aria-label="Bot actions" aria-expanded={menuOpen} title="More bot actions"><MoreHorizontal className="h-4 w-4" /></Button>
@@ -67,7 +73,7 @@ export default function BotDetailView({ bot, projectName, workProjectName, items
         </div>
         <div className="mt-4 flex flex-wrap items-center gap-3"><SegmentedControl value={bot.autonomy} onChange={(value: BotAutonomy) => void update(botPatch(value))} label="Bot autonomy" options={[{ value: 'dry_run', label: 'Dry run' }, { value: 'propose', label: 'Propose' }, { value: 'act', label: 'Act' }]} /><label className="flex items-center gap-2 text-xs text-muted-foreground"><Toggle checked={bot.enabled} onChange={(enabled) => void update({ enabled })} label="Enable bot" /><span className="flex items-center gap-1"><Power className="h-3 w-3" />{bot.enabled ? 'Enabled' : 'Paused'}</span></label>{notice ? <span className="flex items-center gap-1 text-xs text-muted-foreground" role="status"><Check className="h-3.5 w-3.5 text-emerald-600" />{notice}</span> : null}</div>
       </header>
-      <Tabs value={tab} onChange={changeTab} options={[{ value: 'overview', label: 'Overview' }, { value: 'inbox', label: `Inbox${bot.pending ? ` · ${bot.pending}` : ''}` }, { value: 'brief', label: 'Brief' }, { value: 'tools', label: 'Tools' }, { value: 'triggers', label: 'Triggers' }, { value: 'outputs', label: 'Outputs & actions' }, { value: 'ticks', label: 'Ticks' }, { value: 'danger', label: 'Danger' }]} />
+      <Tabs value={tab} onChange={changeTab} options={[{ value: 'overview', label: 'Overview' }, { value: 'inbox', label: `Inbox${bot.pending ? ` · ${bot.pending}` : ''}` }, { value: 'brief', label: 'Brief' }, { value: 'tools', label: 'Tools' }, { value: 'triggers', label: 'Triggers' }, { value: 'outputs', label: 'Outputs & actions' }, { value: 'ticks', label: 'Ticks' }, { value: 'simulator', label: 'Simulator' }, { value: 'versions', label: 'Versions' }, { value: 'memory', label: 'Memory' }, { value: 'trust', label: 'Trust' }, { value: 'iterate', label: 'Iterate' }, { value: 'danger', label: 'Danger' }]} />
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
         {tab === 'overview' ? <OverviewTab bot={bot} items={items} runs={runs} /> : null}
         {tab === 'inbox' ? <div className="space-y-2 p-4 sm:p-6">{items.length ? items.map((item) => <button key={item.item_id} type="button" onClick={() => onSelectItem(item)} className="block w-full rounded-xl border border-border/70 bg-card p-3 text-left hover:border-primary/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"><div className="flex items-center justify-between gap-3"><p className="min-w-0 truncate text-xs font-semibold">{item.title}</p><StatusPill status={item.status} /></div><p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{item.summary || 'No summary provided.'}</p></button>) : <p className="text-xs text-muted-foreground">This bot has no inbox items.</p>}</div> : null}
@@ -76,6 +82,11 @@ export default function BotDetailView({ bot, projectName, workProjectName, items
         {tab === 'triggers' ? <TriggersTab bot={bot} onSave={update} /> : null}
         {tab === 'outputs' ? <OutputsActionsTab bot={bot} onSave={update} /> : null}
         {tab === 'ticks' ? <TicksTab bot={bot} runs={runs} onSelectRun={(run) => { setSelectedRunId(run.run_id); onSelectRun?.(run); }} selectedRunId={selectedRunId} onRun={() => void run()} onCancelRun={onCancelRun} /> : null}
+        {tab === 'simulator' ? <SimulatorTab key={bot.section_id} bot={bot} items={items} /> : null}
+        {tab === 'versions' ? <VersionsTab key={bot.section_id} sectionId={bot.section_id} onSelectRun={onSelectRun} /> : null}
+        {tab === 'memory' ? <MemoryTab key={bot.section_id} sectionId={bot.section_id} items={items} /> : null}
+        {tab === 'trust' ? <TrustTab bot={bot} onOpenTools={() => changeTab('tools')} /> : null}
+        {tab === 'iterate' ? <IterateTab key={bot.section_id} bot={bot} onSave={update} /> : null}
         {tab === 'danger' ? <DangerTab bot={bot} onDelete={onDelete} onResetPolicy={() => update({ tool_policy: {} })} /> : null}
       </div>
     </section>

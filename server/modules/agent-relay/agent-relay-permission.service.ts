@@ -44,6 +44,17 @@ export type RelayPermissionContext = {
   mode: AgentRelayMode;
   approvalPolicy?: AgentRelayApprovalPolicy;
   provider: LLMProvider;
+  /**
+   * How the worker is confined by the OS: `process` (the whole CLI runs under
+   * sandbox-exec, so every command it runs is kernel-confined), `provider`
+   * (the provider's own sandbox; its permission requests are escalations out
+   * of that sandbox), or null (string classification is the only envelope).
+   */
+  sandbox?: 'process' | 'provider' | null;
+  /** Egress policy of the sandbox; only `process` sandboxes cannot enforce it themselves. */
+  network?: 'open' | 'restricted';
+  /** MCP servers the lead granted this task; their tools are part of the envelope. */
+  grantedMcpServers?: string[];
   /** The only writable area for this job: the worktree root, or the project root. */
   envelopeRoot: string;
   sourceSessionId: string | null;
@@ -67,6 +78,9 @@ export type RelayPermissionOutcome = {
   via: 'policy' | 'lead' | 'operator' | 'timeout' | 'jev';
   approvalId: string | null;
   latencyMs: number;
+  toolName?: string | null;
+  command?: string | null;
+  paths?: string[];
   /**
    * The Jev recommendation for this request, recorded whether or not it was
    * acted on. Present only for escalation-tier requests with Jev enabled, and
@@ -146,9 +160,83 @@ async function resolveDecision(requestId: string, decision: RelayPermissionDecis
  * - `read_only` never writes and never escalates, even if the lead would
  *   have approved it.
  */
+/**
+ * Actions that cross the sandbox boundary no matter where they run: they
+ * publish, push, or reach other users' systems, or escalate privilege. An OS
+ * sandbox confines writes, not these.
+ */
+const BOUNDARY_CROSSING_PATTERNS: Array<[RegExp, string]> = [
+  [/(^|[\s;&|(])(sudo|doas|su)\s/, 'privilege escalation'],
+  [/\bgit\s+(?:-\S+\s+)*(push|send-email|remote\s+(add|set-url))\b/, 'pushes to a remote'],
+  [/\b(npm|pnpm|yarn|bun)\s+(publish|unpublish|deprecate|owner|dist-tag|login|adduser)\b/, 'publishes a package'],
+  [/\b(cargo|twine|gem|poetry)\s+(publish|upload|push)\b/, 'publishes a package'],
+  [/\b(docker|podman)\s+(push|login)\b/, 'pushes an image'],
+  [/\bgh\s+(pr\s+(create|merge|close|edit|comment|review|ready)|release|repo\s+(create|delete|edit|fork)|issue\s+(create|close|edit|comment|delete)|secret|workflow\s+run|api)\b/, 'acts on GitHub'],
+  [/\b(osascript|launchctl)\b/, 'controls other applications or services'],
+];
+
+const NETWORK_COMMAND_PATTERN = /(^|[\s;&|(])(curl|wget|ssh|scp|sftp|rsync|nc|ncat|telnet|ftp)\s/;
+const NETWORK_TOOL_NAMES = new Set(['WebFetch', 'WebSearch', 'web_fetch', 'web_search', 'fetch']);
+
+function grantedMcpServerForTool(toolName: string | null | undefined, granted: string[] | undefined): string | null {
+  if (!toolName || !granted?.length) return null;
+  const match = /^mcp__([^_]+(?:[-_][^_]+)*?)__/.exec(toolName);
+  const server = match?.[1] ?? null;
+  return server && granted.includes(server) ? server : null;
+}
+
+/**
+ * Decision for a worker confined by an OS sandbox, or null to fall through to
+ * the string classifier. Inside a `process` sandbox every shell command is
+ * kernel-confined, so only boundary crossings are refused; with a `provider`
+ * sandbox a permission request *is* a request to leave the sandbox, so the
+ * strict classifier still decides and sandbox-widening grants are refused.
+ */
+function classifySandboxedRequest(input: {
+  mode: AgentRelayMode;
+  approvalPolicy: AgentRelayApprovalPolicy;
+  sandbox: 'process' | 'provider';
+  network: 'open' | 'restricted';
+  grantedMcpServers?: string[];
+  toolName?: string | null;
+  command?: string | null;
+}): { tier: RelayPermissionTier; reason: string } | null {
+  if (input.approvalPolicy === 'manual') return null;
+  const command = input.command?.trim() ?? '';
+  if (command) {
+    for (const [pattern, label] of BOUNDARY_CROSSING_PATTERNS) {
+      if (pattern.test(command)) {
+        return { tier: 'deny', reason: `sandbox boundary: command ${label}; report it for the lead to do after review` };
+      }
+    }
+    if (input.network === 'restricted' && NETWORK_COMMAND_PATTERN.test(command)) {
+      return { tier: 'deny', reason: 'sandbox boundary: network egress is restricted for workers' };
+    }
+    if (input.sandbox === 'process') {
+      return { tier: 'approve', reason: 'runs inside the worker\'s OS sandbox' };
+    }
+    return null;
+  }
+  if (input.toolName === 'CodexPermissions') {
+    return { tier: 'deny', reason: 'sandbox boundary: request to widen the worker sandbox' };
+  }
+  if (grantedMcpServerForTool(input.toolName, input.grantedMcpServers)) {
+    return { tier: 'approve', reason: 'tool of an MCP server the lead granted this task' };
+  }
+  if (input.toolName && NETWORK_TOOL_NAMES.has(input.toolName)) {
+    return input.network === 'open'
+      ? { tier: 'approve', reason: 'sandboxed worker with open network' }
+      : { tier: 'deny', reason: 'sandbox boundary: network egress is restricted for workers' };
+  }
+  return null;
+}
+
 export function classifyRelayPermissionRequest(input: {
   mode: AgentRelayMode;
   approvalPolicy?: AgentRelayApprovalPolicy;
+  sandbox?: 'process' | 'provider' | null;
+  network?: 'open' | 'restricted';
+  grantedMcpServers?: string[];
   envelopeRoot: string;
   toolName?: string | null;
   command?: string | null;
@@ -157,6 +245,18 @@ export function classifyRelayPermissionRequest(input: {
   rawInput?: unknown;
 }): { tier: RelayPermissionTier; reason: string } {
   const approvalPolicy = input.approvalPolicy ?? 'auto';
+  if (input.sandbox) {
+    const sandboxed = classifySandboxedRequest({
+      mode: input.mode,
+      approvalPolicy,
+      sandbox: input.sandbox,
+      network: input.network ?? 'open',
+      grantedMcpServers: input.grantedMcpServers,
+      toolName: input.toolName,
+      command: input.command,
+    });
+    if (sandboxed) return sandboxed;
+  }
   const shared = {
     workspaceRoot: input.envelopeRoot,
     toolName: input.toolName,
@@ -237,12 +337,17 @@ export const agentRelayPermissionBroker = {
     let via: RelayPermissionOutcome['via'] = 'policy';
     let approvalId: string | null = null;
     let jevAdvice: JevPermissionAdvice | null = null;
+    let requestDetails: { toolName: string | null; command: string | null; paths: string[] } | null = null;
 
     try {
       const details = extractPermissionRequestDetails(message);
+      requestDetails = details;
       const classification = classifyRelayPermissionRequest({
         mode: ctx.mode,
         approvalPolicy: ctx.approvalPolicy,
+        sandbox: ctx.sandbox ?? null,
+        network: ctx.network,
+        grantedMcpServers: ctx.grantedMcpServers,
         envelopeRoot: ctx.envelopeRoot,
         toolName: details.toolName,
         command: details.command,
@@ -331,6 +436,9 @@ export const agentRelayPermissionBroker = {
       approvalId,
       latencyMs: Date.now() - startedAt,
       jevAdvice,
+      toolName: requestDetails?.toolName ?? null,
+      command: requestDetails?.command ?? null,
+      paths: requestDetails?.paths ?? [],
     };
     notify('onSettled', outcome);
     return outcome;

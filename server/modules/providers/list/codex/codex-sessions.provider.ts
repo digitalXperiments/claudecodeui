@@ -132,6 +132,239 @@ function codexToolResult(
   };
 }
 
+export type CodexFileChange = {
+  path: string;
+  kind?: string;
+  diff?: string;
+  move_path?: string;
+};
+
+function readChangeKind(value: unknown): string | undefined {
+  if (typeof value === 'string') {
+    return value;
+  }
+  const record = readObjectRecord(value);
+  return typeof record?.type === 'string' ? record.type : undefined;
+}
+
+function readChangeDiff(record: AnyRecord): string | undefined {
+  for (const key of ['diff', 'unified_diff', 'content']) {
+    if (typeof record[key] === 'string') {
+      return record[key];
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Normalizes Codex file-change payloads into `[{ path, kind, diff }]`.
+ * The app-server sends an array (`[{ path, kind, diff }]`, where `kind` may be
+ * `{ type }`), while rollout `item_completed` FileChange items store a map
+ * keyed by path (`{ [path]: { type, unified_diff | content, move_path } }`).
+ *
+ * Exported for tests.
+ */
+export function normalizeCodexFileChanges(changes: unknown): {
+  changes: CodexFileChange[];
+  paths: string[];
+} {
+  const normalized: CodexFileChange[] = [];
+
+  const pushChange = (filePath: unknown, record: AnyRecord) => {
+    if (typeof filePath !== 'string' || !filePath.trim()) {
+      return;
+    }
+    const kind = readChangeKind(record.kind) ?? readChangeKind(record.type);
+    const movePath = typeof record.move_path === 'string'
+      ? record.move_path
+      : readObjectRecord(record.kind)?.move_path;
+    normalized.push({
+      path: filePath,
+      ...(kind ? { kind } : {}),
+      ...(readChangeDiff(record) !== undefined ? { diff: readChangeDiff(record) } : {}),
+      ...(typeof movePath === 'string' && movePath ? { move_path: movePath } : {}),
+    });
+  };
+
+  if (Array.isArray(changes)) {
+    for (const entry of changes) {
+      const record = readObjectRecord(entry);
+      if (record) {
+        pushChange(record.path ?? record.file_path, record);
+      }
+    }
+  } else {
+    const map = readObjectRecord(changes);
+    if (map) {
+      for (const [filePath, value] of Object.entries(map)) {
+        pushChange(filePath, readObjectRecord(value) ?? {});
+      }
+    }
+  }
+
+  return { changes: normalized, paths: normalized.map((change) => change.path) };
+}
+
+export function buildCodexFileChangesInput(changes: unknown): { changes: CodexFileChange[]; file_path: string } {
+  const normalized = normalizeCodexFileChanges(changes);
+  return { changes: normalized.changes, file_path: normalized.paths.join(', ') };
+}
+
+/**
+ * Codex runs commands through a login shell (`["/bin/zsh", "-lc", script]`);
+ * show the script itself rather than the wrapper.
+ */
+function codexCommandText(command: unknown): string {
+  if (typeof command === 'string') {
+    return command;
+  }
+  if (!Array.isArray(command)) {
+    return '';
+  }
+  const parts = command.filter((part): part is string => typeof part === 'string');
+  if (
+    parts.length === 3
+    && /(^|\/)(ba|z|da|k)?sh$/.test(parts[0])
+    && (parts[1] === '-lc' || parts[1] === '-c')
+  ) {
+    return parts[2];
+  }
+  return parts.join(' ');
+}
+
+/**
+ * App-server item types that never render as tool rows: user/agent messages
+ * and reasoning already come from their dedicated paths, and the rest are
+ * lifecycle markers.
+ */
+const CODEX_NON_TOOL_ITEM_TYPES = new Set([
+  'userMessage',
+  'agentMessage',
+  'reasoning',
+  'contextCompaction',
+  'enteredReviewMode',
+  'exitedReviewMode',
+]);
+
+type CodexHistoryItemResult = {
+  entries: AnyRecord[];
+  /** True when the item is a nested tool call we render as its own row. */
+  isNestedTool: boolean;
+  /** Set for UserMessage items (fallback user rows). */
+  userEntry?: AnyRecord;
+};
+
+/**
+ * Converts an `event_msg` / `item_completed` rollout record into history
+ * entries. Tool rows use `item.id` as toolCallId, which is the same id the
+ * app-server stream uses as the live `toolId`, so live/history rows merge.
+ *
+ * Exported for tests.
+ */
+export function codexItemCompletedToHistory(
+  payload: AnyRecord,
+  timestamp: string | undefined,
+): CodexHistoryItemResult {
+  const item = readObjectRecord(payload.item);
+  if (!item || typeof item.id !== 'string') {
+    return { entries: [], isNestedTool: false };
+  }
+
+  const status = item.status ?? 'completed';
+  const pushResult = (entries: AnyRecord[], output: unknown, isError: boolean) => {
+    if (isNonterminalCodexToolStatus(status)) {
+      return;
+    }
+    entries.push({
+      type: 'tool_result',
+      timestamp,
+      toolCallId: item.id,
+      output: formatCodexToolResultContent(output),
+      isError: isError || status === 'failed' || status === 'error',
+    });
+  };
+
+  switch (item.type) {
+    case 'CommandExecution': {
+      const parsedCommand = Array.isArray(item.parsed_cmd)
+        ? item.parsed_cmd
+            .map((part: AnyRecord) => (typeof part?.cmd === 'string' ? part.cmd : ''))
+            .filter(Boolean)
+            .join(' && ')
+        : '';
+      const command = codexCommandText(item.command) || parsedCommand;
+      const entries: AnyRecord[] = [{
+        type: 'tool_use',
+        timestamp,
+        toolName: 'Bash',
+        toolInput: { command },
+        toolCallId: item.id,
+      }];
+      const output = item.aggregated_output ?? item.formatted_output ?? item.stdout ?? '';
+      pushResult(entries, output, typeof item.exit_code === 'number' && item.exit_code !== 0);
+      return { entries, isNestedTool: true };
+    }
+    case 'FileChange': {
+      const input = buildCodexFileChangesInput(item.changes);
+      const entries: AnyRecord[] = [{
+        type: 'tool_use',
+        timestamp,
+        toolName: 'FileChanges',
+        toolInput: input,
+        toolCallId: item.id,
+      }];
+      const output = [item.stdout, item.stderr]
+        .filter((part) => typeof part === 'string' && part.trim())
+        .join('\n') || input.file_path;
+      pushResult(entries, output, false);
+      return { entries, isNestedTool: true };
+    }
+    case 'McpToolCall': {
+      const entries: AnyRecord[] = [{
+        type: 'tool_use',
+        timestamp,
+        toolName: typeof item.tool === 'string' && item.tool ? item.tool : 'MCP',
+        toolInput: item.arguments ?? {},
+        toolCallId: item.id,
+      }];
+      const hasError = item.error !== undefined && item.error !== null;
+      pushResult(
+        entries,
+        hasError ? item.error : item.result,
+        hasError || readObjectRecord(item.result)?.isError === true,
+      );
+      return { entries, isNestedTool: true };
+    }
+    case 'UserMessage': {
+      const rawText = extractCodexTextContent(item.content);
+      const { text, attachments } = parseImagesInputTag(rawText);
+      const localImages = Array.isArray(item.content)
+        ? item.content
+            .filter((part: AnyRecord) => part?.type === 'local_image' && typeof part.path === 'string')
+            .map((part: AnyRecord) => part.path as string)
+        : [];
+      const images = [...toImageAttachments(localImages), ...attachments];
+      if (!text.trim() && images.length === 0) {
+        return { entries: [], isNestedTool: false };
+      }
+      return {
+        entries: [],
+        isNestedTool: false,
+        userEntry: {
+          type: 'user',
+          timestamp,
+          message: { role: 'user', content: text },
+          images: images.length > 0 ? images : undefined,
+        },
+      };
+    }
+    default:
+      // AgentMessage / Reasoning are persisted as response_items too; other
+      // item types (ContextCompaction, Extension, ...) are not rendered.
+      return { entries: [], isNestedTool: false };
+  }
+}
+
 async function getCodexSessionMessages(
   sessionId: string,
   limit: number | null = null,
@@ -147,6 +380,15 @@ async function getCodexSessionMessages(
 
     const messages: AnyRecord[] = [];
     let tokenUsage: AnyRecord | null = null;
+    // Code-mode Codex wraps nested tool calls in `custom_tool_call name:"exec"`
+    // (a JS snippet) and records each nested call as an `item_completed`
+    // event. Render the nested items (whose ids match the live stream) and
+    // drop the wrapper `exec` rows for turns that have them.
+    let currentTurnId: string | null = null;
+    let sawLegacyUserMessage = false;
+    const itemUserMessages: AnyRecord[] = [];
+    const turnsWithNestedTools = new Set<string>();
+    const execCalls: Array<{ message: AnyRecord; callId: unknown; turnId: string | null }> = [];
     const fileStream = fsSync.createReadStream(sessionFilePath);
     const rl = readline.createInterface({
       input: fileStream,
@@ -173,7 +415,29 @@ async function getCodexSessionMessages(
           }
         }
 
+        if (
+          entry.type === 'event_msg'
+          && entry.payload?.type === 'task_started'
+          && typeof entry.payload.turn_id === 'string'
+        ) {
+          currentTurnId = entry.payload.turn_id;
+        }
+
+        if (entry.type === 'event_msg' && entry.payload?.type === 'item_completed') {
+          const payload = entry.payload as AnyRecord;
+          const converted = codexItemCompletedToHistory(payload, entry.timestamp);
+          messages.push(...converted.entries);
+          if (converted.userEntry) {
+            itemUserMessages.push(converted.userEntry);
+          }
+          const turnId = typeof payload.turn_id === 'string' ? payload.turn_id : currentTurnId;
+          if (converted.isNestedTool && turnId) {
+            turnsWithNestedTools.add(turnId);
+          }
+        }
+
         if (entry.type === 'event_msg' && isVisibleCodexUserMessage(entry.payload as AnyRecord)) {
+          sawLegacyUserMessage = true;
           // Non-image attachments ride along as an `<images_input>` path block
           // appended to the prompt; strip it from the displayed text and
           // surface the referenced files alongside any inline images.
@@ -295,13 +559,22 @@ async function getCodexSessionMessages(
               toolCallId: entry.payload.call_id,
             });
           } else {
-            messages.push({
+            const message = {
               type: 'tool_use',
               timestamp: entry.timestamp,
               toolName,
               toolInput: input,
               toolCallId: entry.payload.call_id,
-            });
+            };
+            messages.push(message);
+            if (toolName === 'exec') {
+              const passthroughTurnId = entry.payload.internal_chat_message_metadata_passthrough?.turn_id;
+              execCalls.push({
+                message,
+                callId: entry.payload.call_id,
+                turnId: typeof passthroughTurnId === 'string' ? passthroughTurnId : currentTurnId,
+              });
+            }
           }
         }
 
@@ -315,6 +588,35 @@ async function getCodexSessionMessages(
         }
       } catch {
         // Skip malformed lines.
+      }
+    }
+
+    // Newer Codex rollouts no longer write `user_message` events; the prompt
+    // only exists as an item_completed UserMessage. Use those as a fallback so
+    // older transcripts (which have both) don't get duplicate user rows.
+    if (!sawLegacyUserMessage) {
+      messages.push(...itemUserMessages);
+    }
+
+    const suppressedExecMessages = new Set<AnyRecord>();
+    const suppressedExecCallIds = new Set<unknown>();
+    for (const execCall of execCalls) {
+      if (execCall.turnId && turnsWithNestedTools.has(execCall.turnId)) {
+        suppressedExecMessages.add(execCall.message);
+        if (execCall.callId) {
+          suppressedExecCallIds.add(execCall.callId);
+        }
+      }
+    }
+    if (suppressedExecMessages.size > 0) {
+      for (let index = messages.length - 1; index >= 0; index -= 1) {
+        const message = messages[index];
+        if (
+          suppressedExecMessages.has(message)
+          || (message.type === 'tool_result' && suppressedExecCallIds.has(message.toolCallId))
+        ) {
+          messages.splice(index, 1);
+        }
       }
     }
 
@@ -519,7 +821,7 @@ export class CodexSessionsProvider implements IProviderSessions {
             provider: PROVIDER,
             kind: 'tool_use',
             toolName: 'FileChanges',
-            toolInput: raw.changes,
+            toolInput: buildCodexFileChangesInput(raw.changes),
             toolId: baseId,
             status: raw.status,
             toolResult: codexToolResult(raw.status, raw.changes),
@@ -554,6 +856,9 @@ export class CodexSessionsProvider implements IProviderSessions {
             toolName: 'WebSearch',
             toolInput: { query: raw.query },
             toolId: baseId,
+            status: raw.status,
+            // Only item/completed reaches here, so a missing status is terminal.
+            toolResult: codexToolResult(raw.status ?? 'completed', ''),
           })];
         case 'todo_list':
           return [createNormalizedMessage({
@@ -565,6 +870,8 @@ export class CodexSessionsProvider implements IProviderSessions {
             toolName: 'TodoList',
             toolInput: { items: raw.items },
             toolId: baseId,
+            status: raw.status,
+            toolResult: codexToolResult(raw.status ?? 'completed', ''),
           })];
         case 'error':
           return [createNormalizedMessage({
@@ -575,7 +882,11 @@ export class CodexSessionsProvider implements IProviderSessions {
             kind: 'error',
             content: raw.message?.content || 'Unknown error',
           })];
-        default:
+        default: {
+          if (CODEX_NON_TOOL_ITEM_TYPES.has(raw.itemType)) {
+            return [];
+          }
+          const status = raw.status ?? raw.item?.status ?? 'completed';
           return [createNormalizedMessage({
             id: baseId,
             sessionId,
@@ -585,7 +896,10 @@ export class CodexSessionsProvider implements IProviderSessions {
             toolName: raw.itemType || 'Unknown',
             toolInput: raw.item || raw,
             toolId: baseId,
+            status,
+            toolResult: codexToolResult(status, ''),
           })];
+        }
       }
     }
 
@@ -656,12 +970,10 @@ export class CodexSessionsProvider implements IProviderSessions {
       }
     }
 
-    let total = 0;
-    for (const msg of normalized) {
-      if (msg.kind !== 'tool_result') {
-        total += 1;
-      }
-    }
+    // `total` counts exactly the rows `offset`/`limit` slice over. Excluding
+    // tool_result rows here made clients' offset (which includes them) run
+    // ahead of total, skewing "N of M", hasMore, and tail-bridge planning.
+    const total = normalized.length;
     const normalizedOffset = Math.max(0, offset);
     const normalizedLimit = limit === null ? null : Math.max(0, limit);
     const { page, hasMore } = sliceTailPage(normalized, normalizedLimit, normalizedOffset);

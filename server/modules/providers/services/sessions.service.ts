@@ -6,6 +6,11 @@ import { parseStudioPrototypeIds, projectsDb, sessionsDb } from '@/modules/datab
 import { chatRunRegistry, shellSessionRegistry } from '@/modules/websocket/index.js';
 import { providerRegistry } from '@/modules/providers/provider.registry.js';
 import { sessionHistoryCache } from '@/modules/providers/services/session-history-cache.service.js';
+import {
+  deleteRunErrors,
+  listRunErrorMessages,
+  mergeRunErrorsIntoHistory,
+} from '@/modules/providers/services/session-run-errors.service.js';
 import type {
   FetchHistoryOptions,
   FetchHistoryResult,
@@ -282,11 +287,16 @@ export const sessionsService = {
     // transcripts are visible in Chat whenever the user opens the session.
     // App-created sessions that never produced a provider transcript yet
     // (e.g. first message still streaming) simply have no history.
+    // Live run errors are not in most provider transcripts; they are merged
+    // back in here so a failed turn still shows its error after a reload.
+    const runErrors = listRunErrorMessages(sessionId);
+
     if (!session.provider_session_id) {
+      const { page, hasMore } = sliceTailPage(runErrors, options.limit ?? null, Math.max(0, options.offset ?? 0));
       return {
-        messages: [],
-        total: 0,
-        hasMore: false,
+        messages: page,
+        total: runErrors.length,
+        hasMore,
         offset: options.offset ?? 0,
         limit: options.limit ?? null,
       };
@@ -310,26 +320,36 @@ export const sessionsService = {
     const transcriptPath = provider === 'claude' || provider === 'codex'
       ? session.jsonl_path
       : null;
-    const fullHistory = await sessionHistoryCache.getFullHistory({
+    const loadFull = () => providerSessions.fetchHistory(sessionId, {
+      limit: null,
+      offset: 0,
+      projectPath,
+      providerSessionId,
+      jsonlPath: session.jsonl_path,
+    });
+    let fullHistory = await sessionHistoryCache.getFullHistory({
       sessionId,
       transcriptPath,
-      loadFull: () => providerSessions.fetchHistory(sessionId, {
-        limit: null,
-        offset: 0,
-        projectPath,
-        providerSessionId,
-        jsonlPath: session.jsonl_path,
-      }),
+      loadFull,
     });
+    // Run errors need the full list to land in the right place; sessions with
+    // any are rare, so only they pay for the uncached full read.
+    if (!fullHistory && runErrors.length > 0) {
+      fullHistory = await loadFull();
+    }
 
     let result: FetchHistoryResult;
     if (fullHistory) {
+      const messages = fullHistory.historyPending
+        ? fullHistory.messages
+        : mergeRunErrorsIntoHistory(fullHistory.messages, runErrors);
       // Providers slice with this same helper, so a cached page is identical
       // to what a direct `(limit, offset)` read would have returned.
-      const { page, hasMore } = sliceTailPage(fullHistory.messages, requestedLimit, Math.max(0, requestedOffset));
+      const { page, hasMore } = sliceTailPage(messages, requestedLimit, Math.max(0, requestedOffset));
       result = {
         ...fullHistory,
         messages: page,
+        total: fullHistory.total + (messages.length - fullHistory.messages.length),
         hasMore,
         offset: requestedOffset,
         limit: requestedLimit,
@@ -432,6 +452,7 @@ export const sessionsService = {
     }
 
     const deleted = sessionsDb.deleteSessionById(sessionId);
+    if (deleted) deleteRunErrors(sessionId);
     if (!deleted) {
       throw new AppError(`Session "${sessionId}" was not found.`, {
         code: 'SESSION_NOT_FOUND',

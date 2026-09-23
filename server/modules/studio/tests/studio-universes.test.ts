@@ -207,7 +207,7 @@ test('Studio Universes: rejects a request that is missing a provider/model or ha
   });
 });
 
-test('Studio Universes: falls back to a sandbox_copy workspace for a non-git project', async () => {
+test('Studio Universes: a non-git project gets real git worktree isolation', async () => {
   await withHarness(async ({ root }) => {
     installFakeClaudeWorker();
 
@@ -233,7 +233,10 @@ test('Studio Universes: falls back to a sandbox_copy workspace for a non-git pro
       assert.equal(variant.status, 'completed');
       assert.ok(variant.workspaceId);
       const workspace = workspaceService.get(variant.workspaceId!);
-      assert.equal(workspace?.mode, 'sandbox_copy');
+      // Relay defers to the workspace service, which git-inits a plain
+      // project so every writer can be verified, rehearsed, and landed
+      // (sandbox_copy is a merge dead end).
+      assert.equal(workspace?.mode, 'git_worktree');
     }
   });
 });

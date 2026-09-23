@@ -5,7 +5,11 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { closeConnection, initializeDatabase, sessionsDb } from '@/modules/database/index.js';
-import { syncGrokShellSession } from '@/modules/providers/list/grok/grok-shell-sync.js';
+import {
+  readGrokSessionRuntime,
+  readLatestGrokSessionRuntime,
+  syncGrokShellSession,
+} from '@/modules/providers/list/grok/grok-shell-sync.js';
 
 type Harness = {
   sessionsRoot: string;
@@ -41,10 +45,15 @@ async function withHarness(runTest: (harness: Harness) => void | Promise<void>):
   }
 }
 
-async function touchSessionDir(projectDir: string, sessionId: string, mtime: Date): Promise<void> {
+const SHELL_PROMPT = 'refactor the parser module';
+
+async function touchSessionDir(projectDir: string, sessionId: string, mtime: Date, prompt = SHELL_PROMPT): Promise<void> {
   const dir = path.join(projectDir, sessionId);
   await mkdir(dir, { recursive: true });
-  await writeFile(path.join(dir, 'chat_history.jsonl'), '');
+  await writeFile(
+    path.join(dir, 'chat_history.jsonl'),
+    `${JSON.stringify({ type: 'user', content: `<user_query>${prompt}</user_query>` })}\n`,
+  );
   await utimes(dir, mtime, mtime);
 }
 
@@ -60,6 +69,7 @@ test('shell-created session is adopted onto the app session mapping', async () =
       projectPath,
       startedAt,
       sessionsRoot,
+      submittedPrompts: [SHELL_PROMPT],
     });
 
     assert.deepEqual(result, {
@@ -84,6 +94,7 @@ test('already-mapped session touched by the shell is reported without remap', as
       projectPath,
       startedAt,
       sessionsRoot,
+      submittedPrompts: [SHELL_PROMPT],
     });
 
     assert.deepEqual(result, {
@@ -110,6 +121,7 @@ test('a session owned by another app row is never stolen', async () => {
       projectPath,
       startedAt,
       sessionsRoot,
+      submittedPrompts: [SHELL_PROMPT],
     });
 
     assert.equal(result, null);
@@ -130,6 +142,7 @@ test('stale session dirs from before the PTY started are ignored', async () => {
       projectPath,
       startedAt,
       sessionsRoot,
+      submittedPrompts: [SHELL_PROMPT],
     });
 
     assert.equal(result, null);
@@ -153,6 +166,7 @@ test('two unowned sessions touched in the window are left unbound (ambiguity ski
       projectPath,
       startedAt,
       sessionsRoot,
+      submittedPrompts: [SHELL_PROMPT],
     });
 
     assert.equal(result, null);
@@ -174,6 +188,7 @@ test('an existing mapping is never overwritten when its session was not touched'
       projectPath,
       startedAt,
       sessionsRoot,
+      submittedPrompts: [SHELL_PROMPT],
     });
 
     assert.equal(result, null);
@@ -196,6 +211,7 @@ test('the single unowned session is adopted when the rest are foreign-owned', as
       projectPath,
       startedAt,
       sessionsRoot,
+      submittedPrompts: [SHELL_PROMPT],
     });
 
     assert.deepEqual(result, {
@@ -204,6 +220,24 @@ test('the single unowned session is adopted when the rest are foreign-owned', as
       adopted: true,
     });
     assert.equal(sessionsDb.getSessionById('app-7')?.provider_session_id, 'grok-new');
+  });
+});
+
+test('an external grok session in the same project without the shell prompt is not adopted', async () => {
+  await withHarness(async ({ sessionsRoot, projectPath, projectDir }) => {
+    sessionsDb.createAppSession('app-1', 'grok', projectPath);
+    await touchSessionDir(projectDir, 'grok-external', new Date(), 'something typed elsewhere');
+
+    const result = await syncGrokShellSession({
+      appSessionId: 'app-1',
+      projectPath,
+      startedAt: Date.now() - 60_000,
+      sessionsRoot,
+      submittedPrompts: [SHELL_PROMPT],
+    });
+
+    assert.equal(result, null);
+    assert.equal(sessionsDb.getSessionById('app-1')?.provider_session_id, null);
   });
 });
 
@@ -226,6 +260,7 @@ test('shell session without an app session is indexed as its own sidebar row', a
       projectPath,
       startedAt,
       sessionsRoot,
+      submittedPrompts: [SHELL_PROMPT],
     });
 
     assert.ok(result);
@@ -234,5 +269,63 @@ test('shell session without an app session is indexed as its own sidebar row', a
     const row = sessionsDb.getSessionByProviderSessionId('grok-orphan', 'grok');
     assert.ok(row);
     assert.equal(row.session_id, result.appSessionId);
+  });
+});
+
+test('reads the model and effort the TUI wrote into summary.json', async () => {
+  await withHarness(async ({ sessionsRoot, projectPath, projectDir }) => {
+    const dir = path.join(projectDir, 'grok-runtime');
+    await mkdir(dir, { recursive: true });
+    await writeFile(
+      path.join(dir, 'summary.json'),
+      JSON.stringify({
+        current_model_id: 'grok-4.7-build-fast',
+        reasoning_effort: 'xhigh',
+      }),
+    );
+
+    assert.deepEqual(
+      readGrokSessionRuntime(projectPath, 'grok-runtime', sessionsRoot),
+      { model: 'grok-4.7-build-fast', effort: 'xhigh' },
+    );
+  });
+});
+
+test('a summary written before the shell started is not reported', async () => {
+  await withHarness(async ({ sessionsRoot, projectPath, projectDir }) => {
+    const dir = path.join(projectDir, 'grok-old');
+    await mkdir(dir, { recursive: true });
+    const summaryPath = path.join(dir, 'summary.json');
+    await writeFile(summaryPath, JSON.stringify({ current_model_id: 'grok-4.5' }));
+    const old = new Date(Date.now() - 60_000);
+    await utimes(summaryPath, old, old);
+
+    assert.equal(
+      readGrokSessionRuntime(projectPath, 'grok-old', sessionsRoot, { since: Date.now() - 1_000 }),
+      null,
+    );
+    assert.equal(
+      readLatestGrokSessionRuntime(projectPath, sessionsRoot, { since: Date.now() - 1_000 }),
+      null,
+    );
+  });
+});
+
+test('latest-summary fallback skips sessions owned by another app row', async () => {
+  await withHarness(async ({ sessionsRoot, projectPath, projectDir }) => {
+    sessionsDb.createAppSession('other-app', 'grok', projectPath);
+    sessionsDb.assignProviderSessionId('other-app', 'grok-foreign');
+    for (const [id, model] of [['grok-mine', 'grok-4.6'], ['grok-foreign', 'grok-4.7']] as const) {
+      const dir = path.join(projectDir, id);
+      await mkdir(dir, { recursive: true });
+      await writeFile(path.join(dir, 'summary.json'), JSON.stringify({ current_model_id: model }));
+    }
+    const newer = new Date(Date.now() + 5_000);
+    await utimes(path.join(projectDir, 'grok-foreign', 'summary.json'), newer, newer);
+
+    assert.deepEqual(
+      readLatestGrokSessionRuntime(projectPath, sessionsRoot, { since: Date.now() - 10_000, appSessionId: 'app-1' }),
+      { model: 'grok-4.6', effort: null, providerSessionId: 'grok-mine' },
+    );
   });
 });

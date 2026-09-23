@@ -651,6 +651,26 @@ CREATE INDEX IF NOT EXISTS idx_agent_relay_approvals_relay ON agent_relay_approv
 CREATE INDEX IF NOT EXISTS idx_agent_relay_approvals_status ON agent_relay_approvals(status, created_at);
 `;
 
+/** Immutable verification and delivery evidence used to guard explicit land operations. */
+export const AGENT_RELAY_DELIVERY_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS agent_relay_delivery_records (
+    delivery_id TEXT PRIMARY KEY NOT NULL,
+    project_id TEXT NOT NULL,
+    source_session_id TEXT,
+    kind TEXT NOT NULL CHECK (kind IN ('verify', 'rehearse', 'land', 'recover')),
+    workspace_ids_json TEXT NOT NULL DEFAULT '[]',
+    tips_json TEXT NOT NULL DEFAULT '{}',
+    base_sha TEXT,
+    result_json TEXT NOT NULL,
+    passed INTEGER NOT NULL DEFAULT 0,
+    landed_sha TEXT,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (project_id) REFERENCES projects(project_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_agent_relay_delivery_project ON agent_relay_delivery_records(project_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_agent_relay_delivery_kind ON agent_relay_delivery_records(kind, project_id, created_at DESC);
+`;
+
 /**
  * Phase 4 — Secrets vault metadata (PRD §8.3). Values live in the OS
  * keychain when available, else encrypted ciphertext in this table.

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import { getConnection } from '@/modules/database/index.js';
+import { recordSectionVersion } from '@/modules/mission-control/mission-control-versions.service.js';
 import { broadcastSystemEvent } from '@/modules/websocket/index.js';
 import {
   DEFAULT_MC_ACTIONS,
@@ -347,12 +348,15 @@ export const missionControlDb = {
       ts,
       ts,
     );
-    return this.getSection(sectionId)!;
+    const created = this.getSection(sectionId)!;
+    recordSectionVersion(created, 'created');
+    return created;
   },
 
   updateSection(sectionId: string, input: UpdateMcSectionInput): McSection | null {
     const existing = this.getSection(sectionId);
     if (!existing) return null;
+    recordSectionVersion(existing, 'baseline');
 
     const next: McSection = {
       ...existing,
@@ -452,6 +456,7 @@ export const missionControlDb = {
     );
     const updated = this.getSection(sectionId);
     if (updated) {
+      recordSectionVersion(updated, 'edited');
       broadcastMissionControlSectionUpdated({
         sectionId: updated.section_id,
         lastRunAt: updated.last_run_at,

@@ -23,7 +23,7 @@ import {
     configureMemoryCurationRuntimes,
     mcpCatalogService,
 } from '@/modules/providers/index.js';
-import { createWebSocketServer, shellSessionRegistry, configureProviderAbortFns } from '@/modules/websocket/index.js';
+import { createWebSocketServer, shellSessionRegistry, releaseAgentShellSession, configureProviderAbortFns } from '@/modules/websocket/index.js';
 
 import {
     interruptsRoutes,
@@ -69,6 +69,7 @@ import {
 import {
     queryCodex,
     abortCodexSession,
+    injectCodexMessage,
 } from './openai-codex.js';
 import { buildCodexTokenUsage } from './modules/providers/list/codex/codex-token-usage.js';
 import {
@@ -202,7 +203,7 @@ import { browserUseService } from './modules/browser-use/browser-use.service.js'
 import { configureBackupRuntime, stopBackupScheduler } from './modules/backups/index.js';
 import { startEnabledPluginServers, stopAllPlugins, getPluginPort } from './utils/plugin-process-manager.js';
 import { initializeDatabase, projectsDb, sessionsDb } from './modules/database/index.js';
-import { syncGrokShellSession } from './modules/providers/list/grok/grok-shell-sync.js';
+import { syncShellSessionForProvider } from './modules/providers/services/shell-session-sync.service.js';
 import {
     broadcastCanonicalSessionUpsert,
     chatRunRegistry,
@@ -348,32 +349,38 @@ void mcpCatalogService.upsert({
 });
 
 // Shell must not resume a provider-native session while Chatbar is still
-// using it. Register before checking isProcessing again so an already-finished
-// run cannot leave the Shell wait unresolved.
+// using it — including an accepted chat.send that has not registered its run
+// yet. Register before checking again so an already-finished run (or a
+// reservation released without a run) cannot leave the Shell wait unresolved.
 function waitForChatbarRunIdle(appSessionId) {
     return new Promise((resolve) => {
         let settled = false;
-        let unsubscribe = () => {};
-        const settle = () => {
-            if (settled) {
+        let unsubscribeComplete = () => {};
+        let unsubscribePending = () => {};
+        const settleIfIdle = () => {
+            if (settled || chatRunRegistry.isRunningOrPending(appSessionId)) {
                 return;
             }
             settled = true;
-            unsubscribe();
+            unsubscribeComplete();
+            unsubscribePending();
             resolve();
         };
 
-        unsubscribe = chatRunRegistry.onRunComplete((event) => {
+        unsubscribeComplete = chatRunRegistry.onRunComplete((event) => {
             if (event.appSessionId === appSessionId) {
-                settle();
+                settleIfIdle();
+            }
+        });
+        unsubscribePending = chatRunRegistry.onPendingSendSettled((settledSessionId) => {
+            if (settledSessionId === appSessionId) {
+                settleIfIdle();
             }
         });
 
-        // Covers the race where the run completed before this listener was
+        // Covers the race where the run completed before these listeners were
         // attached, as well as the already-idle case.
-        if (!chatRunRegistry.isProcessing(appSessionId)) {
-            settle();
-        }
+        settleIfIdle();
     });
 }
 
@@ -394,10 +401,12 @@ const abortFns = {
     opencode: abortOpenCodeSession,
     kilo: abortKiloSession,
     cline: abortClineSession,
+    qwencode: abortQwenCodeSession,
     grok: abortGrokSession,
     kimi: abortKimiSession,
     pi: abortPiSession,
     omp: abortOmpSession,
+    antigravity: abortAntigravitySession,
 };
 configureProviderAbortFns(abortFns);
 
@@ -408,15 +417,18 @@ const wss = createWebSocketServer(server, {
     },
     chat: {
         spawnFns: providerSpawnFns,
-        // Mid-run inject for Claude chat only (queryClaudeSDK uses open stdin
-        // when appSessionId is present). Headless/git keep one-shot prompts.
+        // Mid-run inject for chat: Claude pushes onto the open stdin channel
+        // (queryClaudeSDK when appSessionId is present), Codex steers the
+        // active app-server turn. Headless/git keep one-shot prompts.
         injectFns: {
             claude: injectClaudeMessage,
+            codex: injectCodexMessage,
         },
         abortFns,
         resolveToolApproval,
         getPendingApprovalsForSession,
         isShellSessionActive: (appSessionId) => shellSessionRegistry.isActive(appSessionId),
+        releaseShellSession: releaseAgentShellSession,
         cancelRelayJobsForSession: async (appSessionId) => {
             const relayJobs = agentRelayService.activeForSession(appSessionId)
                 .filter((job) => job.source_session_id === appSessionId);
@@ -432,24 +444,25 @@ const wss = createWebSocketServer(server, {
 
             return null;
         },
-        isChatbarRunActive: (appSessionId) => chatRunRegistry.isProcessing(appSessionId),
+        isChatbarRunActive: (appSessionId) => chatRunRegistry.isRunningOrPending(appSessionId),
         waitForChatbarRunIdle,
-        // Adopt sessions the interactive TUI created (Grok forks a fresh id
-        // when it can't resume) so Chat ↔ Shell stay on one transcript, then
-        // broadcast the canonical upsert so open chat views refetch.
-        syncShellSession: ({ provider, projectPath, appSessionId, startedAt }) => {
-            if (provider !== 'grok') {
-                return;
-            }
-            void syncGrokShellSession({ appSessionId, projectPath, startedAt })
-                .then((result) => {
-                    if (!result) {
+        // Adopt sessions the interactive TUI created (a fresh TUI, or one
+        // that forked when it couldn't resume) so Chat ↔ Shell stay on one
+        // transcript, then broadcast the canonical upsert so open chat views
+        // refetch. Runs on PTY exit/detach and whenever a shell turn settles.
+        // Returns the promise so Chatbar handoff / shell restart can await the
+        // adoption before resuming from the session mapping.
+        syncShellSession: (info) => {
+            const { provider } = info;
+            return syncShellSessionForProvider(info)
+                .then((canonicalSessionId) => {
+                    if (!canonicalSessionId) {
                         return;
                     }
-                    return broadcastCanonicalSessionUpsert(result.appSessionId);
+                    return broadcastCanonicalSessionUpsert(canonicalSessionId);
                 })
                 .catch((error) => {
-                    console.error('[Shell] Grok session sync failed:', error?.message || error);
+                    console.error(`[Shell] ${provider} session sync failed:`, error?.message || error);
                 });
         },
         stripAnsiSequences,
@@ -2239,7 +2252,19 @@ async function startServer() {
 
         await closeSessionsWatcher();
         // Clean up plugin processes on shutdown
+        let shutdownInProgress = false;
         const shutdownRuntimeServices = async () => {
+            if (shutdownInProgress) {
+                // A second signal is an explicit forced stop.
+                process.exit(1);
+            }
+            shutdownInProgress = true;
+            chatRunRegistry.beginShutdown();
+            // Claude SDK and Codex app-server runs are children of this
+            // process. Exiting now closes their stdio pipes mid-turn. Leave
+            // services (including MCPs and approvals) alive until accepted
+            // chat runs and sends have finished.
+            await chatRunRegistry.waitForIdle();
             try {
                 stopKanbanScheduler();
                 stopAutomationKernel();

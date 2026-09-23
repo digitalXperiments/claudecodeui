@@ -5,6 +5,10 @@ import { promises as fsPromises } from 'node:fs';
 import chokidar, { type FSWatcher } from 'chokidar';
 
 import { antigravityConversationsDir } from '@/modules/providers/list/antigravity/antigravity-conversation-store.js';
+import {
+  prewarmRecentAntigravityHistory,
+  scheduleAntigravityHistoryRefresh,
+} from '@/modules/providers/list/antigravity/antigravity-history.js';
 import { grokSessionsRoot } from '@/modules/providers/list/grok/grok-sessions.provider.js';
 import { ompSessionsRoot } from '@/modules/providers/list/omp/omp-paths.js';
 import {
@@ -105,8 +109,11 @@ let watcherRescheduleAfterRefresh = false;
  * Filters watcher events to provider-specific session artifact file types.
  */
 export function isWatcherTargetFile(provider: LLMProvider, filePath: string): boolean {
+  // Like Antigravity below: new messages land in the WAL before a checkpoint
+  // touches the main database, so the `-wal` file is data-bearing too.
   if (provider === 'opencode' || provider === 'kilo') {
-    return path.basename(filePath) === `${provider}.db`;
+    const fileName = path.basename(filePath);
+    return fileName === `${provider}.db` || fileName === `${provider}.db-wal`;
   }
 
   if (provider === 'cline') {
@@ -122,11 +129,12 @@ export function isWatcherTargetFile(provider: LLMProvider, filePath: string): bo
   }
 
   // The conversation database is the session; its `.meta` sidecar carries the
-  // cwd the row is filed under. The `-wal`/`-shm` siblings churn on every write
-  // and would re-index on each one, so they are deliberately not targets — the
-  // `.db` mtime moves at checkpoint time, which is soon enough.
+  // cwd the row is filed under. New messages land in SQLite's WAL before the
+  // main `.db` is checkpointed, so the WAL is data-bearing and must trigger a
+  // refresh. Chokidar events are coalesced below; the `-shm` coordination file
+  // carries no conversation data and stays ignored.
   if (provider === 'antigravity') {
-    return filePath.endsWith('.db') || filePath.endsWith('.meta');
+    return filePath.endsWith('.db') || filePath.endsWith('.db-wal') || filePath.endsWith('.meta');
   }
 
   return filePath.endsWith('.jsonl');
@@ -263,8 +271,17 @@ async function onUpdate(
     console.log(`Session synchronization triggered by ${eventType} event for provider "${provider}"`, {
       filePath,
       sessionId: result.sessionId,
+      ...(result.sessionIds.length > 1 ? { sessionIds: result.sessionIds } : {}),
     });
-    queuePendingWatcherUpdate(eventType, provider, result.sessionId);
+    for (const sessionId of result.sessionIds) {
+      queuePendingWatcherUpdate(eventType, provider, sessionId);
+    }
+    if (provider === 'antigravity' && result.sessionId) {
+      // Antigravity history is an ACP replay (seconds per read). Warm it in the
+      // background — debounced, throttled, one at a time, and skipped while a
+      // live turn is writing — so opening the session is served from cache.
+      scheduleAntigravityHistoryRefresh(result.sessionId);
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`Session watcher sync failed for provider "${provider}"`, {
@@ -279,6 +296,8 @@ async function onUpdate(
  * Starts provider filesystem watchers and performs initial DB synchronization.
  * Providers the user turned off in Settings → Agents get no watcher.
  */
+let antigravityBootPrewarmScheduled = false;
+
 export async function initializeSessionsWatcher(): Promise<void> {
   console.log('Setting up session watchers');
 
@@ -289,6 +308,12 @@ export async function initializeSessionsWatcher(): Promise<void> {
   });
 
   const disabledProviders = await getDisabledProviderIds();
+  if (!disabledProviders.has('antigravity') && !antigravityBootPrewarmScheduled) {
+    // Once per process (re-arming the watchers must not re-prewarm): replay the
+    // few most recent conversations, serially, after startup settles.
+    antigravityBootPrewarmScheduled = true;
+    prewarmRecentAntigravityHistory();
+  }
   for (const { provider, rootPath } of getEnabledProviderWatchPaths(disabledProviders)) {
     try {
       await fsPromises.mkdir(rootPath, { recursive: true });

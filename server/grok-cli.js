@@ -26,6 +26,7 @@ import {
 import { createCompleteMessage, createNormalizedMessage } from './shared/utils.js';
 import { ensureManagedGrokHome } from './shared/grok-home.js';
 import { leadSessionEnv } from './shared/lead-session-env.js';
+import { wrapCommandForSandbox } from './shared/worker-sandbox.js';
 
 // cross-spawn resolves .cmd shims/PATHEXT on Windows and delegates to
 // child_process.spawn everywhere else.
@@ -590,7 +591,10 @@ async function waitForToolApprovalPaused(watchdog, requestId, options) {
 }
 
 async function createAcpSession(workingDir, resumeSessionId, spawnArgs, envOverrides = {}, mcpServers = [], sessionOptions = {}) {
-  const child = spawnFunction('grok', spawnArgs, {
+  // Relay workers run the whole CLI under the OS sandbox; every tool process
+  // Grok spawns inherits it.
+  const launch = wrapCommandForSandbox('grok', spawnArgs, sessionOptions.relaySandbox ?? null);
+  const child = spawnFunction(launch.command, launch.args, {
     cwd: workingDir,
     stdio: ['pipe', 'pipe', 'pipe'],
     env: { ...process.env, ...envOverrides },
@@ -817,6 +821,86 @@ function closeHandle(handle) {
   }
 }
 
+function readGrokConfigValue(option) {
+  if (!option || typeof option !== 'object') {
+    return '';
+  }
+  const current = option.currentValue ?? option.value;
+  if (typeof current === 'string') {
+    return current.trim();
+  }
+  if (current && typeof current === 'object' && typeof current.value === 'string') {
+    return current.value.trim();
+  }
+  return '';
+}
+
+/**
+ * Push the chat bar's model and effort onto the live ACP session.
+ * Grok's value shape is `{ value }` (see the agent-mode docs).
+ */
+async function applyGrokSessionRuntime(handle, model, effort) {
+  const sessionId = handle?.grokSessionId;
+  if (!handle?.rpc || !sessionId) {
+    return;
+  }
+  if (model && handle.currentModel !== model) {
+    try {
+      await handle.rpc.request('session/set_config_option', {
+        sessionId,
+        configId: 'model',
+        value: { value: model },
+      });
+      handle.currentModel = model;
+      handle.currentEffort = undefined;
+    } catch (error) {
+      console.error('Failed to set Grok model:', error?.message || error);
+    }
+  }
+  if (effort && handle.currentEffort !== effort) {
+    try {
+      await handle.rpc.request('session/set_config_option', {
+        sessionId,
+        configId: 'reasoning_effort',
+        value: { value: effort },
+      });
+      handle.currentEffort = effort;
+    } catch (error) {
+      console.error('Failed to set Grok reasoning effort:', error?.message || error);
+    }
+  }
+}
+
+function readGrokRuntimeFromUpdate(update) {
+  const options = Array.isArray(update?.configOptions)
+    ? update.configOptions
+    : Array.isArray(update?.options)
+      ? update.options
+      : [];
+  let model = '';
+  let effort = '';
+  for (const option of options) {
+    const id = option?.id || option?.configId;
+    const value = readGrokConfigValue(option);
+    if (!value) {
+      continue;
+    }
+    if (id === 'model') {
+      model = value;
+    } else if (id === 'reasoning_effort') {
+      effort = value;
+    }
+  }
+  const directId = update?.configId;
+  const directValue = readGrokConfigValue(update);
+  if (directId === 'model' && directValue) {
+    model = directValue;
+  } else if (directId === 'reasoning_effort' && directValue) {
+    effort = directValue;
+  }
+  return { model, effort };
+}
+
 async function spawnGrok(command, options = {}, ws) {
   const {
     sessionId,
@@ -830,6 +914,7 @@ async function spawnGrok(command, options = {}, ws) {
     unattended = false,
     approvalTimeoutMs,
     relayWorker = false,
+    relaySandbox = null,
     appSessionId,
   } = options;
 
@@ -869,15 +954,16 @@ async function spawnGrok(command, options = {}, ws) {
     effort: resolvedEffort,
     alwaysApprove: permissionRuntime.alwaysApprove,
   });
-  // Grok has no ACP config method for model/effort/permission/MCP servers, so
-  // these are fixed at spawn. A reused child whose settings (including bound
-  // MCP servers) changed must be recreated (with session/load to preserve
-  // history) to apply the new set.
+  // Permission mode and MCP servers are fixed at spawn. Model and reasoning
+  // effort are also passed as spawn flags, then applied again with
+  // session/set_config_option because a loaded session keeps its previous
+  // model until that call (so "Grok 4.7 Fast" would otherwise stay on 4.7).
+  // A reused child whose settings changed must be recreated.
   const mcpSignature = resolvedMcpServers
     .map((s) => s.name)
     .sort()
     .join(',');
-  const spawnSignature = `${spawnArgs.join(' ')}|${permissionRuntime.mode}|${managedGrokHome}|mcp:${mcpSignature}`;
+  const spawnSignature = `${spawnArgs.join(' ')}|${permissionRuntime.mode}|${managedGrokHome}|mcp:${mcpSignature}|sandbox:${relaySandbox ? JSON.stringify(relaySandbox) : ''}`;
 
   const processKey = sessionId || `new:${Date.now()}`;
   let handle = acpSessions.get(processKey);
@@ -896,7 +982,8 @@ async function spawnGrok(command, options = {}, ws) {
     }
 
     try {
-      handle = await createAcpSession(workingDir, sessionId, spawnArgs, spawnEnv, acpMcpServers, { relayWorker });
+      handle = await createAcpSession(workingDir, sessionId, spawnArgs, spawnEnv, acpMcpServers, { relayWorker, relaySandbox });
+      await applyGrokSessionRuntime(handle, resolvedModel, resolvedEffort);
     } catch (setupError) {
       // createAcpSession runs before the prompt try/catch below — without this
       // the failure only hits startProviderRun's safety-net complete (exit 1)
@@ -1278,6 +1365,27 @@ async function spawnGrok(command, options = {}, ws) {
       return;
     }
 
+    if (update.sessionUpdate === 'config_option_update') {
+      const runtime = readGrokRuntimeFromUpdate(update);
+      if (runtime.model) {
+        handle.currentModel = runtime.model;
+      }
+      if (runtime.effort) {
+        handle.currentEffort = runtime.effort;
+      }
+      if (runtime.model || runtime.effort) {
+        ws.send(createNormalizedMessage({
+          kind: 'status',
+          text: 'runtime_state',
+          sessionId: finalSessionId,
+          provider: 'grok',
+          model: runtime.model || undefined,
+          effort: runtime.effort || undefined,
+        }));
+      }
+      return;
+    }
+
     const normalized = sessionsService.normalizeMessage('grok', update, finalSessionId);
     for (const msg of normalized) {
       // Hydrate ExitPlanMode tool cards with plan.md — Grok's tool_call rawInput
@@ -1320,15 +1428,10 @@ async function spawnGrok(command, options = {}, ws) {
     stallWatchdog.dispose();
     scheduleIdleCleanup(handle, capturedSessionId || processKey);
 
-    const completion = emitGrokPromptCompletion(ws, {
-      sessionId: finalSessionId,
-      explicitlyAborted: handle.aborted,
-      stopReason: result?.stopReason,
-      permissionDenial: lastPermissionDenial,
-    });
-
     // Push live context occupancy (matches Grok /context) so the composer
-    // badge does not keep showing stale or cumulative-only spend.
+    // badge does not keep showing stale or cumulative-only spend. Sent BEFORE
+    // the terminal `complete`: the run registry stops sequencing once a run
+    // completes, and a late status frame would skew the client replay cursor.
     try {
       const projectPath = options.projectPath || options.cwd;
       if (projectPath && handle.grokSessionId) {
@@ -1347,6 +1450,13 @@ async function spawnGrok(command, options = {}, ws) {
     } catch (tokenError) {
       console.warn('Grok token budget refresh failed (non-fatal):', tokenError?.message || tokenError);
     }
+
+    const completion = emitGrokPromptCompletion(ws, {
+      sessionId: finalSessionId,
+      explicitlyAborted: handle.aborted,
+      stopReason: result?.stopReason,
+      permissionDenial: lastPermissionDenial,
+    });
 
     // Isolated from the main try/catch: a notification-plumbing failure must
     // never retroactively turn an already-sent successful `complete` into a

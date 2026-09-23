@@ -10,6 +10,14 @@ import type { NormalizedMessage } from '@/shared/types.js';
 import { makeScratchDir } from '@/shared/scratch.js';
 import { antigravityTitleFromPrompt } from '@/modules/providers/list/antigravity/antigravity-conversation-store.js';
 import {
+  antigravityConversationDbPath,
+  antigravityConversationFingerprint,
+  clearAntigravityHistoryCache,
+  readAntigravityHistory,
+  setAntigravityHistoryBusyCheck,
+  setAntigravityHistoryRefreshedListener,
+} from '@/modules/providers/list/antigravity/antigravity-history.js';
+import {
   extractOauthUrl,
   isLoopbackReturnUrl,
   probeAntigravityAcp,
@@ -44,6 +52,7 @@ import {
   AntigravitySessionsProvider,
   antigravityAnnouncedToolPath,
   isMisattributedDenial,
+  timestampAntigravityReplay,
 } from '@/modules/providers/list/antigravity/antigravity-sessions.provider.js';
 import { AntigravitySkillsProvider } from '@/modules/providers/list/antigravity/antigravity-skills.provider.js';
 import { AntigravityProviderAuth, resetAntigravityAuthCacheForTests } from '@/modules/providers/list/antigravity/antigravity-auth.provider.js';
@@ -657,6 +666,22 @@ describe('Antigravity skills discovery', () => {
 });
 
 describe('Antigravity sessions', () => {
+  it('invalidates the history fingerprint when only the SQLite WAL changes', async () => {
+    const root = await makeScratchDir('antigravity-history-wal-');
+    const env = { ...process.env, CLOUDCLI_ANTIGRAVITY_DIR: root };
+    const dbPath = antigravityConversationDbPath('s1', env);
+    await mkdir(path.dirname(dbPath), { recursive: true });
+    await writeFile(dbPath, 'database');
+
+    const before = antigravityConversationFingerprint('s1', env);
+    assert.ok(before);
+    await writeFile(`${dbPath}-wal`, 'new messages');
+    const after = antigravityConversationFingerprint('s1', env);
+
+    assert.ok(after);
+    assert.notEqual(after, before);
+  });
+
   it('normalizes ACP update shapes and reports no readable history', async () => {
     const provider = new AntigravitySessionsProvider();
     assert.equal(
@@ -679,10 +704,19 @@ describe('Antigravity sessions', () => {
     assert.equal(result?.isError, true);
     assert.deepEqual(provider.normalizeMessage({ sessionUpdate: 'unknown_thing' }, 's1'), []);
 
-    // `session/load` is addressed with a cwd; without one there is nothing to
-    // replay, so the reader returns an honest empty page instead of guessing.
-    assert.deepEqual(await provider.fetchHistory('s1'), {
-      messages: [], total: 0, hasMore: false, offset: 0, limit: null,
+    // No conversation store on disk yet: an empty page, but flagged as pending
+    // so the client retries instead of rendering a legit empty transcript.
+    const root = await makeScratchDir('antigravity-history-missing-');
+    const isolated = new AntigravitySessionsProvider({ ...process.env, CLOUDCLI_ANTIGRAVITY_DIR: root });
+    assert.deepEqual(await isolated.fetchHistory('s1'), {
+      messages: [],
+      total: 0,
+      hasMore: false,
+      offset: 0,
+      limit: null,
+      historyPending: true,
+      retryable: true,
+      historyPendingReason: 'not-persisted',
     });
   });
 
@@ -814,5 +848,234 @@ describe('Antigravity sessions', () => {
         ['text', 'assistant', 'after'],
       ],
     );
+  });
+
+  it('keeps replay rows in order with stable identities across reads', () => {
+    const provider = new AntigravitySessionsProvider();
+    const normalize = (provider as unknown as {
+      normalizeHistoryUpdates: (updates: Record<string, unknown>[], sessionId: string) => NormalizedMessage[];
+    }).normalizeHistoryUpdates.bind(provider);
+    const updates = [
+      { sessionUpdate: 'user_message_chunk', content: { text: 'first' } },
+      { sessionUpdate: 'agent_message_chunk', content: { text: 'reply' } },
+      { sessionUpdate: 'user_message_chunk', content: { text: 'second' } },
+    ];
+    const first = normalize(updates, 's1');
+    const second = normalize(updates, 's1');
+    timestampAntigravityReplay(first, 's1', 1_000_000);
+    timestampAntigravityReplay(second, 's1', 1_000_000);
+    assert.deepEqual(first.map((m) => m.content), ['first', 'reply', 'second']);
+    assert.deepEqual(first.map((m) => [m.id, m.timestamp]), second.map((m) => [m.id, m.timestamp]));
+    assert.ok(Date.parse(first[0]!.timestamp) < Date.parse(first[1]!.timestamp));
+    assert.ok(Date.parse(first[1]!.timestamp) < Date.parse(first[2]!.timestamp));
+  });
+});
+
+/**
+ * Minimal Antigravity ACP stand-in for history replay: `session/load` records
+ * the cwd it was addressed with, replays two chunks before the response and
+ * one straggler shortly AFTER it (the drain must still catch it). Writing
+ * `fail` into the control file makes `session/load` return an error.
+ */
+async function writeFakeHistoryAcpServer(root: string): Promise<{ binary: string; logPath: string; controlPath: string }> {
+  const logPath = path.join(root, 'loads.log');
+  const controlPath = path.join(root, 'control');
+  const script = path.join(root, 'fake-agy-history.mjs');
+  await writeFile(script, `
+import fs from 'node:fs';
+import readline from 'node:readline';
+const rl = readline.createInterface({ input: process.stdin });
+const send = (payload) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...payload }) + '\\n');
+const update = (sessionId, text) => send({ method: 'session/update', params: { sessionId, update: {
+  sessionUpdate: 'agent_message_chunk', content: { text },
+} } });
+rl.on('line', (line) => {
+  let msg; try { msg = JSON.parse(line); } catch { return; }
+  if (msg.method === 'initialize') {
+    send({ id: msg.id, result: { protocolVersion: 1, agentCapabilities: { loadSession: true } } });
+  } else if (msg.method === 'session/load') {
+    const control = fs.existsSync(${JSON.stringify(controlPath)}) ? fs.readFileSync(${JSON.stringify(controlPath)}, 'utf8') : '';
+    fs.appendFileSync(${JSON.stringify(logPath)}, JSON.stringify({ sessionId: msg.params.sessionId, cwd: msg.params.cwd }) + '\\n');
+    if (control.includes('fail')) {
+      send({ id: msg.id, error: { code: -32000, message: 'cwd mismatch' } });
+      return;
+    }
+    const { sessionId } = msg.params;
+    send({ method: 'session/update', params: { sessionId, update: {
+      sessionUpdate: 'user_message_chunk', content: { text: 'hi' },
+    } } });
+    update(sessionId, 'hello ');
+    if (control.includes('extra')) update(sessionId, 'new turn ');
+    send({ id: msg.id, result: {} });
+    setTimeout(() => update(sessionId, 'world'), 40);
+  }
+});
+`, 'utf8');
+  const binary = path.join(root, 'agy_acp_server');
+  await writeFile(binary, `#!/bin/sh\nexec "${process.execPath}" "${script}" "$@"\n`, 'utf8');
+  await chmod(binary, 0o755);
+  return { binary, logPath, controlPath };
+}
+
+async function readLoads(logPath: string): Promise<Array<{ sessionId: string; cwd: string }>> {
+  try {
+    return (await readFile(logPath, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+  } catch {
+    return [];
+  }
+}
+
+async function seedConversation(env: NodeJS.ProcessEnv, sessionId: string, metaCwd: string | null): Promise<string> {
+  const dbPath = antigravityConversationDbPath(sessionId, env);
+  await mkdir(path.dirname(dbPath), { recursive: true });
+  await writeFile(dbPath, 'database');
+  if (metaCwd) {
+    await writeFile(dbPath.replace(/\.db$/, '.meta'), JSON.stringify({ cwd: metaCwd }), 'utf8');
+  }
+  return dbPath;
+}
+
+describe('Antigravity history replay cache', () => {
+  it('replays with the .meta cwd and drains a chunk that trails the load response', async () => {
+    clearAntigravityHistoryCache();
+    const root = await makeScratchDir('antigravity-history-meta-');
+    try {
+      const { binary, logPath } = await writeFakeHistoryAcpServer(root);
+      const env = { ...process.env, ANTIGRAVITY_ACP_PATH: binary, CLOUDCLI_ANTIGRAVITY_DIR: path.join(root, 'rt') };
+      await seedConversation(env, 'meta-1', '/work/real-cwd');
+
+      const read = await readAntigravityHistory('meta-1', '/indexed/project-path', env);
+      assert.equal(read.status, 'fresh');
+      assert.deepEqual(
+        read.updates.map((u) => (u.content as { text: string }).text),
+        ['hi', 'hello ', 'world'],
+      );
+      const loads = await readLoads(logPath);
+      assert.equal(loads.length, 1);
+      assert.equal(loads[0].cwd, '/work/real-cwd');
+
+      // Unchanged store: served from memory, no second agent.
+      assert.equal((await readAntigravityHistory('meta-1', '/indexed/project-path', env)).status, 'fresh');
+      assert.equal((await readLoads(logPath)).length, 1);
+
+      // Without a .meta sidecar the indexed project path is the fallback.
+      await seedConversation(env, 'meta-2', null);
+      await readAntigravityHistory('meta-2', '/indexed/project-path', env);
+      assert.equal((await readLoads(logPath)).at(-1)?.cwd, '/indexed/project-path');
+    } finally {
+      clearAntigravityHistoryCache();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('serves a stale cache immediately and refreshes it in the background', async () => {
+    clearAntigravityHistoryCache();
+    const root = await makeScratchDir('antigravity-history-swr-');
+    try {
+      const { binary, logPath } = await writeFakeHistoryAcpServer(root);
+      const env = { ...process.env, ANTIGRAVITY_ACP_PATH: binary, CLOUDCLI_ANTIGRAVITY_DIR: path.join(root, 'rt') };
+      const dbPath = await seedConversation(env, 'swr-1', '/work/swr');
+
+      const first = await readAntigravityHistory('swr-1', '', env);
+      assert.equal(first.status, 'fresh');
+
+      // A live turn is writing: the stale cache is served and no replay starts.
+      setAntigravityHistoryBusyCheck(() => true);
+      await writeFile(`${dbPath}-wal`, 'turn in progress');
+      const busy = await readAntigravityHistory('swr-1', '', env);
+      assert.equal(busy.status, 'stale');
+      assert.equal(busy.updates, first.updates);
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      assert.equal((await readLoads(logPath)).length, 1);
+
+      // Turn finished: the next read is still instant (stale) but kicks one
+      // background refresh, after which the cache is fresh again.
+      setAntigravityHistoryBusyCheck(null);
+      await writeFile(`${dbPath}-wal`, 'turn in progress, more');
+      const startedAt = Date.now();
+      const stale = await readAntigravityHistory('swr-1', '', env);
+      assert.equal(stale.status, 'stale');
+      assert.ok(Date.now() - startedAt < 200, 'stale read must not wait for a replay');
+
+      let status: string = stale.status;
+      for (let i = 0; i < 100 && status !== 'fresh'; i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        status = (await readAntigravityHistory('swr-1', '', env)).status;
+      }
+      assert.equal(status, 'fresh');
+      assert.equal((await readLoads(logPath)).length, 2);
+    } finally {
+      setAntigravityHistoryBusyCheck(null);
+      clearAntigravityHistoryCache();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('announces a background replay that changed the transcript, and stays silent otherwise', async () => {
+    clearAntigravityHistoryCache();
+    const root = await makeScratchDir('antigravity-history-notify-');
+    const announced: string[] = [];
+    setAntigravityHistoryRefreshedListener((id) => announced.push(id));
+    try {
+      const { binary, logPath, controlPath } = await writeFakeHistoryAcpServer(root);
+      const env = { ...process.env, ANTIGRAVITY_ACP_PATH: binary, CLOUDCLI_ANTIGRAVITY_DIR: path.join(root, 'rt') };
+      const dbPath = await seedConversation(env, 'notify-1', '/work/notify');
+      assert.equal((await readAntigravityHistory('notify-1', '', env)).status, 'fresh');
+
+      const waitForFresh = async () => {
+        let status = 'stale';
+        for (let i = 0; i < 100 && status !== 'fresh'; i += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 100));
+          status = (await readAntigravityHistory('notify-1', '', env)).status;
+        }
+        return status;
+      };
+
+      // Fingerprint moved but the replay is identical (e.g. a checkpoint).
+      await writeFile(`${dbPath}-wal`, 'checkpoint');
+      assert.equal((await readAntigravityHistory('notify-1', '', env)).status, 'stale');
+      assert.equal(await waitForFresh(), 'fresh');
+      assert.deepEqual(announced, []);
+
+      // A new turn landed: the stale reader's clients must be told.
+      await writeFile(controlPath, 'extra', 'utf8');
+      await new Promise((resolve) => setTimeout(resolve, 5_100)); // refresh throttle
+      await writeFile(`${dbPath}-wal`, 'new turn');
+      assert.equal((await readAntigravityHistory('notify-1', '', env)).status, 'stale');
+      assert.equal(await waitForFresh(), 'fresh');
+      assert.deepEqual(announced, ['notify-1']);
+      assert.equal((await readLoads(logPath)).length, 3);
+    } finally {
+      setAntigravityHistoryRefreshedListener(null);
+      clearAntigravityHistoryCache();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('flags a failed replay as pending/retryable instead of an empty transcript', async () => {
+    clearAntigravityHistoryCache();
+    const root = await makeScratchDir('antigravity-history-fail-');
+    try {
+      const { binary, controlPath } = await writeFakeHistoryAcpServer(root);
+      const env = { ...process.env, ANTIGRAVITY_ACP_PATH: binary, CLOUDCLI_ANTIGRAVITY_DIR: path.join(root, 'rt') };
+      await seedConversation(env, 'fail-1', '/work/fail');
+      await writeFile(controlPath, 'fail', 'utf8');
+
+      const provider = new AntigravitySessionsProvider(env);
+      const failed = await provider.fetchHistory('app-1', { providerSessionId: 'fail-1' });
+      assert.equal(failed.messages.length, 0);
+      assert.equal(failed.historyPending, true);
+      assert.equal(failed.retryable, true);
+      assert.equal(failed.historyPendingReason, 'replay-failed');
+
+      // Nothing bad was cached: the retry succeeds once the agent recovers.
+      await writeFile(controlPath, '', 'utf8');
+      const retried = await provider.fetchHistory('app-1', { providerSessionId: 'fail-1' });
+      assert.equal(retried.historyPending, undefined);
+      assert.deepEqual(retried.messages.map((m) => m.content), ['hi', 'hello world']);
+    } finally {
+      clearAntigravityHistoryCache();
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });

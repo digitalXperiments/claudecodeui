@@ -15,6 +15,9 @@ import type { AnyRecord, LLMProvider } from '@/shared/types.js';
 import { expandMcpSelectionsToTools } from '@/shared/mcp-tool-expand.js';
 import { AppError } from '@/shared/utils.js';
 import type { McSection, McToolPolicyDecision } from '@/modules/mission-control/mission-control.types.js';
+import { missionControlDb } from '@/modules/mission-control/mission-control.repository.js';
+import { recordSectionVersion } from '@/modules/mission-control/mission-control-versions.service.js';
+import { approvedMemoryContext } from '@/modules/mission-control/mission-control-memory.service.js';
 
 export { expandMcpSelectionsToTools };
 
@@ -523,6 +526,8 @@ export async function runMissionControlAgent(params: {
   // adoption path; they must never be mistaken for the selected chat's run.
   const created = sessionsService.createAppSession(provider, projectPath, { internal: true });
   const appSessionId = created.sessionId;
+  const persistedSection = missionControlDb.getSection(section.section_id);
+  const botVersion = persistedSection ? recordSectionVersion(persistedSection, 'baseline').version : null;
 
   const canonicalRun = runService.create({
     source: 'mission_control',
@@ -536,6 +541,7 @@ export async function runMissionControlAgent(params: {
     trigger: params.trigger ?? 'manual',
     meta: {
       section_id: section.section_id,
+      ...(botVersion != null ? { bot_version: botVersion } : {}),
       ...(params.sourceRef && params.sourceRef !== section.section_id ? { item_id: params.sourceRef } : {}),
       phase: params.phase ?? 'produce',
     },
@@ -589,10 +595,11 @@ export async function runMissionControlAgent(params: {
 
 export function buildProducePrompt(section: McSection): string {
   const now = new Date().toISOString();
+  const memory = missionControlDb.getSection(section.section_id) ? approvedMemoryContext(section.section_id) : '';
   if (section.mode === 'fire_and_forget') {
-    return `Current time (ISO 8601): ${now}\n\n${section.produce_prompt}`;
+    return `Current time (ISO 8601): ${now}\n\n${section.produce_prompt}${memory ? `\n\n${memory}` : ''}`;
   }
-  return `Current time (ISO 8601): ${now}\n\n${section.produce_prompt}\n\n${PRODUCE_ENVELOPE}`;
+  return `Current time (ISO 8601): ${now}\n\n${section.produce_prompt}${memory ? `\n\n${memory}` : ''}\n\n${PRODUCE_ENVELOPE}`;
 }
 
 export function buildResolvePrompt(

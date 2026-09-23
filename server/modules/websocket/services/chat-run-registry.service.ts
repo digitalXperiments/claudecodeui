@@ -10,6 +10,8 @@ import type {
   RealtimeClientConnection,
 } from '@/shared/types.js';
 import { filterSkillBodyEvent } from '@/modules/websocket/services/chat-stream-filter.service.js';
+import { createCompleteMessage } from '@/shared/utils.js';
+import { recordRunError } from '@/modules/providers/services/session-run-errors.service.js';
 
 type ChatRunStatus = 'running' | 'completed';
 
@@ -65,6 +67,83 @@ const MAX_BUFFERED_EVENTS_PER_RUN = 5000;
  * path all consult it instead of asking each provider runtime individually.
  */
 const runs = new Map<string, ChatRun>();
+let shuttingDown = false;
+let activeSendHandlers = 0;
+
+/**
+ * Sessions with an accepted `chat.send` that has not registered its run yet.
+ *
+ * `handleChatSend` awaits real work (releasing a parked Agent CLI PTY for up
+ * to a few seconds, creating an isolated worktree) before `startRun`, and the
+ * socket handles other messages concurrently meanwhile. Without this marker a
+ * `chat.subscribe` landing in that window would answer `isProcessing: false`
+ * and the client would clear the spinner of the send it just made. Keyed by
+ * session with one token per in-flight send so overlapping sends release
+ * independently.
+ */
+const pendingSends = new Map<string, Set<symbol>>();
+const sendHandlerSettledListeners = new Set<() => void>();
+
+/**
+ * Sockets that subscribed while a send was pending and no run was running
+ * yet. `startRun` attaches them to the new run; if the last reservation is
+ * released without a run (handoff failed, validation error), they get a
+ * terminal `complete` so the spinner their `isProcessing: true` ack started
+ * clears instead of waiting forever for frames that never come.
+ */
+const pendingSubscribers = new Map<string, Set<RealtimeClientConnection>>();
+
+type PendingSendSettledListener = (appSessionId: string) => void;
+
+const pendingSendSettledListeners = new Set<PendingSendSettledListener>();
+
+function settlePendingSubscribers(appSessionId: string): void {
+  const subscribers = pendingSubscribers.get(appSessionId);
+  if (!subscribers) {
+    return;
+  }
+  pendingSubscribers.delete(appSessionId);
+
+  const run = runs.get(appSessionId);
+  if (run?.status === 'running') {
+    for (const connection of subscribers) {
+      run.writer.updateWebSocket(connection);
+    }
+    return;
+  }
+
+  let provider: LLMProvider = 'claude';
+  try {
+    provider = (sessionsDb.getSessionById(appSessionId)?.provider as LLMProvider | undefined) ?? provider;
+  } catch {
+    // Best-effort provider label; the terminal frame is what matters.
+  }
+  const payload = JSON.stringify(createCompleteMessage({
+    provider,
+    sessionId: appSessionId,
+    exitCode: 1,
+    aborted: true,
+  }));
+  for (const connection of subscribers) {
+    if (connection.readyState === WS_OPEN_STATE) {
+      connection.send(payload);
+    }
+  }
+}
+
+function emitPendingSendSettled(appSessionId: string): void {
+  for (const listener of pendingSendSettledListeners) {
+    try {
+      listener(appSessionId);
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      console.error('[ChatRunRegistry] pending-send listener threw', {
+        appSessionId,
+        error: errorMessage,
+      });
+    }
+  }
+}
 
 /**
  * Terminal run outcome, delivered to `onRunComplete` subscribers exactly once
@@ -215,6 +294,30 @@ function decorateAndRecordEvent(run: ChatRun, message: NormalizedMessage): Norma
     return null;
   }
 
+  // Frames a runtime emits after its terminal `complete` (late telemetry
+  // such as a `status token_budget`) are forwarded live but neither sequenced
+  // nor buffered: `seq` is scoped to one run and the client resets its
+  // replay cursor at `complete`, so a post-complete seq would leave the
+  // cursor ahead of the session's NEXT run and hide that run's first frames
+  // from a later `chat.subscribe` replay.
+  if (run.status === 'completed') {
+    const late: NormalizedMessage = { ...filteredMessage, sessionId: run.appSessionId };
+    delete late.seq;
+    // Provider transcripts rarely record run errors; persist them so the
+    // failure survives a history reload (see session-run-errors.service).
+    recordRunError(late);
+    try {
+      run.onEvent?.(late);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error('[ChatRunRegistry] canonical run event listener threw', {
+        appSessionId: run.appSessionId,
+        error: message,
+      });
+    }
+    return late;
+  }
+
   run.lastSeq += 1;
 
   const outbound: NormalizedMessage = {
@@ -222,6 +325,7 @@ function decorateAndRecordEvent(run: ChatRun, message: NormalizedMessage): Norma
     sessionId: run.appSessionId,
     seq: run.lastSeq,
   };
+  recordRunError(outbound);
 
   if (filteredMessage.kind === 'complete') {
     // The provider may report its own id here; the frontend only ever knows
@@ -299,6 +403,44 @@ function recordProviderSessionId(run: ChatRun, providerSessionId: string): void 
  * regardless of which provider runtime produced them.
  */
 export const chatRunRegistry = {
+  beginShutdown(): void {
+    shuttingDown = true;
+  },
+
+  isShuttingDown(): boolean {
+    return shuttingDown;
+  },
+
+  trackSendHandler(): () => void {
+    activeSendHandlers += 1;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      activeSendHandlers -= 1;
+      for (const listener of sendHandlerSettledListeners) listener();
+    };
+  },
+
+  /** Keep SDK/stdio children alive until accepted chat sends finish. */
+  waitForIdle(): Promise<void> {
+    const idle = () => activeSendHandlers === 0 && pendingSends.size === 0
+      && ![...runs.values()].some((run) => run.status === 'running');
+    if (idle()) return Promise.resolve();
+    return new Promise((resolve) => {
+      const check = () => {
+        if (!idle()) return;
+        offComplete();
+        offPending();
+        sendHandlerSettledListeners.delete(check);
+        resolve();
+      };
+      const offComplete = this.onRunComplete(check);
+      const offPending = this.onPendingSendSettled(check);
+      sendHandlerSettledListeners.add(check);
+      check();
+    });
+  },
   /**
    * Starts tracking a run and returns it, or `null` when a run is already in
    * progress for the session (callers must reject the duplicate send).
@@ -349,6 +491,16 @@ export const chatRunRegistry = {
     }
 
     runs.set(input.appSessionId, run);
+
+    // Sockets that subscribed while this send was still pending follow the
+    // run from its first frame.
+    const waiting = pendingSubscribers.get(input.appSessionId);
+    if (waiting) {
+      pendingSubscribers.delete(input.appSessionId);
+      for (const connection of waiting) {
+        run.writer.updateWebSocket(connection);
+      }
+    }
     return run;
   },
 
@@ -358,6 +510,54 @@ export const chatRunRegistry = {
 
   isProcessing(appSessionId: string): boolean {
     return runs.get(appSessionId)?.status === 'running';
+  },
+
+  /**
+   * Marks a session as having a `chat.send` in flight whose run is not
+   * registered yet. Must be called synchronously before the send handler's
+   * first `await`. Returns an idempotent release function; callers release it
+   * in a `finally` once the run is registered (or the send failed).
+   *
+   * Deliberately NOT folded into `isProcessing` (a reservation released
+   * without ever starting a run never emits a completion); callers that must
+   * treat a pending send as busy use `isRunningOrPending` together with
+   * `onPendingSendSettled`.
+   */
+  reservePendingSend(appSessionId: string): () => void {
+    const token = Symbol(appSessionId);
+    let tokens = pendingSends.get(appSessionId);
+    if (!tokens) {
+      tokens = new Set();
+      pendingSends.set(appSessionId, tokens);
+    }
+    tokens.add(token);
+
+    let released = false;
+    return () => {
+      if (released) {
+        return;
+      }
+      released = true;
+      const current = pendingSends.get(appSessionId);
+      current?.delete(token);
+      if (current && current.size === 0) {
+        pendingSends.delete(appSessionId);
+        settlePendingSubscribers(appSessionId);
+        emitPendingSendSettled(appSessionId);
+      }
+    };
+  },
+
+  hasPendingSend(appSessionId: string): boolean {
+    return (pendingSends.get(appSessionId)?.size ?? 0) > 0;
+  },
+
+  /**
+   * What `chat_subscribed.isProcessing` reports: a running run, or an
+   * accepted send that is about to register one.
+   */
+  isRunningOrPending(appSessionId: string): boolean {
+    return runs.get(appSessionId)?.status === 'running' || (pendingSends.get(appSessionId)?.size ?? 0) > 0;
   },
 
   listRunningRuns(): Array<{
@@ -387,6 +587,18 @@ export const chatRunRegistry = {
    */
   attachConnection(appSessionId: string, connection: RealtimeClientConnection): boolean {
     const run = runs.get(appSessionId);
+    // A pending send has no run yet: park the socket until `startRun` (or the
+    // reservation's release) decides what it receives.
+    if (run?.status !== 'running' && (pendingSends.get(appSessionId)?.size ?? 0) > 0) {
+      let waiting = pendingSubscribers.get(appSessionId);
+      if (!waiting) {
+        waiting = new Set();
+        pendingSubscribers.set(appSessionId, waiting);
+      }
+      const added = !waiting.has(connection);
+      waiting.add(connection);
+      return added;
+    }
     if (!run) {
       return false;
     }
@@ -402,6 +614,12 @@ export const chatRunRegistry = {
   detachConnection(connection: RealtimeClientConnection): void {
     for (const run of runs.values()) {
       run.writer.detachConnection(connection);
+    }
+    for (const [appSessionId, waiting] of pendingSubscribers) {
+      waiting.delete(connection);
+      if (waiting.size === 0) {
+        pendingSubscribers.delete(appSessionId);
+      }
     }
   },
 
@@ -460,9 +678,23 @@ export const chatRunRegistry = {
   },
 
   /**
+   * Subscribe to "the last pending send for a session was released". Fires
+   * after `startRun` registered the run (then `isProcessing` is true) or when
+   * the send ended without one. Returns an unsubscribe function.
+   */
+  onPendingSendSettled(listener: PendingSendSettledListener): () => void {
+    pendingSendSettledListeners.add(listener);
+    return () => pendingSendSettledListeners.delete(listener);
+  },
+
+  /**
    * Test-only escape hatch: clears every tracked run.
    */
   clearAll(): void {
     runs.clear();
+    pendingSends.clear();
+    pendingSubscribers.clear();
+    shuttingDown = false;
+    activeSendHandlers = 0;
   },
 };

@@ -15,6 +15,8 @@ import ErrorBoundary from './ErrorBoundary';
 import MainContentHeader from './subcomponents/MainContentHeader';
 import MainContentStateView from './subcomponents/MainContentStateView';
 import MobileMenuButton from './subcomponents/MobileMenuButton';
+import DesktopWorkbenchPane from './subcomponents/DesktopWorkbenchPane';
+import MainContentTabSwitcher from './subcomponents/MainContentTabSwitcher';
 
 const StudioView = lazy(() => import('../../studio/view/StudioView'));
 const BotStudioView = lazy(() => import('../../bot-studio/view/BotStudioView'));
@@ -86,6 +88,7 @@ function MainContent({
   // so xterm is not disposed on tab switch (blank flash). Avoids connecting a PTY
   // for users who never open the shell tab.
   const [shellEverOpened, setShellEverOpened] = useState(false);
+  const [terminalEverOpened, setTerminalEverOpened] = useState(false);
 
   const shouldShowTasksTab = Boolean(tasksEnabled && isTaskMasterInstalled);
   const shouldShowBrowserTab = browserUseEnabled;
@@ -100,12 +103,17 @@ function MainContent({
     if (activeTab === 'shell') {
       setShellEverOpened(true);
     }
+    if (activeTab === 'terminal') {
+      setTerminalEverOpened(true);
+    }
   }, [activeTab]);
+
 
   // Reset keep-alive when project changes so a new project does not reuse a
   // stale terminal instance keyed to the previous project path.
   useEffect(() => {
     setShellEverOpened(false);
+    setTerminalEverOpened(false);
   }, [selectedProject?.projectId]);
 
   const {
@@ -187,6 +195,81 @@ function MainContent({
     return <MainContentStateView mode="empty" isMobile={isMobile} onMenuClick={onMenuClick} />;
   }
 
+  const toolView = selectedProject ? (
+    <div className="relative h-full min-w-0 flex-1 overflow-hidden">
+      {(terminalEverOpened || activeTab === 'terminal') && (
+        <div className={`h-full w-full overflow-hidden ${activeTab === 'terminal' ? 'block' : 'hidden'}`}>
+          <Suspense fallback={null}>
+            <StandaloneShell
+              project={selectedProject}
+              isPlainShell
+              minimumContrastRatio={isMobile ? undefined : 4.5}
+              showHeader={false}
+              isActive={activeTab === 'terminal'}
+              onReturnToChat={() => setActiveTab('chat')}
+            />
+          </Suspense>
+        </div>
+      )}
+      {(shellEverOpened || activeTab === 'shell') && (
+        <div className={`h-full w-full overflow-hidden ${activeTab === 'shell' ? 'block' : 'hidden'}`}>
+          <Suspense fallback={null}>
+            <StandaloneShell
+              project={selectedProject}
+              session={selectedSession}
+              minimumContrastRatio={isMobile ? undefined : 4.5}
+              showHeader={false}
+              isActive={activeTab === 'shell'}
+              autoConnect={!selectedSessionIsProcessing}
+              waitForChat={selectedSessionIsProcessing}
+              onReturnToChat={() => setActiveTab('chat')}
+            />
+          </Suspense>
+        </div>
+      )}
+      {activeTab === 'files' && (
+        <div className="h-full overflow-hidden">
+          <Suspense fallback={null}>
+            <FileTree selectedProject={selectedProject} onFileOpen={handleFileOpen} />
+          </Suspense>
+        </div>
+      )}
+      {activeTab === 'git' && (
+        <div className="h-full overflow-hidden">
+          <Suspense fallback={null}>
+            <GitPanel selectedProject={selectedProject} isMobile={isMobile} onFileOpen={handleFileOpen} />
+          </Suspense>
+        </div>
+      )}
+      {activeTab === 'operations' && (
+        <div className="h-full overflow-hidden">
+          <Suspense fallback={null}><OperationsView selectedProject={selectedProject} /></Suspense>
+        </div>
+      )}
+      {shouldShowTasksTab && (
+        <Suspense fallback={null}><TaskMasterPanel isVisible={activeTab === 'tasks'} /></Suspense>
+      )}
+      {shouldShowBrowserTab && activeTab === 'browser' && (
+        <div className="h-full overflow-hidden">
+          <Suspense fallback={null}>
+            <BrowserUsePanel isVisible onShowSettings={onShowSettings} />
+          </Suspense>
+        </div>
+      )}
+      {activeTab.startsWith('plugin:') && (
+        <div className="h-full overflow-hidden">
+          <Suspense fallback={null}>
+            <PluginTabContent
+              pluginName={activeTab.replace('plugin:', '')}
+              selectedProject={selectedProject}
+              selectedSession={selectedSession}
+            />
+          </Suspense>
+        </div>
+      )}
+    </div>
+  ) : null;
+
   return (
     <div className="flex h-full min-h-0 flex-col">
       {!isStudioOrBots && selectedProject ? (
@@ -207,6 +290,7 @@ function MainContent({
           onLoadMoreSessions={onLoadMoreSessions}
           isLoadingMoreSessions={isLoadingMoreSessions}
           processingSessions={processingSessions}
+          onToggleWorkbench={() => setActiveTab(activeTab === 'chat' ? 'terminal' : 'chat')}
         />
       ) : null}
 
@@ -229,9 +313,10 @@ function MainContent({
               one instance down and mounted a fresh one — resetting in-memory
               state such as the picked permission mode back to its default. */}
           {selectedProject ? (
-            <div className={`h-full ${!isStudioOrBots && activeTab === 'chat' ? 'block' : 'hidden'}`}>
+            <div className={`h-full ${!isStudioOrBots && (!isMobile || activeTab === 'chat') ? 'block' : 'hidden'}`}>
               <ErrorBoundary showDetails>
                 <ChatInterface
+                  isActive={!isStudioOrBots && (!isMobile || activeTab === 'chat')}
                   selectedProject={selectedProject}
                   selectedSession={selectedSession}
                   ws={ws}
@@ -300,79 +385,45 @@ function MainContent({
                 </Suspense>
               </ErrorBoundary>
             </div>
-          ) : selectedProject ? (
-            <>
-              {/* Keep shell mounted after first open (CSS hide) so xterm is not disposed on tab switch.
-                  Mount when active OR already opened (effect latches shellEverOpened for subsequent hides). */}
-              {(shellEverOpened || activeTab === 'shell') && (
-                <div className={`h-full w-full overflow-hidden ${activeTab === 'shell' ? 'block' : 'hidden'}`}>
-                  <Suspense fallback={null}>
-                  <StandaloneShell
-                    project={selectedProject}
-                    session={selectedSession}
-                    showHeader={false}
-                    isActive={activeTab === 'shell'}
-                    autoConnect={!selectedSessionIsProcessing}
-                    waitForChat={selectedSessionIsProcessing}
-                  />
-                  </Suspense>
-                </div>
-              )}
-
-              {activeTab === 'files' && (
-                <div className="h-full overflow-hidden">
-                  <Suspense fallback={null}>
-                  <FileTree selectedProject={selectedProject} onFileOpen={handleFileOpen} />
-                  </Suspense>
-                </div>
-              )}
-
-              {activeTab === 'git' && (
-                <div className="h-full overflow-hidden">
-                  <Suspense fallback={null}>
-                  <GitPanel selectedProject={selectedProject} isMobile={isMobile} onFileOpen={handleFileOpen} />
-                  </Suspense>
-                </div>
-              )}
-
-              {activeTab === 'operations' && (
-                <div className="h-full overflow-hidden">
-                  <Suspense fallback={null}>
-                  <OperationsView selectedProject={selectedProject} />
-                  </Suspense>
-                </div>
-              )}
-
-              {shouldShowTasksTab && (
-                <Suspense fallback={null}>
-                  <TaskMasterPanel isVisible={activeTab === 'tasks'} />
-                </Suspense>
-              )}
-
-              {shouldShowBrowserTab && activeTab === 'browser' && (
-                <div className="h-full overflow-hidden">
-                  <Suspense fallback={null}>
-                  <BrowserUsePanel isVisible={activeTab === 'browser'} onShowSettings={onShowSettings} />
-                  </Suspense>
-                </div>
-              )}
-
-              {activeTab.startsWith('plugin:') && (
-                <div className="h-full overflow-hidden">
-                  <Suspense fallback={null}>
-                  <PluginTabContent
-                    pluginName={activeTab.replace('plugin:', '')}
-                    selectedProject={selectedProject}
-                    selectedSession={selectedSession}
-                  />
-                  </Suspense>
-                </div>
-              )}
-            </>
-          ) : null}
+          ) : isMobile ? toolView : null}
         </div>
 
-        {!isStudioOrBots && selectedProject ? (
+        {!isMobile && !isStudioOrBots && selectedProject && activeTab !== 'chat' ? (
+          <DesktopWorkbenchPane
+            navigation={(
+              <MainContentTabSwitcher
+                activeTab={activeTab}
+                setActiveTab={setActiveTab}
+                shouldShowTasksTab={shouldShowTasksTab}
+                shouldShowBrowserTab={shouldShowBrowserTab}
+                isMobile={false}
+                showChatTab={false}
+              />
+            )}
+            onClose={() => setActiveTab('chat')}
+          >
+            {toolView}
+            {(activeTab === 'files' || activeTab === 'git') && (
+              <Suspense fallback={null}>
+                <EditorSidebar
+                  editingFile={editingFile}
+                  isMobile={false}
+                  editorExpanded={editorExpanded}
+                  editorWidth={editorWidth}
+                  hasManualWidth={hasManualWidth}
+                  resizeHandleRef={resizeHandleRef}
+                  onResizeStart={handleResizeStart}
+                  onCloseEditor={handleCloseEditor}
+                  onToggleEditorExpand={handleToggleEditorExpand}
+                  projectPath={selectedProject.path}
+                  fillSpace={activeTab === 'files'}
+                />
+              </Suspense>
+            )}
+          </DesktopWorkbenchPane>
+        ) : null}
+
+        {isMobile && !isStudioOrBots && selectedProject ? (
           <Suspense fallback={null}>
           <EditorSidebar
             editingFile={editingFile}
@@ -390,6 +441,7 @@ function MainContent({
           </Suspense>
         ) : null}
       </div>
+
     </div>
   );
 }

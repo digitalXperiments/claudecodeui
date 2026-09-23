@@ -8,6 +8,7 @@ import type { MarkSessionIdle, MarkSessionProcessing } from '../../../hooks/useS
 import type { PendingPermissionRequest } from '../types/types';
 import type { ProjectSession, LLMProvider } from '../../../types/app';
 import type { SessionStore, NormalizedMessage } from '../../../stores/useSessionStore';
+import { trackRunSeq } from '../../../utils/runSeqCursor';
 
 const isActionablePermissionRequest = (request: { toolName?: unknown } | null | undefined): boolean => {
   return request?.toolName !== 'ExitPlanMode' && request?.toolName !== 'exit_plan_mode';
@@ -43,6 +44,11 @@ interface UseChatRealtimeHandlersArgs {
   onSessionProcessing?: MarkSessionProcessing;
   onSessionIdle?: MarkSessionIdle;
   onWebSocketReconnect?: () => void;
+  /**
+   * Called on `complete` for the viewed session. When omitted the hook falls
+   * back to `sessionStore.refreshFromServer(sid)`.
+   */
+  onRunComplete?: (sessionId: string) => void;
   sessionStore: SessionStore;
 }
 
@@ -74,6 +80,7 @@ export function useChatRealtimeHandlers({
   onSessionProcessing,
   onSessionIdle,
   onWebSocketReconnect,
+  onRunComplete,
   sessionStore,
 }: UseChatRealtimeHandlersArgs) {
   // Session switches can send `chat.subscribe` before this effect has a chance
@@ -92,6 +99,9 @@ export function useChatRealtimeHandlers({
   // replay from another subscription, without treating a later run's seq=1
   // as stale merely because an earlier run used the same session id.
   const processedEventIdsRef = useRef(new Map<string, Set<string>>());
+  // Sessions whose run completed and whose next run has not sent seq 1 yet;
+  // see `trackRunSeq` for why the cursor stays frozen in between.
+  const awaitingRunStartRef = useRef(new Set<string>());
 
   useEffect(() => {
     pendingPermissionRequestsRef.current = pendingPermissionRequests;
@@ -136,9 +146,12 @@ export function useChatRealtimeHandlers({
           // those frames only.
           return;
         }
-        if (msg.seq > known) {
-          lastSeqRef.current.set(sid, msg.seq);
-        }
+        trackRunSeq(
+          { lastSeq: lastSeqRef.current, awaitingRunStart: awaitingRunStartRef.current },
+          sid,
+          msg.kind,
+          msg.seq,
+        );
       }
 
       switch (msg.kind) {
@@ -164,6 +177,7 @@ export function useChatRealtimeHandlers({
             // subscribe was sent — the ack describes the older state.
             onSessionIdle?.(sid, {
               ifStartedBefore: statusCheckSentAtRef.current.get(sid),
+              fromSubscribeAck: true,
             });
           }
 
@@ -324,7 +338,8 @@ export function useChatRealtimeHandlers({
         case 'complete': {
           // Sequence numbers belong to one provider run. A later message in
           // the same conversation starts a fresh run, so do not let the old
-          // cursor suppress its seq=1 stream after this terminal frame.
+          // cursor suppress its seq=1 stream after this terminal frame
+          // (`trackRunSeq` above already reset the replay cursor).
           if (sid) {
             lastSeqRef.current.delete(sid);
             processedEventIdsRef.current.delete(sid);
@@ -372,7 +387,11 @@ export function useChatRealtimeHandlers({
           // before the first send), so the only follow-up is syncing the
           // viewed conversation with the now-persisted transcript.
           if (sid && sid === activeViewSessionId) {
-            void sessionStore.refreshFromServer(sid);
+            if (onRunComplete) {
+              onRunComplete(sid);
+            } else {
+              void sessionStore.refreshFromServer(sid);
+            }
           }
 
           break;
@@ -424,10 +443,26 @@ export function useChatRealtimeHandlers({
         }
 
         case 'status': {
+          // Live model/effort from Grok ACP. Not a status banner.
+          if (msg.text === 'runtime_state' && msg.provider === 'grok') {
+            window.dispatchEvent(new CustomEvent('cloudcli:grok-runtime-state', {
+              detail: {
+                sessionId: sid,
+                model: typeof msg.model === 'string' ? msg.model : undefined,
+                effort: typeof msg.effort === 'string' ? msg.effort : undefined,
+              },
+            }));
+            break;
+          }
           // Token telemetry is stored for the currently visible session only;
           // a background run must not replace the modal's usage numbers.
-          if (msg.text === 'token_budget' && msg.tokenBudget && sid === activeViewSessionId) {
-            setTokenBudget(msg.tokenBudget as Record<string, unknown>);
+          // Never a processing signal, even for a background session: it can
+          // trail the run's `complete`, and treating it as activity would
+          // mark an idle session busy (and queue its next send).
+          if (msg.text === 'token_budget') {
+            if (msg.tokenBudget && sid === activeViewSessionId) {
+              setTokenBudget(msg.tokenBudget as Record<string, unknown>);
+            }
           } else if (msg.text && sid) {
             onSessionProcessing?.(sid, {
               statusText: msg.text as string,
@@ -460,6 +495,7 @@ export function useChatRealtimeHandlers({
     onSessionProcessing,
     onSessionIdle,
     onWebSocketReconnect,
+    onRunComplete,
     sessionStore,
   ]);
 }

@@ -2,6 +2,10 @@ import express from 'express';
 
 import { projectsDb, sessionsDb } from '@/modules/database/index.js';
 import { agentRelayService } from '@/modules/agent-relay/agent-relay.service.js';
+import { relayDeliveryService } from '@/modules/agent-relay/relay-delivery.service.js';
+import { markRelaySeenByLead } from '@/modules/agent-relay/lead-session-wake.service.js';
+import type { RelayHostChecksResult } from '@/modules/agent-relay/relay-host-check.service.js';
+import { aggregateRelayScorecard, instantiateRelayTemplate, listRelayTemplates, type RelayWorkflowInputs } from '@/modules/agent-relay/relay-workflow-library.js';
 import { studioService } from '@/modules/studio/index.js';
 import {
   AGENT_RELAY_PROVIDERS,
@@ -11,6 +15,7 @@ import {
   type AgentRelayScope,
   type AgentRelaySettingsPatch,
   type AgentRelayTaskInput,
+  type AgentRelayTaskRequirements,
   type AgentRelayWorkerProfile,
 } from '@/modules/agent-relay/agent-relay.types.js';
 import type { LLMProvider } from '@/shared/types.js';
@@ -153,8 +158,22 @@ function parseTasks(value: unknown): AgentRelayTaskInput[] {
       outputSchema: optionalSchema(task.outputSchema, `tasks[${index}].outputSchema`),
       dependsOn: optionalIndexList(task.dependsOn, `tasks[${index}].dependsOn`),
       retries: optionalNumber(task.retries),
+      requires: optionalRequirements(task.requires, `tasks[${index}].requires`),
     };
   });
+}
+
+function optionalRequirements(value: unknown, field: string): AgentRelayTaskRequirements | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    throw new AppError(`${field} must be an object.`, { code: 'RELAY_TASK_INVALID', statusCode: 400 });
+  }
+  const record = value as Record<string, unknown>;
+  return {
+    mcpServers: stringList(record.mcpServers),
+    network: typeof record.network === 'boolean' ? record.network : undefined,
+    commands: stringList(record.commands),
+  };
 }
 
 function approvalIdParam(value: unknown): string {
@@ -172,6 +191,30 @@ function relayIdParam(value: unknown): string {
 }
 
 /** Keep approval interrupts actionable without echoing multi-kilobyte commands into the lead context. */
+const VERIFY_OUTPUT_TAIL_CHARS = 3_000;
+
+/**
+ * Lead-facing host-check evidence: one output tail per command. The full
+ * record (stdout, stderr, combined output) stays in the delivery record and
+ * the operator REST surface; repeating it three times cost lead context.
+ */
+function compactVerification(verification: RelayHostChecksResult) {
+  return {
+    passed: verification.passed,
+    unavailable: verification.unavailable,
+    testedCommit: verification.testedCommit,
+    ...(verification.message ? { message: verification.message } : {}),
+    evidence: verification.evidence.map((item) => ({
+      command: item.command,
+      exitCode: item.exitCode,
+      passed: item.passed,
+      ...(item.reason ? { reason: item.reason } : {}),
+      ...(item.timedOut ? { timedOut: true } : {}),
+      outputTail: item.output.length > VERIFY_OUTPUT_TAIL_CHARS ? `…${item.output.slice(-VERIFY_OUTPUT_TAIL_CHARS)}` : item.output,
+    })),
+  };
+}
+
 function compactApproval(approval: AgentRelayApproval) {
   const truncate = (value: string | null, limit: number) => value && value.length > limit ? `${value.slice(0, limit)}…` : value;
   return {
@@ -248,19 +291,97 @@ agentRelayRoutes.get('/jobs', (req, res) => {
       ...job,
       queue_position: job.status === 'queued' ? (queuePositions.get(job.relay_id) ?? null) : null,
       usage: agentRelayService.summarize(job).usage,
+      delivery: relayDeliveryService.deliveryState(job),
     })),
   }));
 });
 
 agentRelayRoutes.get('/approvals', (req, res) => {
   const sessionId = optionalString(req.query.sessionId);
+  const projectId = optionalString(req.query.projectId);
   const approvals = agentRelayService.listApprovals({
     relayId: optionalString(req.query.relayId) ? relayIdParam(req.query.relayId) : undefined,
+    projectId,
     status: req.query.status === 'pending' ? 'pending' : undefined,
     limit: req.query.limit ? Number(req.query.limit) : undefined,
     scope: sessionId ? { sourceSessionId: sessionId } : { allowUnscoped: true },
   });
   res.json(createApiSuccessResponse({ approvals }));
+});
+
+agentRelayRoutes.post('/jobs/:relayId/verify', asyncHandler(async (req, res) => {
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const commands = body.commands === undefined ? undefined : stringList(body.commands);
+  if (body.commands !== undefined && !commands) throw new AppError('commands must be an array of strings.', { code: 'RELAY_CHECKS_INVALID', statusCode: 400 });
+  const result = await relayDeliveryService.verify({
+    relayId: relayIdParam(req.params.relayId),
+    commands,
+    timeoutMs: optionalNumber(body.timeoutMs),
+    scope: { allowUnscoped: true },
+  });
+  res.json(createApiSuccessResponse(result));
+}));
+
+agentRelayRoutes.get('/projects/:projectId/unlanded', asyncHandler(async (req, res) => {
+  res.json(createApiSuccessResponse({ jobs: await relayDeliveryService.unlanded({
+    projectId: requiredString(req.params.projectId, 'projectId'),
+    scope: { allowUnscoped: true },
+  }) }));
+}));
+
+agentRelayRoutes.get('/projects/:projectId/scorecard', (req, res) => {
+  const projectId = requiredString(req.params.projectId, 'projectId');
+  const jobs = agentRelayService.list({ projectId, limit: 500 });
+  res.json(createApiSuccessResponse({ scorecard: aggregateRelayScorecard(jobs) }));
+});
+
+agentRelayRoutes.post('/projects/:projectId/rehearse', asyncHandler(async (req, res) => {
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const projectId = requiredString(req.params.projectId, 'projectId');
+  let relayIds = stringList(body.relayIds);
+  // Legacy callers sent workspace ids; resolve them to their writer jobs.
+  const workspaceIds = stringList(body.workspaceIds);
+  if (!relayIds && workspaceIds) {
+    const jobs = agentRelayService.list({ projectId, limit: 500 });
+    relayIds = workspaceIds.map((workspaceId) => jobs.find((job) => job.workspace_id === workspaceId)?.relay_id).filter((id): id is string => Boolean(id));
+  }
+  if (!relayIds?.length) throw new AppError('relayIds must be a non-empty array of strings.', { code: 'RELAY_DELIVERY_INPUT_INVALID', statusCode: 400 });
+  const result = await relayDeliveryService.rehearse({ projectId, relayIds, scope: { allowUnscoped: true } });
+  res.json(createApiSuccessResponse(result));
+}));
+
+agentRelayRoutes.post('/jobs/:relayId/land', asyncHandler(async (req, res) => {
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const result = await relayDeliveryService.land({
+    relayId: relayIdParam(req.params.relayId),
+    rehearsalId: requiredString(body.rehearsalId, 'rehearsalId'),
+    commit: typeof body.commit === 'boolean' ? body.commit : undefined,
+    scope: { allowUnscoped: true },
+  });
+  res.json(createApiSuccessResponse(result));
+}));
+
+agentRelayRoutes.post('/deliveries/:deliveryId/land', asyncHandler(async (req, res) => {
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const result = await relayDeliveryService.land({
+    rehearsalId: requiredString(req.params.deliveryId, 'deliveryId'),
+    commit: typeof body.commit === 'boolean' ? body.commit : undefined,
+    scope: { allowUnscoped: true },
+  });
+  res.json(createApiSuccessResponse(result));
+}));
+
+agentRelayRoutes.post('/jobs/:relayId/discard', asyncHandler(async (req, res) => {
+  res.json(createApiSuccessResponse(await relayDeliveryService.discard({
+    relayId: relayIdParam(req.params.relayId),
+    scope: { allowUnscoped: true },
+  })));
+}));
+
+agentRelayRoutes.get('/jobs/:relayId/delivery', (req, res) => {
+  const job = agentRelayService.get(relayIdParam(req.params.relayId));
+  if (!job) throw new AppError('Relay job not found.', { code: 'RELAY_NOT_FOUND', statusCode: 404 });
+  res.json(createApiSuccessResponse({ delivery: relayDeliveryService.deliveryState(job) }));
 });
 
 agentRelayRoutes.post('/approvals/:approvalId/decide', asyncHandler(async (req, res) => {
@@ -386,6 +507,38 @@ agentRelayMcpRoutes.post('/tools/:toolName', asyncHandler(async (req, res) => {
   const input = (req.body && typeof req.body === 'object' ? req.body : {}) as Record<string, unknown>;
   let data: unknown;
   switch (req.params.toolName) {
+    case 'relay_templates':
+      data = { templates: listRelayTemplates() };
+      break;
+    case 'relay_run_template': {
+      const scope = requireMcpScope(req, input);
+      const rawInputs = input.inputs;
+      if (!rawInputs || typeof rawInputs !== 'object' || Array.isArray(rawInputs)) {
+        throw new AppError('inputs must be an object.', { code: 'RELAY_TEMPLATE_INPUT_INVALID', statusCode: 400 });
+      }
+      let tasks;
+      try {
+        tasks = instantiateRelayTemplate(requiredString(input.templateId, 'templateId'), rawInputs as RelayWorkflowInputs);
+      } catch (error) {
+        throw new AppError(error instanceof Error ? error.message : 'Invalid Relay workflow template input.', { code: 'RELAY_TEMPLATE_INPUT_INVALID', statusCode: 400 });
+      }
+      const result = await agentRelayService.submitBatch({
+        projectPath: optionalString(input.projectPath) ?? process.cwd(),
+        sourceSessionId: scope.sourceSessionId ?? null,
+        tasks,
+      });
+      data = {
+        batchId: result.batchId,
+        jobs: result.jobs.map((job) => agentRelayService.summarize(job)),
+        ...(result.warnings.length ? { warnings: result.warnings } : {}),
+      };
+      break;
+    }
+    case 'relay_scorecard': {
+      const scope = requireMcpScope(req, input);
+      data = { scorecard: aggregateRelayScorecard(agentRelayService.list({ sourceSessionId: scope.sourceSessionId ?? undefined, limit: 500 })) };
+      break;
+    }
     case 'relay_delegate': {
       const scope = requireMcpScope(req, input);
       const result = await agentRelayService.submitBatch({
@@ -393,7 +546,11 @@ agentRelayMcpRoutes.post('/tools/:toolName', asyncHandler(async (req, res) => {
         sourceSessionId: scope.sourceSessionId ?? null,
         tasks: parseTasks(input.tasks),
       });
-      data = { batchId: result.batchId, jobs: result.jobs.map((job) => agentRelayService.summarize(job)) };
+      data = {
+        batchId: result.batchId,
+        jobs: result.jobs.map((job) => agentRelayService.summarize(job)),
+        ...(result.warnings.length ? { warnings: result.warnings } : {}),
+      };
       break;
     }
     case 'relay_status': {
@@ -404,6 +561,7 @@ agentRelayMcpRoutes.post('/tools/:toolName', asyncHandler(async (req, res) => {
       const jobs = ids.length > 0
         ? ids.map((id) => agentRelayService.getForScope(id, scope)).filter((job): job is NonNullable<typeof job> => Boolean(job))
         : agentRelayService.list({ sourceSessionId: scope.sourceSessionId ?? '__unowned__', limit: 50 });
+      markRelaySeenByLead(scope.sourceSessionId, jobs);
       data = {
         jobs: jobs.map((job) => agentRelayService.summarize(job)),
         pendingApprovals: agentRelayService.listApprovals({ scope, status: 'pending', limit: 50 }).map(compactApproval),
@@ -411,11 +569,13 @@ agentRelayMcpRoutes.post('/tools/:toolName', asyncHandler(async (req, res) => {
       break;
     }
     case 'relay_wait': {
+      const scope = requireMcpScope(req, input);
       const waited = await agentRelayService.wait(stringList(input.relayIds) ?? [], {
         returnWhen: input.returnWhen === 'all' ? 'all' : 'any',
         timeoutMs: optionalNumber(input.timeoutMs),
-        scope: requireMcpScope(req, input),
+        scope,
       });
+      markRelaySeenByLead(scope.sourceSessionId, waited.jobs);
       data = {
         timedOut: waited.timedOut,
         jobs: waited.jobs.map((job) => agentRelayService.summarize(job)),
@@ -423,12 +583,14 @@ agentRelayMcpRoutes.post('/tools/:toolName', asyncHandler(async (req, res) => {
       };
       break;
     }
-    case 'relay_result':
-      data = agentRelayService.getResult(requiredString(input.relayId, 'relayId'), {
-        includeOutput: input.includeOutput !== false,
-        scope: requireMcpScope(req, input),
-      });
+    case 'relay_result': {
+      const scope = requireMcpScope(req, input);
+      const relayId = requiredString(input.relayId, 'relayId');
+      data = agentRelayService.getResult(relayId, { includeOutput: input.includeOutput !== false, scope });
+      const job = agentRelayService.getForScope(relayId, scope);
+      if (job) markRelaySeenByLead(scope.sourceSessionId, [job]);
       break;
+    }
     case 'relay_follow_up':
       data = { job: agentRelayService.summarize(await agentRelayService.followUp(
         requiredString(input.relayId, 'relayId'),
@@ -463,6 +625,50 @@ agentRelayMcpRoutes.post('/tools/:toolName', asyncHandler(async (req, res) => {
       };
       break;
     }
+    case 'relay_verify': {
+      const commands = input.commands === undefined ? undefined : stringList(input.commands);
+      if (input.commands !== undefined && !commands) throw new AppError('commands must be an array of strings.', { code: 'RELAY_CHECKS_INVALID', statusCode: 400 });
+      const verified = await relayDeliveryService.verify({
+        relayId: requiredString(input.relayId, 'relayId'),
+        commands,
+        timeoutMs: optionalNumber(input.timeoutMs),
+        scope: requireMcpScope(req, input),
+      });
+      data = { deliveryId: verified.deliveryId, passed: verified.passed, verification: compactVerification(verified.verification) };
+      break;
+    }
+    case 'relay_rehearse': {
+      const scope = requireMcpScope(req, input);
+      const relayIds = stringList(input.relayIds) ?? [];
+      const first = relayIds[0] ? agentRelayService.getForScope(relayIds[0], scope) : null;
+      const rehearsed = await relayDeliveryService.rehearse({
+        projectId: optionalString(input.projectId) ?? first?.project_id ?? '',
+        relayIds,
+        scope,
+      });
+      data = { ...rehearsed, checks: rehearsed.checks ? compactVerification(rehearsed.checks) : null };
+      break;
+    }
+    case 'relay_discard':
+      data = await relayDeliveryService.discard({
+        relayId: requiredString(input.relayId, 'relayId'),
+        scope: requireMcpScope(req, input),
+      });
+      break;
+    case 'relay_unlanded':
+      data = { jobs: await relayDeliveryService.unlanded({
+        projectId: requiredString(input.projectId, 'projectId'),
+        scope: requireMcpScope(req, input),
+      }) };
+      break;
+    case 'relay_land':
+      data = await relayDeliveryService.land({
+        relayId: optionalString(input.relayId),
+        rehearsalId: requiredString(input.rehearsalId, 'rehearsalId'),
+        commit: typeof input.commit === 'boolean' ? input.commit : undefined,
+        scope: requireMcpScope(req, input),
+      });
+      break;
     case 'relay_pending_approvals':
       data = {
         approvals: agentRelayService.listApprovals({
@@ -525,7 +731,34 @@ agentRelayMcpRoutes.post('/tools/:toolName', asyncHandler(async (req, res) => {
     default:
       throw new AppError(`Unknown Agent Relay tool "${req.params.toolName}".`, { code: 'RELAY_TOOL_NOT_FOUND', statusCode: 404 });
   }
-  res.json({ success: true, data });
+  res.json({ success: true, data: req.params.toolName.startsWith('relay_') ? compactForLead(data) : data });
 }));
+
+/** Model-identity fields that only matter to the operator's audit view. */
+const LEAD_REDUNDANT_JOB_KEYS = new Set(['selectedModel', 'catalogDefaultModel', 'catalogResolvedModel', 'modelSelectionSource']);
+
+/**
+ * Every lead MCP response is paid for in lead context on every poll. Drop
+ * nulls, empty arrays/objects, and audit-only model identity fields; the
+ * operator REST surface keeps the full shape.
+ */
+export function compactForLead(value: unknown, depth = 0): unknown {
+  if (depth > 12 || value === null || value === undefined) return value ?? undefined;
+  if (Array.isArray(value)) return value.map((entry) => compactForLead(entry, depth + 1)).filter((entry) => entry !== undefined);
+  if (typeof value !== 'object') return value;
+  const record = value as Record<string, unknown>;
+  const isJob = typeof record.relayId === 'string' && 'mode' in record;
+  const output: Record<string, unknown> = {};
+  for (const [key, raw] of Object.entries(record)) {
+    if (isJob && LEAD_REDUNDANT_JOB_KEYS.has(key)) continue;
+    if (isJob && key === 'modelLabel' && raw === record.model) continue;
+    const compacted = compactForLead(raw, depth + 1);
+    if (compacted === undefined || compacted === null) continue;
+    if (Array.isArray(compacted) && compacted.length === 0) continue;
+    if (typeof compacted === 'object' && !Array.isArray(compacted) && Object.keys(compacted as object).length === 0) continue;
+    output[key] = compacted;
+  }
+  return output;
+}
 
 export default agentRelayRoutes;

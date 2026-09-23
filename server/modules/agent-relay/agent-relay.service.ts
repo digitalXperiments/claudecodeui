@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { access, readFile } from 'node:fs/promises';
 import fs from 'node:fs';
@@ -23,6 +24,7 @@ import {
   type AgentRelaySettingsPatch,
   type AgentRelayWorkerProfile,
   type AgentRelayStructuredResult,
+  type AgentRelayTaskInput,
 } from '@/modules/agent-relay/agent-relay.types.js';
 import { normalizeDeclaredSchema, validateJsonSchema } from '@/shared/json-schema-lite.js';
 import { adjudicateResult as jevAdjudicateResult } from '@/modules/agent-relay/jev-relay.service.js';
@@ -49,7 +51,14 @@ import { newRelayBatchId, newRelayJobId } from '@/shared/ids.js';
 import { TERMINAL_RUN_STATUSES, type RunStatus } from '@/shared/run-events.js';
 import type { AnyRecord, LLMProvider, NormalizedMessage, ProviderModelsDefinition } from '@/shared/types.js';
 import { enabledRegistryModelIdsForProvider } from '@/modules/model-registry/index.js';
-import { notifyAgentRelayTerminal } from '@/modules/agent-relay/lead-session-wake.service.js';
+import {
+  configureLeadWakeFailureHandler,
+  notifyAgentRelayDelivery,
+  notifyAgentRelayTerminal,
+} from '@/modules/agent-relay/lead-session-wake.service.js';
+import { relayDeliveryService, type AutoDeliveryOutcome } from '@/modules/agent-relay/relay-delivery.service.js';
+import { buildRelaySandboxSpec, type RelaySandboxSpec } from '@/modules/agent-relay/relay-sandbox.js';
+import { classifyRelayFailure, decideRelayFallback } from '@/modules/agent-relay/relay-routing-policy.js';
 import { AppError } from '@/shared/utils.js';
 import { findAppRoot, findServerRoot, getModuleDir } from '@/utils/runtime-paths.js';
 
@@ -92,7 +101,23 @@ const DEFAULT_SETTINGS: AgentRelaySettings = {
   defaultApprovalPolicy: 'auto',
   installSkill: true,
   approvalTimeoutMs: DEFAULT_APPROVAL_TIMEOUT_MS,
+  workerSandbox: 'enforce',
+  workerNetwork: 'open',
+  workerAllowedDomains: [],
+  allowLeadManualApproval: false,
+  autoVerify: true,
+  autoRehearse: true,
+  autoLand: 'off',
+  defaultWorkerMcpServers: [],
 };
+
+function uniqueDomains(value: unknown, fallback: string[]): string[] {
+  if (!Array.isArray(value)) return [...fallback];
+  return [...new Set(value
+    .filter((entry): entry is string => typeof entry === 'string')
+    .map((entry) => entry.trim().toLowerCase())
+    .filter((entry) => /^[a-z0-9*.:-]+$/.test(entry)))].slice(0, 200);
+}
 
 let runtimeSpawnFns: Partial<Record<LLMProvider, ProviderSpawnFn>> = {};
 let runtimeAbortFns: Partial<Record<LLMProvider, (providerSessionId: string) => boolean | Promise<boolean>>> = {};
@@ -613,6 +638,16 @@ function readSettings(): AgentRelaySettings {
         MIN_APPROVAL_TIMEOUT_MS,
         MAX_APPROVAL_TIMEOUT_MS,
       ),
+      workerSandbox: parsed.workerSandbox === 'off' ? 'off' : 'enforce',
+      workerNetwork: parsed.workerNetwork === 'restricted' ? 'restricted' : 'open',
+      workerAllowedDomains: uniqueDomains(parsed.workerAllowedDomains, []),
+      allowLeadManualApproval: parsed.allowLeadManualApproval === true,
+      autoVerify: parsed.autoVerify !== false,
+      autoRehearse: parsed.autoRehearse !== false,
+      autoLand: parsed.autoLand === 'on_pass' ? 'on_pass' : 'off',
+      defaultWorkerMcpServers: sanitizeWorkerMcpServers(Array.isArray(parsed.defaultWorkerMcpServers)
+        ? parsed.defaultWorkerMcpServers.filter((entry): entry is string => typeof entry === 'string').slice(0, 30)
+        : []),
     });
   } catch {
     return withOpenCodeLeadMigration({
@@ -788,7 +823,32 @@ function resultContractLines(job: Pick<AgentRelayJob, 'output_schema'>): string[
   return lines;
 }
 
-function workerRoleLines(job: Pick<AgentRelayJob, 'mode' | 'approval_policy'>): string[] {
+const SANDBOX_BOUNDARY_LINE = 'Never attempt: git push, publishing packages or images, gh actions on remote repos/PRs, sudo, or osascript/launchctl. They are denied and recorded for the lead; list them under openQuestions as steps for the lead instead.';
+
+function workerRoleLines(
+  job: Pick<AgentRelayJob, 'mode' | 'approval_policy'>,
+  sandbox: Pick<RelaySandboxSpec, 'network'> | null = null,
+): string[] {
+  if (sandbox && job.approval_policy !== 'manual') {
+    const network = sandbox.network === 'open'
+      ? 'Network access (package installs, localhost servers) is available.'
+      : 'Network egress is blocked except localhost.';
+    if (job.mode === 'read_only') {
+      return [
+        'Role: EXPLORER. This is a read-only assignment.',
+        'You run inside an OS sandbox that makes the project read-only. Any command you need for inspection (scripts, tests, builds that only read, localhost probes) runs without asking. Writes fail at the OS level except under tmp/cloudcli/ for scratch; do not try to work around that.',
+        network,
+        SANDBOX_BOUNDARY_LINE,
+      ];
+    }
+    return [
+      'Role: IMPLEMENTER in an isolated CloudCLI worktree.',
+      'You run inside an OS sandbox: this worktree and its feature branch are writable; the primary checkout, your home directory, and credentials are not. Every command inside the sandbox (edits, installs, tests, builds, scripts, git commit) runs without asking — do not wait for permission and do not ask the lead to run checks for you.',
+      network,
+      'Do not merge into the base branch. Run the relevant checks yourself, commit completed changes to the current feature branch with a clear message, and leave a reviewable diff. Uncommitted changes are committed by the host when you finish.',
+      SANDBOX_BOUNDARY_LINE,
+    ];
+  }
   if (job.mode === 'read_only') {
     return [
       'Role: EXPLORER. This is a read-only assignment.',
@@ -810,12 +870,17 @@ function workerRoleLines(job: Pick<AgentRelayJob, 'mode' | 'approval_policy'>): 
   ];
 }
 
-function buildWorkerPrompt(job: Pick<AgentRelayJob, 'relay_id' | 'task' | 'mode' | 'approval_policy' | 'label' | 'output_schema' | 'depends_on'>): string {
+function buildWorkerPrompt(
+  job: Pick<AgentRelayJob, 'relay_id' | 'task' | 'mode' | 'approval_policy' | 'label' | 'output_schema' | 'depends_on'> & Partial<Pick<AgentRelayJob, 'mcp_servers'>>,
+  sandbox: Pick<RelaySandboxSpec, 'network'> | null = null,
+): string {
+  const grantedMcp = sanitizeWorkerMcpServers(job.mcp_servers ?? []);
   return [
     'You are a delegated sidekick for a lead agent. Complete only the bounded assignment below.',
     'Do not expand scope. Do not ask the end user questions; report blockers to the lead.',
     'Delegation is owned by the lead. Never call Agent Relay relay_* tools or create sub-delegations.',
-    ...workerRoleLines(job),
+    ...workerRoleLines(job, sandbox),
+    ...(grantedMcp.length > 0 ? [`MCP servers granted to you for this task (use them without asking): ${grantedMcp.join(', ')}.`] : []),
     '',
     `Relay job: ${job.relay_id}${job.label ? ` — ${job.label}` : ''}`,
     `Assignment:\n${job.task}`,
@@ -1076,7 +1141,7 @@ function effectiveApprovalTimeoutMs(job: Pick<AgentRelayJob, 'timeout_ms'>): num
   return Math.min(readSettings().approvalTimeoutMs, Math.max(MIN_APPROVAL_TIMEOUT_MS, job.timeout_ms - 30_000));
 }
 
-function buildRuntimeOptions(job: AgentRelayJob, cwd: string): AnyRecord {
+function buildRuntimeOptions(job: AgentRelayJob, cwd: string, sandbox: RelaySandboxSpec | null = null): AnyRecord {
   const permissionMode = relayPermissionMode(job);
   const mcpServers = sanitizeWorkerMcpServers(job.mcp_servers);
   const options: AnyRecord = {
@@ -1088,6 +1153,7 @@ function buildRuntimeOptions(job: AgentRelayJob, cwd: string): AnyRecord {
     sessionSummary: `Agent Relay · ${job.task.slice(0, 100)}`,
     images: [],
     relayWorker: true,
+    ...(sandbox ? { relaySandbox: sandbox } : {}),
   };
   // catalog_resolved_model is the concrete pinned id behind an alias (e.g.
   // 'haiku' -> 'claude-haiku-4-5-20251001'). Passing the alias to the CLI lets
@@ -1169,7 +1235,156 @@ function publish(job: AgentRelayJob | null): void {
   if (!job) return;
   broadcastSystemEvent({ kind: 'agent_relay_updated', job });
   notifyAgentRelayTerminal(job);
+  if (AGENT_RELAY_TERMINAL_STATUSES.has(job.status)) scheduleAutoDelivery(job);
 }
+
+function deliverySummary(job: AgentRelayJob): AgentRelayJobSummary['delivery'] {
+  if (job.mode !== 'isolated_write' || !job.workspace_id) return null;
+  try {
+    const state = relayDeliveryService.deliveryState(job);
+    return state ? { stage: state.stage, rehearsalId: state.rehearsalId, landedSha: state.landedSha } : null;
+  } catch {
+    return null;
+  }
+}
+
+const RETENTION_SWEEP_MS = 60 * 60_000;
+let retentionTimer: ReturnType<typeof setInterval> | null = null;
+
+/**
+ * Whether a writer workspace still holds work that is not in the primary:
+ * its own committed changes (after its snapshot/start) or uncommitted edits
+ * that differ from the primary copy. Legacy workspaces without a snapshot
+ * count overlay copies identical to the primary as clean, and a branch fully
+ * merged into its base as landed.
+ */
+async function workspaceHoldsUnlandedWork(workspace: NonNullable<ReturnType<typeof workspaceService.get>>): Promise<boolean> {
+  const status = await workspaceService.refreshStatus(workspace.workspace_id);
+  if (status.status !== 'active' || status.conflicts.length > 0) return true;
+  const { committedChanges, runGit, readBlob, repositoryRoot: repoRootOf } = await import('@/modules/workspaces/index.js');
+  const projectRoot = projectsDb.getProjectPathById(workspace.project_id);
+  // Status and committed paths are repository-relative (nested projects).
+  const primary = projectRoot ? ((await repoRootOf(projectRoot)) ?? projectRoot) : null;
+  const sameAsPrimary = async (relativePath: string): Promise<boolean> => {
+    if (!primary) return false;
+    try {
+      const [ours, theirs] = await Promise.all([
+        fs.promises.readFile(path.join(workspace.root_path, relativePath)),
+        fs.promises.readFile(path.join(primary, relativePath)),
+      ]);
+      return ours.equals(theirs);
+    } catch {
+      return false;
+    }
+  };
+  for (const file of status.dirty_files) {
+    if (!(await sameAsPrimary(file.path))) return true;
+  }
+  const start = workspace.snapshot_sha ?? workspace.start_sha;
+  if (start) {
+    const head = status.head_sha;
+    if (!head || head === start) return false;
+    const changed = await committedChanges(workspace.root_path, start, head);
+    for (const file of changed) {
+      const tipContent = readBlob(workspace.root_path, head, file.path);
+      if (!primary) return true;
+      const primaryContent = await fs.promises.readFile(path.join(primary, file.path)).catch(() => null);
+      const same = tipContent === null ? primaryContent === null : primaryContent !== null && tipContent.equals(primaryContent);
+      if (!same) return true;
+    }
+    return false;
+  }
+  if (status.ahead === 0) return false;
+  const merged = await runGit(workspace.root_path, ['merge-base', '--is-ancestor', 'HEAD', workspace.base_branch || 'HEAD']);
+  return merged.code !== 0;
+}
+
+/** One automatic delivery pass per writer attempt. */
+const autoDeliveryScheduled = new Set<string>();
+
+function scheduleAutoDelivery(job: AgentRelayJob): void {
+  const settings = readSettings();
+  if (!settings.autoVerify) return;
+  // Blocked/failed writers never verify, but they can still be the last job
+  // of a batch whose other writers are waiting to be rehearsed together.
+  const key = `${job.relay_id}:${job.attempt}`;
+  if (autoDeliveryScheduled.has(key)) return;
+  autoDeliveryScheduled.add(key);
+  if (autoDeliveryScheduled.size > 5_000) autoDeliveryScheduled.clear();
+  void (async () => {
+    const batchWriters = agentRelayDb.list({ projectId: job.project_id, limit: 500 })
+      .filter((candidate) => candidate.batch_id === job.batch_id && candidate.mode === 'isolated_write');
+    if (batchWriters.length === 0) return;
+    const trigger = job.mode === 'isolated_write' ? job : batchWriters[batchWriters.length - 1]!;
+    const { autoDeliverAfterWriter } = await import('@/modules/agent-relay/relay-delivery.service.js');
+    const outcome = await autoDeliverAfterWriter(trigger.relay_id, settings);
+    if (!outcome) return;
+    reportAutoDelivery(job, outcome);
+  })().catch((error) => {
+    console.warn('[AgentRelay] automatic delivery failed', error);
+  });
+}
+
+function reportAutoDelivery(job: AgentRelayJob, outcome: AutoDeliveryOutcome): void {
+  for (const verified of outcome.verified) {
+    const verifiedJob = agentRelayDb.get(verified.relayId);
+    if (verifiedJob) broadcastSystemEvent({ kind: 'agent_relay_updated', job: verifiedJob });
+    if (!verified.passed) {
+      notifyAgentRelayDelivery(
+        job.source_session_id,
+        `verify:${verified.deliveryId}`,
+        `Host checks FAILED for ${verifiedJob?.label || verified.relayId} (${verified.relayId}); see its delivery record ${verified.deliveryId} or relay_verify for output. Follow up with the worker to fix it.`,
+      );
+    }
+  }
+  if (outcome.rehearsal) {
+    const labels = outcome.rehearsal.relayIds.map((relayId) => agentRelayDb.get(relayId)?.label || relayId).join(', ');
+    for (const relayId of outcome.rehearsal.relayIds) {
+      const rehearsedJob = agentRelayDb.get(relayId);
+      if (rehearsedJob) broadcastSystemEvent({ kind: 'agent_relay_updated', job: rehearsedJob });
+    }
+    const landedText = outcome.landed
+      ? ` It was landed automatically: ${outcome.landed.landed.map((entry) => ('commitSha' in entry ? `${entry.relayId} → ${entry.commitSha ?? 'uncommitted'}` : `${entry.relayId} skipped`)).join(', ')}.`
+      : '';
+    const text = outcome.rehearsal.passed
+      ? `Integration candidate ready: rehearsal ${outcome.rehearsal.deliveryId} passed for ${labels}.${landedText || ` Review, then land it with relay_land { "rehearsalId": "${outcome.rehearsal.deliveryId}" }.`}`
+      : `Rehearsal ${outcome.rehearsal.deliveryId} for ${labels} did not pass (${outcome.rehearsal.outcome}). Inspect it with relay_rehearse output or follow up with the writers.`;
+    notifyAgentRelayDelivery(job.source_session_id, `rehearse:${outcome.rehearsal.deliveryId}`, text);
+    void import('@/modules/interrupt-queue/index.js').then(({ interruptsService }) => {
+      interruptsService.create({
+        projectId: job.project_id,
+        kind: outcome.rehearsal!.passed ? 'relay_integration_ready' : 'relay_integration_failed',
+        severity: outcome.rehearsal!.passed ? 'info' : 'warning',
+        title: outcome.rehearsal!.passed
+          ? (outcome.landed ? `Relay landed: ${labels}` : `Relay work ready to land: ${labels}`)
+          : `Relay rehearsal failed: ${labels}`,
+        body: text,
+        runId: null,
+        dedupeKey: `relay-rehearsal:${outcome.rehearsal!.deliveryId}`,
+        meta: { rehearsalId: outcome.rehearsal!.deliveryId, relayIds: outcome.rehearsal!.relayIds },
+      });
+    }).catch(() => undefined);
+  }
+  if (outcome.error) {
+    notifyAgentRelayDelivery(job.source_session_id, `delivery-error:${job.batch_id}`, `Automatic delivery for batch ${job.batch_id} stopped: ${outcome.error}`);
+  }
+}
+
+configureLeadWakeFailureHandler((failure) => {
+  const lead = sessionsDb.getSessionById(failure.leadSessionId);
+  void import('@/modules/interrupt-queue/index.js').then(({ interruptsService }) => {
+    interruptsService.create({
+      projectId: lead?.project_path ? (projectsDb.getProjectPath(lead.project_path)?.project_id ?? null) : null,
+      kind: 'relay_lead_unreachable',
+      severity: 'warning',
+      title: failure.gaveUp ? 'Relay lead could not be woken; retries exhausted' : 'Relay lead could not be woken; retrying',
+      body: `Lead session ${failure.leadSessionId} (${lead?.provider ?? 'unknown provider'}) failed to start a turn for ${failure.relayIds.length} finished worker(s): ${failure.error}. Worker results and delivery records are saved; resume the lead or hand the session to another provider to continue.`,
+      runId: null,
+      dedupeKey: `relay-lead-wake:${failure.leadSessionId}`,
+      meta: { leadSessionId: failure.leadSessionId, relayIds: failure.relayIds, attempts: failure.attempts },
+    });
+  }).catch(() => undefined);
+});
 
 /**
  * Resolves a relay job for a specific caller, refusing jobs the caller does
@@ -1299,6 +1514,149 @@ async function collectWorkspaceResult(job: AgentRelayJob): Promise<AgentRelayRes
   }
 }
 
+const MAX_DENIAL_RESUMES = 2;
+/** Per-job count of automatic resumes after a denial ended the provider turn. */
+const denialResumes = new Map<string, number>();
+
+function isDenialEndedTurn(errorText: string): boolean {
+  return /permission was denied|Agent Relay denied this request/i.test(errorText);
+}
+
+const MAX_PROVIDER_FAILOVERS = 2;
+const FAILOVER_FAILURES = new Set(['quota', 'rate_limit', 'auth', 'spawn']);
+
+/** Whether a writer's worktree is exactly where it started (nothing to lose by replaying). */
+async function writerUntouched(job: AgentRelayJob): Promise<boolean> {
+  if (job.mode !== 'isolated_write') return true;
+  if (!job.workspace_id) return true;
+  const workspace = workspaceService.get(job.workspace_id);
+  if (!workspace || workspace.mode !== 'git_worktree') return false;
+  try {
+    const status = await workspaceService.refreshStatus(job.workspace_id);
+    const start = workspace.start_sha ?? workspace.head_sha;
+    return status.dirty_files.length === 0 && Boolean(start) && status.head_sha === start;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Re-dispatch a job to another provider after a provider-level failure
+ * (quota, rate limit, auth, launch). Uses the routing policy's safety rules:
+ * never replay a writer whose worktree already changed, and stop after a
+ * bounded number of switches. Returns the requeued job, or null.
+ */
+async function attemptProviderFailover(job: AgentRelayJob, errorText: string, output: string | null): Promise<AgentRelayJob | null> {
+  const failure = classifyRelayFailure(errorText || job.error || '');
+  if (!FAILOVER_FAILURES.has(failure.kind)) return null;
+  const attempted = [job.provider, ...job.failovers.map((entry) => entry.fromProvider)];
+  const untouched = await writerUntouched(job);
+  const decision = decideRelayFallback({
+    mode: job.mode,
+    failure,
+    sideEffects: untouched ? 'none' : 'started',
+    attemptedCandidates: attempted,
+    fallbackCount: job.failovers.length,
+    maxFallbacks: MAX_PROVIDER_FAILOVERS,
+    usableOutput: Boolean(output),
+  });
+  if (!decision.allowed) return null;
+
+  const settings = readSettings();
+  const candidates = settings.workerProviders.filter((provider) => {
+    if (attempted.includes(provider) || !runtimeSpawnFns[provider]) return false;
+    if (job.mode === 'read_only' && !providerSupportsReadOnlyRelay(provider)) return false;
+    if (job.mcp_servers.length > 0 && !providerHonorsRelayMcpGrants(provider)) return false;
+    const allowed = allowedWorkerModelsFor(settings, provider);
+    return !allowed || allowed.length > 0;
+  });
+  for (const provider of candidates) {
+    try {
+      const auth = await providerAuthService.getProviderAuthStatus(provider);
+      if (!auth.installed || !auth.authenticated) continue;
+      const catalog = (await providerModelsService.getProviderModels(provider)).models;
+      const identity = resolveRelayModelIdentity(settings, provider, null, catalog);
+      const requeued = agentRelayDb.reassignForFailover(job.relay_id, {
+        provider,
+        model: identity.model,
+        requestedModel: null,
+        modelLabel: identity.modelLabel,
+        catalogDefaultModel: identity.catalogDefaultModel,
+        catalogResolvedModel: identity.catalogResolvedModel,
+        modelSelectionSource: identity.modelSelectionSource,
+        effort: resolveRelayEffort(job.effort, catalog, identity.model),
+        failover: {
+          at: new Date().toISOString(),
+          fromProvider: job.provider,
+          fromModel: job.model,
+          toProvider: provider,
+          toModel: identity.model,
+          failure: failure.kind,
+          reason: (errorText || '').slice(0, 300),
+        },
+      });
+      if (requeued) {
+        publish(requeued);
+        void drainQueue();
+        return requeued;
+      }
+    } catch (error) {
+      console.warn('[AgentRelay] failover candidate unusable', { provider, error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+  return null;
+}
+
+function commandInstalled(command: string): boolean {
+  const name = command.trim().split(/\s+/)[0] ?? '';
+  if (!/^[A-Za-z0-9._+-]+$/.test(name)) return false;
+  const result = spawnSync('/bin/sh', ['-c', 'command -v "$1" >/dev/null 2>&1', 'sh', name], { stdio: 'ignore' });
+  return result.status === 0;
+}
+
+/**
+ * Reject a task whose declared needs cannot be met, with a reason the lead can
+ * act on, instead of letting a worker discover it mid-run and report blocked.
+ */
+async function assertTaskRequirements(
+  index: number,
+  requires: AgentRelayTaskInput['requires'],
+  settings: AgentRelaySettings,
+  catalogNames: Set<string> | null,
+): Promise<void> {
+  if (!requires) return;
+  const problems: string[] = [];
+  const requiredMcp = sanitizeWorkerMcpServers(requires.mcpServers ?? []);
+  if (requiredMcp.length > 0 && catalogNames) {
+    const missing = requiredMcp.filter((name) => !catalogNames.has(name));
+    if (missing.length > 0) {
+      problems.push(`MCP servers not in the CloudCLI catalog: ${missing.join(', ')} (available: ${[...catalogNames].slice(0, 30).join(', ') || 'none'})`);
+    }
+  }
+  if (requires.network && settings.workerNetwork === 'restricted') {
+    problems.push('network egress, but worker network is restricted in Agent Relay settings');
+  }
+  const missingCommands = (requires.commands ?? []).filter((command) => !commandInstalled(command));
+  if (missingCommands.length > 0) problems.push(`tools not installed on this host: ${missingCommands.join(', ')}`);
+  if (problems.length > 0) {
+    throw new AppError(`Relay task ${index + 1} requires ${problems.join('; ')}.`, { code: 'RELAY_REQUIREMENT_UNMET', statusCode: 409 });
+  }
+}
+
+/** Completed writer predecessors (same batch dependencies), in dependency order. */
+function predecessorWriterWorkspaces(job: Pick<AgentRelayJob, 'depends_on' | 'project_id'>) {
+  const workspaces = [];
+  for (const dependencyId of job.depends_on) {
+    const dependency = agentRelayDb.get(dependencyId);
+    if (!dependency || dependency.mode !== 'isolated_write' || !dependency.workspace_id) continue;
+    const workspace = workspaceService.get(dependency.workspace_id);
+    if (workspace && workspace.mode === 'git_worktree' && workspace.project_id === job.project_id && workspace.feature_branch) {
+      workspaces.push(workspace);
+    }
+  }
+  return workspaces;
+}
+
 async function executeJob(relayId: string): Promise<void> {
   let job = agentRelayDb.get(relayId);
   let canonicalRunId: string | null = null;
@@ -1318,21 +1676,47 @@ async function executeJob(relayId: string): Promise<void> {
   let workspaceId = job.workspace_id;
   try {
     if (job.mode === 'isolated_write' && !workspaceId) {
-      const gitRepo = fs.existsSync(path.join(job.project_path, '.git'));
+      // Let the workspace service pick the mode: it resolves projects nested
+      // below a repository root (no `<project>/.git`) to a real git worktree
+      // and git-inits plain projects, so every writer can be verified and
+      // landed. Forcing sandbox_copy here made nested projects undeliverable.
+      //
+      // A writer that depends on earlier writers starts from their combined
+      // committed tips (stacked pipeline), so "implement → test → fix" stages
+      // build on each other instead of each starting from the base.
+      const predecessors = predecessorWriterWorkspaces(job);
       const workspace = await workspaceService.create({
         projectId: job.project_id,
         projectPath: job.project_path,
         taskId: job.relay_id,
         branchName: `relay/${job.relay_id.toLowerCase()}`,
-        mode: gitRepo ? 'git_worktree' : 'sandbox_copy',
+        snapshotPrimaryChanges: predecessors.length === 0,
+        ...(predecessors.length > 0
+          ? {
+            startRefs: predecessors.map((predecessor) => predecessor.feature_branch),
+            inheritSnapshotSha: predecessors[0]!.snapshot_sha ?? null,
+          }
+          : {}),
       });
       workspaceId = workspace.workspace_id;
-      cwd = workspace.root_path;
+      cwd = workspaceService.resolveCwd(workspace.workspace_id);
       agentRelayDb.setWorkspace(job.relay_id, workspace.workspace_id);
     } else if (workspaceId) {
       cwd = workspaceService.resolveCwd(workspaceId);
+    } else if (job.mode === 'read_only') {
+      // A reviewer/tester that depends on a writer inspects that writer's
+      // worktree — otherwise it reviews the unchanged primary checkout.
+      const [reviewed] = predecessorWriterWorkspaces(job).slice(-1);
+      if (reviewed) cwd = workspaceService.resolveCwd(reviewed.workspace_id);
     }
 
+    job = agentRelayDb.get(relayId);
+    if (!job || job.status !== 'queued') return;
+    // The OS sandbox is the real envelope where the provider supports one;
+    // the broker's classifier then only arbitrates boundary crossings.
+    // Computed before the job turns `running`, so nothing async sits between
+    // that transition and the provider start (follow-ups inject into it).
+    const sandbox = await buildRelaySandboxSpec(job, cwd, readSettings());
     job = agentRelayDb.get(relayId);
     if (!job || job.status !== 'queued') return;
     const existingSession = job.app_session_id ? sessionsDb.getSessionById(job.app_session_id) : null;
@@ -1437,6 +1821,9 @@ async function executeJob(relayId: string): Promise<void> {
       mode: job.mode,
       approvalPolicy: job.approval_policy,
       provider: job.provider,
+      sandbox: sandbox?.enforcement ?? null,
+      network: sandbox?.network,
+      grantedMcpServers: sanitizeWorkerMcpServers(job.mcp_servers),
       envelopeRoot: cwd,
       sourceSessionId: job.source_session_id,
       approvalTimeoutMs: effectiveApprovalTimeoutMs(job),
@@ -1456,9 +1843,9 @@ async function executeJob(relayId: string): Promise<void> {
       content: existingSession
         ? buildFollowUpPrompt(job, job.last_prompt)
         : job.last_prompt !== job.task
-          ? `${buildWorkerPrompt(job)}\n\nFollow-up from the lead:\n${job.last_prompt}`
-          : buildWorkerPrompt(job),
-      options: buildRuntimeOptions(job, cwd),
+          ? `${buildWorkerPrompt(job, sandbox)}\n\nFollow-up from the lead:\n${job.last_prompt}`
+          : buildWorkerPrompt(job, sandbox),
+      options: buildRuntimeOptions(job, cwd, sandbox),
       connection: DETACHED_CONNECTION,
       userId: null,
       onEvent,
@@ -1532,6 +1919,37 @@ async function executeJob(relayId: string): Promise<void> {
         return;
       }
     }
+    // Some providers (Grok ACP) end the whole turn when one tool call is
+    // denied. A sandbox-boundary denial is an expected, recorded outcome, not
+    // a failed job: resume the same session and let the worker finish.
+    if (providerFailed && isDenialEndedTurn(errorChunks.join('\n'))) {
+      const latest = agentRelayDb.get(job.relay_id) ?? job;
+      const resumes = denialResumes.get(job.relay_id) ?? 0;
+      const denial = latest.denied_actions[latest.denied_actions.length - 1];
+      if (denial && resumes < MAX_DENIAL_RESUMES) {
+        denialResumes.set(job.relay_id, resumes + 1);
+        const requeued = agentRelayDb.requeueWithFollowUp(job.relay_id, buildFollowUpPrompt(job, [
+          `Your previous step was refused at the sandbox boundary: ${denial.command || denial.tool || 'tool use'} (${denial.reason}).`,
+          'Do not retry it. List it under openQuestions as a step for the lead, continue with the rest of the assignment, and finish with the <agent_relay_result> contract.',
+        ].join('\n')));
+        if (requeued) {
+          closeCanonicalRun(canonicalRun.run_id, 'failed', 'Worker turn ended on a sandbox denial; resuming the same session.');
+          publish(requeued);
+          void drainQueue();
+          return;
+        }
+      }
+    }
+    // Quota, rate-limit, auth, or launch failures are about the provider, not
+    // the task: hand the same brief to the next eligible provider when the
+    // worker provably did nothing yet.
+    if (providerFailed && !output) {
+      const failedOver = await attemptProviderFailover(agentRelayDb.get(job.relay_id) ?? job, errorChunks.join('\n'), null);
+      if (failedOver) {
+        closeCanonicalRun(canonicalRun.run_id, 'failed', `Provider failed; failed over to ${failedOver.provider}.`);
+        return;
+      }
+    }
 
     const parsed = parseStructuredResult(output, providerFailed);
     parsed.result.contractValidation = {
@@ -1581,6 +1999,19 @@ async function executeJob(relayId: string): Promise<void> {
         'The worker did not return a valid <agent_relay_result> contract; the summary is its raw prose.',
       ];
     }
+    // A writer's tip must be landable: commit anything it left uncommitted.
+    // Its workspace started from a snapshot commit of the primary's dirty
+    // files, so every remaining change here is genuinely the worker's.
+    if (job.mode === 'isolated_write' && workspaceId && !providerFailed) {
+      try {
+        await workspaceService.commitPendingChanges(
+          workspaceId,
+          `relay: ${(job.label || job.task).split('\n')[0]!.slice(0, 72)}\n\nUncommitted changes left by ${job.relay_id}, committed by CloudCLI.`,
+        );
+      } catch (commitError) {
+        console.warn('[AgentRelay] could not commit leftover worker changes', commitError);
+      }
+    }
     const result: AgentRelayResult = {
       ...structured,
       output,
@@ -1588,7 +2019,8 @@ async function executeJob(relayId: string): Promise<void> {
     };
     const error = errorChunks.join('\n').trim().slice(0, 20_000) || null;
     closeCanonicalRun(canonicalRun.run_id, providerFailed ? 'failed' : 'succeeded', error);
-    publish(agentRelayDb.finish(job.relay_id, providerFailed ? 'failed' : 'completed', { result, error }));
+    const outerStatus = providerFailed ? 'failed' : structured.status === 'blocked' ? 'blocked' : 'completed';
+    publish(agentRelayDb.finish(job.relay_id, outerStatus, { result, error }));
     // Fire-and-forget, strictly after the job is already terminal and already
     // published. A slow or failing sidecar can never hold a finished result
     // back from the lead, and the assessment cannot change the lifecycle.
@@ -1607,6 +2039,7 @@ async function executeJob(relayId: string): Promise<void> {
           return;
         }
       }
+      if (await attemptProviderFailover(current, message, null)) return;
       publish(agentRelayDb.finish(relayId, 'failed', { error: message.slice(0, 20_000) }));
     }
   } finally {
@@ -1630,7 +2063,8 @@ function dependencyGate(job: AgentRelayJob): { state: 'ready' | 'waiting' | 'dep
     const dep = agentRelayDb.get(depId);
     if (!dep) return { state: 'dependency_failed', reason: `Dependency ${depId} no longer exists.` };
     if (!AGENT_RELAY_TERMINAL_STATUSES.has(dep.status)) return { state: 'waiting' };
-    if (dep.status !== 'completed') {
+    // `blocked` is reported below with the worker's own semantic outcome.
+    if (dep.status !== 'completed' && dep.status !== 'blocked') {
       const name = dep.label || dep.relay_id;
       return {
         state: 'dependency_failed',
@@ -1829,6 +2263,20 @@ configureRelayPermissionObserver({
     }).catch(() => undefined);
   },
   onSettled: (outcome) => {
+    if (!outcome.allow) {
+      const current = agentRelayDb.get(outcome.relayId);
+      if (current) {
+        publish(agentRelayDb.appendDeniedAction(outcome.relayId, {
+          at: new Date().toISOString(),
+          attempt: current.attempt,
+          tool: outcome.toolName ?? null,
+          command: outcome.command ? outcome.command.slice(0, 500) : null,
+          paths: (outcome.paths ?? []).slice(0, 10),
+          reason: outcome.reason.slice(0, 500),
+          via: outcome.via,
+        }));
+      }
+    }
     const approvalId = outcome.approvalId;
     if (!approvalId) return;
     const approval = agentRelayDb.getApproval(approvalId);
@@ -1866,6 +2314,20 @@ export const agentRelayService = {
         MIN_APPROVAL_TIMEOUT_MS,
         MAX_APPROVAL_TIMEOUT_MS,
       ),
+      workerSandbox: patch.workerSandbox === 'off' || patch.workerSandbox === 'enforce' ? patch.workerSandbox : current.workerSandbox,
+      workerNetwork: patch.workerNetwork === 'open' || patch.workerNetwork === 'restricted' ? patch.workerNetwork : current.workerNetwork,
+      workerAllowedDomains: patch.workerAllowedDomains === undefined
+        ? current.workerAllowedDomains
+        : uniqueDomains(patch.workerAllowedDomains, current.workerAllowedDomains),
+      allowLeadManualApproval: typeof patch.allowLeadManualApproval === 'boolean'
+        ? patch.allowLeadManualApproval
+        : current.allowLeadManualApproval,
+      autoVerify: typeof patch.autoVerify === 'boolean' ? patch.autoVerify : current.autoVerify,
+      autoRehearse: typeof patch.autoRehearse === 'boolean' ? patch.autoRehearse : current.autoRehearse,
+      autoLand: patch.autoLand === 'on_pass' || patch.autoLand === 'off' ? patch.autoLand : current.autoLand,
+      defaultWorkerMcpServers: Array.isArray(patch.defaultWorkerMcpServers)
+        ? sanitizeWorkerMcpServers(patch.defaultWorkerMcpServers.filter((entry): entry is string => typeof entry === 'string').slice(0, 30))
+        : current.defaultWorkerMcpServers,
     };
     if (next.enabled && next.leadProviders.length === 0) {
       throw new AppError('Select at least one lead provider for the Agent Relay MCP.', { code: 'RELAY_LEAD_PROVIDER_REQUIRED', statusCode: 400 });
@@ -1939,7 +2401,7 @@ export const agentRelayService = {
 
   getCapabilities,
 
-  async submitBatch(input: AgentRelayBatchInput): Promise<{ batchId: string; jobs: AgentRelayJob[] }> {
+  async submitBatch(input: AgentRelayBatchInput): Promise<{ batchId: string; jobs: AgentRelayJob[]; warnings: string[] }> {
     const settings = readSettings();
     if (!settings.enabled) throw new AppError('Agent Relay is disabled in Settings.', { code: 'RELAY_DISABLED', statusCode: 409 });
     const projectPath = path.resolve(input.projectPath || process.cwd());
@@ -1966,6 +2428,11 @@ export const agentRelayService = {
       }
     }
 
+    const warnings: string[] = [];
+    const needsCatalog = input.tasks.some((task) => (task.requires?.mcpServers?.length ?? 0) > 0) || settings.defaultWorkerMcpServers.length > 0;
+    const mcpCatalogNames = needsCatalog
+      ? new Set((await mcpCatalogService.listCatalog().catch(() => [])).map((entry) => entry.name))
+      : null;
     // Normalize the complete batch before writing any rows. A malformed later
     // task must not strand earlier tasks as invisible queued work.
     const normalizedTasks = await Promise.all(input.tasks.map(async (task, index) => {
@@ -1986,6 +2453,19 @@ export const agentRelayService = {
       if (poolMode === 'read_only') {
         const modeCapable = pool.filter((candidate) => providerSupportsReadOnlyRelay(candidate));
         if (modeCapable.length > 0) pool = modeCapable;
+      }
+      const requiredMcp = sanitizeWorkerMcpServers(task.requires?.mcpServers ?? []);
+      if (requiredMcp.length > 0 && !task.provider) {
+        // A task that declares MCP needs must land on a provider that can
+        // actually receive the grant, rather than discovering it mid-run.
+        const grantCapable = pool.filter((candidate) => providerHonorsRelayMcpGrants(candidate));
+        if (grantCapable.length === 0) {
+          throw new AppError(
+            `Relay task ${index + 1} requires MCP servers (${requiredMcp.join(', ')}) but no allowed worker provider honors MCP grants.`,
+            { code: 'RELAY_REQUIREMENT_UNMET', statusCode: 409 },
+          );
+        }
+        pool = grantCapable;
       }
       if (pool.length === 0) {
         throw new AppError(
@@ -2008,7 +2488,16 @@ export const agentRelayService = {
       const modeFallback = profile?.defaultMode ?? settings.defaultMode;
       const approvalFallback = profile?.defaultApprovalPolicy ?? settings.defaultApprovalPolicy;
       let mode = normalizeMode(task.mode, modeFallback);
-      const approvalPolicy = normalizeApprovalPolicy(task.approvalPolicy, approvalFallback);
+      // Manual is an operator choice. A lead asking for it per task is
+      // overridden (with a warning) unless the operator explicitly allowed it.
+      const leadAskedManual = task.approvalPolicy === 'manual' && Boolean(input.sourceSessionId);
+      const manualBlocked = leadAskedManual && !settings.allowLeadManualApproval;
+      if (manualBlocked) {
+        warnings.push(
+          `Task ${index + 1}: approvalPolicy "manual" is reserved for the operator; using "${approvalFallback}". Workers run inside their sandbox and report blockers instead of asking you.`,
+        );
+      }
+      const approvalPolicy = normalizeApprovalPolicy(manualBlocked ? undefined : task.approvalPolicy, approvalFallback);
       if (mode === 'read_only' && !providerSupportsReadOnlyRelay(provider)) {
         // An explicit ask for read_only on an incapable provider is an honest
         // error. But when read_only only arrived via the default/profile
@@ -2063,11 +2552,25 @@ export const agentRelayService = {
           );
         }
       }
+      await assertTaskRequirements(index, task.requires, settings, mcpCatalogNames);
+      const grantsHonored = providerHonorsRelayMcpGrants(provider);
+      const requestedMcp = [
+        ...(Array.isArray(task.mcpServers) ? task.mcpServers : []),
+        ...requiredMcp,
+        ...(grantsHonored ? settings.defaultWorkerMcpServers : []),
+      ];
       const mcpServers = resolveWorkerMcpServers({
         provider,
-        taskMcpServers: task.mcpServers,
+        taskMcpServers: requestedMcp.length > 0 ? requestedMcp : task.mcpServers,
         profile,
       });
+      const ungranted = requiredMcp.filter((name) => !mcpServers.includes(name));
+      if (ungranted.length > 0) {
+        throw new AppError(
+          `Relay task ${index + 1} requires MCP servers the ${provider} worker profile does not allow: ${ungranted.join(', ')}.`,
+          { code: 'RELAY_REQUIREMENT_UNMET', statusCode: 409 },
+        );
+      }
       if (mcpServers.length > 0 && !providerHonorsRelayMcpGrants(provider)) {
         throw new AppError(
           `Provider "${provider}" cannot receive explicit Agent Relay MCP grants. Choose a provider that honors task MCP grants.`,
@@ -2109,7 +2612,7 @@ export const agentRelayService = {
     const jobs = agentRelayDb.createBatch(jobInputs);
     jobs.forEach(publish);
     void drainQueue();
-    return { batchId, jobs };
+    return { batchId, jobs, warnings };
   },
 
   /** Unscoped read for trusted server-internal callers only. */
@@ -2206,6 +2709,13 @@ export const agentRelayService = {
       attempt: job.attempt,
       retryCount: job.retry_count,
       pendingApprovalCount: agentRelayDb.listApprovals({ relayId: job.relay_id, status: 'pending', limit: 20 }).length,
+      delivery: deliverySummary(job),
+      deniedActions: job.denied_actions.slice(-10).map((action) => ({
+        tool: action.tool,
+        command: action.command ? action.command.slice(0, 200) : null,
+        reason: action.reason.slice(0, 200),
+        via: action.via,
+      })),
       usage,
       result: job.result
         ? {
@@ -2338,6 +2848,7 @@ export const agentRelayService = {
    */
   listApprovals(input: {
     relayId?: string;
+    projectId?: string;
     /** Defaults to trusted; the MCP boundary always passes the caller's scope. */
     scope?: AgentRelayScope;
     status?: AgentRelayApproval['status'];
@@ -2347,6 +2858,7 @@ export const agentRelayService = {
     if (input.relayId) requireOwnedJob(input.relayId, scope);
     return agentRelayDb.listApprovals({
       relayId: input.relayId,
+      projectId: input.projectId,
       status: input.status,
       limit: input.limit,
       // An unidentifiable caller is scoped to a session id that cannot exist,
@@ -2522,10 +3034,9 @@ export const agentRelayService = {
         continue;
       }
       try {
-        const status = await workspaceService.refreshStatus(workspaceId);
-        if (status.status !== 'active' || status.dirty_files.length > 0 || status.conflicts.length > 0 || status.ahead > 0) {
-          // Dirty files, conflicts, commits ahead of base, and uncertain
-          // lifecycle states are all unlanded work; preserve them.
+        if (await workspaceHoldsUnlandedWork(workspace)) {
+          // Worker changes that are not in the primary, conflicts, and
+          // uncertain lifecycle states are all unlanded work; preserve them.
           continue;
         }
         await workspaceService.discard(workspaceId, { deleteBranch: true });
@@ -2552,11 +3063,22 @@ export const agentRelayService = {
     const interrupted = agentRelayDb.listActive();
     const failed = agentRelayDb.failNonterminalOnBoot();
     agentRelayDb.expireAllPendingApprovals('CloudCLI restarted before this request was answered.');
-    void this.purgeExpiredJobs().catch((error) => {
-      console.error('[Agent Relay] retention purge failed', error);
-    });
+    const purge = () => {
+      void this.purgeExpiredJobs().catch((error) => {
+        console.error('[Agent Relay] retention purge failed', error);
+      });
+    };
+    purge();
+    // Retention used to run only at boot, so a long-lived server accumulated
+    // worktrees indefinitely.
+    if (retentionTimer) clearInterval(retentionTimer);
+    retentionTimer = setInterval(purge, RETENTION_SWEEP_MS);
+    retentionTimer.unref?.();
     for (const job of interrupted) {
       closeCanonicalRun(job.run_id, 'failed', 'CloudCLI restarted before this delegation finished.');
+      // Tell the owning lead: an interrupted worker used to fail silently.
+      const current = agentRelayDb.get(job.relay_id);
+      if (current && AGENT_RELAY_TERMINAL_STATUSES.has(current.status)) publish(current);
     }
     if (readSettings().enabled) void drainQueue();
     return failed;

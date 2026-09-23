@@ -35,6 +35,7 @@ function emptyApproach(label: string): CreateUniverseApproachDraft {
 
 function statusTone(status: string): string {
   if (status === 'completed') return 'text-emerald-600';
+  if (status === 'blocked') return 'text-amber-600';
   if (status === 'failed' || status === 'timed_out' || status === 'cancelled') return 'text-red-600';
   if (status === 'running' || status === 'queued' || status === 'waiting_approval') return 'text-amber-600';
   return 'text-muted-foreground';
@@ -162,7 +163,7 @@ function VariantCard({ projectId, universeId, variant, onChanged }: VariantCardP
     }
   };
 
-  const isTerminal = ['completed', 'failed', 'cancelled', 'timed_out'].includes(variant.status);
+  const isTerminal = ['completed', 'blocked', 'failed', 'cancelled', 'timed_out'].includes(variant.status);
   const canPreview = Boolean(variant.workspaceId);
   const previewRunning = variant.preview.status === 'starting' || variant.preview.status === 'running';
 

@@ -1,5 +1,11 @@
 import { useCallback, useState } from 'react';
 
+import {
+  shouldIgnoreIdle,
+  shouldIgnoreShellTakeover,
+  type IdleRequestOptions,
+} from '../utils/sessionActivityGuards';
+
 export interface SessionActivity {
   /** Which surface owns the live session. Shell sessions are not abortable chat runs. */
   source: 'chat' | 'shell';
@@ -11,6 +17,11 @@ export interface SessionActivity {
    * the elapsed-time display and the stale `chat_subscribed` idle-ack guard.
    */
   startedAt: number;
+  /**
+   * Client clock of the latest local `chat.send` for this entry. Shields the
+   * fresh send from stale `chat_subscribed` acks (see sessionActivityGuards).
+   */
+  localSendAt?: number;
   /** Display title from `/sessions/running` so lists do not need the project page. */
   title?: string | null;
   projectId?: string | null;
@@ -40,12 +51,18 @@ export type SessionActivitySnapshot = {
 
 export type MarkSessionProcessing = (
   sessionId?: string | null,
-  activity?: { source?: 'chat' | 'shell'; statusText?: string | null; canInterrupt?: boolean },
+  activity?: {
+    source?: 'chat' | 'shell';
+    statusText?: string | null;
+    canInterrupt?: boolean;
+    /** Set by the composer when this mark is a local `chat.send`. */
+    localSend?: boolean;
+  },
 ) => void;
 
 export type MarkSessionIdle = (
   sessionId?: string | null,
-  opts?: { ifStartedBefore?: number },
+  opts?: IdleRequestOptions,
 ) => void;
 
 export type SyncProcessingSessions = (
@@ -70,6 +87,7 @@ const sessionActivityMapsMatch = (
       || leftActivity.source !== rightActivity.source
       || leftActivity.canInterrupt !== rightActivity.canInterrupt
       || leftActivity.startedAt !== rightActivity.startedAt
+      || leftActivity.localSendAt !== rightActivity.localSendAt
       || leftActivity.title !== rightActivity.title
       || leftActivity.projectId !== rightActivity.projectId
       || leftActivity.projectDisplayName !== rightActivity.projectDisplayName
@@ -101,8 +119,12 @@ export function useSessionProtection() {
       return;
     }
 
+    const now = Date.now();
     setProcessingSessions((prev) => {
       const existing = prev.get(sessionId);
+      if (shouldIgnoreShellTakeover(existing, activity?.source, now)) {
+        return prev;
+      }
       const nextSource = activity?.source ?? existing?.source ?? 'chat';
       const next: SessionActivity = {
         source: nextSource,
@@ -112,7 +134,10 @@ export function useSessionProtection() {
         startedAt:
           existing && existing.source === nextSource
             ? existing.startedAt
-            : Date.now(),
+            : now,
+        localSendAt: nextSource === 'chat'
+          ? (activity?.localSend ? now : existing?.localSendAt)
+          : undefined,
         title: existing?.title,
         projectId: existing?.projectId,
         projectDisplayName: existing?.projectDisplayName,
@@ -126,6 +151,7 @@ export function useSessionProtection() {
         && existing.statusText === next.statusText
         && existing.canInterrupt === next.canInterrupt
         && existing.isInternal === next.isInternal
+        && existing.localSendAt === next.localSendAt
       ) {
         return prev;
       }
@@ -141,6 +167,7 @@ export function useSessionProtection() {
       return;
     }
 
+    const now = Date.now();
     setProcessingSessions((prev) => {
       const existing = prev.get(sessionId);
       if (!existing) {
@@ -148,9 +175,10 @@ export function useSessionProtection() {
       }
 
       // Guard against stale `chat_subscribed` idle acks: if a new request
-      // started after the subscribe was sent, the idle ack describes the
-      // older request and must not clear the newer one.
-      if (opts?.ifStartedBefore !== undefined && existing.startedAt >= opts.ifStartedBefore) {
+      // started after the subscribe was sent, or a local send is only
+      // moments old, the idle ack describes the older state and must not
+      // clear the newer request. Terminal frames pass no ack flag.
+      if (shouldIgnoreIdle(existing, opts, now)) {
         return prev;
       }
 
@@ -176,6 +204,11 @@ export function useSessionProtection() {
 
       for (const [sessionId, snapshot] of incoming) {
         const existing = prev.get(sessionId);
+        // A poll taken mid Agent CLI -> Chat hand-off still lists the Shell.
+        if (existing && shouldIgnoreShellTakeover(existing, snapshot.source, now)) {
+          updated.set(sessionId, existing);
+          continue;
+        }
         const snapshotStartedAt =
           typeof snapshot.startedAt === 'number' && Number.isFinite(snapshot.startedAt) && snapshot.startedAt > 0
             ? snapshot.startedAt
@@ -187,6 +220,7 @@ export function useSessionProtection() {
             snapshot.statusText !== undefined ? snapshot.statusText : existing?.statusText ?? null,
           canInterrupt: snapshot.canInterrupt ?? existing?.canInterrupt ?? true,
           startedAt: snapshotStartedAt ?? existing?.startedAt ?? now,
+          localSendAt: existing?.localSendAt,
           title: snapshot.title !== undefined ? snapshot.title : existing?.title ?? null,
           projectId: snapshot.projectId !== undefined ? snapshot.projectId : existing?.projectId ?? null,
           projectDisplayName:

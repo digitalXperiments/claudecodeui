@@ -8,11 +8,12 @@ import { useShellConnection } from './useShellConnection';
 import { useShellTerminal } from './useShellTerminal';
 
 export function useShellRuntime({
-  selectedProject,
-  selectedSession,
+    selectedProject,
+    selectedSession,
   initialCommand,
   isPlainShell,
   minimal,
+  minimumContrastRatio,
   autoConnect,
   waitForChat,
   isRestarting,
@@ -46,6 +47,14 @@ export function useShellRuntime({
       return;
     }
 
+    // Invalidate ownership before close: delayed events from this socket
+    // must not reset a replacement connection or write into its terminal.
+    wsRef.current = null;
+    activeSocket.onopen = null;
+    activeSocket.onmessage = null;
+    activeSocket.onclose = null;
+    activeSocket.onerror = null;
+
     if (
       activeSocket.readyState === WebSocket.OPEN ||
       activeSocket.readyState === WebSocket.CONNECTING
@@ -53,7 +62,6 @@ export function useShellRuntime({
       activeSocket.close();
     }
 
-    wsRef.current = null;
   }, []);
 
   const { isInitialized, clearTerminalScreen, disposeTerminal } = useShellTerminal({
@@ -62,7 +70,9 @@ export function useShellRuntime({
     fitAddonRef,
     wsRef,
     selectedProject,
+    selectedSession,
     minimal,
+    minimumContrastRatio,
     isRestarting,
     closeSocket,
   });

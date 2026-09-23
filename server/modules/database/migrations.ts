@@ -2,6 +2,7 @@ import { Database } from 'better-sqlite3';
 
 import {
   AGENT_RUN_PROFILES_TABLE_SCHEMA_SQL,
+  AGENT_RELAY_DELIVERY_SCHEMA_SQL,
   APP_CONFIG_TABLE_SCHEMA_SQL,
   CATEGORIES_TABLE_SCHEMA_SQL,
   CONTEXT_PACKS_TABLE_SCHEMA_SQL,
@@ -886,6 +887,14 @@ const ensureAutomationGraphSchema = (db: Database): void => {
 
 /** Additive Relay execution metadata introduced after the initial table ship. */
 const ensureAgentRelaySchema = (db: Database): void => {
+  if (tableExists(db, 'agent_workspaces')) {
+    // Relay workspaces commit the primary's uncommitted state as a snapshot
+    // (landing applies only what comes after it) and may start from a
+    // predecessor's tip (stacked pipelines; diffs show only this stage).
+    const workspaceColumns = getTableInfo(db, 'agent_workspaces').map((column) => column.name);
+    addColumnToTableIfNotExists(db, 'agent_workspaces', workspaceColumns, 'snapshot_sha', 'TEXT');
+    addColumnToTableIfNotExists(db, 'agent_workspaces', workspaceColumns, 'start_sha', 'TEXT');
+  }
   if (!tableExists(db, 'agent_relay_jobs')) return;
   const columnNames = getTableInfo(db, 'agent_relay_jobs').map((column) => column.name);
   addColumnToTableIfNotExists(db, 'agent_relay_jobs', columnNames, 'effort', 'TEXT');
@@ -914,6 +923,11 @@ const ensureAgentRelaySchema = (db: Database): void => {
   // A lead follow-up sent while the job was non-terminal that could not be
   // injected into a live provider turn; delivered on the job's next attempt.
   addColumnToTableIfNotExists(db, 'agent_relay_jobs', columnNames, 'pending_follow_up', 'TEXT');
+
+  // Worker actions the envelope refused, returned to the lead as deniedActions.
+  addColumnToTableIfNotExists(db, 'agent_relay_jobs', columnNames, 'denied_actions_json', 'TEXT');
+  // Provider failovers taken after quota/auth/launch failures (bounded ledger).
+  addColumnToTableIfNotExists(db, 'agent_relay_jobs', columnNames, 'failover_json', 'TEXT');
 
   // Relays are scoped to the lead session that dispatched them, so the panel
   // and the MCP surface can stop showing every session's workers everywhere.
@@ -1099,6 +1113,7 @@ export const runMigrations = (db: Database) => {
     db.exec(RUN_SPINE_SCHEMA_SQL);
     backfillSessionRuntimePreferences(db);
     ensureAgentRelaySchema(db);
+    db.exec(AGENT_RELAY_DELIVERY_SCHEMA_SQL);
     db.exec(CONTEXT_PACKS_TABLE_SCHEMA_SQL);
     db.exec(AUTOMATION_TABLE_SCHEMA_SQL);
     db.exec(FAILOVER_PLAYBOOKS_TABLE_SCHEMA_SQL);

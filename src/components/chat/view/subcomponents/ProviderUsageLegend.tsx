@@ -19,7 +19,7 @@ import {
 export { ProviderUsageLegendContent } from './ProviderUsageLegendContent';
 export type { ProviderUsageLegendContentProps } from './ProviderUsageLegendContent';
 
-export default function ProviderUsageLegend() {
+export default function ProviderUsageLegend({ embedded = false }: { embedded?: boolean }) {
   const { isMobile } = useDeviceSettings({ trackPWA: false });
   const uiRef = useRef<ProviderUsageLegendUi | null>(null);
   if (uiRef.current === null) {
@@ -68,7 +68,7 @@ export default function ProviderUsageLegend() {
 
   // The floating card / launcher overlaps the composer on phones; mobile is
   // emergency-use only, so the widget is hidden there entirely.
-  if (isMobile) {
+  if (isMobile && !embedded) {
     return null;
   }
 
@@ -87,7 +87,8 @@ export default function ProviderUsageLegend() {
       error={usage.error}
       refreshNotice={usage.refreshNotice}
       refreshing={usage.refreshing}
-      collapsed={view.collapsed}
+      loading={usage.loading}
+      collapsed={embedded ? false : view.collapsed}
       expandedProvider={view.expandedProvider}
       expandedProviders={view.expandedProviders}
       now={now}
@@ -95,6 +96,7 @@ export default function ProviderUsageLegend() {
       onToggleCollapsed={ui.toggleCollapsed}
       onToggleProvider={ui.toggleProvider}
       onToggleExpandAll={() => ui.toggleExpandAll(signedInVisibleProviderIds)}
+      embedded={embedded}
     />
   );
 }

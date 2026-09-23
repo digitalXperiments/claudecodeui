@@ -15,6 +15,11 @@ export {
   currentBranch,
   parseRemoteSlug,
   remoteRepoSlug,
+  revParse,
+  statusPorcelain,
+  committedChanges,
+  readBlob,
+  mergeFileContents,
 } from '@/modules/workspaces/workspace-git.service.js';
 export type { GitResult } from '@/modules/workspaces/workspace-git.service.js';
 export * from '@/modules/workspaces/workspace.types.js';

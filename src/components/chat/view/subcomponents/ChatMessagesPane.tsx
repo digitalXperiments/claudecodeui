@@ -1,5 +1,5 @@
 import { useTranslation } from 'react-i18next';
-import { memo, useCallback, useEffect, useMemo, useState } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { Dispatch, RefObject, SetStateAction } from 'react';
 import { Link } from 'react-router-dom';
 
@@ -15,7 +15,11 @@ import type {
 } from '../../../../types/app';
 import { getIntrinsicMessageKey } from '../../utils/messageKeys';
 import { groupConsecutiveTools, isToolGroupItem } from '../../utils/toolGrouping';
+import { getRowHeightCache } from '../../utils/rowHeightCache';
+import { COLLAPSED_TOOL_GROUP_ESTIMATE_PX, estimateMessageRowHeight } from '../../utils/rowHeightEstimate';
+import { buildTranscriptRowModel, INITIAL_MOUNTED_TAIL_ROWS } from '../../utils/transcriptRowModel';
 import { useLazyRowObserver } from '../../hooks/useLazyRowObserver';
+import type { HistoryLoadError } from '../../hooks/useChatSessionState';
 
 import MessageComponent from './MessageComponent';
 import ProviderSelectionEmptyState from './ProviderSelectionEmptyState';
@@ -24,13 +28,10 @@ import LoadAllMessagesOverlay from './LoadAllMessagesOverlay';
 import LazyMessageRow from './LazyMessageRow';
 import ChatExportMenu from './ChatExportMenu';
 
-/**
- * How many trailing rows mount their real content on first commit, so the
- * initial scroll-to-bottom measures real heights instead of placeholder
- * estimates. While a provider run is in flight the same tail stays
- * force-mounted so growing rows are never swapped for placeholders.
- */
-const INITIAL_MOUNTED_TAIL_ROWS = 30;
+// INITIAL_MOUNTED_TAIL_ROWS (transcriptRowModel): trailing rows mount their
+// real content on first commit so the initial scroll-to-bottom measures real
+// heights. While a provider run is in flight the same tail stays
+// force-mounted so growing rows are never swapped for placeholders.
 
 /**
  * Rows that are still growing or awaiting interaction must never lazy-unmount:
@@ -56,6 +57,9 @@ interface ChatMessagesPaneProps {
   readOnly?: boolean;
   scrollContainerRef: RefObject<HTMLDivElement>;
   isLoadingSessionMessages: boolean;
+  /** Set when the first history load failed or history was never available. */
+  historyLoadError?: HistoryLoadError | null;
+  onRetryHistoryLoad?: () => void;
   /** True while the viewed session has an active provider run in flight. */
   isProcessing?: boolean;
   /** True while ChatComposer's floating activity/stop tab is rendered above the input. */
@@ -100,9 +104,7 @@ interface ChatMessagesPaneProps {
   hasMoreMessages: boolean;
   totalMessages: number;
   sessionMessagesCount: number;
-  visibleMessageCount: number;
   visibleMessages: ChatMessage[];
-  loadEarlierMessages: () => void;
   loadAllMessages: () => void;
   allMessagesLoaded: boolean;
   isLoadingAllMessages: boolean;
@@ -123,6 +125,8 @@ function ChatMessagesPane({
   readOnly = false,
   scrollContainerRef,
   isLoadingSessionMessages,
+  historyLoadError = null,
+  onRetryHistoryLoad,
   isProcessing = false,
   hasActivityIndicator = false,
   chatMessages,
@@ -165,9 +169,7 @@ function ChatMessagesPane({
   hasMoreMessages,
   totalMessages,
   sessionMessagesCount,
-  visibleMessageCount,
   visibleMessages,
-  loadEarlierMessages,
   loadAllMessages,
   allMessagesLoaded,
   isLoadingAllMessages,
@@ -248,6 +250,30 @@ function ChatMessagesPane({
     [messageKeyMap],
   );
 
+  // Row keys that survive prepends (tool groups keep the key they were first
+  // rendered with) and first-commit mount hints for newly prepended rows.
+  // Both refs describe the last *committed* render.
+  const groupKeyByMemberRef = useRef<ReadonlyMap<string, string>>(new Map());
+  const committedRowKeysRef = useRef<ReadonlySet<string>>(new Set());
+  const rowModel = useMemo(
+    () => buildTranscriptRowModel(
+      groupedVisibleMessages,
+      getMessageKey,
+      groupKeyByMemberRef.current,
+      committedRowKeysRef.current,
+    ),
+    [groupedVisibleMessages, getMessageKey],
+  );
+  useLayoutEffect(() => {
+    groupKeyByMemberRef.current = rowModel.groupKeyByMember;
+    committedRowKeysRef.current = new Set(rowModel.rows.map((row) => row.key));
+  }, [rowModel]);
+
+  // Measured row heights outlive row components (remounts, revisits).
+  const heightScope = currentSessionId || selectedSession?.id || 'draft';
+  const heightCache = useMemo(() => getRowHeightCache(heightScope), [heightScope]);
+  const showOlderHistorySlot = !allMessagesLoaded && (hasMoreMessages || isLoadingMoreMessages);
+
   return (
     <div
       ref={scrollContainerRef}
@@ -268,6 +294,17 @@ function ChatMessagesPane({
             />
           </div>
         </div>
+      )}
+      {chatMessages.length > 0 && (
+        // Zero-height sticky host outside the spaced transcript content, so
+        // the pill appearing/fading never changes content height.
+        <LoadAllMessagesOverlay
+          showLoadAllOverlay={showLoadAllOverlay}
+          isLoadingAllMessages={isLoadingAllMessages}
+          loadAllJustFinished={loadAllJustFinished}
+          totalMessages={totalMessages}
+          onLoadAllMessages={loadAllMessages}
+        />
       )}
       <div data-transcript-content className="mx-auto w-full max-w-[54.25rem] space-y-3 px-4 sm:space-y-4">
       {linkedPrototypes.length > 0 && (
@@ -301,7 +338,24 @@ function ChatMessagesPane({
           ))}
         </div>
       )}
-      {isLoadingSessionMessages && chatMessages.length === 0 ? (
+      {historyLoadError && !isLoadingSessionMessages && chatMessages.length === 0 && selectedSession ? (
+        <div className="mt-8 flex flex-col items-center gap-3 text-center text-sm text-gray-500 dark:text-gray-400" role="alert">
+          <p>
+            {historyLoadError === 'unavailable'
+              ? t('session.loading.historyUnavailable', 'This conversation\'s history isn\'t available yet.')
+              : t('session.loading.historyFailed', 'Couldn\'t load conversation history.')}
+          </p>
+          {onRetryHistoryLoad && (
+            <button
+              type="button"
+              className="rounded-md border border-border px-3 py-1.5 text-xs font-medium text-foreground hover:bg-muted"
+              onClick={onRetryHistoryLoad}
+            >
+              {t('session.loading.retry', 'Retry')}
+            </button>
+          )}
+        </div>
+      ) : isLoadingSessionMessages && chatMessages.length === 0 ? (
         <div className="mt-8 text-center text-gray-500 dark:text-gray-400">
           <div className="flex items-center justify-center space-x-2">
             <div className="h-4 w-4 animate-spin rounded-full border-b-2 border-gray-400" />
@@ -349,50 +403,28 @@ function ChatMessagesPane({
         />
       ) : (
         <>
-          {/* Loading indicator for older messages (hide when load-all is active) */}
-          {isLoadingMoreMessages && !isLoadingAllMessages && !allMessagesLoaded && (
-            <div className="py-3 text-center text-gray-500 dark:text-gray-400">
-              <div className="flex items-center justify-center space-x-2">
-                <div className="h-4 w-4 animate-spin rounded-full border-b-2 border-gray-400" />
-                <p className="text-sm">{t('session.loading.olderMessages')}</p>
-              </div>
-            </div>
-          )}
-
-          {/* Indicator showing there are more messages to load (hide when all loaded) */}
-          {hasMoreMessages && !isLoadingMoreMessages && !allMessagesLoaded && (
-            <div className="border-b border-gray-200 py-2 text-center text-sm text-gray-500 dark:border-gray-700 dark:text-gray-400">
-              {totalMessages > 0 && (
-                <span>
-                  {t('session.messages.showingOf', { shown: sessionMessagesCount, total: totalMessages })}{' '}
+          {/* One fixed-height slot for "loading older" / "more above", so
+              swapping between them never shifts the transcript. */}
+          {showOlderHistorySlot && (
+            <div
+              data-older-history-slot
+              className="flex h-10 items-center justify-center border-b border-gray-200 text-center text-sm text-gray-500 dark:border-gray-700 dark:text-gray-400"
+            >
+              {isLoadingMoreMessages && !isLoadingAllMessages ? (
+                <div className="flex items-center justify-center space-x-2">
+                  <div className="h-4 w-4 animate-spin rounded-full border-b-2 border-gray-400" />
+                  <p className="text-sm">{t('session.loading.olderMessages')}</p>
+                </div>
+              ) : (
+                <span className="truncate">
+                  {/* Both counts are persisted-history rows; the rendered row
+                      count differs (tool results merge, groups collapse). */}
+                  {sessionMessagesCount > 0 && totalMessages > sessionMessagesCount
+                    ? <>{t('session.messages.showingOf', { shown: sessionMessagesCount, total: totalMessages })}{' '}</>
+                    : null}
                   <span className="text-xs">{t('session.messages.scrollToLoad')}</span>
                 </span>
               )}
-            </div>
-          )}
-
-          <LoadAllMessagesOverlay
-            showLoadAllOverlay={showLoadAllOverlay}
-            isLoadingAllMessages={isLoadingAllMessages}
-            loadAllJustFinished={loadAllJustFinished}
-            totalMessages={totalMessages}
-            onLoadAllMessages={loadAllMessages}
-          />
-
-          {/* Legacy message count indicator (for non-paginated view) */}
-          {!hasMoreMessages && chatMessages.length > visibleMessageCount && (
-            <div className="border-b border-gray-200 py-2 text-center text-sm text-gray-500 dark:border-gray-700 dark:text-gray-400">
-              {t('session.messages.showingLast', { count: visibleMessageCount, total: chatMessages.length })} |
-              <button className="ml-1 text-blue-600 underline hover:text-blue-700" onClick={loadEarlierMessages}>
-                {t('session.messages.loadEarlier')}
-              </button>
-              {' | '}
-              <button
-                className="text-blue-600 underline hover:text-blue-700 dark:text-blue-400 dark:hover:text-blue-300"
-                onClick={loadAllMessages}
-              >
-                {t('session.messages.loadAll')}
-              </button>
             </div>
           )}
 
@@ -406,7 +438,8 @@ function ChatMessagesPane({
               : Number.POSITIVE_INFINITY;
 
             return groupedVisibleMessages.map((item, index) => {
-              const initiallyNearViewport = index >= rowCount - INITIAL_MOUNTED_TAIL_ROWS;
+              const row = rowModel.rows[index];
+              const initiallyNearViewport = row.mountInitially;
               const isInForcedTail = index >= forcedTailStart;
 
               if (isToolGroupItem(item)) {
@@ -415,7 +448,12 @@ function ChatMessagesPane({
 
                 return (
                   <LazyMessageRow
-                    key={`tool-group-${getMessageKey(item.messages[0])}`}
+                    key={row.key}
+                    rowKey={row.key}
+                    memberKeys={row.memberKeys}
+                    heightKeys={row.heightKeys}
+                    heightCache={heightCache}
+                    estimatedHeight={COLLAPSED_TOOL_GROUP_ESTIMATE_PX}
                     lazyRows={lazyRows}
                     timestamp={item.timestamp}
                     initiallyNearViewport={initiallyNearViewport}
@@ -465,7 +503,11 @@ function ChatMessagesPane({
 
               return (
                 <LazyMessageRow
-                  key={getMessageKey(item)}
+                  key={row.key}
+                  rowKey={row.key}
+                  heightKeys={row.heightKeys}
+                  heightCache={heightCache}
+                  estimatedHeight={estimateMessageRowHeight(item, messagePrevMessage)}
                   lazyRows={lazyRows}
                   timestamp={item.timestamp}
                   initiallyNearViewport={initiallyNearViewport}

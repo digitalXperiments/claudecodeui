@@ -101,14 +101,21 @@ test('scheduler round-robins contending lead sessions even with one worker slot'
     const logicalProjectPath = projectsDb.createProjectPath(process.cwd()).project!.project_path;
     for (const id of ['lead-a', 'lead-b', 'lead-c']) sessionsDb.createAppSession(id, 'claude', logicalProjectPath);
     const starts: string[] = [];
+    let releaseFirstWorker!: () => void;
+    const firstWorkerGate = new Promise<void>((resolve) => { releaseFirstWorker = resolve; });
     configureAgentRelayRuntimes({
       claude: async (command, _options, writer) => {
         const marker = ['A1', 'A2', 'B1', 'C1'].find((candidate) => command.includes(candidate)) ?? '?';
         starts.push(marker);
-        await new Promise((resolve) => setTimeout(resolve, 30));
+        if (marker === 'A1') await firstWorkerGate;
+        else await new Promise((resolve) => setTimeout(resolve, 30));
         const relayWriter = writer as RelayWriter;
         relayWriter.setSessionId(`fair-${marker}`);
-        relayWriter.send({ kind: 'text', provider: 'claude', content: `done ${marker}` });
+        relayWriter.send({
+          kind: 'text',
+          provider: 'claude',
+          content: `<agent_relay_result>{"status":"completed","summary":"done ${marker}","evidence":[],"filesTouched":[],"testsRun":[],"openQuestions":[]}</agent_relay_result>`,
+        });
         relayWriter.send({ kind: 'complete', provider: 'claude', exitCode: 0, success: true });
       },
     }, {});
@@ -117,6 +124,7 @@ test('scheduler round-robins contending lead sessions even with one worker slot'
     const a2 = await agentRelayService.submitBatch({ projectPath: logicalProjectPath, sourceSessionId: 'lead-a', tasks: [{ task: 'A2 task', provider: 'claude' }] });
     const b1 = await agentRelayService.submitBatch({ projectPath: logicalProjectPath, sourceSessionId: 'lead-b', tasks: [{ task: 'B1 task', provider: 'claude' }] });
     const c1 = await agentRelayService.submitBatch({ projectPath: logicalProjectPath, sourceSessionId: 'lead-c', tasks: [{ task: 'C1 task', provider: 'claude' }] });
+    releaseFirstWorker();
     const ids = [a1, a2, b1, c1].map((batch) => batch.jobs[0]!.relay_id);
     const waited = await agentRelayService.wait(ids, { returnWhen: 'all', timeoutMs: 10_000 });
     assert.equal(waited.jobs.every((job) => job.status === 'completed'), true);
@@ -301,7 +309,7 @@ test('dependsOn forms a pipeline: gated start, injected results, fail-fast on br
       ],
     });
     const semanticWait = await agentRelayService.wait(semantic.jobs.map((job) => job.relay_id), { returnWhen: 'all', timeoutMs: 10_000 });
-    assert.equal(semanticWait.jobs[0]?.status, 'completed');
+    assert.equal(semanticWait.jobs[0]?.status, 'blocked', 'a blocked report is a first-class outcome, not success');
     assert.equal(semanticWait.jobs[0]?.result?.status, 'blocked');
     assert.equal(semanticWait.jobs[1]?.status, 'failed');
     assert.match(semanticWait.jobs[1]?.error ?? '', /reported blocked/);

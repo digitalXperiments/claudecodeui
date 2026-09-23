@@ -15,6 +15,7 @@ import type { ChatInterfaceProps, PermissionMode, Provider } from '../types/type
 import type { StudioPrototype } from '../../studio/types';
 import { studioApi } from '../../studio/api/studioApi';
 import { useChatProviderState } from '../hooks/useChatProviderState';
+import { PROVIDER_MODEL_CHANGED_EVENT, type ProviderModelChangedDetail } from '../../../constants/providerModelEvents';
 import { normalizedToChatMessages } from '../hooks/useChatMessages';
 import { useChatSessionState } from '../hooks/useChatSessionState';
 import { useChatRealtimeHandlers } from '../hooks/useChatRealtimeHandlers';
@@ -35,9 +36,6 @@ import ChatMessagesPane from './subcomponents/ChatMessagesPane';
 import ChatComposer from './subcomponents/ChatComposer';
 import ContinuityControl from './subcomponents/ContinuityControl';
 import CommandResultModal, { type SessionSwitchRequest } from './subcomponents/CommandResultModal';
-import LiveSpendMeter from './subcomponents/LiveSpendMeter';
-import ProviderUsageLegend from './subcomponents/ProviderUsageLegend';
-import AgentRelayActivityControl from './subcomponents/AgentRelayActivityControl';
 
 /** Labels for the post-switch notice (mirrors CommandResultModal's map). */
 const SWITCH_PROVIDER_LABELS: Record<string, string> = {
@@ -66,6 +64,7 @@ type PendingHandoffSend = {
 };
 
 function ChatInterface({
+  isActive = true,
   selectedProject,
   selectedSession,
   studioMode = false,
@@ -210,6 +209,9 @@ function ChatInterface({
     currentSessionId,
     setCurrentSessionId,
     isLoadingSessionMessages,
+    historyLoadError,
+    retryHistoryLoad,
+    loadedHistoryCount,
     isLoadingMoreMessages,
     hasMoreMessages,
     totalMessages,
@@ -217,9 +219,7 @@ function ChatInterface({
     setIsUserScrolledUp,
     tokenBudget,
     setTokenBudget,
-    visibleMessageCount,
     visibleMessages,
-    loadEarlierMessages,
     loadAllMessages,
     allMessagesLoaded,
     isLoadingAllMessages,
@@ -229,7 +229,9 @@ function ChatInterface({
     scrollContainerRef,
     scrollToBottom,
     scrollToBottomAndReset,
+    refreshAfterRunComplete,
   } = useChatSessionState({
+    isActive,
     selectedProject,
     selectedSession,
     ws,
@@ -523,6 +525,9 @@ function ChatInterface({
     if (targetModel) {
       localStorage.setItem(`${targetProvider}-model`, targetModel);
       localStorage.setItem(`${targetProvider}-model-${newSessionId}`, targetModel);
+      window.dispatchEvent(new CustomEvent<ProviderModelChangedDetail>(PROVIDER_MODEL_CHANGED_EVENT, {
+        detail: { provider: targetProvider, model: targetModel, sessionId: newSessionId },
+      }));
     }
 
     setPermissionMode(chosenPermissionMode);
@@ -794,6 +799,8 @@ function ChatInterface({
     onSessionProcessing,
     onSessionIdle,
     onWebSocketReconnect: handleWebSocketReconnect,
+    // Coordinated latest refresh with retry (syncs hasMore/total/offset).
+    onRunComplete: refreshAfterRunComplete,
     sessionStore,
   });
 
@@ -874,6 +881,8 @@ function ChatInterface({
           readOnly={isReadOnlyWorkerSession}
           scrollContainerRef={scrollContainerRef}
           isLoadingSessionMessages={isLoadingSessionMessages}
+          historyLoadError={historyLoadError}
+          onRetryHistoryLoad={retryHistoryLoad}
           isProcessing={isProcessing}
           hasActivityIndicator={hasActivityIndicator}
           chatMessages={chatMessages}
@@ -915,10 +924,8 @@ function ChatInterface({
           isLoadingMoreMessages={isLoadingMoreMessages}
           hasMoreMessages={hasMoreMessages}
           totalMessages={totalMessages}
-          sessionMessagesCount={chatMessages.length}
-          visibleMessageCount={visibleMessageCount}
+          sessionMessagesCount={loadedHistoryCount}
           visibleMessages={visibleMessages}
-          loadEarlierMessages={loadEarlierMessages}
           loadAllMessages={loadAllMessages}
           allMessagesLoaded={allMessagesLoaded}
           isLoadingAllMessages={isLoadingAllMessages}
@@ -936,24 +943,6 @@ function ChatInterface({
         />
 
         <div className="relative flex-shrink-0">
-          {/* On phones this row is normally revealed by the composer's More
-              tools toggle — which a read-only worker transcript hides. Keep it
-              pinned open there so the relay chip (the lead's control plane for
-              this worker) stays reachable without re-enabling the composer. */}
-          <div
-            className={`items-center justify-between gap-2 px-3 pb-1 ${
-              mobileToolsOpen || isReadOnlyWorkerSession ? 'flex' : 'hidden sm:flex'
-            }`}
-          >
-            {!studioMode ? (
-              <AgentRelayActivityControl
-                projectId={selectedProject?.projectId ?? null}
-                sessionId={selectedSession?.id || currentSessionId || null}
-                newSessionTrigger={newSessionTrigger}
-              />
-            ) : null}
-            {!studioMode ? <LiveSpendMeter sessionId={selectedSession?.id || currentSessionId || null} /> : null}
-          </div>
           {isUserScrolledUp && chatMessages.length > 0 && (
             <div className="pointer-events-none absolute -top-11 left-0 right-0 z-20 flex justify-center">
               <button
@@ -1062,7 +1051,6 @@ function ChatInterface({
         />
         </div>
           </div>
-          {!studioMode ? <ProviderUsageLegend /> : null}
         </div>
       </div>
 

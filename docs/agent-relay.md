@@ -126,37 +126,54 @@ source for history.
 
 ## Permission envelope
 
-Workers run unattended, so CloudCLI answers their permission prompts against the
-envelope the lead declared per task, reusing the swarm module's request
-classifier:
+Workers run unattended inside an **OS sandbox**, so almost nothing needs a
+decision (Settings → Agent Relay → Sandbox and delivery, `workerSandbox:
+enforce`, the default):
 
-- safe reads proceed immediately in both modes;
-- `approvalPolicy: auto` is the default and recommended profile. It never
-  parks the lead. Scouts (`read_only`) get proven-safe reads auto-approved
-  and every mutation auto-denied. Isolated writers get in-worktree edits
-  auto-approved; network, installs, outside-tree paths, destructive, and
-  unclassifiable actions are auto-denied. The worker reports the blocker
-  instead of spending lead tokens on `relay_approve`. Isolated writers do
-  **not** run with full bypass — CloudCLI still intercepts prompts.
-- `approvalPolicy: manual` is the opt-in that still parks the lead for
-  isolated-worktree mutations and risky actions. Use it only when you want
-  that gate.
-- a `read_only` worker may never mutate state, even with lead approval
-  (`plan` mode where the provider has it). Unattended explorers run in a
-  read-only sandbox and do not prompt on inspect bash: Codex uses
-  `approvalPolicy: never` with a read-only sandbox; OpenCode/Kilo/Qwen
-  auto-approve plan-mode permission asks. The host still auto-denies
-  mutating commands if a prompt does fire. Codex interactive plan chats
-  are unchanged.
-- only `manual` jobs write durable `agent_relay_approvals` rows and park as
-  `waiting_approval`. The classifier is host-enforced; workers do not
-  approve or classify their own permissions. Worker prompts name the role
-  (EXPLORER vs IMPLEMENTER) so they stay inside the envelope instead of
-  probing it.
+| Provider | Sandbox |
+| --- | --- |
+| Claude | Agent SDK sandbox (Seatbelt). Bash is confined and auto-allowed; `dangerouslyDisableSandbox` is ignored; the SDK fails closed if the sandbox cannot start. |
+| Codex | Native `workspace-write` seatbelt with `approvalPolicy: on-request` for writers, so Codex only asks to *leave* the sandbox. The branch's git state is added as writable roots. |
+| Grok, OpenCode, Kilo, Cline, Qwen, Antigravity | The whole CLI runs under `sandbox-exec`; every tool process inherits the profile. |
+| Cursor, Kimi, Pi, OMP | No sandbox; the string classifier below remains the only envelope. |
 
-Approval objects returned over MCP truncate long commands, reasons, and path
-lists. The durable REST/operator record remains complete, while repeated lead
-polls stay context-cheap.
+A writer's sandbox allows writes to its worktree, its own branch's git state
+(gitdir, objects, `refs/heads/relay/…`), `tmp/cloudcli/`, temp dirs, and CLI
+state dot-directories. The primary checkout, the rest of the home directory,
+shell rc files, SSH/cloud credentials, and CloudCLI's own database are
+write-protected. A read-only job's sandbox makes the project read-only except
+`tmp/cloudcli/`. Network is `open` by default (package installs, localhost
+servers) or `restricted`.
+
+- `approvalPolicy: auto` (default). Inside the sandbox every action is
+  approved. Boundary crossings are denied and recorded on the job as
+  `denied_actions`: `git push`, publishing packages/images, `gh` actions on
+  remote repos/PRs, `sudo`, `osascript`/`launchctl`, Codex requests to widen
+  its sandbox, and network egress when restricted. MCP tools of servers the
+  lead granted are approved. Summaries return `deniedActions` so the lead can
+  do those steps itself after review. A provider turn that ends because of a
+  denial (Grok) is resumed automatically in the same session.
+- `approvalPolicy: manual` is an operator choice. A lead that passes it per
+  task gets the operator default plus a warning, unless the operator enables
+  "Let leads choose manual approval".
+- Without a sandbox, the classifier decides. It treats project checks and
+  scripts inside the worker's workspace (`npm run <script>`, `python3 -m
+  pytest`, `make`, `bash scripts/x.sh`, `cargo build/run`) as workspace writes,
+  strips heredoc bodies before classifying, rejects `git -C <other repo>`
+  mutations, and no longer treats `cargo run` or `awk system()` as reads.
+- A worker that finishes its turn but reports it could not complete ends in
+  the terminal status `blocked` (never counted as success); dependents fail
+  fast with the reason.
+
+Tasks can declare `requires: { mcpServers, network, commands }`. Unmet needs
+fail the dispatch with a reason; required MCP servers are granted
+automatically and force a provider that honors grants. `defaultWorkerMcpServers`
+grants servers (e.g. memory, a localhost browser) to every eligible worker.
+
+Provider-level failures (quota/usage limit, rate limit, auth, launch) fail
+over to the next authenticated allowed provider, at most twice, and only when
+the worker produced nothing and (for writers) left its worktree untouched.
+The ledger is on the job as `failovers`.
 
 An unanswered request is denied when the approval budget (Agent Relay → Approval
 wait) expires, so a worker resumes and reports the blocker instead of hanging
@@ -182,13 +199,40 @@ Omitting `effort` uses the selected model's provider-native default. A provider
 with no limit keeps its full catalog.
 
 `read_only` asks the delegate to inspect and report. `isolated_write` creates a
-separate CloudCLI worktree and feature branch for each writer. Writers do not
-share a writable checkout. Relay never auto-rebases or auto-merges worker
-branches; the lead must inspect each diff and deliberately integrate compatible
-changes through the existing Workspaces/Git flow. Completed writers are asked
-to commit on their feature branch so that explicit merge/squash integration is
-available; failed or interrupted workers may still leave an uncommitted diff
-for inspection.
+separate CloudCLI worktree and feature branch for each writer.
+
+## Delivery: verify → rehearse → land
+
+Each writer's worktree starts from a **snapshot commit** of the primary
+checkout's uncommitted files, so its own work is exactly `snapshot..tip`; diffs
+show only that. The host commits anything a writer leaves uncommitted. A writer
+that `dependsOn` earlier writers starts from their combined branches (stacked
+pipeline; the stage diff shows only its own work). A read-only task that
+depends on a writer inspects that writer's worktree.
+
+The server then continues without the lead:
+
+1. **Verify** (`autoVerify`, default on) — host checks in the writer worktree
+   at its committed tip (`.cloudcli/ship.*` check, then `npm test`, then
+   `npm run typecheck`; none configured = unavailable, not a failure).
+2. **Rehearse** (`autoRehearse`, default on) — when a batch settles, its
+   verified final-stage writers are applied onto a throwaway worktree of the
+   primary *as it is now* (HEAD plus uncommitted files), and the checks run
+   there.
+3. **Land** (`relay_land`, the panel's Land button, or `autoLand: on_pass`) —
+   each writer's range is applied onto the primary file by file: unchanged
+   paths get the new content, paths the operator also edited get a clean
+   three-way merge, and overlaps are reported as conflicts (no markers are
+   written). Paths that were clean are committed; paths carrying the
+   operator's own edits are written but left uncommitted. Landed worktrees and
+   branches are removed.
+
+The lead is woken with a digest (status, summary, open questions, denied
+actions, rehearsal id). Wakes that arrive while the lead is busy are deferred
+rather than dropped, jobs the lead already saw via MCP do not re-wake it, and
+failed wakes (for example, a lead out of quota) retry with backoff and raise an
+operator interrupt. Job delivery state is persisted and returned as
+`delivery` (REST) / `delivery.stage` (MCP).
 
 Auto-pick skips Cursor for `read_only` because Cursor has no host-enforceable
 plan seat. Explicit `isolated_write` on Cursor is allowed. Cursor headless
@@ -220,14 +264,14 @@ grants for Cursor are advisory (env + prompt suffix) only.
 - Disabling Relay cancels queued, running, and approval-blocked work. Cancellation
   is persisted and returned immediately while slow provider abort cleanup runs
   in the background.
-- Terminal Relay jobs older than 14 days are purged on boot (approvals cascade;
-  isolated worktrees discarded).
+- Terminal Relay jobs older than 14 days are purged at boot and hourly. A
+  worktree is discarded only when it holds no work absent from the primary
+  (own commits after its snapshot, or edits that differ from the primary).
 - Provider CLI authentication and availability are shown in Settings and by
   `relay_capabilities`; Relay does not provision provider credentials.
 
 ## Open gaps
 
-- mweb has no Agent Relay UI.
 - Cursor is not a real read-only seat (`readOnlyPlanSeat` is false). Do not
   send `read_only` to Cursor; auto-pick already excludes it for that mode.
 

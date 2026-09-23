@@ -26,7 +26,8 @@ type OpenCodeSessionRow = {
 
 type SynchronizeRowsResult = {
   processed: number;
-  firstSessionId: string | null;
+  /** Canonical app session ids indexed by the pass, newest first. */
+  sessionIds: string[];
 };
 
 export type OpenCodeSessionSynchronizerOptions = {
@@ -38,6 +39,12 @@ export type OpenCodeSessionSynchronizerOptions = {
 };
 
 /**
+ * Overlap between consecutive watcher passes so a row committed while the
+ * previous pass was reading is not skipped by the `since` watermark.
+ */
+const FILE_SYNC_OVERLAP_MS = 5_000;
+
+/**
  * Session indexer for OpenCode's SQLite-backed session store.
  */
 export class OpenCodeSessionSynchronizer implements IProviderSessionSynchronizer {
@@ -46,6 +53,8 @@ export class OpenCodeSessionSynchronizer implements IProviderSessionSynchronizer
   private readonly databaseFileName: string;
   private readonly fallbackTitle: string;
   private readonly logLabel: string;
+  /** Start of the previous watcher-triggered pass (epoch ms). */
+  private lastFileSyncAt: number | null = null;
 
   constructor(options: OpenCodeSessionSynchronizerOptions = {}) {
     this.provider = options.provider ?? 'opencode';
@@ -67,18 +76,37 @@ export class OpenCodeSessionSynchronizer implements IProviderSessionSynchronizer
    * Handles watcher changes for opencode.db.
    */
   async synchronizeFile(filePath: string): Promise<string | null> {
-    if (path.basename(filePath) !== this.databaseFileName) {
-      return null;
+    return (await this.synchronizeFileSessions(filePath))[0] ?? null;
+  }
+
+  /**
+   * Watcher pass returning EVERY session it indexed (newest first) so each
+   * changed session is broadcast, not just the newest.
+   */
+  async synchronizeFileSessions(filePath: string): Promise<string[]> {
+    // New messages land in SQLite's WAL long before a checkpoint touches the
+    // main file, so the `-wal` sidecar is a live-transcript signal too.
+    const fileName = path.basename(filePath);
+    if (fileName !== this.databaseFileName && fileName !== `${this.databaseFileName}-wal`) {
+      return [];
     }
 
-    const result = this.synchronizeRows(undefined, 1);
-    return result.firstSessionId;
+    // Index every session touched since the previous pass, not just the
+    // newest: a Shell TUI and a Chat run (or two TUIs) can write different
+    // sessions between two polls, and LIMIT 1 silently dropped the older one.
+    // The first pass after boot has no watermark and keeps the old LIMIT 1.
+    const passStartedAt = Date.now();
+    const result = this.lastFileSyncAt === null
+      ? this.synchronizeRows(undefined, 1)
+      : this.synchronizeRows(new Date(this.lastFileSyncAt - FILE_SYNC_OVERLAP_MS));
+    this.lastFileSyncAt = passStartedAt;
+    return result.sessionIds;
   }
 
   private synchronizeRows(since?: Date, limit?: number): SynchronizeRowsResult {
     const dbPath = this.databasePath;
     if (!fsSync.existsSync(dbPath)) {
-      return { processed: 0, firstSessionId: null };
+      return { processed: 0, sessionIds: [] };
     }
 
     const db = new Database(dbPath, { readonly: true, fileMustExist: true });
@@ -103,24 +131,24 @@ export class OpenCodeSessionSynchronizer implements IProviderSessionSynchronizer
       `).all(...params) as OpenCodeSessionRow[];
 
       let processed = 0;
-      let firstSessionId: string | null = null;
+      const sessionIds: string[] = [];
       for (const row of rows) {
         const indexedSessionId = this.upsertSession(db, row);
         if (!indexedSessionId) {
           continue;
         }
 
-        if (!firstSessionId) {
-          firstSessionId = indexedSessionId;
+        if (!sessionIds.includes(indexedSessionId)) {
+          sessionIds.push(indexedSessionId);
         }
         processed += 1;
       }
 
-      return { processed, firstSessionId };
+      return { processed, sessionIds };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.warn(`[${this.logLabel}] Failed to synchronize sessions:`, message);
-      return { processed: 0, firstSessionId: null };
+      return { processed: 0, sessionIds: [] };
     } finally {
       db.close();
     }

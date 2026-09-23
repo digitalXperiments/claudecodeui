@@ -376,7 +376,7 @@ function errorText(error: unknown): string {
 export function classifyRelayFailure(error: unknown): RelayFailureClassification {
   const text = errorText(error).toLowerCase();
   let kind: RelayFailureClass = 'task_failure';
-  if (/(quota|credit|billing|insufficient[_ -]?balance|budget)/.test(text)) kind = 'quota';
+  if (/(quota|credit|billing|insufficient[_ -]?balance|budget|usage limit|hit your (usage )?limit|limit reached|plan limit|exceeded your|out of (credits|tokens))/.test(text)) kind = 'quota';
   else if (/(rate[_ -]?limit|too many requests|throttl|http\s*429)/.test(text)) kind = 'rate_limit';
   else if (/(unauthori[sz]|authentication|invalid[_ -]?(token|api[_ -]?key)|expired[_ -]?token|http\s*401)/.test(text)) kind = 'auth';
   else if (/(permission denied|forbidden|access denied|not allowed|http\s*403|eacces)/.test(text)) kind = 'permission';

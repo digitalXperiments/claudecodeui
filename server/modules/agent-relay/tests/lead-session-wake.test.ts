@@ -6,7 +6,9 @@ import test from 'node:test';
 import { agentRelayService, configureAgentRelayRuntimes } from '@/modules/agent-relay/index.js';
 import {
   configureAgentRelayLeadWake,
+  markRelaySeenByLead,
   notifyAgentRelayTerminal,
+  wakePrompt,
 } from '@/modules/agent-relay/lead-session-wake.service.js';
 import type { AgentRelayJob } from '@/modules/agent-relay/agent-relay.types.js';
 import { appConfigDb, closeConnection, initializeDatabase, projectsDb, sessionsDb } from '@/modules/database/index.js';
@@ -111,6 +113,8 @@ function terminalJob(leadSessionId: string, relayId: string, overrides: Partial<
     retry_count: 0,
     schema_retry_count: 0,
     result: null,
+    denied_actions: [],
+    failovers: [],
     error: null,
     timeout_ms: 60_000,
     attempt: 1,
@@ -316,4 +320,91 @@ test('terminal worker notifications coalesce into one lead wake with a summary',
   } finally {
     await fixture.cleanup();
   }
+});
+
+async function busyLead(fixture: Awaited<ReturnType<typeof createLeadFixture>>) {
+  let releaseLead = () => {};
+  const activeLead = await startProviderRun({
+    appSessionId: fixture.leadSessionId,
+    provider: 'claude',
+    providerSessionId: null,
+    projectPath: fixture.logicalProjectPath,
+    spawnFn: async (_command, _options, writer) => {
+      await new Promise<void>((resolve) => {
+        releaseLead = () => {
+          (writer as RelayWriter).send({ kind: 'complete', provider: 'claude', exitCode: 0, success: true });
+          resolve();
+        };
+      });
+    },
+    content: 'active lead turn',
+    options: {},
+    connection: DETACHED_CONNECTION,
+    userId: null,
+  });
+  if (!activeLead.ok) throw new Error('The active lead run did not start.');
+  return { release: () => releaseLead(), completion: activeLead.completion };
+}
+
+test('a notice that arrives while the lead is busy is delivered once it goes idle', { concurrency: false }, async () => {
+  const fixture = await createLeadFixture('agent-relay-lead-deferred-');
+  const prompts: string[] = [];
+  try {
+    const lead = await busyLead(fixture);
+    configureAgentRelayLeadWake({
+      claude: async (command, _options, writer) => {
+        prompts.push(command);
+        (writer as RelayWriter).send({ kind: 'complete', provider: 'claude', exitCode: 0, success: true });
+      },
+    });
+    notifyAgentRelayTerminal(terminalJob(fixture.leadSessionId, 'relay-deferred', { status: 'completed' }));
+    await new Promise((resolve) => setTimeout(resolve, 2_300));
+    assert.equal(prompts.length, 0, 'never injected into a busy lead');
+    lead.release();
+    await lead.completion;
+    await new Promise((resolve) => setTimeout(resolve, 5_600));
+    assert.equal(prompts.length, 1, 'delivered after the lead went idle instead of being dropped');
+    assert.match(prompts[0]!, /relay-deferred/);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test('a job the lead already harvested does not trigger a redundant wake', { concurrency: false }, async () => {
+  const fixture = await createLeadFixture('agent-relay-lead-seen-');
+  let wakeCalls = 0;
+  try {
+    const lead = await busyLead(fixture);
+    configureAgentRelayLeadWake({ claude: async () => { wakeCalls += 1; } });
+    const job = terminalJob(fixture.leadSessionId, 'relay-seen', { status: 'completed' });
+    notifyAgentRelayTerminal(job);
+    markRelaySeenByLead(fixture.leadSessionId, [job]);
+    lead.release();
+    await lead.completion;
+    await new Promise((resolve) => setTimeout(resolve, 7_800));
+    assert.equal(wakeCalls, 0);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test('the wake digest carries summaries, open questions, and denied actions', () => {
+  const prompt = wakePrompt([{
+    ...terminalJob('lead-x', 'relay-digest', { status: 'blocked', label: 'impl:api' }),
+    result: {
+      status: 'blocked',
+      summary: 'Implemented the route but could not publish.',
+      evidence: [],
+      filesTouched: ['a.ts'],
+      testsRun: [],
+      openQuestions: ['Push the branch after review'],
+      output: '',
+    },
+    denied_actions: [{ at: '', attempt: 1, tool: 'Bash', command: 'git push origin main', paths: [], reason: 'sandbox boundary', via: 'policy' }],
+  }], [{ key: 'r', text: 'Integration candidate ready: rehearsal rd_1 passed.' }]);
+  assert.match(prompt, /impl:api \(relay-digest\): blocked/);
+  assert.match(prompt, /Implemented the route/);
+  assert.match(prompt, /Push the branch after review/);
+  assert.match(prompt, /git push origin main/);
+  assert.match(prompt, /rehearsal rd_1 passed/);
 });

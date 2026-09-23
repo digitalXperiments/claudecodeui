@@ -1,11 +1,11 @@
-import { AlertCircle, Activity, CheckCircle2, FileInput, LayoutTemplate, PauseCircle, RotateCw, Inbox } from 'lucide-react';
+import { AlertCircle, Activity, CheckCircle2, FileInput, LayoutDashboard, LayoutTemplate, PauseCircle, RotateCw, Inbox } from 'lucide-react';
 
 import type { Bot, BotHealth } from '../types';
 import { formatAge } from '../types';
 import StatusPill from '../ui/StatusPill';
 import BotIcon from '../ui/BotIcon';
 
-type RosterView = 'inbox' | 'activity' | 'templates' | 'import';
+type RosterView = 'dashboard' | 'inbox' | 'activity' | 'exceptions' | 'templates' | 'import';
 type Group = { label: string; health: BotHealth; icon: typeof AlertCircle };
 
 const groups: Group[] = [
@@ -16,8 +16,10 @@ const groups: Group[] = [
 ];
 
 const subNavigation: Array<{ view: RosterView; label: string; icon: typeof Inbox }> = [
+  { view: 'dashboard', label: 'Overview', icon: LayoutDashboard },
   { view: 'inbox', label: 'Inbox', icon: Inbox },
   { view: 'activity', label: 'Activity', icon: Activity },
+  { view: 'exceptions', label: 'Exceptions', icon: AlertCircle },
   { view: 'templates', label: 'Templates', icon: LayoutTemplate },
   { view: 'import', label: 'Import', icon: FileInput },
 ];

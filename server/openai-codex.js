@@ -36,6 +36,8 @@ import { createCompleteMessage, createNormalizedMessage } from './shared/utils.j
 import { buildCodexTokenUsage } from './modules/providers/list/codex/codex-token-usage.js';
 import { leadSessionEnv } from './shared/lead-session-env.js';
 import { mapPermissionModeToCodexOptions } from './modules/providers/list/codex/codex-permission-mode.js';
+import { codexSandboxConfig } from './shared/worker-sandbox.js';
+import { appServerItemToLegacy } from './modules/providers/list/codex/codex-app-server-items.js';
 
 const activeCodexSessions = new Map();
 
@@ -59,98 +61,6 @@ function loadManagedObsidianCodexRuntime() {
       error instanceof Error ? error.message : error,
     );
     return null;
-  }
-}
-
-function appServerItemToLegacy(item) {
-  if (!item || typeof item !== 'object') {
-    return null;
-  }
-
-  const base = { type: 'item', uuid: item.id };
-  switch (item.type) {
-    case 'agentMessage':
-      // Codex uses commentary agent messages for progress/narration and
-      // final_answer for the reply proper. Keep commentary on the existing
-      // reasoning path so it is rendered as one collapsible thinking block
-      // instead of looking like a normal assistant answer.
-      if (item.phase === 'commentary') {
-        return {
-          ...base,
-          itemType: 'reasoning',
-          message: {
-            role: 'assistant',
-            content: item.text || '',
-            isReasoning: true,
-          },
-        };
-      }
-      return {
-        ...base,
-        itemType: 'agent_message',
-        message: { role: 'assistant', content: item.text || '' },
-      };
-    case 'reasoning':
-      return {
-        ...base,
-        itemType: 'reasoning',
-        message: {
-          role: 'assistant',
-          content: Array.isArray(item.summary) ? item.summary.join('\n') : '',
-          isReasoning: true,
-        },
-      };
-    case 'commandExecution':
-      return {
-        ...base,
-        itemType: 'command_execution',
-        command: item.command,
-        output: item.aggregatedOutput,
-        exitCode: item.exitCode,
-        status: item.status,
-      };
-    case 'fileChange':
-      return {
-        ...base,
-        itemType: 'file_change',
-        changes: item.changes,
-        status: item.status,
-      };
-    case 'mcpToolCall':
-      return {
-        ...base,
-        itemType: 'mcp_tool_call',
-        server: item.server,
-        tool: item.tool,
-        arguments: item.arguments,
-        result: item.result,
-        error: item.error,
-        status: item.status,
-      };
-    case 'webSearch':
-      return {
-        ...base,
-        itemType: 'web_search',
-        query: item.query,
-      };
-    case 'plan':
-      return {
-        ...base,
-        itemType: 'todo_list',
-        items: item.text ? [{ text: item.text, completed: false }] : [],
-      };
-    case 'error':
-      return {
-        ...base,
-        itemType: 'error',
-        message: { role: 'error', content: item.message || 'Unknown error' },
-      };
-    default:
-      return {
-        ...base,
-        itemType: item.type || 'Unknown',
-        item,
-      };
   }
 }
 
@@ -322,6 +232,7 @@ export async function queryCodex(command, options = {}, ws) {
     unattended = false,
     approvalTimeoutMs,
     relayWorker = false,
+    relaySandbox = null,
     appSessionId,
   } = options;
 
@@ -334,7 +245,13 @@ export async function queryCodex(command, options = {}, ws) {
   const workingDirectory = cwd || projectPath || process.cwd();
   // Bounded approval wait for unattended (swarm) runs; 0 = wait forever (chat).
   const approvalWaitMs = resolveApprovalTimeoutMs({ unattended, approvalTimeoutMs });
-  const { sandbox, approvalPolicy, approvalsReviewer } = mapPermissionModeToCodexOptions(permissionMode, { unattended });
+  const mapped = mapPermissionModeToCodexOptions(permissionMode, { unattended });
+  const { sandbox, approvalsReviewer } = mapped;
+  // A sandboxed relay writer runs everything inside workspace-write without
+  // asking ("on-request": Codex only asks to *leave* the sandbox), instead of
+  // "untrusted", which asked about nearly every command.
+  const relaySandboxedWriter = Boolean(relayWorker && relaySandbox?.mode === 'isolated_write' && sandbox === 'workspace-write');
+  const approvalPolicy = relaySandboxedWriter ? 'on-request' : mapped.approvalPolicy;
   // Codex does not support per-task MCP grants on this app-server path. A
   // relay worker therefore gets no managed or inherited CloudCLI MCPs; the
   // lead can select a provider with explicit grant support when MCP is needed.
@@ -684,7 +601,7 @@ export async function queryCodex(command, options = {}, ws) {
 
   try {
     const managedConfig = relayWorker
-      ? { mcp_servers: {} }
+      ? { mcp_servers: {}, ...(relaySandboxedWriter ? codexSandboxConfig(relaySandbox) : {}) }
       : managedObsidianRuntime?.config
       ? {
         ...managedObsidianRuntime.config,
@@ -756,6 +673,8 @@ export async function queryCodex(command, options = {}, ws) {
       startedAt: new Date().toISOString(),
       ws,
       turnId: null,
+      appSessionId: appSessionId || null,
+      workingDirectory,
     });
     if (ws.setSessionId && typeof ws.setSessionId === 'function') {
       ws.setSessionId(capturedSessionId);
@@ -895,6 +814,51 @@ export function abortCodexSession(sessionId) {
   }
 
   return true;
+}
+
+/**
+ * Steers a follow-up message into the active Codex turn (app-server
+ * `turn/steer`), so chat sends during a running turn attach to it instead of
+ * being rejected with RUN_IN_PROGRESS.
+ * @param {string} command - Follow-up user message
+ * @param {Object} options - Runtime options (sessionId, appSessionId, images, cwd)
+ * @returns {Promise<boolean>} Whether the message reached the live turn
+ */
+export async function injectCodexMessage(command, options = {}) {
+  let threadId = options.sessionId || null;
+  let session = threadId ? activeCodexSessions.get(threadId) : null;
+  if (!session && options.appSessionId) {
+    for (const [id, entry] of activeCodexSessions.entries()) {
+      if (entry.appSessionId === options.appSessionId && entry.status === 'running') {
+        threadId = id;
+        session = entry;
+        break;
+      }
+    }
+  }
+  if (!session || session.status !== 'running' || !session.turnId || !session.rpc) {
+    return false;
+  }
+
+  try {
+    const result = await session.rpc.request('turn/steer', {
+      threadId,
+      input: buildCodexAppServerInput(
+        command,
+        options.images,
+        options.cwd || session.workingDirectory || process.cwd(),
+      ),
+      expectedTurnId: session.turnId,
+    });
+    if (result?.turnId) {
+      session.turnId = result.turnId;
+    }
+    return true;
+  } catch (error) {
+    // Turn already finished (or ids raced): the caller retries the run lock.
+    console.warn(`[Codex] turn/steer failed for ${threadId}:`, error?.message || error);
+    return false;
+  }
 }
 
 /**

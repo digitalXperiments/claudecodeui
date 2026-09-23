@@ -2,6 +2,9 @@ import express from 'express';
 
 import { AppError, asyncHandler } from '@/shared/utils.js';
 import { missionControlDb } from '@/modules/mission-control/mission-control.repository.js';
+import { getSectionVersionHistory, recordSectionVersion } from '@/modules/mission-control/mission-control-versions.service.js';
+import { listBotMemories, proposeBotMemory, reviewBotMemory } from '@/modules/mission-control/mission-control-memory.service.js';
+import { listBotExceptions } from '@/modules/mission-control/mission-control-exceptions.service.js';
 import { runsDb } from '@/modules/runs/index.js';
 import {
   applyItemAction,
@@ -9,6 +12,7 @@ import {
   retryItem,
   runSectionProduce,
 } from '@/modules/mission-control/mission-control-runner.service.js';
+import { simulateSectionTick } from '@/modules/mission-control/mission-control-simulator.service.js';
 import { matchProjectsForItem, workThisItem } from '@/modules/mission-control/mission-control-work.service.js';
 import { syncMissionControlSchedules } from '@/modules/mission-control/mission-control-scheduler.service.js';
 import {
@@ -294,6 +298,9 @@ router.post(
 );
 
 // GET /sections
+router.get('/exceptions', asyncHandler(async (_req, res) => { res.json({ exceptions: listBotExceptions() }); }));
+
+// GET /sections
 router.get(
   '/sections',
   asyncHandler(async (_req, res) => {
@@ -352,6 +359,42 @@ router.get(
       });
     }
     res.json({ section });
+  }),
+);
+
+// GET /sections/:id/runs — bounded produce/resolve tick history.
+router.get('/sections/:id/memories', asyncHandler(async (req, res) => {
+  const sectionId = paramId(req.params.id);
+  if (!missionControlDb.getSection(sectionId)) throw new AppError('Section not found', { code: 'MC_SECTION_NOT_FOUND', statusCode: 404 });
+  res.json({ memories: listBotMemories(sectionId) });
+}));
+
+router.post('/sections/:id/memories', asyncHandler(async (req, res) => {
+  const sectionId = paramId(req.params.id);
+  if (!missionControlDb.getSection(sectionId)) throw new AppError('Section not found', { code: 'MC_SECTION_NOT_FOUND', statusCode: 404 });
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const memory = proposeBotMemory(sectionId, readString(body.content), typeof body.sourceItemId === 'string' ? body.sourceItemId : null);
+  res.status(201).json({ memory });
+}));
+
+router.patch('/sections/:id/memories/:memoryId', asyncHandler(async (req, res) => {
+  const sectionId = paramId(req.params.id);
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const status = body.status;
+  if (status !== 'proposed' && status !== 'approved' && status !== 'rejected') throw new AppError('Invalid memory status', { code: 'MC_BAD_MEMORY_STATUS', statusCode: 400 });
+  const memory = reviewBotMemory(sectionId, paramId(req.params.memoryId), status, typeof body.content === 'string' ? body.content : undefined);
+  const section = missionControlDb.getSection(sectionId);
+  if (section) recordSectionVersion(section, 'edited');
+  res.json({ memory });
+}));
+
+// GET /sections/:id/runs — bounded produce/resolve tick history.
+router.get(
+  '/sections/:id/versions',
+  asyncHandler(async (req, res) => {
+    const section = missionControlDb.getSection(paramId(req.params.id));
+    if (!section) throw new AppError('Section not found', { code: 'MC_SECTION_NOT_FOUND', statusCode: 404 });
+    res.json(getSectionVersionHistory(section));
   }),
 );
 
@@ -451,6 +494,15 @@ router.post(
   '/sections/:id/run',
   asyncHandler(async (req, res) => {
     const result = await runSectionProduce(paramId(req.params.id));
+    res.json(result);
+  }),
+);
+
+// POST /sections/:id/simulate — inspect sample produce output without a provider run or writes
+router.post(
+  '/sections/:id/simulate',
+  asyncHandler(async (req, res) => {
+    const result = simulateSectionTick(paramId(req.params.id), req.body?.output);
     res.json(result);
   }),
 );

@@ -1,11 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ChevronRight, Eye, FileJson, ExternalLink, Loader2, MessageSquare, X } from 'lucide-react';
+import { Eye, FileJson, ExternalLink, Loader2, MessageSquare, X } from 'lucide-react';
 
-import type { BotRun } from '../api/botStudioApi';
 import { actionIsSendLike, formatAge, itemHasDraft } from '../types';
 import StatusPill from '../ui/StatusPill';
 import BotIcon from '../ui/BotIcon';
-import { formatDuration } from '../ui/runFormatting';
 import { Button } from '../../../shared/view/ui';
 import { getActionSemantics } from '../../mission-control/utils/actionSemantics';
 import { isXArticleBody } from '../../mission-control/utils/xArticle';
@@ -13,6 +11,7 @@ import ArticleDraftCard from '../../mission-control/view/subcomponents/ArticleDr
 
 import type { ContextPaneProps } from './contracts';
 import { getItemContentPreview } from './inbox/itemContent';
+import RunTimeline from './RunTimeline';
 
 type ExtendedContextPaneProps = ContextPaneProps & {
   onAction?: (item: NonNullable<ContextPaneProps['item']>, action: NonNullable<ContextPaneProps['item']>['actions'][number], body?: Record<string, unknown>) => void;
@@ -40,16 +39,6 @@ function sourceUrl(item: NonNullable<ContextPaneProps['item']>): string | null {
 
 function runIdForItem(item: NonNullable<ContextPaneProps['item']>): string | null {
   return stringValue(item.body.run_id) ?? stringValue(item.body.runId) ?? stringValue(item.body.produced_by_run_id);
-}
-
-function runDetail(run: BotRun, onSelectRun?: (run: BotRun) => void) {
-  return <div className="space-y-4 p-4">
-    <div><p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">Tick detail</p><div className="mt-2 flex items-center gap-2"><StatusPill status={run.status} /><span className="text-xs text-muted-foreground">{run.kind || 'produce'} · {run.trigger || 'manual'}</span></div></div>
-    <dl className="grid grid-cols-2 gap-x-3 gap-y-3 text-xs"><div><dt className="text-[10px] text-muted-foreground">Started</dt><dd className="mt-0.5">{run.started_at ? formatAge(run.started_at) : '—'}</dd></div><div><dt className="text-[10px] text-muted-foreground">Duration</dt><dd className="mt-0.5">{formatDuration(run.duration_ms)}</dd></div><div><dt className="text-[10px] text-muted-foreground">Tokens</dt><dd className="mt-0.5">{run.tokens?.toLocaleString() ?? '—'}</dd></div><div><dt className="text-[10px] text-muted-foreground">Cost</dt><dd className="mt-0.5">{run.cost_usd != null ? `$${run.cost_usd.toFixed(2)}` : '—'}</dd></div></dl>
-    {run.error_summary ? <p className="rounded-lg bg-destructive/10 px-3 py-2 text-xs text-destructive" role="alert">{run.error_summary}</p> : null}
-    {run.item_id ? <p className="rounded-lg border border-border/70 bg-card px-3 py-2 text-xs">Produced inbox item <span className="font-mono text-[10px]">{run.item_id}</span></p> : null}
-    {onSelectRun ? <Button size="sm" variant="ghost" onClick={() => onSelectRun(run)}>Open run <ChevronRight className="h-3 w-3" /></Button> : null}
-  </div>;
 }
 
 export default function ContextPane({ item, bot, preview, operatorContext, onOperatorContextChange, onBodyChange, onGenerateAssets, onClose, selectedRun, onSelectRun, onAction, workCandidates, workLoading = false, workError, onWork }: ExtendedContextPaneProps) {
@@ -123,7 +112,7 @@ export default function ContextPane({ item, bot, preview, operatorContext, onOpe
     return next;
   }, [bodyDraft, operatorContext]);
 
-  if (selectedRun) return <aside className="flex min-h-0 flex-col border-t border-border/70 bg-card/30 xl:border-t-0"><div className="flex items-center justify-between border-b border-border/70 px-4 py-3"><p className="text-sm font-semibold">Run {selectedRun.run_id}</p>{onClose ? <Button size="sm" variant="ghost" onClick={onClose} aria-label="Close context pane"><X className="h-3.5 w-3.5" /></Button> : null}</div><div className="min-h-0 flex-1 overflow-y-auto">{runDetail(selectedRun, onSelectRun)}</div></aside>;
+  if (selectedRun) return <aside className="flex min-h-0 flex-col border-t border-border/70 bg-card/30 xl:border-t-0"><div className="flex items-start justify-between gap-2 border-b border-border/70 px-4 py-3"><div className="min-w-0"><p className="truncate text-sm font-semibold">{selectedRun.bot_title || 'Run detail'}</p><p className="mt-0.5 truncate font-mono text-[9px] text-muted-foreground" title={selectedRun.run_id}>{selectedRun.run_id}</p></div>{onClose ? <Button size="sm" variant="ghost" onClick={onClose} aria-label="Close context pane"><X className="h-3.5 w-3.5" /></Button> : null}</div><div className="min-h-0 flex-1 overflow-y-auto"><RunTimeline run={selectedRun} /></div></aside>;
   if (!item) return <aside className="flex min-h-0 flex-col border-t border-border/70 bg-card/30 xl:border-t-0"><div className="flex flex-1 flex-col items-center justify-center p-8 text-center"><div className="flex h-10 w-10 items-center justify-center overflow-hidden rounded-xl bg-primary/10 text-primary"><BotIcon size={18} /></div><p className="mt-3 text-sm font-medium">Context pane</p><p className="mt-1 max-w-xs text-xs leading-5 text-muted-foreground">Select an inbox item to inspect its evidence, draft, and next action.</p></div></aside>;
 
   return <aside className="flex min-h-0 flex-col border-t border-border/70 bg-card/30 xl:border-t-0">

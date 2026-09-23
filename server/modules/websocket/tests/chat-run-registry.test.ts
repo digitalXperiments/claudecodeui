@@ -4,8 +4,14 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
+import type { WebSocket } from 'ws';
+
 import { closeConnection, initializeDatabase, sessionsDb } from '@/modules/database/index.js';
 import { chatRunRegistry } from '@/modules/websocket/services/chat-run-registry.service.js';
+import {
+  handleChatSubscribe,
+  type ChatWebSocketDependencies,
+} from '@/modules/websocket/services/chat-websocket.service.js';
 import { connectedClients } from '@/modules/websocket/services/websocket-state.service.js';
 
 /**
@@ -350,5 +356,164 @@ test('startRun rejects a second concurrent run for the same session', async () =
       userId: null,
     });
     assert.ok(third);
+  });
+});
+
+test('frames emitted after complete are forwarded unsequenced and never buffered', async () => {
+  await withIsolatedDatabase(() => {
+    sessionsDb.createAppSession('app-run-late', 'opencode', '/workspace/demo');
+    const connection = new FakeConnection();
+    const run = chatRunRegistry.startRun({
+      appSessionId: 'app-run-late',
+      provider: 'opencode',
+      providerSessionId: null,
+      connection,
+      userId: null,
+    });
+    assert.ok(run);
+
+    run.writer.send({ kind: 'text', provider: 'opencode', sessionId: 'p', content: 'done' });
+    run.writer.send({ kind: 'complete', provider: 'opencode', sessionId: 'p', exitCode: 0 });
+    run.writer.send({ kind: 'status', provider: 'opencode', sessionId: 'p', text: 'token_budget', tokenBudget: { used: 1 } });
+
+    assert.equal(connection.frames.length, 3);
+    const late = connection.frames[2];
+    assert.equal(late?.text, 'token_budget');
+    assert.equal(late?.sessionId, 'app-run-late');
+    assert.equal('seq' in (late ?? {}), false);
+    assert.equal(run.lastSeq, 2);
+    assert.deepEqual(chatRunRegistry.replayEvents('app-run-late', 0).map((event) => event.seq), [1, 2]);
+
+    // The session's next run starts cleanly at seq 1.
+    const next = chatRunRegistry.startRun({
+      appSessionId: 'app-run-late',
+      provider: 'opencode',
+      providerSessionId: null,
+      connection,
+      userId: null,
+    });
+    assert.ok(next);
+    next.writer.send({ kind: 'text', provider: 'opencode', sessionId: 'p', content: 'again' });
+    assert.equal(connection.frames.at(-1)?.seq, 1);
+  });
+});
+
+test('pending-send reservations report processing until every token is released', async () => {
+  await withIsolatedDatabase(() => {
+    const sessionId = 'app-run-pending';
+    assert.equal(chatRunRegistry.isRunningOrPending(sessionId), false);
+
+    const releaseA = chatRunRegistry.reservePendingSend(sessionId);
+    const releaseB = chatRunRegistry.reservePendingSend(sessionId);
+    assert.equal(chatRunRegistry.hasPendingSend(sessionId), true);
+    assert.equal(chatRunRegistry.isRunningOrPending(sessionId), true);
+    // Reservations are not runs: Shell's run-idle wait must not see them.
+    assert.equal(chatRunRegistry.isProcessing(sessionId), false);
+
+    releaseA();
+    releaseA();
+    assert.equal(chatRunRegistry.hasPendingSend(sessionId), true);
+    releaseB();
+    assert.equal(chatRunRegistry.hasPendingSend(sessionId), false);
+    assert.equal(chatRunRegistry.isRunningOrPending(sessionId), false);
+  });
+});
+
+test('a socket that subscribes during a pending send follows the run it registers', async () => {
+  await withIsolatedDatabase(() => {
+    const sessionId = 'app-run-pending-attach';
+    sessionsDb.createAppSession(sessionId, 'codex', '/workspace/demo');
+    const release = chatRunRegistry.reservePendingSend(sessionId);
+
+    // No prior run exists for this session: the subscriber is parked.
+    const subscriber = new FakeConnection();
+    handleChatSubscribe(
+      subscriber as unknown as WebSocket,
+      { sessions: [{ sessionId }] },
+      { getPendingApprovalsForSession: () => [] } as unknown as ChatWebSocketDependencies,
+    );
+    assert.equal(subscriber.frames[0]?.kind, 'chat_subscribed');
+    assert.equal(subscriber.frames[0]?.isProcessing, true);
+
+    const sender = new FakeConnection();
+    const run = chatRunRegistry.startRun({
+      appSessionId: sessionId,
+      provider: 'codex',
+      providerSessionId: null,
+      connection: sender,
+      userId: null,
+    });
+    assert.ok(run);
+    release();
+    run.writer.send({ kind: 'stream_delta', provider: 'codex', sessionId: 'c', content: 'hello' });
+    run.writer.sendComplete({ exitCode: 0 });
+
+    assert.deepEqual(subscriber.frames.slice(1).map((frame) => frame.kind), ['stream_delta', 'complete']);
+    assert.deepEqual(sender.frames.map((frame) => frame.kind), ['stream_delta', 'complete']);
+  });
+});
+
+test('a pending send released without a run completes its parked subscribers', async () => {
+  await withIsolatedDatabase(() => {
+    const sessionId = 'app-run-pending-failed';
+    sessionsDb.createAppSession(sessionId, 'claude', '/workspace/demo');
+    const release = chatRunRegistry.reservePendingSend(sessionId);
+    const settled: string[] = [];
+    const unsubscribe = chatRunRegistry.onPendingSendSettled((id) => settled.push(id));
+
+    const subscriber = new FakeConnection();
+    assert.equal(chatRunRegistry.attachConnection(sessionId, subscriber), true);
+
+    // e.g. AGENT_CLI_HANDOFF_FAILED: the send ends before startRun.
+    release();
+    unsubscribe();
+
+    assert.deepEqual(settled, [sessionId]);
+    assert.equal(subscriber.frames.length, 1);
+    assert.equal(subscriber.frames[0]?.kind, 'complete');
+    assert.equal(subscriber.frames[0]?.sessionId, sessionId);
+    assert.equal(chatRunRegistry.isRunningOrPending(sessionId), false);
+  });
+});
+
+test('detached sockets are dropped from pending subscribers', async () => {
+  await withIsolatedDatabase(() => {
+    const sessionId = 'app-run-pending-detach';
+    const release = chatRunRegistry.reservePendingSend(sessionId);
+    const subscriber = new FakeConnection();
+    chatRunRegistry.attachConnection(sessionId, subscriber);
+    chatRunRegistry.detachConnection(subscriber);
+    release();
+    assert.equal(subscriber.frames.length, 0);
+  });
+});
+
+test('shutdown drain waits for pending sends and active runs', async () => {
+  await withIsolatedDatabase(async () => {
+    const sessionId = 'app-run-shutdown';
+    sessionsDb.createAppSession(sessionId, 'codex', '/workspace/demo');
+    const releaseHandler = chatRunRegistry.trackSendHandler();
+    const release = chatRunRegistry.reservePendingSend(sessionId);
+    chatRunRegistry.beginShutdown();
+    assert.equal(chatRunRegistry.isShuttingDown(), true);
+    let drained = false;
+    const waiting = chatRunRegistry.waitForIdle().then(() => { drained = true; });
+    const run = chatRunRegistry.startRun({
+      appSessionId: sessionId,
+      provider: 'codex',
+      providerSessionId: null,
+      connection: new FakeConnection(),
+      userId: null,
+    });
+    assert.ok(run);
+    release();
+    await Promise.resolve();
+    assert.equal(drained, false);
+    run.writer.sendComplete({ exitCode: 0 });
+    await Promise.resolve();
+    assert.equal(drained, false);
+    releaseHandler();
+    await waiting;
+    assert.equal(drained, true);
   });
 });

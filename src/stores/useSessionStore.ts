@@ -12,14 +12,19 @@ import { useCallback, useMemo, useRef, useState } from 'react';
 import { authenticatedFetch } from '../utils/api';
 import type { LLMProvider } from '../types/app';
 
-import { computeMerged, pruneRealtimeSupersededByServer } from './sessionStoreMerge';
+import { computeMerged, reconcileRealtimeWithServer } from './sessionStoreMerge';
 import {
   buildSessionMessagesUrl,
+  carryOverRowIdentity,
   hasReachedCachedTailTimeBoundary,
+  isHistoryResponsePending,
+  isHistoryResponseRefreshing,
   mergeLatestServerPage,
   mergeOlderServerPage,
+  mergeOlderServerPageWithoutDuplicates,
   planLatestPageBridge,
   resolveLatestPagePagination,
+  resolveOlderPageOffset,
   SESSION_MESSAGES_PAGE_SIZE,
 } from './sessionMessagePagination';
 import type { SessionMessagesRequestOptions } from './sessionMessagePagination';
@@ -127,11 +132,27 @@ export interface SessionSlot {
   hasMore: boolean;
   offset: number;
   tokenUsage: unknown;
+  /**
+   * The server said the persisted history is not available yet (e.g. an
+   * Antigravity conversation that has not been written/replayed). An empty
+   * page in this state is not a real empty transcript.
+   */
+  historyPending: boolean;
+  /** Rows are the server's last-good cache while it refreshes in background. */
+  historyRefreshing: boolean;
 }
+
+/** How a single history request ended, for callers that retry. */
+export type HistoryFetchOutcome = 'applied' | 'superseded' | 'pending' | 'error';
+
+export type HistoryFetchResult = {
+  slot: SessionSlot;
+  outcome: HistoryFetchOutcome;
+};
 
 const EMPTY: NormalizedMessage[] = [];
 
-function createEmptySlot(): SessionSlot {
+export function createEmptySlot(): SessionSlot {
   return {
     serverMessages: EMPTY,
     realtimeMessages: EMPTY,
@@ -144,6 +165,8 @@ function createEmptySlot(): SessionSlot {
     hasMore: false,
     offset: 0,
     tokenUsage: null,
+    historyPending: false,
+    historyRefreshing: false,
     _fetchSeq: 0,
     _appliedFetchSeq: 0,
   };
@@ -152,10 +175,26 @@ function createEmptySlot(): SessionSlot {
 /**
  * Recompute slot.merged only when the input arrays have actually changed
  * (by reference). Returns true if merged was recomputed.
+ *
+ * Every serverMessages write (latest refresh, first page, "Load all", older
+ * page) funnels through here, so this is where realtime rows the transcript
+ * now owns are pruned — previously only the latest refresh pruned, and the
+ * other paths left live tool rows/replies rendered twice. Rows new to the
+ * server list inherit the render identity of the live row they replace.
  */
-function recomputeMergedIfNeeded(slot: SessionSlot): boolean {
+export function recomputeMergedIfNeeded(slot: SessionSlot): boolean {
   if (slot.serverMessages === slot._lastServerRef && slot.realtimeMessages === slot._lastRealtimeRef) {
     return false;
+  }
+  if (slot.serverMessages !== slot._lastServerRef && slot.realtimeMessages.length > 0) {
+    const previousIds = new Set(slot._lastServerRef.map((message) => message.id));
+    const reconciled = reconcileRealtimeWithServer(
+      slot.serverMessages,
+      slot.realtimeMessages,
+      (message) => !previousIds.has(message.id),
+    );
+    slot.serverMessages = reconciled.serverMessages;
+    slot.realtimeMessages = reconciled.realtimeMessages;
   }
   slot._lastServerRef = slot.serverMessages;
   slot._lastRealtimeRef = slot.realtimeMessages;
@@ -163,13 +202,44 @@ function recomputeMergedIfNeeded(slot: SessionSlot): boolean {
   return true;
 }
 
+/**
+ * Safety bound on live rows kept for a settled session that is not in view.
+ * Realtime rows are uncapped while a run streams (dropping them lost output
+ * not yet persisted) and normally leave once a server write owns them — but
+ * that write only happens for the viewed session, so a background session's
+ * rows would otherwise pile up across runs until it is opened again.
+ */
+export const MAX_SETTLED_REALTIME_MESSAGES = 5000;
+
+/**
+ * Drop the oldest live rows beyond `maxRows` from a settled slot. Callers
+ * must only use this for sessions with no run in flight and not in view: the
+ * dropped rows are persisted by then, and the slot is marked stale so the
+ * next visit re-reads the transcript tail instead of trusting the cache.
+ * Returns true when rows were dropped.
+ */
+export function trimSettledRealtimeRows(
+  slot: SessionSlot,
+  maxRows: number = MAX_SETTLED_REALTIME_MESSAGES,
+): boolean {
+  if (slot.realtimeMessages.length <= maxRows) return false;
+  slot.realtimeMessages = maxRows > 0 ? slot.realtimeMessages.slice(-maxRows) : EMPTY;
+  slot.fetchedAt = 0;
+  recomputeMergedIfNeeded(slot);
+  return true;
+}
+
 // ─── Bounded latest-page refresh ─────────────────────────────────────────────
 
-type SessionHistoryPage = {
+export type SessionHistoryPage = {
   messages: NormalizedMessage[];
   total: number;
   hasMore: boolean;
   tokenUsage?: unknown;
+  /** historyPending/retryable: the page is not the final transcript yet. */
+  pending: boolean;
+  /** historyRefreshing: rows are a last-good cache; refetch shortly. */
+  refreshing: boolean;
 };
 
 export type CanRequestHistory = () => boolean;
@@ -182,7 +252,18 @@ export type LatestHistoryRefreshResult = {
   changed: boolean;
   /** canRequest() vetoed the network — the caller should retry when visible. */
   deferred: boolean;
+  /** The request failed (network/HTTP); nothing was applied. */
+  failed?: boolean;
+  /** The server reported history as not yet available; nothing was applied. */
+  pending?: boolean;
+  /** The fetched tail could not be stitched onto the cached history. */
+  unbridged?: boolean;
 };
+
+export type HistoryPageRequester = (
+  sessionId: string,
+  options: SessionMessagesRequestOptions,
+) => Promise<SessionHistoryPage>;
 
 async function requestSessionHistoryPage(
   sessionId: string,
@@ -199,6 +280,8 @@ async function requestSessionHistoryPage(
     messages,
     total: typeof data.total === 'number' ? data.total : messages.length,
     hasMore: Boolean(data.hasMore),
+    pending: isHistoryResponsePending(data),
+    refreshing: isHistoryResponseRefreshing(data),
     ...(
       data && typeof data === 'object' && 'tokenUsage' in data
         ? { tokenUsage: data.tokenUsage }
@@ -233,19 +316,20 @@ function olderPagePrecedesCachedHistory(
 
 /**
  * Fetches and atomically applies a bounded persisted-tail reconciliation.
- * Every request is finite. Claude/Codex bridge discovery may use more than one
- * bounded chunk because their response `total` omits paginated tool results.
+ * Every request is finite. Bridge discovery may use more than one bounded
+ * chunk when a provider's `total` does not match the rows it pages over.
  *
  * Concurrency uses the store's `_fetchSeq`/`_appliedFetchSeq` ticket guard:
  * the ticket is taken before the first request and a stale ticket (a
  * later-started fetch already applied) discards the whole reconciliation
  * instead of winding the transcript back.
  */
-async function refreshLatestSlotFromServer(
+export async function refreshLatestSlotFromServer(
   sessionId: string,
   slot: SessionSlot,
   limit: number,
   canRequest: CanRequestHistory = () => true,
+  request: HistoryPageRequester = requestSessionHistoryPage,
 ): Promise<Omit<LatestHistoryRefreshResult, 'slot'>> {
   if (!canRequest()) {
     return { applied: false, changed: false, deferred: true };
@@ -255,10 +339,17 @@ async function refreshLatestSlotFromServer(
   const previousServerMessages = slot.serverMessages;
   const previousTotal = slot.total;
   const previousHasMore = slot.hasMore;
-  const latestPage = await requestSessionHistoryPage(sessionId, {
+  const latestPage = await request(sessionId, {
     limit,
     offset: 0,
   });
+
+  // "Not persisted yet" is not an authoritative empty transcript: applying it
+  // through the `!hasMore` branch below would wipe already-cached rows.
+  if (latestPage.pending && latestPage.messages.length === 0) {
+    slot.historyPending = true;
+    return { applied: false, changed: false, deferred: false, pending: true };
+  }
 
   let nextServerMessages: NormalizedMessage[] | null = null;
   let nextHasMore = previousHasMore;
@@ -299,10 +390,10 @@ async function refreshLatestSlotFromServer(
         return { applied: false, changed: false, deferred: false };
       }
 
-      const bridgePage = await requestSessionHistoryPage(sessionId, bridgeRequest);
+      const bridgePage = await request(sessionId, bridgeRequest);
       if (bridgePage.total !== latestPage.total) {
         console.warn(`[SessionStore] History changed while bridging ${sessionId}; retaining cached suffix.`);
-        return { applied: false, changed: false, deferred: false };
+        return { applied: false, changed: false, deferred: false, unbridged: true };
       }
       if (bridgePage.messages.length === 0) break;
 
@@ -312,7 +403,7 @@ async function refreshLatestSlotFromServer(
         || !olderPagePrecedesCachedHistory(bridgePage.messages, fetchedWindow)
       ) {
         console.warn(`[SessionStore] History shifted while bridging ${sessionId}; retaining cached suffix.`);
-        return { applied: false, changed: false, deferred: false };
+        return { applied: false, changed: false, deferred: false, unbridged: true };
       }
 
       fetchedWindow = bridgeMerge.messages;
@@ -330,6 +421,12 @@ async function refreshLatestSlotFromServer(
       nextServerMessages = fetchedWindow;
       nextHasMore = false;
     } else if (mergedPage.overlapLength > 0) {
+      // An older page may have been prepended while this refresh was in
+      // flight; stitch onto the current cache so those rows are kept.
+      if (slot.serverMessages !== previousServerMessages) {
+        const rebased = mergeLatestServerPage(slot.serverMessages, fetchedWindow);
+        if (rebased.overlapLength > 0) mergedPage = rebased;
+      }
       nextServerMessages = mergedPage.messages;
       nextHasMore = resolveLatestPagePagination(
         previousServerMessages.length,
@@ -358,32 +455,143 @@ async function refreshLatestSlotFromServer(
 
   if (!nextServerMessages) {
     console.warn(`[SessionStore] Could not bridge latest history for ${sessionId}; retaining cached suffix.`);
-    return { applied: false, changed, deferred: false };
+    return { applied: false, changed, deferred: false, unbridged: true };
   }
 
   slot._appliedFetchSeq = fetchTicket;
-  slot.serverMessages = nextServerMessages;
+  slot.serverMessages = carryOverRowIdentity(slot.serverMessages, nextServerMessages);
   slot.total = latestPage.total;
-  slot.offset = nextServerMessages.length;
+  slot.offset = slot.serverMessages.length;
   slot.hasMore = nextHasMore;
-  slot.fetchedAt = Date.now();
-  // Only drop realtime rows the server transcript now owns. A blind clear
-  // here caused the chat pane to flash "Continue your conversation" after
-  // `complete` while JSONL / provider_session_id indexing was still behind.
-  slot.realtimeMessages = pruneRealtimeSupersededByServer(
-    slot.serverMessages,
-    slot.realtimeMessages,
-  );
+  slot.historyPending = latestPage.pending;
+  slot.historyRefreshing = latestPage.refreshing;
+  // A pending/refreshing snapshot must not count as fresh cache.
+  slot.fetchedAt = latestPage.pending || latestPage.refreshing ? 0 : Date.now();
+  // Only drop realtime rows the server transcript now owns (done inside
+  // recomputeMergedIfNeeded). A blind clear here caused the chat pane to flash
+  // "Continue your conversation" after `complete` while JSONL /
+  // provider_session_id indexing was still behind.
   recomputeMergedIfNeeded(slot);
 
   return { applied: true, changed: true, deferred: false };
 }
 
+/**
+ * One history request applied to a slot (initial page, "Load all", search).
+ * Reports how it ended so callers can retry failures and not-yet-persisted
+ * history instead of treating them as an empty transcript.
+ */
+export async function fetchSlotHistory(
+  sessionId: string,
+  slot: SessionSlot,
+  opts: { limit?: number | null; offset?: number },
+  onChange: () => void = () => {},
+  request: HistoryPageRequester = requestSessionHistoryPage,
+): Promise<HistoryFetchOutcome> {
+  const fetchTicket = ++slot._fetchSeq;
+  slot.status = 'loading';
+  onChange();
+
+  try {
+    const page = await request(sessionId, { limit: opts.limit, offset: opts.offset ?? 0 });
+
+    // A later-started fetch already applied: this response is stale.
+    if (fetchTicket <= slot._appliedFetchSeq) return 'superseded';
+
+    if (page.pending && page.messages.length === 0) {
+      // Keep whatever is cached; the caller retries with backoff.
+      slot.historyPending = true;
+      slot.fetchedAt = 0;
+      slot.status = 'idle';
+      onChange();
+      return 'pending';
+    }
+
+    slot._appliedFetchSeq = fetchTicket;
+    slot.serverMessages = carryOverRowIdentity(slot.serverMessages, page.messages);
+    slot.total = page.total;
+    slot.hasMore = page.hasMore;
+    slot.offset = (opts.offset ?? 0) + page.messages.length;
+    slot.historyPending = page.pending;
+    slot.historyRefreshing = page.refreshing;
+    // A pending/refreshing snapshot must not count as fresh cache.
+    slot.fetchedAt = page.pending || page.refreshing ? 0 : Date.now();
+    slot.status = 'idle';
+    recomputeMergedIfNeeded(slot);
+    if (page.tokenUsage) slot.tokenUsage = page.tokenUsage;
+    onChange();
+    return page.pending ? 'pending' : 'applied';
+  } catch (error) {
+    console.error(`[SessionStore] fetch failed for ${sessionId}:`, error);
+    // Don't clobber a newer fetch's result with a stale failure.
+    if (fetchTicket > slot._appliedFetchSeq) {
+      slot.status = 'error';
+      onChange();
+      return 'error';
+    }
+    return 'superseded';
+  }
+}
+
+/**
+ * Loads the next older page and prepends it to `slot.serverMessages`.
+ *
+ * Offsets count from the newest row, so turns persisted while the user reads
+ * older history shift the requested window newer: the page is merged with
+ * duplicate removal instead of a raw prepend, and `total` is kept current.
+ * A page superseded by a later-started full fetch/refresh, or one lying
+ * entirely inside the cache, is re-requested rather than looking like
+ * "nothing older". Returns true when slot state changed.
+ */
+export async function fetchOlderSlotPage(
+  sessionId: string,
+  slot: SessionSlot,
+  limit: number,
+  request: HistoryPageRequester = requestSessionHistoryPage,
+): Promise<boolean> {
+  let changed = false;
+  for (let attempt = 0; attempt < 3 && slot.hasMore; attempt++) {
+    const fetchTicket = ++slot._fetchSeq;
+    const requestOffset = slot.offset;
+    const requestTotal = slot.total;
+
+    let page: SessionHistoryPage;
+    try {
+      page = await request(sessionId, { limit, offset: requestOffset });
+    } catch (error) {
+      console.error(`[SessionStore] fetchMore failed for ${sessionId}:`, error);
+      return changed;
+    }
+
+    // A later-started full fetch/refresh replaced serverMessages while this
+    // page was in flight; its offset no longer describes the cache.
+    if (fetchTicket <= slot._appliedFetchSeq) continue;
+
+    const merge = mergeOlderServerPageWithoutDuplicates(
+      slot.serverMessages,
+      page.messages,
+      page.total !== requestTotal,
+    );
+    slot.total = page.total;
+    slot.hasMore = page.hasMore;
+    slot.offset = resolveOlderPageOffset(requestOffset, page.messages.length, merge.messages.length);
+    changed = true;
+
+    if (merge.prependedCount > 0) {
+      slot.serverMessages = merge.messages;
+      recomputeMergedIfNeeded(slot);
+      return true;
+    }
+    // Entire window was already cached (the tail grew by >= one page while
+    // reading): step past it instead of reporting "no older messages".
+    if (page.messages.length === 0) return changed;
+  }
+  return changed;
+}
+
 // ─── Stale threshold ─────────────────────────────────────────────────────────
 
 const STALE_THRESHOLD_MS = 30_000;
-
-const MAX_REALTIME_MESSAGES = 500;
 
 // ─── Hook ────────────────────────────────────────────────────────────────────
 
@@ -422,71 +630,38 @@ export function useSessionStore() {
    * Fetch messages from the provider sessions endpoint and populate serverMessages.
    *
    * Provider and project metadata are resolved server-side from `sessionId`.
-   * The endpoint returns the standard `{ success, data }` envelope.
+   * The endpoint returns the standard `{ success, data }` envelope. The
+   * detailed variant reports how the request ended so the chat view can retry
+   * failures and not-yet-persisted history instead of showing an empty chat.
    */
+  const fetchFromServerDetailed = useCallback(async (
+    sessionId: string,
+    opts: {
+      limit?: number | null;
+      offset?: number;
+    } = {},
+  ): Promise<HistoryFetchResult> => {
+    const slot = getSlot(sessionId);
+    const outcome = await fetchSlotHistory(sessionId, slot, opts, () => notify(sessionId));
+    return { slot, outcome };
+  }, [getSlot, notify]);
+
   const fetchFromServer = useCallback(async (
     sessionId: string,
     opts: {
       limit?: number | null;
       offset?: number;
     } = {},
-  ) => {
-    const slot = getSlot(sessionId);
-    const fetchTicket = ++slot._fetchSeq;
-    slot.status = 'loading';
-    notify(sessionId);
-
-    try {
-      const params = new URLSearchParams();
-      if (opts.limit !== null && opts.limit !== undefined) {
-        params.append('limit', String(opts.limit));
-        params.append('offset', String(opts.offset ?? 0));
-      }
-
-      const qs = params.toString();
-      const url = `/api/providers/sessions/${encodeURIComponent(sessionId)}/messages${qs ? `?${qs}` : ''}`;
-      const response = await authenticatedFetch(url);
-
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
-      }
-
-      const body = await response.json();
-      const data = body?.data ?? body;
-      const messages: NormalizedMessage[] = data.messages || [];
-
-      // A later-started fetch already applied: this response is stale.
-      if (fetchTicket <= slot._appliedFetchSeq) {
-        return slot;
-      }
-      slot._appliedFetchSeq = fetchTicket;
-
-      slot.serverMessages = messages;
-      slot.total = data.total ?? messages.length;
-      slot.hasMore = Boolean(data.hasMore);
-      slot.offset = (opts.offset ?? 0) + messages.length;
-      slot.fetchedAt = Date.now();
-      slot.status = 'idle';
-      recomputeMergedIfNeeded(slot);
-      if (data.tokenUsage) {
-        slot.tokenUsage = data.tokenUsage;
-      }
-
-      notify(sessionId);
-      return slot;
-    } catch (error) {
-      console.error(`[SessionStore] fetch failed for ${sessionId}:`, error);
-      // Don't clobber a newer fetch's result with a stale failure.
-      if (fetchTicket > slot._appliedFetchSeq) {
-        slot.status = 'error';
-        notify(sessionId);
-      }
-      return slot;
-    }
-  }, [getSlot, notify]);
+  ) => (await fetchFromServerDetailed(sessionId, opts)).slot, [fetchFromServerDetailed]);
 
   /**
-   * Load older (paginated) messages and prepend to serverMessages.
+   * Load the next older (paginated) page and prepend it to serverMessages.
+   *
+   * Offsets count from the newest row, so turns persisted while the user reads
+   * older history shift the requested window newer: the page is merged with
+   * duplicate removal instead of a raw prepend, and `total` is kept current.
+   * A page superseded by a newer full fetch/refresh is re-requested against
+   * the new cache rather than silently looking like "nothing older".
    */
   const fetchMore = useCallback(async (
     sessionId: string,
@@ -495,42 +670,9 @@ export function useSessionStore() {
     } = {},
   ) => {
     const slot = getSlot(sessionId);
-    if (!slot.hasMore) return slot;
-
-    const fetchTicket = ++slot._fetchSeq;
-    const params = new URLSearchParams();
-    const limit = opts.limit ?? 20;
-    params.append('limit', String(limit));
-    params.append('offset', String(slot.offset));
-
-    const qs = params.toString();
-    const url = `/api/providers/sessions/${encodeURIComponent(sessionId)}/messages${qs ? `?${qs}` : ''}`;
-
-    try {
-      const response = await authenticatedFetch(url);
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const body = await response.json();
-      const data = body?.data ?? body;
-      const olderMessages: NormalizedMessage[] = data.messages || [];
-
-      // A full fetch/refresh replaced serverMessages while this page was in
-      // flight — prepending onto the new array would duplicate or misorder.
-      if (fetchTicket <= slot._appliedFetchSeq) {
-        return slot;
-      }
-      slot._appliedFetchSeq = fetchTicket;
-
-      // Prepend older messages (they're earlier in the conversation)
-      slot.serverMessages = [...olderMessages, ...slot.serverMessages];
-      slot.hasMore = Boolean(data.hasMore);
-      slot.offset = slot.offset + olderMessages.length;
-      recomputeMergedIfNeeded(slot);
-      notify(sessionId);
-      return slot;
-    } catch (error) {
-      console.error(`[SessionStore] fetchMore failed for ${sessionId}:`, error);
-      return slot;
-    }
+    const changed = await fetchOlderSlotPage(sessionId, slot, opts.limit ?? SESSION_MESSAGES_PAGE_SIZE);
+    if (changed) notify(sessionId);
+    return slot;
   }, [getSlot, notify]);
 
   /**
@@ -543,11 +685,13 @@ export function useSessionStore() {
       msg.sessionId === sessionId
         ? msg
         : { ...msg, sessionId };
-    let updated = [...slot.realtimeMessages, normalizedMessage];
-    if (updated.length > MAX_REALTIME_MESSAGES) {
-      updated = updated.slice(-MAX_REALTIME_MESSAGES);
-    }
-    slot.realtimeMessages = updated;
+    // No cap while streaming: dropping the oldest live rows on long runs
+    // silently lost output that was not persisted yet. Rows leave once a
+    // server write owns them (recomputeMergedIfNeeded), e.g. the run-complete
+    // latest refresh; settled background sessions are bounded separately
+    // (trimSettledRealtime). Merging stays O(live + server) via the cached
+    // server index in sessionStoreMerge.
+    slot.realtimeMessages = [...slot.realtimeMessages, normalizedMessage];
     recomputeMergedIfNeeded(slot);
     notify(sessionId);
   }, [getSlot, notify]);
@@ -563,11 +707,7 @@ export function useSessionStore() {
         ? msg
         : { ...msg, sessionId },
     );
-    let updated = [...slot.realtimeMessages, ...normalizedMessages];
-    if (updated.length > MAX_REALTIME_MESSAGES) {
-      updated = updated.slice(-MAX_REALTIME_MESSAGES);
-    }
-    slot.realtimeMessages = updated;
+    slot.realtimeMessages = [...slot.realtimeMessages, ...normalizedMessages];
     recomputeMergedIfNeeded(slot);
     notify(sessionId);
   }, [getSlot, notify]);
@@ -623,7 +763,7 @@ export function useSessionStore() {
       return { slot, ...result };
     } catch (error) {
       console.error(`[SessionStore] latest refresh failed for ${sessionId}:`, error);
-      return { slot, applied: false, changed: false, deferred: false };
+      return { slot, applied: false, changed: false, deferred: false, failed: true };
     }
   }, [getSlot, notify]);
 
@@ -803,6 +943,19 @@ export function useSessionStore() {
   }, [notify]);
 
   /**
+   * Bound a settled background session's live rows (see
+   * MAX_SETTLED_REALTIME_MESSAGES). The caller guarantees no run is in flight
+   * for `sessionId`; the viewed session is never trimmed here — its rows are
+   * pruned by the post-run refresh instead.
+   */
+  const trimSettledRealtime = useCallback((sessionId: string, maxRows?: number) => {
+    if (sessionId === activeSessionIdRef.current) return false;
+    const slot = storeRef.current.get(sessionId);
+    if (!slot) return false;
+    return trimSettledRealtimeRows(slot, maxRows);
+  }, []);
+
+  /**
    * Get merged messages for a session (for rendering).
    */
   const getMessages = useCallback((sessionId: string): NormalizedMessage[] => {
@@ -820,6 +973,7 @@ export function useSessionStore() {
     getSlot,
     has,
     fetchFromServer,
+    fetchFromServerDetailed,
     fetchMore,
     appendRealtime,
     appendRealtimeBatch,
@@ -833,14 +987,15 @@ export function useSessionStore() {
     updateThinkingStream,
     finalizeThinkingStream,
     clearRealtime,
+    trimSettledRealtime,
     getMessages,
     getSessionSlot,
   }), [
-    getSlot, has, fetchFromServer, fetchMore,
+    getSlot, has, fetchFromServer, fetchFromServerDetailed, fetchMore,
     appendRealtime, appendRealtimeBatch, refreshFromServer, refreshLatestFromServer,
     setActiveSession, setStatus, isStale, updateStreaming, finalizeStreaming,
     updateThinkingStream, finalizeThinkingStream,
-    clearRealtime, getMessages, getSessionSlot,
+    clearRealtime, trimSettledRealtime, getMessages, getSessionSlot,
   ]);
 }
 

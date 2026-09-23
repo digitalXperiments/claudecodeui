@@ -15,6 +15,7 @@ export {
 export type { SessionUpsertedEvent } from './services/session-upsert-broadcast.service.js';
 export type { RunCompletionEvent } from './services/chat-run-registry.service.js';
 export { shellSessionRegistry } from './services/shell-session-registry.service.js';
+export { releaseAgentShellSession } from './services/shell-websocket.service.js';
 export {
   startProviderRun,
   filterImagesToUploadStore,

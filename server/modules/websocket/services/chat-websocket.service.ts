@@ -53,6 +53,8 @@ export type ChatWebSocketDependencies = {
   getPendingApprovalsForSession: (providerSessionId: string) => unknown[];
   /** True while an interactive provider TUI owns the app session's PTY. */
   isShellSessionActive?: (appSessionId: string) => boolean;
+  /** Stops a provider TUI before Chatbar takes ownership of the same session. */
+  releaseShellSession?: (appSessionId: string) => Promise<boolean>;
   /** Cancels Agent Relay workers dispatched by a lead when that lead stops. */
   cancelRelayJobsForSession?: (appSessionId: string) => void | Promise<void>;
 };
@@ -149,7 +151,35 @@ export async function handleChatSend(
     return;
   }
 
-  const session = sessionsDb.getSessionById(sessionId);
+  if (chatRunRegistry.isShuttingDown()) {
+    sendProtocolError(ws, 'SERVER_RESTARTING', 'CloudCLI is waiting for active sessions to finish before restarting.', sessionId);
+    return;
+  }
+
+  // Reserve BEFORE the first await: the socket keeps handling messages while
+  // this send releases a parked Agent CLI PTY or creates a worktree, and a
+  // `chat.subscribe` answered in that window must already report processing.
+  // The reservation is dropped as soon as the run is registered (or the send
+  // fails), and unconditionally here as a backstop.
+  const releaseSendHandler = chatRunRegistry.trackSendHandler();
+  const releasePendingSend = chatRunRegistry.reservePendingSend(sessionId);
+  try {
+    await dispatchChatSend(ws, userId, data, dependencies, sessionId, releasePendingSend);
+  } finally {
+    releasePendingSend();
+    releaseSendHandler();
+  }
+}
+
+async function dispatchChatSend(
+  ws: WebSocket,
+  userId: string | number | null,
+  data: AnyRecord,
+  dependencies: ChatWebSocketDependencies,
+  sessionId: string,
+  releasePendingSend: () => void,
+): Promise<void> {
+  let session = sessionsDb.getSessionById(sessionId);
   if (!session) {
     sendProtocolError(
       ws,
@@ -170,11 +200,36 @@ export async function handleChatSend(
     return;
   }
 
-  if (dependencies.isShellSessionActive?.(sessionId)) {
+  if (dependencies.releaseShellSession) {
+    const released = await dependencies.releaseShellSession(sessionId);
+    if (!released) {
+      sendProtocolError(
+        ws,
+        'AGENT_CLI_HANDOFF_FAILED',
+        'Agent CLI could not release this session. Close Agent CLI and try again.',
+        sessionId,
+      );
+      return;
+    }
+    // Releasing awaits the Agent CLI's exit AND its session adoption, which
+    // may have just bound the provider session the TUI created (or merged a
+    // placeholder row). Resume from that mapping, not the pre-release row.
+    const refreshed = sessionsDb.getSessionById(sessionId);
+    if (!refreshed) {
+      sendProtocolError(
+        ws,
+        'SESSION_NOT_FOUND',
+        `Session "${sessionId}" was not found after Agent CLI released it.`,
+        sessionId,
+      );
+      return;
+    }
+    session = refreshed;
+  } else if (dependencies.isShellSessionActive?.(sessionId)) {
     sendProtocolError(
       ws,
       'SHELL_SESSION_ACTIVE',
-      `Session "${sessionId}" is active in Shell. Finish or close the Shell session before sending from Chat.`,
+      `Session "${sessionId}" is active in Agent CLI. Finish or close Agent CLI before sending from Chat.`,
       sessionId,
     );
     return;
@@ -370,6 +425,7 @@ export async function handleChatSend(
       onEvent: recordCanonicalEvent,
     });
   } catch (error) {
+    releasePendingSend();
     if (canonicalRun) {
       const current = runService.get(canonicalRun.run_id);
       if (current && !TERMINAL_RUN_STATUSES.has(current.status)) {
@@ -381,6 +437,10 @@ export async function handleChatSend(
     }
     throw error;
   }
+
+  // Registered (or injected, or rejected): the registry's own run state is
+  // authoritative from here on.
+  releasePendingSend();
 
   if (!result.ok) {
     if (canonicalRun) {
@@ -509,7 +569,7 @@ export async function handleChatAbort(
  * This single message replaces the old `check-session-status`,
  * `get-pending-permissions`, and Claude-only writer reconnect flows.
  */
-function handleChatSubscribe(
+export function handleChatSubscribe(
   ws: WebSocket,
   data: AnyRecord,
   dependencies: ChatWebSocketDependencies
@@ -534,7 +594,11 @@ function handleChatSubscribe(
       : 0;
 
     const run = chatRunRegistry.getRun(sessionId);
-    const isProcessing = chatRunRegistry.isProcessing(sessionId);
+    const isRunActive = chatRunRegistry.isProcessing(sessionId);
+    // An accepted chat.send still releasing Agent CLI (or preparing a
+    // worktree) is processing too — answering idle here would clear the
+    // sender's spinner before its run even registers.
+    const isProcessing = chatRunRegistry.isRunningOrPending(sessionId);
     const isShellActive = dependencies.isShellSessionActive?.(sessionId) ?? false;
     const session = sessionsDb.getSessionById(sessionId);
 
@@ -555,7 +619,9 @@ function handleChatSubscribe(
     // Future live events for this run should also land on the socket that
     // asked — additive fan-out, so other tabs following the run keep their
     // stream. This is what makes mid-stream page refreshes work for all
-    // providers.
+    // providers. For a pending send the registry parks the socket: `startRun`
+    // attaches it to the new run, or — if the send ends without a run — it
+    // receives a terminal `complete` so its spinner clears.
     if (isProcessing) {
       chatRunRegistry.attachConnection(sessionId, ws);
     }
@@ -576,7 +642,7 @@ function handleChatSubscribe(
       sessionId,
       isProcessing,
       isShellActive: !isProcessing && isShellActive,
-      lastSeq: run?.lastSeq ?? 0,
+      lastSeq: isRunActive ? run?.lastSeq ?? 0 : 0,
       pendingPermissions,
       timestamp: new Date().toISOString(),
     });
@@ -588,7 +654,9 @@ function handleChatSubscribe(
     // are fully persisted to the provider transcript and served over REST —
     // replaying them (e.g. after a page reload where the client's lastSeq is
     // 0) would duplicate messages the history fetch already returned.
-    if (isProcessing) {
+    // A pending send has no run yet — the registry entry (if any) is the
+    // PREVIOUS, completed run, whose events must not be replayed.
+    if (isRunActive) {
       for (const event of chatRunRegistry.replayEvents(sessionId, lastSeq)) {
         sendJson(ws, event);
       }

@@ -42,6 +42,14 @@ export type AgentWorkspace = {
   base_sha: string | null;
   feature_branch: string; // '' for sandbox_copy
   head_sha: string | null;
+  /**
+   * Relay workspaces only: commit on the feature branch that captures the
+   * primary checkout's uncommitted files copied in at creation. Changes after
+   * it are the worker's; landing applies exactly those.
+   */
+  snapshot_sha?: string | null;
+  /** Where this workspace's own changes start (predecessor tip when stacked). */
+  start_sha?: string | null;
   status: WorkspaceLifecycleStatus;
   last_error: string | null;
   created_at: string;
@@ -100,11 +108,25 @@ export type CreateWorkspaceInput = {
   taskId?: string;
   runId?: string;
   mode?: WorkspaceMode; // default: git_worktree, auto-falls back to sandbox_copy for non-git projects
+  /**
+   * Commit the primary's uncommitted files (copied in by the overlay) as a
+   * snapshot commit, so later changes are exactly the worker's. Git only.
+   */
+  snapshotPrimaryChanges?: boolean;
+  /**
+   * Start from these refs instead of the base (stacked pipelines): the first
+   * is checked out, the rest are merged in. No overlay/snapshot is taken; the
+   * predecessor's snapshot is inherited via `inheritSnapshotSha`.
+   */
+  startRefs?: string[];
+  inheritSnapshotSha?: string | null;
 };
 
 export type MergeToBaseOptions = {
   strategy?: MergeStrategy; // default: 'merge' (--no-ff)
   deleteAfter?: boolean; // discard worktree + delete feature branch after a successful merge
+  /** Refuse to merge if the primary checkout changed since a verified rehearsal. */
+  expectedBaseSha?: string;
 };
 
 export type DiscardOptions = {
@@ -136,6 +158,40 @@ export type ApplyToPrimaryResult = {
   skipped: ApplyToPrimarySkip[];
   committed: boolean;
   commit_sha: string | null;
+};
+
+/** Per-file outcome of applying a committed range onto a target checkout. */
+export type RangeApplyResult = {
+  fromSha: string;
+  toSha: string;
+  /** Target had the range's base content; the new content was written. */
+  applied: string[];
+  /** Target had its own edits there; a clean three-way merge was written. */
+  merged: string[];
+  /** Target already had the range's end content. */
+  alreadyApplied: string[];
+  /** Nothing was written for these paths (overlapping edits or binary). */
+  conflicts: Array<{ path: string; reason: string }>;
+  /** Paths whose target had uncommitted edits before the apply. */
+  targetDirty: string[];
+};
+
+export type LandOntoPrimaryOptions = {
+  /** Commit message for the landed paths. Default: a message naming the branch. */
+  message?: string;
+  /**
+   * Commit the landed paths that were clean in the primary before landing.
+   * Paths that also carried the operator's uncommitted edits are written but
+   * never committed, so their edits are not swept into the commit. Default true.
+   */
+  commit?: boolean;
+};
+
+export type LandOntoPrimaryResult = RangeApplyResult & {
+  committed: boolean;
+  commit_sha: string | null;
+  /** Written into the primary but left uncommitted (see `commit`). */
+  leftUncommitted: string[];
 };
 
 /** Event hook so later waves can wire WS fan-out (PRD §4.6 `workspace_updated`). */
@@ -171,6 +227,19 @@ export interface WorkspaceService {
   resolveCwd(workspaceId: string): string;
   /** Boot-time reconcile (§5.10): mark rows with missing dirs as `orphan`. */
   reconcileOrphanedWorkspaces(projectId?: string): Promise<AgentWorkspace[]>;
+  /** Three-way, per-file apply of a committed range onto another checkout. */
+  applyCommittedRange(input: {
+    sourceRoot: string;
+    fromRef: string;
+    toRef: string;
+    targetRoot: string;
+    scratchDir: string;
+    pathspec?: string;
+  }): Promise<RangeApplyResult>;
+  /** Land a Relay workspace's own commits onto a (possibly dirty) primary. */
+  landOntoPrimary(workspaceId: string, opts?: LandOntoPrimaryOptions): Promise<LandOntoPrimaryResult>;
+  /** Commit anything left uncommitted in a git workspace; returns the new tip or null. */
+  commitPendingChanges(workspaceId: string, message: string): Promise<string | null>;
 }
 
 export type WorkspaceServiceOptions = {

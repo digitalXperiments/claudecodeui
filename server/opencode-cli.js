@@ -21,6 +21,7 @@ import {
 } from './shared/utils.js';
 import { resolveAcpCliCommand } from './shared/acp-cli-path.js';
 import { leadSessionEnv } from './shared/lead-session-env.js';
+import { wrapCommandForSandbox } from './shared/worker-sandbox.js';
 import { ANTIGRAVITY_SETUP_TIMEOUT_MS } from './modules/providers/list/antigravity/antigravity-acp.js';
 import { buildAntigravityLaunchEnv } from './modules/providers/list/antigravity/antigravity-auth-support.js';
 import {
@@ -32,6 +33,10 @@ import {
   resolveAntigravityBinary,
 } from './modules/providers/list/antigravity/antigravity-runtime.js';
 import { readAntigravitySessionTokenUsage } from './modules/providers/list/antigravity/antigravity-token-usage.js';
+import {
+  scheduleAntigravityHistoryRefresh,
+  setAntigravityHistoryBusyCheck,
+} from './modules/providers/list/antigravity/antigravity-history.js';
 
 // cross-spawn resolves .cmd shims/PATHEXT on Windows and delegates to
 // child_process.spawn everywhere else.
@@ -153,6 +158,18 @@ async function resolveOpenCodeAcpMcpServers(runtime, options = {}) {
 // to anything gated and CloudCLI's permission broker never got a say. ACP is
 // the only opencode entry point that relays the ask to its client.
 const acpSessions = new Map();
+
+// History replays run in a separate ACP child; background refreshes must not
+// replay a session while a live turn here is still writing it. The run's
+// completion (below) schedules the refresh instead.
+setAntigravityHistoryBusyCheck((providerSessionId) => {
+  for (const handle of acpSessions.values()) {
+    if (handle?.provider === 'antigravity' && handle.providerSessionId === providerSessionId && handle.promptInFlight) {
+      return true;
+    }
+  }
+  return false;
+});
 
 const RELAYED_KILO_PERMISSIONS = {
   edit: 'ask',
@@ -486,7 +503,7 @@ function killChild(child) {
   }
 }
 
-async function createAcpSession(workingDir, resumeSessionId, permissionEnv, runtime, extraEnv = {}, mcpServers = []) {
+async function createAcpSession(workingDir, resumeSessionId, permissionEnv, runtime, extraEnv = {}, mcpServers = [], relaySandbox = null) {
   // Resolve the bare command (`opencode`, `kilo`) through PATH plus the
   // installer's `~/.<name>/bin` — a GUI-launched server never sources the
   // shell profile that would put it on PATH. A runtime with its own
@@ -502,7 +519,10 @@ async function createAcpSession(workingDir, resumeSessionId, permissionEnv, runt
     : runtime.acpArgs || ['acp', '--cwd', workingDir];
   // Slow-starting runtimes raise the setup bound; everything else keeps 30s.
   const setupTimeoutMs = runtime.setupTimeoutMs ?? SETUP_TIMEOUT_MS;
-  const child = spawnFunction(resolvedCommand, resolvedArgs, {
+  // Relay workers run the whole ACP CLI under the OS sandbox; every tool
+  // process it spawns inherits the profile.
+  const launch = wrapCommandForSandbox(resolvedCommand, resolvedArgs, relaySandbox);
+  const child = spawnFunction(launch.command, launch.args, {
     cwd: workingDir,
     detached: process.platform !== 'win32',
     stdio: ['pipe', 'pipe', 'pipe'],
@@ -843,7 +863,8 @@ async function spawnAcpProvider(runtime, command, options = {}, ws) {
   const extraEnv = leadSessionEnv(options.appSessionId);
   const resolvedMcp = await resolveOpenCodeAcpMcpServers(runtime, options);
   const acpMcpServers = toOpenCodeAcpMcpServers(resolvedMcp, extraEnv);
-  const mcpKey = JSON.stringify(acpMcpServers);
+  const relaySandbox = options.relayWorker ? options.relaySandbox ?? null : null;
+  const mcpKey = `${JSON.stringify(acpMcpServers)}|sandbox:${relaySandbox ? JSON.stringify(relaySandbox) : ''}`;
 
   // OPENCODE_PERMISSION is read once at process start, so a permission-mode
   // change cannot be applied to a live child — retire it and resume the same
@@ -860,7 +881,7 @@ async function spawnAcpProvider(runtime, command, options = {}, ws) {
   }
 
   if (!handle || handle.child.exitCode !== null || handle.child.killed) {
-    handle = await createAcpSession(workingDir, sessionId, { ...policy.env, ...identityEnv }, runtime, extraEnv, acpMcpServers);
+    handle = await createAcpSession(workingDir, sessionId, { ...policy.env, ...identityEnv }, runtime, extraEnv, acpMcpServers, relaySandbox);
     acpSessions.set(processKey, handle);
 
     if (!capturedSessionId) {
@@ -1141,7 +1162,7 @@ async function spawnAcpProvider(runtime, command, options = {}, ws) {
         acpSessions.delete(key);
       }
       disposeSession(handle);
-      const fresh = await createAcpSession(workingDir, resumeId, { ...policy.env, ...identityEnv }, runtime, extraEnv, acpMcpServers);
+      const fresh = await createAcpSession(workingDir, resumeId, { ...policy.env, ...identityEnv }, runtime, extraEnv, acpMcpServers, relaySandbox);
       acpSessions.set(key, fresh);
       fresh.child.on('exit', () => {
         if (acpSessions.get(key) === fresh) {
@@ -1187,8 +1208,9 @@ async function spawnAcpProvider(runtime, command, options = {}, ws) {
     }
     handle.promptInFlight = false;
 
-    ws.send(createCompleteMessage({ provider: runtime.provider, sessionId: finalSessionId, exitCode: 0 }));
-
+    // Token telemetry goes out BEFORE the terminal `complete`: the run
+    // registry stops sequencing once a run completes, and a late status frame
+    // would otherwise leave the client with a stale replay cursor.
     try {
       let tokenBudget = null;
       if (runtime.databasePath) {
@@ -1209,6 +1231,8 @@ async function spawnAcpProvider(runtime, command, options = {}, ws) {
     } catch (tokenError) {
       console.warn(`${runtime.provider || 'ACP'} token budget refresh failed (non-fatal):`, tokenError?.message || tokenError);
     }
+
+    ws.send(createCompleteMessage({ provider: runtime.provider, sessionId: finalSessionId, exitCode: 0 }));
 
     // Isolated from the main try/catch: a notification-plumbing failure must
     // never retroactively turn an already-sent successful `complete` into a
@@ -1266,6 +1290,18 @@ async function spawnAcpProvider(runtime, command, options = {}, ws) {
     throw error;
   } finally {
     unsubscribe();
+    if (runtime.provider === 'antigravity') {
+      // Warm the history cache now that the turn is on disk, so reopening the
+      // session (or a reload) is served without a blocking replay.
+      const historySessionId = handle?.providerSessionId || capturedSessionId;
+      if (historySessionId) {
+        try {
+          scheduleAntigravityHistoryRefresh(historySessionId, { fallbackCwd: workingDir, delayMs: 1_000 });
+        } catch {
+          // Cache warming is best-effort.
+        }
+      }
+    }
     // Headless runs (swarm, Mission Control, Kanban) are one prompt per run,
     // and each idle ACP child holds ~500MB. A retry cascade used to stack
     // several of those for the 30-minute idle window, and the resulting memory

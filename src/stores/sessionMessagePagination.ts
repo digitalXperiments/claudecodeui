@@ -264,3 +264,146 @@ export function resolveLatestPagePagination(
       : previousHasMore && oldestFetchedPageHasMore,
   };
 }
+
+/**
+ * Cheap semantic signature for a persisted row. Mirrors the fields used by
+ * `messagesRepresentSamePersistedRow` (minus the id), bounded so very long
+ * tool output does not make hashing expensive.
+ */
+export function persistedRowSignature(message: NormalizedMessage): string {
+  const content = message.content ?? message.text ?? '';
+  return [
+    message.provider,
+    message.kind,
+    message.timestamp,
+    message.role ?? '',
+    message.toolId ?? '',
+    message.rowid ?? '',
+    message.sequence ?? '',
+    message.toolName ?? '',
+    content.length,
+    content.slice(0, 64),
+    content.slice(-32),
+  ].join('\u0001');
+}
+
+/**
+ * Keeps React row identity stable across history re-reads.
+ *
+ * Some provider readers (notably Codex) mint fresh ids on every read, so a
+ * refreshed tail or a "Load all" re-download would otherwise re-key — and
+ * remount, losing measured heights and the scroll anchor — every row. For
+ * each incoming row that does not share an id with a cached row, the cached
+ * row's render identity is carried over via `renderId` when the two represent
+ * the same persisted row. Rows that already match by id keep any renderId the
+ * cached copy carried. Returns `nextMessages` itself when nothing changed.
+ */
+export function carryOverRowIdentity(
+  previousMessages: NormalizedMessage[],
+  nextMessages: NormalizedMessage[],
+): NormalizedMessage[] {
+  if (previousMessages.length === 0 || nextMessages.length === 0) return nextMessages;
+
+  const byId = new Map<string, NormalizedMessage>();
+  const bySignature = new Map<string, NormalizedMessage[]>();
+  for (const message of previousMessages) {
+    byId.set(message.id, message);
+    const signature = persistedRowSignature(message);
+    const queue = bySignature.get(signature);
+    if (queue) queue.push(message);
+    else bySignature.set(signature, [message]);
+  }
+
+  const claimed = new Set<NormalizedMessage>();
+  let changed = false;
+  const result = nextMessages.map((message) => {
+    const sameId = byId.get(message.id);
+    if (sameId) {
+      claimed.add(sameId);
+      if (sameId.renderId && !message.renderId) {
+        changed = true;
+        return { ...message, renderId: sameId.renderId };
+      }
+      return message;
+    }
+    if (message.renderId) return message;
+    const queue = bySignature.get(persistedRowSignature(message));
+    const previous = queue?.find((candidate) => (
+      !claimed.has(candidate) && messagesRepresentSamePersistedRow(candidate, message)
+    ));
+    if (!previous) return message;
+    claimed.add(previous);
+    changed = true;
+    return { ...message, renderId: previous.renderId ?? previous.id };
+  });
+
+  return changed ? result : nextMessages;
+}
+
+export type DriftAwareOlderPageResult = OlderPageMergeResult & {
+  /** Rows of the page that were already cached (tail drift / concurrent refresh). */
+  duplicateCount: number;
+};
+
+/**
+ * Prepends an older tail-offset page onto the cached history without
+ * duplicates. Offsets are counted from the newest row, so when turns persist
+ * while the user reads older history the requested window shifts newer and
+ * its newest rows are ones already cached. The contiguous overlap is handled
+ * by `mergeOlderServerPage`; when the transcript is known to have changed
+ * (`transcriptChanged`) any remaining already-cached rows are dropped too.
+ */
+export function mergeOlderServerPageWithoutDuplicates(
+  cachedMessages: NormalizedMessage[],
+  olderMessages: NormalizedMessage[],
+  transcriptChanged: boolean,
+): DriftAwareOlderPageResult {
+  const merged = mergeOlderServerPage(cachedMessages, olderMessages);
+  if (!transcriptChanged || merged.prependedCount === 0) {
+    return { ...merged, duplicateCount: merged.overlapLength };
+  }
+
+  const cachedSignatures = new Set(cachedMessages.map(persistedRowSignature));
+  const cachedIds = new Set(cachedMessages.map((message) => message.id));
+  // After a large tail growth the shifted window can even contain rows newer
+  // than the whole cache; those belong to the tail refresh, never the top.
+  const cachedOldestTime = cachedMessages.length > 0 ? Date.parse(cachedMessages[0].timestamp) : Number.NaN;
+  const prepended = olderMessages
+    .slice(0, merged.prependedCount)
+    .filter((message) => {
+      if (cachedIds.has(message.id) || cachedSignatures.has(persistedRowSignature(message))) return false;
+      const time = Date.parse(message.timestamp);
+      return !Number.isFinite(time) || !Number.isFinite(cachedOldestTime) || time <= cachedOldestTime;
+    });
+  const duplicateCount = olderMessages.length - prepended.length;
+  return {
+    messages: prepended.length === merged.prependedCount
+      ? merged.messages
+      : [...prepended, ...cachedMessages],
+    overlapLength: merged.overlapLength,
+    prependedCount: prepended.length,
+    duplicateCount,
+  };
+}
+
+/** Next tail offset after an older page: never behind what is already cached. */
+export function resolveOlderPageOffset(
+  requestOffset: number,
+  pageLength: number,
+  mergedLength: number,
+): number {
+  return Math.max(requestOffset + pageLength, mergedLength);
+}
+
+/** Server hint that the (possibly empty) history response is not final yet. */
+export function isHistoryResponsePending(data: unknown): boolean {
+  if (!data || typeof data !== 'object') return false;
+  const record = data as Record<string, unknown>;
+  return Boolean(record.historyPending || record.retryable);
+}
+
+/** Server hint that the returned rows are a last-good cache being refreshed. */
+export function isHistoryResponseRefreshing(data: unknown): boolean {
+  if (!data || typeof data !== 'object') return false;
+  return Boolean((data as Record<string, unknown>).historyRefreshing);
+}

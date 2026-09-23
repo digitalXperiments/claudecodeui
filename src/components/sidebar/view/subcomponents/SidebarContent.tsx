@@ -20,6 +20,7 @@ import SidebarProjectList, { type SidebarProjectListProps } from './SidebarProje
 import SidebarRail from './SidebarRail';
 import SidebarProjectsPanel from './SidebarProjectsPanel';
 import SidebarLayout from './SidebarLayout';
+import SidebarUtilitySections from './SidebarUtilitySections';
 
 function HighlightedSnippet({ snippet, highlights }: { snippet: string; highlights: { start: number; end: number }[] }) {
   const parts: ReactNode[] = [];
@@ -726,6 +727,12 @@ export default function SidebarContent({
       }
       selectedProjectName={selectedProjectName}
       panelWidth={isMobile ? undefined : projectsPanelWidth}
+      bottomSections={(
+        <SidebarUtilitySections
+          projectId={projectListProps.selectedProject?.projectId ?? null}
+          sessionId={projectListProps.selectedSession?.id ? String(projectListProps.selectedSession.id) : null}
+        />
+      )}
       t={t}
     >
       {renderProjectsBody()}

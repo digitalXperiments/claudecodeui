@@ -189,6 +189,22 @@ const readMetaCwd = (metaPath: string): string | null => {
 };
 
 /**
+ * The working directory Antigravity recorded for a conversation in its `.meta`
+ * sidecar, or `null` when the sidecar is missing/unreadable.
+ *
+ * ACP `session/load` rejects a cwd that differs from the one the session was
+ * created in, so this is the authoritative cwd for replay — the project path
+ * CloudCLI indexed can drift (worktrees, renamed projects).
+ */
+export function readAntigravityConversationCwd(
+  sessionId: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string | null {
+  if (!sessionId) return null;
+  return readMetaCwd(path.join(antigravityConversationsDir(env), `${sessionId}.meta`));
+}
+
+/**
  * Remove CloudCLI's machine-only prompt blocks from a stored user message, so
  * neither session titles nor replayed transcripts show plumbing the user never
  * typed. Shared by the title reader and the history normalizer.

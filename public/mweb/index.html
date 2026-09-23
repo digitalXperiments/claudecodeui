@@ -177,6 +177,42 @@
   .reviewCard .reviewBtns button { -webkit-box-flex: 1; -webkit-flex: 1 1 120px; flex: 1 1 120px; min-width: 100px; min-height: 44px; margin: 4px; padding: 10px 12px; touch-action: manipulation; }
   .reviewCard .reviewBtns button.destructive { background: #a33; color: #fff; }
 
+  /* Agent Relay: compact, touch-first operator surface. Keep these rules
+     deliberately old-school so the mweb page remains Safari 9 compatible. */
+  #screenRelay.screen.active { display: -webkit-box; display: -webkit-flex; display: flex; -webkit-box-orient: vertical; -webkit-flex-direction: column; flex-direction: column; height: 100%; min-height: 0; padding: 0; }
+  #screenRelay .topbar { position: relative; z-index: 2; }
+  #relayList { overflow-y: auto; -webkit-overflow-scrolling: touch; -webkit-box-flex: 1; -webkit-flex: 1 1 auto; flex: 1 1 auto; min-height: 0; padding: 10px 12px; padding-bottom: calc(20px + constant(safe-area-inset-bottom)); padding-bottom: calc(20px + env(safe-area-inset-bottom)); }
+  .relayTools { padding: 8px 12px; border-bottom: 1px solid #e4dccb; }
+  .relayTools select { margin: 0 0 7px 0; padding: 9px 8px; }
+  .relayTools button { margin-top: 0; }
+  .relayConnection { min-height: 18px; margin: 0 0 4px 0; font-size: 12px; color: #8a8170; }
+  .relayConnection.error { color: #a33; }
+  .relayNotice { margin: 8px 0; padding: 9px 10px; border-radius: 7px; background: #dfe8d4; color: #2d5d31; font-size: 13px; }
+  .relayNotice.error { background: #fde2e2; color: #8d1616; }
+  .relayBatch { margin: 10px 0 14px 0; }
+  .relayBatchTitle { margin: 0 2px 6px 2px; font-size: 13px; font-weight: bold; color: #8a8170; }
+  .relayCard { margin: 0 0 8px 0; padding: 11px; border-radius: 9px; background: #ebe4d4; border: 1px solid #e4dccb; }
+  .relayCard.stalled { border-color: #c7793a; }
+  .relayCardTitle { font-weight: bold; word-break: break-word; }
+  .relayCardMeta { margin-top: 4px; font-size: 12px; color: #8a8170; word-break: break-word; }
+  .relayCardTask { margin-top: 8px; font-size: 13px; white-space: pre-wrap; word-break: break-word; }
+  .relayCardPeek { margin-top: 7px; padding: 7px 8px; border-radius: 6px; background: rgba(0,0,0,0.08); font-size: 12px; white-space: pre-wrap; word-break: break-word; }
+  .relayCardResult { margin-top: 7px; font-size: 13px; white-space: pre-wrap; word-break: break-word; }
+  .relayApproval { margin: 0 0 9px 0; padding: 11px; border-radius: 9px; background: #ebe4d4; border: 1px solid #e4dccb; }
+  .relayApprovalTitle { font-weight: bold; word-break: break-word; }
+  .relayApprovalMeta, .relayApprovalReason, .relayApprovalPaths { margin-top: 5px; font-size: 12px; white-space: pre-wrap; word-break: break-word; }
+  .relayApprovalCommand { margin-top: 7px; padding: 8px; border-radius: 6px; background: rgba(0,0,0,0.18); font-family: Menlo, Consolas, monospace; font-size: 12px; white-space: pre-wrap; word-break: break-word; }
+  .relayActions { display: -webkit-box; display: -webkit-flex; display: flex; -webkit-flex-wrap: wrap; flex-wrap: wrap; margin: 7px -4px -4px; }
+  .relayActions button { -webkit-box-flex: 1; -webkit-flex: 1 1 112px; flex: 1 1 112px; min-width: 100px; min-height: 44px; margin: 4px; padding: 9px 10px; }
+  .relayActions button.destructive { background: #a33; color: #fff; }
+  .relayFollowUp { margin-top: 7px; }
+  .relayFollowUp textarea { min-height: 56px; font-size: 14px; resize: vertical; }
+  .relayEmpty { padding: 18px 4px; color: #8a8170; text-align: center; }
+  body.theme-paper .relayCard, body.theme-paper .relayApproval { background: #ebe4d4; border-color: #d5ccba; }
+  html.theme-dusk .relayTools, body.theme-dusk .relayTools, html.theme-ink .relayTools, body.theme-ink .relayTools { border-color: #3a352c; }
+  html.theme-dusk .relayCard, body.theme-dusk .relayCard, html.theme-dusk .relayApproval, body.theme-dusk .relayApproval { background: #25221c; border-color: #3a352c; }
+  html.theme-ink .relayCard, body.theme-ink .relayCard, html.theme-ink .relayApproval, body.theme-ink .relayApproval { background: #222528; border-color: #2e3338; }
+
   #toolOutput pre { white-space: pre-wrap; word-break: break-word; font-size: 12px; max-height: 420px; overflow: auto; }
   .gitSection { padding: 12px; }
   .gitBranchRow { display: -webkit-box; display: -webkit-flex; display: flex; -webkit-box-align: center; -webkit-align-items: center; align-items: center; margin-bottom: 10px; }
@@ -475,6 +511,7 @@
     <div>
       <button class="secondary small" id="btnThemeCategories">Theme</button>
       <button class="secondary small" id="btnReviewFromCategories" aria-label="Action Centre">MC</button>
+      <button class="secondary small" id="btnRelayFromCategories" aria-label="Agent Relay">Relay</button>
       <button class="secondary small" id="btnLogoutCategories">Logout</button>
     </div>
   </div>
@@ -498,6 +535,7 @@
     <div class="title" id="sessionsTitle">Sessions</div>
     <div>
       <button class="secondary small" id="btnThemeSessions">Theme</button>
+      <button class="secondary small" id="btnRelayFromSessions" aria-label="Agent Relay">Relay</button>
       <button class="secondary small" id="btnGitFromSessions">Git</button>
       <button class="secondary small" id="btnBackToProjects">Back</button>
     </div>
@@ -560,6 +598,30 @@
     </div>
   </div>
   <div id="reviewList" class="list"></div>
+</div>
+
+<div id="screenRelay" class="screen">
+  <div class="topbar">
+    <div class="title">Agent Relay</div>
+    <div>
+      <button class="secondary small" id="btnThemeRelay">Theme</button>
+      <button class="secondary small" id="btnRefreshRelay">Refresh</button>
+      <button class="secondary small" id="btnBackFromRelay">Back</button>
+    </div>
+  </div>
+  <div class="relayTools">
+    <label for="relayScopeSelect">Scope</label>
+    <select id="relayScopeSelect" aria-label="Relay scope"></select>
+    <label for="relayStatusSelect">Jobs</label>
+    <select id="relayStatusSelect" aria-label="Relay job status">
+      <option value="active">Active</option>
+      <option value="completed">Completed</option>
+      <option value="all">All jobs</option>
+    </select>
+    <div class="relayConnection" id="relayConnection" role="status" aria-live="polite">Ready</div>
+    <div id="relayNotice" class="relayNotice" role="status" aria-live="polite" style="display:none;"></div>
+  </div>
+  <div id="relayList" class="list"></div>
 </div>
 
 <div id="screenGit" class="screen">
@@ -647,6 +709,15 @@
     lastAssistantEl: null,
     reviewPollTimer: null,
     reviewActionStates: {},
+    relayPollTimer: null,
+    relayLoading: false,
+    relayScope: 'project',
+    relayJobs: [],
+    relayPeeks: {},
+    relayApprovals: [],
+    relayPreviousJobs: {},
+    relayPreviousApprovals: {},
+    relayNoticeTimer: null,
     messagesOffset: 0,
     messagesHasMore: false,
     messagesLoading: false,
@@ -681,6 +752,10 @@
     if (id !== 'screenReview' && state.reviewPollTimer) {
       clearInterval(state.reviewPollTimer);
       state.reviewPollTimer = null;
+    }
+    if (id !== 'screenRelay' && state.relayPollTimer) {
+      clearInterval(state.relayPollTimer);
+      state.relayPollTimer = null;
     }
   }
 
@@ -787,7 +862,7 @@
   }
 
   function updateThemeButtons(name) {
-    var ids = ['btnThemeLogin', 'btnThemeCategories', 'btnThemeProjects', 'btnThemeSessions', 'btnThemeChat', 'btnThemeReview', 'btnThemeGit'];
+    var ids = ['btnThemeLogin', 'btnThemeCategories', 'btnThemeProjects', 'btnThemeSessions', 'btnThemeChat', 'btnThemeReview', 'btnThemeRelay', 'btnThemeGit'];
     var i;
     var el;
     var choices = ['themeChoiceFog', 'themeChoicePaper', 'themeChoiceDusk', 'themeChoiceInk'];
@@ -1005,6 +1080,10 @@
       return '#/git/' + encodeURIComponent(params.projectId || '');
     }
     if (screen === 'screenReview') { return '#/review'; }
+    if (screen === 'screenRelay') {
+      return '#/relay?p=' + encodeURIComponent(params.projectId || '') +
+        '&s=' + encodeURIComponent(params.sessionId || '');
+    }
     return '#/categories';
   }
 
@@ -1118,6 +1197,12 @@
     }
     if (route.name === 'review') {
       openReview();
+      return;
+    }
+    if (route.name === 'relay') {
+      if (route.query.p) { state.currentProjectId = route.query.p; }
+      if (route.query.s) { state.currentSessionId = route.query.s; }
+      openRelay(state.currentProjectId, state.currentSessionId);
       return;
     }
     if (route.name === 'git') {
@@ -2724,6 +2809,491 @@
     }, function (d) { setGitErr((d && d.error) || 'History failed'); });
   }
 
+  // ---- Agent Relay (authenticated REST operator surface) ----
+
+  function relayScopeParams() {
+    var query = [];
+    var scope = state.relayScope;
+    if (scope === 'session' && state.currentSessionId) {
+      query.push('sessionId=' + encodeURIComponent(state.currentSessionId));
+      if (state.currentProjectId) { query.push('projectId=' + encodeURIComponent(state.currentProjectId)); }
+    } else if (scope === 'project' && state.currentProjectId) {
+      query.push('projectId=' + encodeURIComponent(state.currentProjectId));
+    }
+    return query;
+  }
+
+  function relayScopeLabel(scope) {
+    if (scope === 'session') { return 'Current session'; }
+    if (scope === 'project') { return 'Current project'; }
+    return 'All accessible jobs';
+  }
+
+  function renderRelayScopeOptions() {
+    var select = $('relayScopeSelect');
+    if (!select) { return; }
+    select.innerHTML = '';
+    var options = [];
+    if (state.currentSessionId) { options.push('session'); }
+    if (state.currentProjectId) { options.push('project'); }
+    options.push('all');
+    if (options.indexOf(state.relayScope) === -1) {
+      state.relayScope = state.currentProjectId ? 'project' : 'all';
+    }
+    for (var i = 0; i < options.length; i++) {
+      var option = document.createElement('option');
+      option.value = options[i];
+      option.appendChild(document.createTextNode(relayScopeLabel(options[i])));
+      select.appendChild(option);
+    }
+    select.value = state.relayScope;
+  }
+
+  function setRelayConnection(message, isError) {
+    var el = $('relayConnection');
+    if (!el) { return; }
+    el.className = 'relayConnection' + (isError ? ' error' : '');
+    el.innerHTML = '';
+    el.appendChild(document.createTextNode(message || 'Ready'));
+  }
+
+  function relayNotify(message, isError) {
+    var el = $('relayNotice');
+    if (!el) { return; }
+    if (state.relayNoticeTimer) { clearTimeout(state.relayNoticeTimer); state.relayNoticeTimer = null; }
+    el.className = 'relayNotice' + (isError ? ' error' : '');
+    el.style.display = 'block';
+    el.innerHTML = '';
+    el.appendChild(document.createTextNode(message || ''));
+    state.relayNoticeTimer = setTimeout(function () {
+      el.style.display = 'none';
+      state.relayNoticeTimer = null;
+    }, 12000);
+  }
+
+  function relayPayload(data) {
+    var payload = unwrap(data);
+    return payload && typeof payload === 'object' ? payload : {};
+  }
+
+  function relayFormatDuration(ms) {
+    if (typeof ms !== 'number' || !isFinite(ms) || ms < 0) { return ''; }
+    var seconds = Math.floor(ms / 1000);
+    if (seconds < 60) { return seconds + 's'; }
+    var minutes = Math.floor(seconds / 60);
+    if (minutes < 60) { return minutes + 'm'; }
+    return Math.floor(minutes / 60) + 'h ' + (minutes % 60) + 'm';
+  }
+
+  function relayJobIsActive(job) {
+    return job && (job.status === 'queued' || job.status === 'running' || job.status === 'waiting_approval');
+  }
+
+  function relayJobStatus(job, peek) {
+    var status = String(job.status || 'unknown');
+    if (status === 'queued' && job.queue_position) { status += ' · queue #' + job.queue_position; }
+    if (status === 'running' && peek && typeof peek.idleMs === 'number') {
+      var idle = relayFormatDuration(peek.idleMs);
+      status += peek.idleMs >= 120000 ? ' · stalled? idle ' + idle : ' · idle ' + idle;
+    }
+    if (status === 'waiting_approval') { status += ' · approval needed'; }
+    return status;
+  }
+
+  function relayNoticeForChanges(jobs, approvals) {
+    var jobMap = {};
+    var approvalMap = {};
+    var i;
+    for (i = 0; i < jobs.length; i++) {
+      jobMap[jobs[i].relay_id] = jobs[i];
+      var prior = state.relayPreviousJobs[jobs[i].relay_id];
+      if (prior && prior.status !== jobs[i].status && !relayJobIsActive(jobs[i])) {
+        relayNotify((jobs[i].label || jobs[i].relay_id) + ' is ' + jobs[i].status + '.', jobs[i].status === 'failed' || jobs[i].status === 'timed_out' || jobs[i].status === 'blocked');
+      }
+      var stage = jobs[i].delivery ? jobs[i].delivery.stage : null;
+      var priorStage = prior && prior.delivery ? prior.delivery.stage : null;
+      if (prior && stage === 'ready_to_land' && priorStage !== 'ready_to_land') {
+        relayNotify((jobs[i].label || jobs[i].relay_id) + ' is ready to land.', false);
+      }
+    }
+    for (i = 0; i < approvals.length; i++) {
+      approvalMap[approvals[i].approval_id] = approvals[i];
+      if (!state.relayPreviousApprovals[approvals[i].approval_id]) {
+        relayNotify('Approval needed: ' + (approvals[i].tool_name || 'worker request') + '.', false);
+      }
+    }
+    state.relayPreviousJobs = jobMap;
+    state.relayPreviousApprovals = approvalMap;
+  }
+
+  function relayPeekJobs(jobs, onDone) {
+    var active = [];
+    for (var i = 0; i < jobs.length; i++) {
+      if (relayJobIsActive(jobs[i])) { active.push(jobs[i]); }
+    }
+    if (!active.length) { state.relayPeeks = {}; onDone(); return; }
+    var peeks = {};
+    var remaining = active.length;
+    for (var j = 0; j < active.length; j++) {
+      (function (job) {
+        xhr('GET', '/api/agent-relay/jobs/' + encodeURIComponent(job.relay_id) + '/peek?limit=5', null, authHeaders(), function (data) {
+          var payload = relayPayload(data);
+          if (payload.peek) { peeks[job.relay_id] = payload.peek; }
+          remaining -= 1;
+          if (!remaining) { state.relayPeeks = peeks; onDone(); }
+        }, function () {
+          remaining -= 1;
+          if (!remaining) { state.relayPeeks = peeks; onDone(); }
+        });
+      })(active[j]);
+    }
+  }
+
+  function relayActionError(data, fallback) {
+    return (data && (data.error || data.message)) || fallback;
+  }
+
+  function decideRelayApproval(approvalId, allow, card) {
+    var buttons = card.getElementsByTagName('button');
+    for (var i = 0; i < buttons.length; i++) { buttons[i].disabled = true; }
+    xhr('POST', '/api/agent-relay/approvals/' + encodeURIComponent(approvalId) + '/decide', { allow: allow, reason: null }, authHeaders(), function () {
+      relayNotify((allow ? 'Approved: ' : 'Denied: ') + approvalId + '.', false);
+      loadRelay();
+    }, function (data) {
+      for (var j = 0; j < buttons.length; j++) { buttons[j].disabled = false; }
+      relayNotify(relayActionError(data, 'Approval decision failed.'), true);
+    });
+  }
+
+  function cancelRelayJob(relayId, card) {
+    var buttons = card.getElementsByTagName('button');
+    for (var i = 0; i < buttons.length; i++) { buttons[i].disabled = true; }
+    xhr('POST', '/api/agent-relay/jobs/' + encodeURIComponent(relayId) + '/cancel', {}, authHeaders(), function () {
+      relayNotify('Relay job cancelled.', false);
+      loadRelay();
+    }, function (data) {
+      for (var j = 0; j < buttons.length; j++) { buttons[j].disabled = false; }
+      relayNotify(relayActionError(data, 'Could not cancel relay job.'), true);
+    });
+  }
+
+  function landRelayRehearsal(rehearsalId, card) {
+    var buttons = card.getElementsByTagName('button');
+    for (var i = 0; i < buttons.length; i++) { buttons[i].disabled = true; }
+    xhr('POST', '/api/agent-relay/deliveries/' + encodeURIComponent(rehearsalId) + '/land', {}, authHeaders(), function () {
+      relayNotify('Relay work landed on your checkout.', false);
+      loadRelay();
+    }, function (data) {
+      for (var j = 0; j < buttons.length; j++) { buttons[j].disabled = false; }
+      relayNotify(relayActionError(data, 'Could not land this work.'), true);
+    });
+  }
+
+  function followUpRelayJob(relayId, input, card) {
+    var prompt = input.value || '';
+    if (!prompt.replace(/^\s+|\s+$/g, '')) {
+      relayNotify('Enter a follow-up for this worker.', true);
+      input.focus();
+      return;
+    }
+    var buttons = card.getElementsByTagName('button');
+    for (var i = 0; i < buttons.length; i++) { buttons[i].disabled = true; }
+    xhr('POST', '/api/agent-relay/jobs/' + encodeURIComponent(relayId) + '/follow-up', { prompt: prompt }, authHeaders(), function () {
+      input.value = '';
+      relayNotify('Follow-up sent to the worker.', false);
+      loadRelay();
+    }, function (data) {
+      for (var j = 0; j < buttons.length; j++) { buttons[j].disabled = false; }
+      relayNotify(relayActionError(data, 'Could not send follow-up.'), true);
+    });
+  }
+
+  function renderRelayApproval(approval) {
+    var card = document.createElement('div');
+    card.className = 'relayApproval';
+    var title = document.createElement('div');
+    title.className = 'relayApprovalTitle';
+    title.appendChild(document.createTextNode(approval.tool_name || 'Worker approval request'));
+    card.appendChild(title);
+    var meta = document.createElement('div');
+    meta.className = 'relayApprovalMeta';
+    meta.appendChild(document.createTextNode('Job ' + (approval.relay_id || '—') + ' · request ' + (approval.request_id || approval.approval_id || '—')));
+    card.appendChild(meta);
+    if (approval.reason) {
+      var reason = document.createElement('div');
+      reason.className = 'relayApprovalReason';
+      reason.appendChild(document.createTextNode('Reason: ' + approval.reason));
+      card.appendChild(reason);
+    }
+    if (approval.cwd) {
+      var cwd = document.createElement('div');
+      cwd.className = 'relayApprovalMeta';
+      cwd.appendChild(document.createTextNode('Working directory: ' + approval.cwd));
+      card.appendChild(cwd);
+    }
+    if (approval.command) {
+      var command = document.createElement('div');
+      command.className = 'relayApprovalCommand';
+      command.appendChild(document.createTextNode(approval.command));
+      card.appendChild(command);
+    }
+    if (approval.paths && approval.paths.length) {
+      var paths = document.createElement('div');
+      paths.className = 'relayApprovalPaths';
+      paths.appendChild(document.createTextNode('Paths: ' + approval.paths.join(', ') + (approval.pathsTruncated ? ' +' + approval.pathsTruncated + ' more' : '')));
+      card.appendChild(paths);
+    }
+    var actions = document.createElement('div');
+    actions.className = 'relayActions';
+    var approve = document.createElement('button');
+    approve.appendChild(document.createTextNode('Approve'));
+    approve.setAttribute('aria-label', 'Approve relay request ' + (approval.approval_id || ''));
+    var deny = document.createElement('button');
+    deny.className = 'destructive';
+    deny.appendChild(document.createTextNode('Deny'));
+    deny.setAttribute('aria-label', 'Deny relay request ' + (approval.approval_id || ''));
+    approve.onclick = function () { decideRelayApproval(approval.approval_id, true, card); };
+    deny.onclick = function () { decideRelayApproval(approval.approval_id, false, card); };
+    actions.appendChild(approve);
+    actions.appendChild(deny);
+    card.appendChild(actions);
+    return card;
+  }
+
+  function renderRelayJob(job) {
+    var peek = state.relayPeeks[job.relay_id];
+    var card = document.createElement('div');
+    card.className = 'relayCard' + (peek && job.status === 'running' && peek.idleMs >= 120000 ? ' stalled' : '');
+    var title = document.createElement('div');
+    title.className = 'relayCardTitle';
+    title.appendChild(document.createTextNode(job.label || job.task || job.relay_id || 'Relay job'));
+    card.appendChild(title);
+    var meta = document.createElement('div');
+    meta.className = 'relayCardMeta';
+    var model = job.model_label || job.model || job.provider || 'worker';
+    meta.appendChild(document.createTextNode(relayJobStatus(job, peek) + ' · ' + model + ' · ' + (job.relay_id || '')));
+    card.appendChild(meta);
+    if (job.task) {
+      var task = document.createElement('div');
+      task.className = 'relayCardTask';
+      task.appendChild(document.createTextNode(job.task));
+      card.appendChild(task);
+    }
+    if (peek && (peek.recentOutput || (peek.recentActivity && peek.recentActivity.length))) {
+      var live = document.createElement('div');
+      live.className = 'relayCardPeek';
+      var detail = peek.recentOutput || peek.recentActivity[peek.recentActivity.length - 1].detail || 'Recent activity';
+      live.appendChild(document.createTextNode('Live: ' + detail));
+      card.appendChild(live);
+    }
+    if (job.delivery && job.delivery.stage && job.delivery.stage !== 'pending') {
+      var delivery = document.createElement('div');
+      delivery.className = 'relayCardMeta';
+      delivery.appendChild(document.createTextNode('Delivery: ' + String(job.delivery.stage).replace(/_/g, ' ')));
+      card.appendChild(delivery);
+    }
+    if (job.denied_actions && job.denied_actions.length) {
+      var denied = document.createElement('div');
+      denied.className = 'relayCardMeta';
+      denied.appendChild(document.createTextNode(job.denied_actions.length + ' action(s) blocked at the sandbox boundary'));
+      card.appendChild(denied);
+    }
+    if (job.result && job.result.summary) {
+      var result = document.createElement('div');
+      result.className = 'relayCardResult';
+      result.appendChild(document.createTextNode(job.result.summary));
+      card.appendChild(result);
+    } else if (job.error) {
+      var error = document.createElement('div');
+      error.className = 'relayCardResult';
+      error.appendChild(document.createTextNode(job.error));
+      card.appendChild(error);
+    }
+    var actions = document.createElement('div');
+    actions.className = 'relayActions';
+    if (relayJobIsActive(job)) {
+      var cancel = document.createElement('button');
+      cancel.className = 'destructive';
+      cancel.appendChild(document.createTextNode('Cancel'));
+      cancel.setAttribute('aria-label', 'Cancel relay job ' + (job.label || job.relay_id || ''));
+      cancel.onclick = function () { cancelRelayJob(job.relay_id, card); };
+      actions.appendChild(cancel);
+    }
+    if (job.delivery && job.delivery.stage === 'ready_to_land' && job.delivery.rehearsalId) {
+      var land = document.createElement('button');
+      land.appendChild(document.createTextNode('Land'));
+      land.setAttribute('aria-label', 'Land relay job ' + (job.label || job.relay_id || ''));
+      land.onclick = function () { landRelayRehearsal(job.delivery.rehearsalId, card); };
+      actions.appendChild(land);
+    }
+    card.appendChild(actions);
+    var follow = document.createElement('div');
+    follow.className = 'relayFollowUp';
+    var followInput = document.createElement('textarea');
+    followInput.setAttribute('aria-label', 'Follow-up for ' + (job.label || job.relay_id || 'relay job'));
+    followInput.setAttribute('placeholder', 'Ask this worker for one focused follow-up');
+    var followButton = document.createElement('button');
+    followButton.className = 'secondary';
+    followButton.appendChild(document.createTextNode('Send follow-up'));
+    followButton.onclick = function () { followUpRelayJob(job.relay_id, followInput, card); };
+    follow.appendChild(followInput);
+    follow.appendChild(followButton);
+    card.appendChild(follow);
+    return card;
+  }
+
+  function renderRelay(jobs, approvals) {
+    var el = $('relayList');
+    if (!el) { return; }
+    el.innerHTML = '';
+    if (approvals.length) {
+      var approvalTitle = document.createElement('div');
+      approvalTitle.className = 'relayBatchTitle';
+      approvalTitle.appendChild(document.createTextNode('Approvals inbox (' + approvals.length + ')'));
+      el.appendChild(approvalTitle);
+      for (var a = 0; a < approvals.length; a++) { el.appendChild(renderRelayApproval(approvals[a])); }
+    }
+    if (!jobs.length && !approvals.length) {
+      var empty = document.createElement('div');
+      empty.className = 'relayEmpty';
+      empty.appendChild(document.createTextNode('No Relay jobs in this scope.'));
+      el.appendChild(empty);
+      return;
+    }
+    var batches = {};
+    var order = [];
+    for (var i = 0; i < jobs.length; i++) {
+      var batchId = jobs[i].batch_id || 'unbatched';
+      if (!batches[batchId]) { batches[batchId] = []; order.push(batchId); }
+      batches[batchId].push(jobs[i]);
+    }
+    for (var b = 0; b < order.length; b++) {
+      var batch = document.createElement('section');
+      batch.className = 'relayBatch';
+      var batchTitle = document.createElement('div');
+      batchTitle.className = 'relayBatchTitle';
+      batchTitle.appendChild(document.createTextNode('Batch ' + order[b] + ' · ' + batches[order[b]].length + ' job' + (batches[order[b]].length === 1 ? '' : 's')));
+      batch.appendChild(batchTitle);
+      for (var j = 0; j < batches[order[b]].length; j++) { batch.appendChild(renderRelayJob(batches[order[b]][j])); }
+      el.appendChild(batch);
+    }
+  }
+
+  /* The active list intentionally uses active=true. When a worker finishes
+     between polls it disappears from that list, so fetch its detail once to
+     keep the open screen's completion notice reliable. */
+  function relayFetchFinishedDetails(jobs, onDone) {
+    var missing = [];
+    for (var key in state.relayPreviousJobs) {
+      if (Object.prototype.hasOwnProperty.call(state.relayPreviousJobs, key)) {
+        var prior = state.relayPreviousJobs[key];
+        if (relayJobIsActive(prior)) {
+          var found = false;
+          for (var i = 0; i < jobs.length; i++) { if (jobs[i].relay_id === key) { found = true; break; } }
+          if (!found) { missing.push(key); }
+        }
+      }
+    }
+    if (!missing.length) { onDone(jobs); return; }
+    var observed = jobs.slice();
+    var remaining = missing.length;
+    for (var j = 0; j < missing.length; j++) {
+      (function (relayId) {
+        xhr('GET', '/api/agent-relay/jobs/' + encodeURIComponent(relayId), null, authHeaders(), function (data) {
+          var payload = relayPayload(data);
+          if (payload.job) { observed.push(payload.job); }
+          remaining -= 1;
+          if (!remaining) { onDone(observed); }
+        }, function () {
+          remaining -= 1;
+          if (!remaining) { onDone(observed); }
+        });
+      })(missing[j]);
+    }
+  }
+
+  function loadRelay() {
+    if (state.activeScreen !== 'screenRelay' || state.relayLoading || document.hidden) { return; }
+    state.relayLoading = true;
+    renderRelayScopeOptions();
+    var status = $('relayStatusSelect').value || 'active';
+    var query = relayScopeParams();
+    if (status === 'active') { query.push('active=true'); }
+    query.push('limit=200');
+    var jobsUrl = '/api/agent-relay/jobs?' + query.join('&');
+    xhr('GET', jobsUrl, null, authHeaders(), function (data) {
+      var payload = relayPayload(data);
+      var jobs = Array.isArray(payload.jobs) ? payload.jobs : [];
+      if (status === 'completed') {
+        jobs = jobs.filter(function (job) { return !relayJobIsActive(job); });
+      }
+      relayFetchFinishedDetails(jobs, function (observedJobs) {
+      var approvalQuery = [];
+      if (state.relayScope === 'session' && state.currentSessionId) {
+        approvalQuery.push('sessionId=' + encodeURIComponent(state.currentSessionId));
+      }
+      approvalQuery.push('status=pending');
+      approvalQuery.push('limit=200');
+      xhr('GET', '/api/agent-relay/approvals?' + approvalQuery.join('&'), null, authHeaders(), function (approvalData) {
+        var approvalPayload = relayPayload(approvalData);
+        var approvals = Array.isArray(approvalPayload.approvals) ? approvalPayload.approvals : [];
+        if (state.relayScope === 'project' && state.currentProjectId) {
+          approvals = approvals.filter(function (approval) {
+            for (var i = 0; i < jobs.length; i++) { if (jobs[i].relay_id === approval.relay_id) { return true; } }
+            return false;
+          });
+        }
+        relayPeekJobs(jobs, function () {
+          state.relayJobs = jobs;
+          state.relayApprovals = approvals;
+          relayNoticeForChanges(observedJobs, approvals);
+          renderRelay(jobs, approvals);
+          state.relayLoading = false;
+          setRelayConnection('Updated ' + new Date().toLocaleTimeString(), false);
+        });
+      }, function (data) {
+        state.relayLoading = false;
+        setRelayConnection(relayActionError(data, 'Relay approvals connection error; retrying.'), true);
+        renderRelay(jobs, []);
+      });
+      });
+    }, function (data) {
+      state.relayLoading = false;
+      setRelayConnection(relayActionError(data, 'Relay connection error; retrying.'), true);
+      renderRelay(state.relayJobs, state.relayApprovals);
+    });
+  }
+
+  function startRelayPolling() {
+    if (state.relayPollTimer) { clearInterval(state.relayPollTimer); }
+    state.relayPollTimer = setInterval(function () {
+      if (!document.hidden) { loadRelay(); }
+    }, 5000);
+  }
+
+  function openRelay(projectId, sessionId) {
+    if (projectId !== undefined) { state.currentProjectId = projectId || null; }
+    if (sessionId !== undefined) { state.currentSessionId = sessionId || null; }
+    state.relayScope = state.currentSessionId ? 'session' : (state.currentProjectId ? 'project' : 'all');
+    state.relayPreviousJobs = {};
+    state.relayPreviousApprovals = {};
+    renderRelayScopeOptions();
+    showScreen('screenRelay');
+    updateHashAndNav('screenRelay', { projectId: state.currentProjectId, sessionId: state.currentSessionId });
+    loadRelay();
+    startRelayPolling();
+  }
+
+  function leaveRelay() {
+    if (state.relayPollTimer) { clearInterval(state.relayPollTimer); state.relayPollTimer = null; }
+    if (state.currentSessionId) {
+      showScreen('screenSessions');
+      updateHashAndNav('screenSessions', { projectId: state.currentProjectId, projectName: state.currentProjectName, categoryId: state.currentCategoryId, categoryName: state.currentCategoryName });
+    } else {
+      navGoCategories();
+    }
+  }
+
   // ---- Action Centre (Mission Control API) ----
 
   function openReview() {
@@ -2966,6 +3536,14 @@
       clearInterval(state.reviewPollTimer);
       state.reviewPollTimer = null;
     }
+    if (state.relayPollTimer) {
+      clearInterval(state.relayPollTimer);
+      state.relayPollTimer = null;
+    }
+    if (state.relayNoticeTimer) {
+      clearTimeout(state.relayNoticeTimer);
+      state.relayNoticeTimer = null;
+    }
     state.reviewActionStates = {};
     try {
       window.localStorage.removeItem(TOKEN_KEY);
@@ -2982,6 +3560,7 @@
   $('btnThemeSessions').onclick = toggleTheme;
   $('btnThemeChat').onclick = toggleTheme;
   $('btnThemeReview').onclick = toggleTheme;
+  $('btnThemeRelay').onclick = toggleTheme;
   $('btnThemeGit').onclick = toggleTheme;
   $('btnThemePickerClose').onclick = closeThemePicker;
   $('themeChoiceFog').onclick = function () { chooseTheme('fog'); };
@@ -3033,8 +3612,17 @@
   $('btnStopChat').onclick = stopChat;
   $('btnLatest').onclick = function () { scrollChatToBottom(); };
   $('btnReviewFromCategories').onclick = function () { openReview(); };
+  $('btnRelayFromCategories').onclick = function () { openRelay(null, null); };
+  $('btnRelayFromSessions').onclick = function () { openRelay(state.currentProjectId, null); };
   $('btnRefreshReview').onclick = function () { loadReviewItems(); };
   $('btnBackFromReview').onclick = leaveReview;
+  $('btnRefreshRelay').onclick = function () { loadRelay(); };
+  $('btnBackFromRelay').onclick = leaveRelay;
+  $('relayScopeSelect').onchange = function () {
+    state.relayScope = $('relayScopeSelect').value;
+    loadRelay();
+  };
+  $('relayStatusSelect').onchange = function () { loadRelay(); };
   $('btnGitFromProjects').onclick = function () {
     if (!state.currentProjectId) { return; }
     openGit(state.currentProjectId, state.currentProjectName);
@@ -3087,12 +3675,22 @@
 
   window.addEventListener('online', function () {
     if (state.activeScreen === 'screenChat' && !state.wsConnected) { connectWs(true); }
+    if (state.activeScreen === 'screenRelay') { setRelayConnection('Reconnected; refreshing…', false); loadRelay(); }
   }, false);
   window.addEventListener('offline', function () {
     setConnectionStatus('Offline', 'offline');
+    if (state.activeScreen === 'screenRelay') { setRelayConnection('Offline; retrying when connected.', true); }
   }, false);
   document.addEventListener('visibilitychange', function () {
     if (!document.hidden && state.activeScreen === 'screenChat' && !state.wsConnected) { connectWs(true); }
+    if (state.activeScreen === 'screenRelay') {
+      if (document.hidden) {
+        if (state.relayPollTimer) { clearInterval(state.relayPollTimer); state.relayPollTimer = null; }
+      } else {
+        loadRelay();
+        startRelayPolling();
+      }
+    }
   }, false);
 
   // ---- Pull to refresh ----
@@ -3123,6 +3721,9 @@
       loadSessions(done);
     } else if (screen === 'screenReview') {
       loadReviewItems(done);
+    } else if (screen === 'screenRelay') {
+      loadRelay();
+      done();
     } else if (screen === 'screenChat') {
       reloadMessagesForRefresh(done);
     } else if (screen === 'screenGit') {

@@ -648,12 +648,10 @@ export class ClaudeSessionsProvider implements IProviderSessions {
       }
     }
 
-    let total = 0;
-    for (const msg of normalized) {
-      if (msg.kind !== 'tool_result') {
-        total += 1;
-      }
-    }
+    // `total` counts exactly the rows `offset`/`limit` slice over. Excluding
+    // tool_result rows here made clients' offset (which includes them) run
+    // ahead of total, skewing "N of M", hasMore, and tail-bridge planning.
+    const total = normalized.length;
     const normalizedOffset = Math.max(0, offset);
     const normalizedLimit = limit === null ? null : Math.max(0, limit);
     const { page, hasMore } = sliceTailPage(normalized, normalizedLimit, normalizedOffset);

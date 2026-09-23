@@ -1,4 +1,4 @@
-import { MessageSquare, Terminal, Folder, GitBranch, ClipboardCheck, MonitorPlay, Gauge, type LucideIcon } from 'lucide-react';
+import { MessageSquare, SquareTerminal, Terminal, Folder, GitBranch, ClipboardCheck, MonitorPlay, Gauge, type LucideIcon } from 'lucide-react';
 import type { Dispatch, SetStateAction } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -12,6 +12,8 @@ type MainContentTabSwitcherProps = {
   setActiveTab: Dispatch<SetStateAction<AppTab>>;
   shouldShowTasksTab: boolean;
   shouldShowBrowserTab: boolean;
+  isMobile: boolean;
+  showChatTab?: boolean;
 };
 
 type BuiltInTab = {
@@ -33,6 +35,7 @@ type TabDefinition = BuiltInTab | PluginTab;
 
 const BASE_TABS: BuiltInTab[] = [
   { kind: 'builtin', id: 'chat',   labelKey: 'tabs.chat',   icon: MessageSquare },
+  { kind: 'builtin', id: 'terminal', labelKey: 'tabs.terminal', icon: SquareTerminal },
   { kind: 'builtin', id: 'shell',  labelKey: 'tabs.shell',  icon: Terminal },
   { kind: 'builtin', id: 'files',  labelKey: 'tabs.files',  icon: Folder },
   { kind: 'builtin', id: 'git',    labelKey: 'tabs.git',    icon: GitBranch },
@@ -58,12 +61,17 @@ export default function MainContentTabSwitcher({
   setActiveTab,
   shouldShowTasksTab,
   shouldShowBrowserTab,
+  isMobile,
+  showChatTab = true,
 }: MainContentTabSwitcherProps) {
   const { t } = useTranslation();
   const { plugins } = usePlugins();
 
   const builtInTabs: BuiltInTab[] = [
-    ...BASE_TABS,
+    ...BASE_TABS.filter((tab) => {
+      if (!showChatTab && tab.id === 'chat') return false;
+      return !isMobile || tab.id !== 'terminal';
+    }),
     ...(shouldShowBrowserTab ? [BROWSER_TAB] : []),
     ...(shouldShowTasksTab ? [TASKS_TAB] : []),
   ];
@@ -84,7 +92,16 @@ export default function MainContentTabSwitcher({
     <PillBar className="w-full justify-between md:w-auto md:justify-start">
       {tabs.map((tab) => {
         const isActive = tab.id === activeTab;
-        const displayLabel = tab.kind === 'builtin' ? t(tab.labelKey) : tab.label;
+        const workbenchLabelKey = tab.kind === 'builtin' && !showChatTab
+          ? tab.id === 'terminal'
+            ? 'tabs.projectTerminal'
+            : tab.id === 'shell'
+              ? 'tabs.agentCli'
+              : tab.labelKey
+          : null;
+        const displayLabel = tab.kind === 'builtin'
+          ? t(workbenchLabelKey ?? tab.labelKey)
+          : tab.label;
 
         return (
           <Tooltip key={tab.id} content={displayLabel} position="bottom">

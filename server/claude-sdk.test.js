@@ -6,9 +6,11 @@ import {
   createRequestId,
   extractPermissionPaths,
   extractTokenBudget,
+  isTurnActivityMessage,
   mapCliOptionsToSDK,
   resolveApprovalTimeoutMs,
   resolveToolApproval,
+  trackBackgroundTask,
   waitForToolApproval,
 } from './claude-sdk.js';
 
@@ -143,4 +145,27 @@ test('mapCliOptionsToSDK keeps the requested model for relay workers and drops s
 test('mapCliOptionsToSDK still loads project/user/local settings for interactive (non-relay) sessions', () => {
   const sdkOptions = mapCliOptionsToSDK({ model: 'claude-sonnet-5' });
   assert.deepEqual(sdkOptions.settingSources, ['project', 'user', 'local']);
+});
+
+test('trackBackgroundTask keeps tasks in flight until they settle', () => {
+  const inflight = new Set();
+  trackBackgroundTask({ type: 'system', subtype: 'task_started', task_id: 'bash-1' }, inflight);
+  trackBackgroundTask({ type: 'system', subtype: 'task_started', task_id: 'agent-2' }, inflight);
+  trackBackgroundTask({ type: 'system', subtype: 'task_progress', task_id: 'bash-1' }, inflight);
+  trackBackgroundTask({ type: 'system', subtype: 'task_updated', task_id: 'bash-1', patch: { is_backgrounded: true } }, inflight);
+  assert.deepEqual([...inflight].sort(), ['agent-2', 'bash-1']);
+
+  trackBackgroundTask({ type: 'system', subtype: 'task_notification', task_id: 'bash-1', status: 'completed' }, inflight);
+  trackBackgroundTask({ type: 'system', subtype: 'task_updated', task_id: 'agent-2', patch: { status: 'killed' } }, inflight);
+  assert.equal(inflight.size, 0);
+
+  trackBackgroundTask({ type: 'result', task_id: 'ignored' }, inflight);
+  assert.equal(inflight.size, 0);
+});
+
+test('isTurnActivityMessage only counts model output as a resumed turn', () => {
+  assert.equal(isTurnActivityMessage({ type: 'assistant' }), true);
+  assert.equal(isTurnActivityMessage({ type: 'stream_event' }), true);
+  assert.equal(isTurnActivityMessage({ type: 'system', subtype: 'task_notification' }), false);
+  assert.equal(isTurnActivityMessage({ type: 'result' }), false);
 });

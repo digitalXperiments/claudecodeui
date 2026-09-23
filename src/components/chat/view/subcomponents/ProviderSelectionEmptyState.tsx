@@ -9,6 +9,7 @@ import type {
 } from "../../../../types/app";
 import { useAgentVisibility } from "../../../../hooks/useAgentVisibility";
 import { filterVisibleModels, useHiddenModels } from "../../../../utils/modelVisibility";
+import { PROVIDER_MODEL_CHANGED_EVENT, type ProviderModelChangedDetail } from "../../../../constants/providerModelEvents";
 import SessionProviderLogo from "../../../llm-logo-provider/SessionProviderLogo";
 import { NextTaskBanner } from "../../../task-master";
 import {
@@ -302,6 +303,9 @@ export default function ProviderSelectionEmptyState({
       setProvider(providerId);
       localStorage.setItem("selected-provider", providerId);
       setModelForProvider(providerId, modelValue);
+      window.dispatchEvent(new CustomEvent<ProviderModelChangedDetail>(PROVIDER_MODEL_CHANGED_EVENT, {
+        detail: { provider: providerId, model: modelValue },
+      }));
       setDialogOpen(false);
       setTimeout(() => textareaRef.current?.focus(), 100);
     },
@@ -437,15 +441,11 @@ export default function ProviderSelectionEmptyState({
                           >
                             <div className="min-w-0 flex-1">
                               <div className="truncate">{model.label}</div>
-                              {/* 
-                              // * Temporarly commented out because the description of models from claude 
-                              // * was a bit inconsistent.  Will return it back when it becomes more consistent.
-                              */}
-                              {/* {model.description && (
+                              {model.description && (
                                 <div className="truncate text-xs text-muted-foreground">
                                   {model.description}
                                 </div>
-                              )} */}
+                              )}
                             </div>
                             {isSelected && (
                               <Check className="ml-auto h-4 w-4 shrink-0 text-primary" />

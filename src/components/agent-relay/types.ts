@@ -7,6 +7,7 @@ export type AgentRelayStatus =
   | 'running'
   | 'waiting_approval'
   | 'completed'
+  | 'blocked'
   | 'failed'
   | 'cancelled'
   | 'timed_out';
@@ -28,7 +29,108 @@ export type AgentRelayApproval = {
   decision_reason: string | null;
   decided_by: string | null;
   created_at: string;
+  expires_at?: string | null;
   decided_at: string | null;
+};
+
+export type AgentRelayVerificationEvidence = {
+  command: string;
+  cwd: string;
+  testedCommit: string | null;
+  exitCode: number | null;
+  timedOut: boolean;
+  cancelled: boolean;
+  capped: boolean;
+  output: string;
+  stdout: string;
+  stderr: string;
+  passed: boolean;
+  reason?: string;
+};
+
+export type AgentRelayVerification = {
+  workspaceId: string;
+  cwd: string;
+  testedCommit: string | null;
+  evidence: AgentRelayVerificationEvidence[];
+  passed: boolean;
+  unavailable: boolean;
+  message?: string;
+};
+
+export type AgentRelayRehearsalResult = {
+  deliveryId: string;
+  passed: boolean;
+  outcome: 'applied' | 'conflict' | 'error';
+  conflicts: Array<{ relayId: string; path: string; reason: string }>;
+  checks: AgentRelayVerification | null;
+};
+
+export type AgentRelayDeliveryStage =
+  | 'pending'
+  | 'verified'
+  | 'verify_failed'
+  | 'ready_to_land'
+  | 'rehearsal_failed'
+  | 'landed'
+  | 'discarded';
+
+/** Server-owned verify → rehearse → land state of one writer. */
+export type AgentRelayDeliveryState = {
+  stage: AgentRelayDeliveryStage;
+  verifyId: string | null;
+  verifyPassed: boolean | null;
+  rehearsalId: string | null;
+  rehearsalPassed: boolean | null;
+  landId: string | null;
+  landedSha: string | null;
+};
+
+export type AgentRelayUnlandedWorkspace = {
+  relay_id: string;
+  label: string | null;
+  batch_id: string;
+  status: AgentRelayStatus;
+  result_status: string | null;
+  workspace_id: string;
+  branch: string;
+  head_sha: string | null;
+  changed_files: number;
+  delivery: AgentRelayDeliveryState | null;
+};
+
+export type AgentRelayLandEntry = {
+  relayId: string;
+  deliveryId?: string;
+  commitSha?: string | null;
+  applied?: number;
+  merged?: string[];
+  conflicts?: Array<{ path: string; reason: string }>;
+  leftUncommitted?: string[];
+  cleanedUp?: boolean;
+  skipped?: string;
+};
+
+export type AgentRelayLandResult = { landed: AgentRelayLandEntry[] };
+
+export type AgentRelayDeniedAction = {
+  at: string;
+  attempt: number;
+  tool: string | null;
+  command: string | null;
+  paths: string[];
+  reason: string;
+  via: string;
+};
+
+export type AgentRelayFailover = {
+  at: string;
+  fromProvider: LLMProvider;
+  fromModel: string | null;
+  toProvider: LLMProvider;
+  toModel: string | null;
+  failure: string;
+  reason: string;
 };
 
 export type AgentRelayWorkerProfile = {
@@ -54,6 +156,14 @@ export type AgentRelaySettings = {
   defaultApprovalPolicy: AgentRelayApprovalPolicy;
   installSkill: boolean;
   approvalTimeoutMs: number;
+  workerSandbox: 'enforce' | 'off';
+  workerNetwork: 'open' | 'restricted';
+  workerAllowedDomains: string[];
+  allowLeadManualApproval: boolean;
+  autoVerify: boolean;
+  autoRehearse: boolean;
+  autoLand: 'off' | 'on_pass';
+  defaultWorkerMcpServers: string[];
 };
 
 export type AgentRelayJob = {
@@ -115,6 +225,12 @@ export type AgentRelayJob = {
   finished_at: string | null;
   updated_at: string;
   usage?: { totalTokens: number | null; costUsd: number | null; runs: number } | null;
+  /** Actions the worker's envelope refused (policy, Jev, or timeout). */
+  denied_actions?: AgentRelayDeniedAction[];
+  /** Provider switches after quota/auth/launch failures. */
+  failovers?: AgentRelayFailover[];
+  /** Writers only: delivery pipeline state from the server. */
+  delivery?: AgentRelayDeliveryState | null;
 };
 
 export type AgentRelayRuntimeStatus = {

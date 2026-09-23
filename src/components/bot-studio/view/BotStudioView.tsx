@@ -12,6 +12,7 @@ import { useBotStudio } from '../hooks/useBotStudio';
 import { useBotStudioLayout } from '../hooks/useBotStudioLayout';
 import { getActionSemantics } from '../../mission-control/utils/actionSemantics';
 import type { Bot, WorkThisSessionRequest } from '../types';
+import { botStudioApi } from '../api/botStudioApi';
 import InlineToast from '../ui/InlineToast';
 import Skeleton from '../ui/Skeleton';
 
@@ -19,11 +20,13 @@ import ActivityView from './ActivityView';
 import BotDetailView, { type DetailTab } from './BotDetailView';
 import BotRoster from './BotRoster';
 import BotStudioHeader from './BotStudioHeader';
+import CommandCenterView from './CommandCenterView';
+import ExceptionsView from './ExceptionsView';
 import ContextPane from './ContextPane';
 import ImportView from './ImportView';
 import InboxView from './InboxView';
 
-type BotStudioViewKey = 'inbox' | 'bots' | 'templates' | 'activity' | 'import';
+type BotStudioViewKey = 'dashboard' | 'inbox' | 'bots' | 'templates' | 'activity' | 'exceptions' | 'import';
 
 type BotStudioRoute = {
   page: BotStudioViewKey | 'import' | 'new';
@@ -31,7 +34,7 @@ type BotStudioRoute = {
   tab?: DetailTab;
 };
 
-const DETAIL_TABS: DetailTab[] = ['overview', 'inbox', 'brief', 'tools', 'triggers', 'outputs', 'ticks', 'danger'];
+const DETAIL_TABS: DetailTab[] = ['overview', 'inbox', 'brief', 'tools', 'triggers', 'outputs', 'ticks', 'simulator', 'versions', 'memory', 'trust', 'iterate', 'danger'];
 
 function parseRoute(pathname: string): BotStudioRoute {
   const parts = pathname.split('/').filter(Boolean);
@@ -39,13 +42,15 @@ function parseRoute(pathname: string): BotStudioRoute {
   if (tail[0] === 'new') return { page: 'new' };
   if (tail[0] === 'templates') return { page: 'templates' };
   if (tail[0] === 'activity') return { page: 'activity' };
+  if (tail[0] === 'exceptions') return { page: 'exceptions' };
   if (tail[0] === 'import') return { page: 'import' };
   if (tail[0] === 'b' && tail[1]) {
     const tab = DETAIL_TABS.includes(tail[2] as DetailTab) ? tail[2] as DetailTab : 'overview';
     return { page: 'bots', botId: decodeURIComponent(tail[1]), tab };
   }
-  if (tail[0] === 'inbox' || !tail.length) return { page: 'inbox' };
-  return { page: 'inbox' };
+  if (tail[0] === 'inbox') return { page: 'inbox' };
+  if (!tail.length) return { page: 'dashboard' };
+  return { page: 'dashboard' };
 }
 
 export default function BotStudioView({ projects, isMobile, onMenuClick, onBackToChat, onWorkThis }: { projects: Project[]; isMobile: boolean; onMenuClick?: () => void; onBackToChat: () => void; onWorkThis?: (request: WorkThisSessionRequest) => void }) {
@@ -201,31 +206,33 @@ export default function BotStudioView({ projects, isMobile, onMenuClick, onBackT
   }, [allPaused, data]);
 
   const openView = useCallback((view: BotStudioViewKey | 'import') => {
-    const path = view === 'inbox' ? '/bots/inbox' : `/bots/${view}`;
+    const path = view === 'dashboard' ? '/bots' : '/bots/' + view;
     go(path);
   }, [go]);
 
   const activeView = route.page === 'new' ? 'inbox' : route.page === 'bots' ? undefined : route.page;
   const projectsForArchitect = projects.map((project) => ({ id: project.projectId, name: project.displayName, path: project.fullPath }));
-  const contextTemporarilyCollapsed = architectOpen || route.page === 'templates' || layout.contextTemporarilyCollapsed;
-  const contextOpen = layout.contextOpen && !contextTemporarilyCollapsed;
+  const contextTemporarilyCollapsed = architectOpen || route.page === 'dashboard' || route.page === 'templates' || (route.page === 'bots' && route.tab === 'simulator') || layout.contextTemporarilyCollapsed;
+  const contextOpen = !contextTemporarilyCollapsed;
   const contextWorkChoice = workChoice?.itemId === itemForContext?.item_id ? workChoice : null;
-  const gridStyle = { '--bot-grid': `${layout.rosterOpen ? `${layout.rosterWidth}px 8px ` : ''}minmax(480px,1fr)${contextOpen ? ` 8px ${layout.contextWidth}px` : ''}` } as CSSProperties;
+  const gridStyle = { '--bot-grid': `${layout.rosterWidth}px 8px minmax(480px,1fr)${contextOpen ? ` 8px ${layout.contextWidth}px` : ''}` } as CSSProperties;
 
   if (data.loading && !data.bots.length) return <div className="space-y-4 p-5" role="status" aria-label="Loading Bot Studio"><Skeleton className="h-10 w-48" /><div className="grid gap-4 xl:grid-cols-[280px_minmax(0,1fr)_400px]"><Skeleton className="h-[min(36rem,70vh)]" /><Skeleton className="h-[min(36rem,70vh)]" /><Skeleton className="h-[min(36rem,70vh)]" /></div></div>;
 
   return <div className="flex h-full min-h-0 flex-col bg-background text-foreground">
     {compact && onMenuClick ? <button type="button" onClick={onMenuClick} aria-label="Open sidebar" className="absolute left-3 top-3 z-10 rounded-lg border border-border bg-card p-2 text-muted-foreground shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"><Menu className="h-4 w-4" /></button> : null}
-    <BotStudioHeader search={search} onSearchChange={setSearch} onBackToChat={onBackToChat} onNewBot={() => openArchitect()} onPauseAll={() => void pauseOrResumeAll()} pauseAllLabel={allPaused ? 'Resume all' : 'Pause all'} onToggleRoster={layout.toggleRoster} onToggleContext={layout.toggleContext} rosterOpen={layout.rosterOpen} contextOpen={contextOpen} isConnected={data.isConnected} />
+    <BotStudioHeader search={search} onSearchChange={setSearch} onBackToChat={onBackToChat} onNewBot={() => openArchitect()} onPauseAll={() => void pauseOrResumeAll()} pauseAllLabel={allPaused ? 'Resume all' : 'Pause all'} isConnected={data.isConnected} />
     {data.error ? <div className="mx-4 mt-3 rounded-lg bg-destructive/10 px-3 py-2 text-xs text-destructive">{data.error}<button type="button" className="ml-2 rounded underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={() => void data.refreshAll({ includeRuns: true })}>Retry</button></div> : null}
     {toast ? <div className="pointer-events-none fixed bottom-4 right-4 z-20"><div className="pointer-events-auto"><InlineToast message={toast.message} tone={toast.tone} onDismiss={() => setToast(null)} /></div></div> : null}
     {architectOpen ? <div className="min-h-0 flex-1 overflow-y-auto"><BotArchitect mode={architectInitial?.section_id ? 'edit' : 'create'} initialSection={architectInitial} projects={projectsForArchitect} onSaved={saveArchitect} onCancel={() => go(selectedBot ? `/bots/b/${encodeURIComponent(selectedBot.section_id)}/overview` : '/bots')} /></div> : <div ref={layout.containerRef} className="grid min-h-0 flex-1 grid-cols-1 xl:[grid-template-columns:var(--bot-grid)]" style={gridStyle}>
-      {layout.rosterOpen ? <><BotRoster bots={data.bots} selectedBotId={route.botId ?? null} search={search} activeView={activeView} onNavigate={openView} onSelect={(bot: Bot) => go(`/bots/b/${encodeURIComponent(bot.section_id)}/overview`)} /><button type="button" className="group hidden w-2 cursor-col-resize items-center justify-center border-border/70 bg-background/60 xl:flex" onPointerDown={(event) => layout.startResize('roster', event)} aria-label="Resize bot roster" title="Resize bot roster"><GripVertical className="h-5 w-3 text-muted-foreground/50 group-hover:text-primary" /></button></> : null}
+      <BotRoster bots={data.bots} selectedBotId={route.botId ?? null} search={search} activeView={activeView} onNavigate={openView} onSelect={(bot: Bot) => go(`/bots/b/${encodeURIComponent(bot.section_id)}/overview`)} /><button type="button" className="group hidden w-2 cursor-col-resize items-center justify-center border-border/70 bg-background/60 xl:flex" onPointerDown={(event) => layout.startResize('roster', event)} aria-label="Resize bot roster" title="Resize bot roster"><GripVertical className="h-5 w-3 text-muted-foreground/50 group-hover:text-primary" /></button>
       <section ref={layout.centerRef} className="flex min-h-0 min-w-0 flex-col overflow-hidden">
+        {route.page === 'dashboard' ? <CommandCenterView bots={data.bots} runsBySection={data.runsBySection} search={search} isLoading={data.activityLoading} onLoad={loadActivity} onSelectBot={(bot) => go('/bots/b/' + encodeURIComponent(bot.section_id) + '/overview')} onOpenInbox={() => openView('inbox')} onOpenActivity={() => openView('activity')} /> : null}
         {route.page === 'inbox' ? <InboxView items={filteredItems} bots={data.bots} search="" selectedItemId={selectedItem?.item_id ?? null} onSelectItem={(item) => { setSelectedItem(item); setSelectedRun(null); setPreview(null); setWorkChoice(null); }} onAction={(item, entry) => void action(item, entry)} onPreview={(item, entry) => void previewItem(item, entry)} onRetry={(item) => void data.retryItem(item.item_id)} onWork={(item) => void workItem(item)} onGenerateAssets={(item, force) => data.generateAssets(item.item_id, force)} onNotice={(message) => setToast({ message, tone: 'default' })} /> : null}
         {route.page === 'bots' ? (selectedBot ? <BotDetailView bot={selectedBot} projectName={projects.find((project) => project.projectId === selectedBot.project_id)?.displayName ?? null} workProjectName={projects.find((project) => project.projectId === selectedBot.work_project_id)?.displayName ?? null} items={data.items.filter((item) => item.section_id === selectedBot.section_id)} runs={data.runsFor(selectedBot.section_id)} selectedTab={route.tab} onTabChange={(tab) => navigate(`/bots/b/${encodeURIComponent(selectedBot.section_id)}/${tab}`)} onUpdate={async (patch) => { await data.saveBot(selectedBot.section_id, patch); }} onRun={() => data.runBot(selectedBot)} onCancelRun={(run) => void data.cancelRun(selectedBot.section_id, run.run_id).catch((error) => setToast({ message: error instanceof Error ? error.message : 'Unable to cancel tick.', tone: 'error' }))} onDelete={async () => { await data.deleteBot(selectedBot.section_id); go('/bots/inbox'); }} onDuplicate={async () => { const duplicate = await data.duplicateBot(selectedBot.section_id); go(`/bots/b/${encodeURIComponent(duplicate.section_id)}/overview`); }} onEdit={() => openArchitect(selectedBot)} onSelectItem={(item) => { setSelectedItem(item); setSelectedRun(null); setPreview(null); }} onSelectRun={(run) => { setSelectedItem(null); setSelectedRun({ ...run, bot_id: selectedBot.section_id, bot_title: selectedBot.title }); }} /> : <div className="flex flex-1 items-center justify-center p-8 text-center text-xs text-muted-foreground">Select a bot from the roster to inspect it.</div>) : null}
         {route.page === 'templates' ? <div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6"><BotTemplatesGallery connectedMcpServers={connectedMcpServers} onUse={(template: BotTemplate) => openArchitect(template.section)} /></div> : null}
         {route.page === 'activity' ? <ActivityView bots={data.bots} runsBySection={data.runsBySection} isLoading={data.activityLoading} onLoad={loadActivity} onLoadMore={() => void data.loadActivityRuns(data.activityPage + 1)} hasMore={data.activityHasMore} isLoadingMore={data.activityLoading} onSelectRun={(run, bot) => { setSelectedItem(null); setSelectedRun({ ...run, bot_id: bot.section_id, bot_title: bot.title }); }} /> : null}
+        {route.page === 'exceptions' ? <ExceptionsView onOpen={(entry) => { if (entry.itemId) { void botStudioApi.getItem(entry.itemId).then((item) => { navigate('/bots/inbox'); setSelectedItem(item); setSelectedRun(null); }).catch((reason: unknown) => setToast({ message: reason instanceof Error ? reason.message : 'Unable to open item.', tone: 'error' })); } else if (entry.runId) { navigate(`/bots/b/${encodeURIComponent(entry.sectionId)}/ticks`); setSelectedItem(null); setSelectedRun({ run_id: entry.runId, status: 'failed', bot_id: entry.sectionId, bot_title: entry.botTitle }); } else go(`/bots/b/${encodeURIComponent(entry.sectionId)}/ticks`); }} /> : null}
         {route.page === 'import' ? <ImportView projects={projects} onImported={() => void data.refreshAll()} /> : null}
       </section>
       {contextOpen ? <><button type="button" className="group hidden w-2 cursor-col-resize items-center justify-center border-border/70 bg-background/60 xl:flex" onPointerDown={(event) => layout.startResize('context', event)} aria-label="Resize context pane" title="Resize context pane"><GripVertical className="h-5 w-3 text-muted-foreground/50 group-hover:text-primary" /></button><ContextPane item={itemForContext} selectedRun={selectedRun} bot={selectedBot} preview={preview} operatorContext={itemForContext ? operatorContexts[itemForContext.item_id] ?? (typeof itemForContext.body.operatorContext === 'string' ? itemForContext.body.operatorContext : '') : ''} onOperatorContextChange={(value) => { if (itemForContext) setOperatorContexts((current) => ({ ...current, [itemForContext.item_id]: value })); }} onBodyChange={(body) => { if (itemForContext) setBodyDrafts((current) => ({ ...current, [itemForContext.item_id]: body })); }} onGenerateAssets={(item, force) => data.generateAssets(item.item_id, force)} workCandidates={contextWorkChoice?.candidates ?? null} workLoading={contextWorkChoice?.loading ?? false} workError={contextWorkChoice?.error ?? null} onWork={(item, projectId) => void workItem(item, projectId)} onClose={() => { setSelectedItem(null); setSelectedRun(null); setWorkChoice(null); }} /></> : null}

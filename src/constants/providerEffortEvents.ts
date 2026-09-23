@@ -4,4 +4,5 @@ export const PROVIDER_DEFAULT_EFFORT_CHANGED_EVENT = 'cloudcli:provider-default-
 export type ProviderDefaultEffortChangedDetail = {
   provider: string;
   effort: string;
+  sessionId?: string | null;
 };

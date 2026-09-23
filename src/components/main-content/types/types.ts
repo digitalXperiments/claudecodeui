@@ -90,6 +90,7 @@ export type MainContentHeaderProps = {
   onLoadMoreSessions?: (projectId: string) => void | Promise<void>;
   isLoadingMoreSessions?: boolean;
   processingSessions?: import('../../../hooks/useSessionProtection').SessionActivityMap;
+  onToggleWorkbench?: () => void;
 };
 
 export type MainContentStateViewProps = {

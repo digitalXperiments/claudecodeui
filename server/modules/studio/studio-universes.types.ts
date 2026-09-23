@@ -20,6 +20,7 @@ export type UniverseVariantStatus =
   | 'running'
   | 'waiting_approval'
   | 'completed'
+  | 'blocked'
   | 'failed'
   | 'cancelled'
   | 'timed_out'

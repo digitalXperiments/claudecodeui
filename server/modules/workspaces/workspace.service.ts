@@ -47,7 +47,10 @@ import type {
   DiffResult,
   DiscardOptions,
   GetDiffOptions,
+  LandOntoPrimaryOptions,
+  LandOntoPrimaryResult,
   MergeResult,
+  RangeApplyResult,
   MergeStrategy,
   MergeToBaseOptions,
   WorkspaceEventHandler,
@@ -71,9 +74,15 @@ const WORKTREES_DIRNAME = '.worktrees';
  * cross-process lock leases under `.cloudcli/locks/` are runtime artifacts that
  * live inside the project root and would otherwise surface as repository dirt
  * to anything that reads `git status` (applyToPrimary, rehearsal preflight).
+ * The lock entry needs a leading globstar: a pattern with an inner slash is
+ * anchored to the repository root, so a project nested below the repo would
+ * not match it. Worker scratch (`tmp/cloudcli/`) is excluded the same way so
+ * host auto-commits and landing never sweep it up.
  */
-const GIT_EXCLUDE_ENTRIES = [`${WORKTREES_DIRNAME}/`, '.cloudcli/locks/'];
+const GIT_EXCLUDE_ENTRIES = [`${WORKTREES_DIRNAME}/`, '**/.cloudcli/locks/', '**/tmp/cloudcli/'];
 const WORKSPACE_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
+/** Identity for host-made commits (snapshots, predecessor merges, auto-commits). */
+export const SYNTHETIC_COMMIT_IDENTITY = ['-c', 'user.name=CloudCLI Relay', '-c', 'user.email=relay@cloudcli.local'];
 const WORKTREES_MARKER = `${path.sep}${WORKTREES_DIRNAME}${path.sep}`;
 const LEGACY_WORKTREES_MARKER = `${path.sep}.cloudcli${path.sep}worktrees${path.sep}`;
 /** Scratch dir every workspace gets, per the strict `tmp/cloudcli/` temp rule. */
@@ -792,6 +801,29 @@ export function createWorkspaceService(options: WorkspaceServiceOptions = {}): W
   };
 
   /**
+   * Commit whatever the overlay copied in as one synthetic snapshot commit.
+   * It is never landed: delivery applies only the changes after it. Returns
+   * the snapshot sha (HEAD itself when the primary had nothing uncommitted).
+   */
+  const commitPrimarySnapshot = async (rootPath: string): Promise<string | null> => {
+    const add = await git.runGit(rootPath, ['add', '-A']);
+    if (add.code !== 0) throw new Error(`could not stage primary snapshot: ${add.stderr.trim().slice(0, 300)}`);
+    const staged = await git.runGit(rootPath, ['diff', '--cached', '--quiet']);
+    if (staged.code !== 0) {
+      const commit = await git.runGit(rootPath, [
+        ...SYNTHETIC_COMMIT_IDENTITY,
+        'commit',
+        '--no-verify',
+        '-q',
+        '-m',
+        'relay: snapshot of primary checkout uncommitted changes',
+      ]);
+      if (commit.code !== 0) throw new Error(`could not commit primary snapshot: ${commit.stderr.trim().slice(0, 300)}`);
+    }
+    return git.revParse(rootPath, 'HEAD');
+  };
+
+  /**
    * Dirty files that `overlayDirtyFiles` copied in from the primary checkout
    * and the worker never touched are not the worker's uncommitted work — they
    * are the primary's own uncommitted state, byte-for-byte. Merging past them
@@ -962,15 +994,40 @@ export function createWorkspaceService(options: WorkspaceServiceOptions = {}): W
         last_error: 'workspace provisioning in progress',
       });
       try {
+        const startRefs = (input.startRefs ?? []).map((ref) => ref.trim()).filter(Boolean);
+        const startSha = startRefs.length > 0 ? await git.revParse(projectPath, startRefs[0]) : baseSha;
+        if (!startSha) throw new Error(`Start ref not resolvable: ${startRefs[0]}`);
         const add = (await git.branchExists(projectPath, featureBranch))
           ? await git.worktreeAddExisting(projectPath, rootPath, featureBranch)
-          : await git.worktreeAdd(projectPath, rootPath, featureBranch, baseSha);
+          : await git.worktreeAdd(projectPath, rootPath, featureBranch, startSha);
         if (add.code !== 0) {
           throw new Error(`git worktree add failed: ${add.stderr.trim().slice(0, 500)}`);
         }
-        await overlayDirtyFiles(projectPath, rootPath, projectScope);
+        let snapshotSha: string | null = null;
+        if (startRefs.length > 0) {
+          // Stacked stage: combine every predecessor tip. A conflict between
+          // predecessors is a real integration problem, not something to
+          // paper over — fail provisioning with the conflicting paths.
+          for (const ref of startRefs.slice(1)) {
+            const merge = await git.runGit(rootPath, [...SYNTHETIC_COMMIT_IDENTITY, 'merge', '--no-ff', '--no-edit', ref]);
+            if (merge.code !== 0) {
+              await git.runGit(rootPath, ['merge', '--abort']);
+              throw new Error(`predecessor branches conflict when combined (${ref}): ${(merge.stdout + merge.stderr).trim().slice(0, 400)}`);
+            }
+          }
+          snapshotSha = input.inheritSnapshotSha ?? null;
+        } else {
+          await overlayDirtyFiles(projectPath, rootPath, projectScope);
+          if (input.snapshotPrimaryChanges) {
+            snapshotSha = await commitPrimarySnapshot(rootPath);
+          }
+        }
         await prepareWorkspaceScratch(projectPath, rootPath, projectScope.projectRelativePath);
-        workspaceDb.setHeadSha(workspaceId, await git.revParse(rootPath, 'HEAD'));
+        const headSha = await git.revParse(rootPath, 'HEAD');
+        workspaceDb.setHeadSha(workspaceId, headSha);
+        if (input.snapshotPrimaryChanges || startRefs.length > 0) {
+          workspaceDb.setDeliveryRefs(workspaceId, { snapshotSha: snapshotSha ?? baseSha, startSha: headSha });
+        }
         workspaceDb.setStatus(workspaceId, 'active');
         const workspace = requireWorkspace(workspaceId);
         emit('workspace.created', workspace);
@@ -1057,8 +1114,9 @@ export function createWorkspaceService(options: WorkspaceServiceOptions = {}): W
     }
     const projectPath = resolveProjectPath(workspace);
     const scope = await resolveProjectScope(projectPath);
-    const fromRef =
-      opts?.base === 'base_sha'
+    const fromRef = workspace.start_sha && opts?.base !== 'base_sha'
+      ? workspace.start_sha
+      : opts?.base === 'base_sha'
         ? (workspace.base_sha ??
           (await git.mergeBase(workspace.root_path, workspace.base_branch, 'HEAD')))
         : ((await git.mergeBase(workspace.root_path, workspace.base_branch, 'HEAD')) ??
@@ -1141,6 +1199,23 @@ export function createWorkspaceService(options: WorkspaceServiceOptions = {}): W
           'WORKSPACE_DIRTY_CONFLICT',
           `Primary checkout is on "${checkedOut}", expected base branch "${workspace.base_branch}"; refusing to merge`,
         );
+      }
+
+      if (opts?.expectedBaseSha) {
+        const primaryHead = await git.revParse(projectPath, 'HEAD');
+        if (primaryHead !== opts.expectedBaseSha) {
+          throw new CloudError(
+            'WORKSPACE_DIRTY_CONFLICT',
+            'Primary checkout changed after rehearsal; rehearse against the current primary tip again',
+          );
+        }
+        const primaryStatus = await git.statusPorcelain(projectPath);
+        if (primaryStatus.dirtyFiles.length > 0 || primaryStatus.conflicts.length > 0) {
+          throw new CloudError(
+            'WORKSPACE_DIRTY_CONFLICT',
+            'Primary checkout has uncommitted or conflicted files; refusing to land over user changes',
+          );
+        }
       }
 
       workspaceDb.setStatus(workspaceId, 'merging');
@@ -1317,6 +1392,185 @@ export function createWorkspaceService(options: WorkspaceServiceOptions = {}): W
     );
   };
 
+  /**
+   * Apply the committed changes `fromRef..toRef` of a source worktree onto a
+   * target checkout of the same repository, file by file:
+   *
+   * - target still has the range's base content → write the new content;
+   * - target already has the new content → nothing to do;
+   * - target has its own edits → three-way text merge, written only if clean;
+   * - otherwise the path is reported as a conflict and left untouched.
+   *
+   * Never writes conflict markers and never touches paths outside the range,
+   * so it is safe on a checkout full of someone else's uncommitted work.
+   */
+  const applyCommittedRange = async (input: {
+    sourceRoot: string;
+    fromRef: string;
+    toRef: string;
+    targetRoot: string;
+    scratchDir: string;
+    pathspec?: string;
+  }): Promise<RangeApplyResult> => {
+    const fromSha = await git.revParse(input.sourceRoot, input.fromRef);
+    const toSha = await git.revParse(input.sourceRoot, input.toRef);
+    if (!fromSha || !toSha) {
+      throw new CloudError('WORKSPACE_APPLY_FAILED', `Cannot resolve range ${input.fromRef}..${input.toRef}`);
+    }
+    const changes = await git.committedChanges(input.sourceRoot, fromSha, toSha, input.pathspec);
+    const targetStatus = await git.statusPorcelain(input.targetRoot);
+    const targetDirtySet = new Set(targetStatus.dirtyFiles.map((file) => file.path));
+    await mkdir(input.scratchDir, { recursive: true });
+    const result: RangeApplyResult = {
+      fromSha,
+      toSha,
+      applied: [],
+      merged: [],
+      alreadyApplied: [],
+      conflicts: [],
+      targetDirty: [],
+    };
+    for (const change of changes) {
+      if (!isSafeRelativePath(change.path)) {
+        result.conflicts.push({ path: change.path, reason: 'unsafe path' });
+        continue;
+      }
+      const targetFile = path.join(input.targetRoot, change.path);
+      if (targetDirtySet.has(change.path)) result.targetDirty.push(change.path);
+      const base = git.readBlob(input.sourceRoot, fromSha, change.path);
+      const theirs = git.readBlob(input.sourceRoot, toSha, change.path);
+      let ours: Buffer | null = null;
+      try {
+        const info = await lstat(targetFile);
+        if (info.isSymbolicLink() || !info.isFile()) {
+          result.conflicts.push({ path: change.path, reason: 'target is not a regular file' });
+          continue;
+        }
+        ours = await readFile(targetFile);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      }
+      const same = (a: Buffer | null, b: Buffer | null) => (a === null ? b === null : b !== null && a.equals(b));
+      if (same(ours, theirs)) {
+        result.alreadyApplied.push(change.path);
+        continue;
+      }
+      if (same(ours, base)) {
+        if (theirs === null) await rm(targetFile, { force: true });
+        else {
+          await mkdir(path.dirname(targetFile), { recursive: true });
+          await writeFile(targetFile, theirs);
+        }
+        result.applied.push(change.path);
+        continue;
+      }
+      const merged = ours && base && theirs ? git.mergeFileContents(input.scratchDir, ours, base, theirs) : null;
+      if (merged) {
+        await writeFile(targetFile, merged);
+        result.merged.push(change.path);
+        continue;
+      }
+      result.conflicts.push({
+        path: change.path,
+        reason: !ours ? 'deleted in target' : !theirs ? 'deleted by the worker but edited in target' : 'overlapping edits',
+      });
+    }
+    return result;
+  };
+
+  /**
+   * Land a Relay workspace's own committed changes onto the primary checkout,
+   * which may be full of the operator's uncommitted work. The range starts at
+   * the workspace's snapshot commit, so the snapshot of the operator's dirty
+   * files itself is never re-applied or committed.
+   */
+  const landOntoPrimary = async (
+    workspaceId: string,
+    opts: LandOntoPrimaryOptions = {},
+  ): Promise<LandOntoPrimaryResult> => {
+    const workspace = requireWorkspace(workspaceId);
+    if (workspace.mode !== 'git_worktree') {
+      throw new CloudError('WORKSPACE_APPLY_FAILED', 'Only git worktree workspaces can be landed');
+    }
+    const projectPath = assertWorkspaceRootAllowed(workspace);
+    const scope = await resolveProjectScope(projectPath);
+    const fromRef = workspace.snapshot_sha ?? workspace.base_sha;
+    if (!fromRef) throw new CloudError('WORKSPACE_APPLY_FAILED', `Workspace ${workspaceId} has no landing base`);
+    return withProjectLock(
+      workspace.project_id,
+      async () => {
+        const workspaceStatus = await git.statusPorcelain(workspace.root_path);
+        if (workspaceStatus.dirtyFiles.length > 0) {
+          throw new CloudError('WORKSPACE_DIRTY_CONFLICT', `Workspace ${workspaceId} has uncommitted changes; commit them before landing`);
+        }
+        const primaryStatus = await git.statusPorcelain(scope.repositoryRoot);
+        if (primaryStatus.conflicts.length > 0) {
+          throw new CloudError('WORKSPACE_DIRTY_CONFLICT', 'Primary checkout has unresolved merge conflicts');
+        }
+        const applied = await applyCommittedRange({
+          sourceRoot: workspace.root_path,
+          fromRef,
+          toRef: 'HEAD',
+          targetRoot: scope.repositoryRoot,
+          scratchDir: path.join(workspace.root_path, 'tmp', 'cloudcli'),
+          pathspec: scope.projectRelativePath || undefined,
+        });
+        const written = [...applied.applied, ...applied.merged];
+        const dirtyBefore = new Set(applied.targetDirty);
+        const committable = [...written, ...applied.alreadyApplied].filter((file) => !dirtyBefore.has(file));
+        const leftUncommitted = written.filter((file) => dirtyBefore.has(file));
+        let committed = false;
+        let commitSha: string | null = null;
+        if (opts.commit !== false && committable.length > 0) {
+          const add = await git.runGit(scope.repositoryRoot, ['add', '-A', '--', ...committable]);
+          if (add.code !== 0) throw new CloudError('WORKSPACE_APPLY_FAILED', `git add failed: ${add.stderr.trim().slice(0, 300)}`);
+          const staged = await git.runGit(scope.repositoryRoot, ['diff', '--cached', '--quiet', '--', ...committable]);
+          if (staged.code !== 0) {
+            const commit = await git.runGit(scope.repositoryRoot, [
+              'commit',
+              '-m',
+              opts.message ?? `Land ${workspace.feature_branch || workspace.workspace_id}`,
+              '--',
+              ...committable,
+            ]);
+            if (commit.code !== 0) {
+              throw new CloudError('WORKSPACE_APPLY_FAILED', `git commit failed: ${(commit.stderr || commit.stdout).trim().slice(0, 400)}`);
+            }
+            committed = true;
+            commitSha = await git.revParse(scope.repositoryRoot, 'HEAD');
+          }
+        }
+        emit('workspace.updated', requireWorkspace(workspaceId));
+        return { ...applied, committed, commit_sha: commitSha, leftUncommitted };
+      },
+      projectPath,
+      lockOptions,
+    );
+  };
+
+  /** Commit whatever the worker left uncommitted, so its tip is landable. */
+  const commitPendingChanges = async (workspaceId: string, message: string): Promise<string | null> => {
+    const workspace = requireWorkspace(workspaceId);
+    if (workspace.mode !== 'git_worktree') return null;
+    assertWorkspaceRootAllowed(workspace);
+    const add = await git.runGit(workspace.root_path, ['add', '-A']);
+    if (add.code !== 0) return null;
+    const staged = await git.runGit(workspace.root_path, ['diff', '--cached', '--quiet']);
+    if (staged.code === 0) return null;
+    const commit = await git.runGit(workspace.root_path, [
+      ...SYNTHETIC_COMMIT_IDENTITY,
+      'commit',
+      '--no-verify',
+      '-q',
+      '-m',
+      message,
+    ]);
+    if (commit.code !== 0) return null;
+    const head = await git.revParse(workspace.root_path, 'HEAD');
+    workspaceDb.setHeadSha(workspaceId, head);
+    return head;
+  };
+
   const discard = async (workspaceId: string, opts?: DiscardOptions): Promise<void> => {
     const workspace = requireWorkspace(workspaceId);
     const projectPath =
@@ -1464,6 +1718,9 @@ export function createWorkspaceService(options: WorkspaceServiceOptions = {}): W
     bindRun,
     resolveCwd,
     reconcileOrphanedWorkspaces,
+    applyCommittedRange,
+    landOntoPrimary,
+    commitPendingChanges,
   };
 };
 

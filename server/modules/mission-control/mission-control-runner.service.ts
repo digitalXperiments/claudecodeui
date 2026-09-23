@@ -29,7 +29,7 @@ import {
  * Normalize produce JSON into a candidate list. Accepts a bare array, a single
  * draft object, or a common wrapper ({ items | drafts | results }).
  */
-function draftCandidates(raw: unknown): unknown[] {
+export function draftCandidates(raw: unknown): unknown[] {
   if (Array.isArray(raw)) return raw;
   if (raw && typeof raw === 'object') {
     const o = raw as Record<string, unknown>;
@@ -49,7 +49,7 @@ function draftCandidates(raw: unknown): unknown[] {
   return [];
 }
 
-function coerceDrafts(raw: unknown): McDraftItem[] {
+export function coerceDrafts(raw: unknown): McDraftItem[] {
   const arr = draftCandidates(raw);
   const drafts: McDraftItem[] = [];
   for (const entry of arr) {
@@ -115,7 +115,7 @@ function isSlackReplyRequiredDraft(draft: McDraftItem): boolean {
     && draft.body.needsMyReply === true;
 }
 
-function filterSectionDrafts(section: McSection, drafts: McDraftItem[]): McDraftItem[] {
+export function filterSectionDrafts(section: McSection, drafts: McDraftItem[]): McDraftItem[] {
   return isSlackSection(section)
     ? drafts.filter(isSlackReplyRequiredDraft)
     : drafts;
@@ -128,7 +128,7 @@ function filterSectionDrafts(section: McSection, drafts: McDraftItem[]): McDraft
  * empty one so the card does not render a blank draft box, and never accept
  * operatorContext from the model — that field is the human's guidance channel.
  */
-function prepareDraftForSection(section: McSection, draft: McDraftItem): McDraftItem {
+export function prepareDraftForSection(section: McSection, draft: McDraftItem): McDraftItem {
   if (!isSlackSection(section)) return draft;
   const body = { ...draft.body };
   delete body.operatorContext;

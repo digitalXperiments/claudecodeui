@@ -3,6 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 
 import Sidebar from '../sidebar/view/Sidebar';
+import LiveSpendMeter from '../chat/view/subcomponents/LiveSpendMeter';
 import { useSidebarResize } from '../sidebar/hooks/useSidebarResize';
 import MainContent from '../main-content/view/MainContent';
 import { useWebSocket } from '../../contexts/WebSocketContext';
@@ -12,6 +13,7 @@ import { useSessionProtection } from '../../hooks/useSessionProtection';
 import { useProjectsState } from '../../hooks/useProjectsState';
 import { useQueuedMessageAutoSend } from '../../hooks/useQueuedMessageAutoSend';
 import { api } from '../../utils/api';
+import { createRunSeqCursor, trackRunSeq } from '../../utils/runSeqCursor';
 import type { WorkThisSessionRequest } from '../bot-studio/types';
 import type { LLMProvider } from '../../types/app';
 
@@ -64,7 +66,7 @@ function AppContentInner() {
   const { isMobile } = useDeviceSettings({ trackPWA: false });
   const { ws, sendMessage, subscribe, isConnected } = useWebSocket();
   const { panelWidth, sidebarRef, handleResizeStart } = useSidebarResize(isMobile);
-  const runningSessionLastSeqRef = useRef(new Map<string, number>());
+  const runningSessionSeqCursorRef = useRef(createRunSeqCursor());
   const runningSessionsRequestRef = useRef<Promise<void> | null>(null);
 
   const {
@@ -125,18 +127,10 @@ function AppContentInner() {
         return;
       }
 
-      // `seq` is scoped to one provider run. Clear the background cursor at
-      // the terminal frame so a later turn in the same conversation can
-      // legitimately start again at seq=1.
-      if (event.kind === 'complete') {
-        runningSessionLastSeqRef.current.delete(event.sessionId);
-        return;
-      }
-
-      const known = runningSessionLastSeqRef.current.get(event.sessionId) ?? 0;
-      if (event.seq > known) {
-        runningSessionLastSeqRef.current.set(event.sessionId, event.seq);
-      }
+      // `seq` is scoped to one provider run. The cursor is cleared at the
+      // terminal frame and ignores stragglers of the finished run until the
+      // next turn starts again at seq=1.
+      trackRunSeq(runningSessionSeqCursorRef.current, event.sessionId, event.kind, event.seq);
     });
   }, [subscribe]);
 
@@ -189,7 +183,7 @@ function AppContentInner() {
             type: 'chat.subscribe',
             sessions: normalizedSessions.filter((session) => session.source === 'chat').map((session) => ({
               sessionId: session.sessionId,
-              lastSeq: runningSessionLastSeqRef.current.get(session.sessionId) ?? 0,
+              lastSeq: runningSessionSeqCursorRef.current.lastSeq.get(session.sessionId) ?? 0,
             })),
           });
         }
@@ -313,7 +307,8 @@ function AppContentInner() {
   }, []);
 
   return (
-    <div className="fixed inset-0 flex bg-background" style={{ bottom: 'var(--keyboard-height, 0px)' }}>
+    <div className="fixed inset-0 flex flex-col bg-background" style={{ bottom: 'var(--keyboard-height, 0px)' }}>
+      <div className="flex min-h-0 flex-1">
       {!isMobile ? (
         <div ref={sidebarRef} className="relative h-full flex-shrink-0 border-r border-border/50">
           <Sidebar {...sidebarSharedProps} projectsPanelWidth={panelWidth} />
@@ -394,6 +389,24 @@ function AppContentInner() {
           onLeaveBots={leaveBots}
           onWorkThis={handleBotWorkThis}
         />
+      </div>
+      </div>
+
+      <div
+        role="status"
+        aria-label="Workspace status"
+        className="flex h-7 shrink-0 items-center gap-3 border-t border-border/60 bg-muted/35 px-3 text-[11px] text-muted-foreground"
+        style={{ paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}
+      >
+        {!studioActive && !botsActive ? (
+          <LiveSpendMeter
+            sessionId={selectedSession?.id || sessionId || null}
+            className="rounded-none border-0 bg-transparent px-0 py-0 text-[11px]"
+          />
+        ) : null}
+        <span className="ml-auto max-w-[40vw] truncate" title={selectedProject?.fullPath}>
+          {selectedProject?.displayName ?? 'CloudCLI'}
+        </span>
       </div>
 
       <Suspense fallback={null}>

@@ -52,3 +52,21 @@ test('formats structured details while preserving plain text', () => {
   assert.equal(formatToolDetail({ ok: true }), '{\n  "ok": true\n}');
   assert.equal(formatToolDetail(undefined), '');
 });
+
+test('never renders [object Object] for object-valued or array inputs', () => {
+  // Codex FileChanges rows used to send the raw changes array as toolInput.
+  const changes = [
+    { path: 'src/a.ts', kind: 'update', diff: '@@' },
+    { path: 'src/b.ts', kind: 'add' },
+  ];
+  assert.equal(getSafeToolPreview('FileChanges', changes), 'src/a.ts src/b.ts');
+  assert.equal(getSafeToolPreview('FileChanges', { changes, file_path: 'src/a.ts, src/b.ts' }), 'src/a.ts, src/b.ts');
+  assert.equal(getSafeToolPreview('FileChanges', [{ file_path: 'x.ts' }, { name: 'y' }]), 'x.ts y');
+  assert.equal(getSafeToolPreview('Mystery', [{ foo: 1 }, { bar: 2 }]), '2 items');
+  assert.equal(getSafeToolPreview('Mystery', { path: { nested: true }, name: 'fallback' }), 'fallback');
+  assert.equal(getSafeToolPreview('Mystery', { command: [{ a: 1 }] }), 'command');
+
+  for (const input of [changes, [{}], { path: {} }, [[{ a: 1 }]]]) {
+    assert.doesNotMatch(getSafeToolPreview('Mystery', input), /\[object Object\]/);
+  }
+});

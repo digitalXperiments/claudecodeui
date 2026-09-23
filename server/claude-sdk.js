@@ -41,6 +41,7 @@ import {
 } from './modules/providers/shared/memory/obsidian-mcp.config.js';
 import { createCompleteMessage, createNormalizedMessage } from './shared/utils.js';
 import { TOOLS_REQUIRING_INTERACTION } from './shared/interactive-tools.js';
+import { claudeSdkSandboxSettings } from './shared/worker-sandbox.js';
 import { buildClaudeTokenBudgetFromUsage } from './modules/providers/list/claude/claude-token-usage.js';
 
 const activeSessions = new Map();
@@ -371,6 +372,15 @@ function mapCliOptionsToSDK(options = {}) {
   // explicit relay job model, so relay workers get none of those sources.
   sdkOptions.settingSources = relayWorker ? [] : ['project', 'user', 'local'];
 
+  // Relay workers run inside the SDK's OS sandbox: Bash is confined to the
+  // worktree (plus its branch's git state) and auto-allowed, so routine
+  // commands never reach the relay broker; only file-tool writes (checked by
+  // path) and genuine boundary crossings do.
+  const relaySandbox = relayWorker ? claudeSdkSandboxSettings(options.relaySandbox) : null;
+  if (relaySandbox) {
+    sdkOptions.sandbox = relaySandbox;
+  }
+
   if (sessionId) {
     sdkOptions.resume = sessionId;
   }
@@ -625,6 +635,37 @@ async function buildPromptPayload(command, images, cwd) {
   return (async function* () {
     yield message;
   })();
+}
+
+const TERMINAL_TASK_STATUSES = new Set(['completed', 'failed', 'killed', 'stopped']);
+
+/**
+ * Maintains the set of in-flight SDK tasks (background Bash, subagents) from
+ * the `task_started` / `task_updated` / `task_notification` system events.
+ * @param {Object} message - Raw SDK message
+ * @param {Set<string>} inflightTaskIds - Mutated in place
+ */
+function trackBackgroundTask(message, inflightTaskIds) {
+  if (message?.type !== 'system' || typeof message.task_id !== 'string') {
+    return;
+  }
+  if (message.subtype === 'task_started') {
+    inflightTaskIds.add(message.task_id);
+  } else if (message.subtype === 'task_notification') {
+    inflightTaskIds.delete(message.task_id);
+  } else if (message.subtype === 'task_updated' && TERMINAL_TASK_STATUSES.has(message.patch?.status)) {
+    inflightTaskIds.delete(message.task_id);
+  }
+}
+
+/**
+ * True for SDK messages that mean the model is working a turn (as opposed to
+ * status/bookkeeping frames that can trail a `result`).
+ * @param {Object} message - Raw SDK message
+ * @returns {boolean}
+ */
+function isTurnActivityMessage(message) {
+  return message?.type === 'assistant' || message?.type === 'stream_event';
 }
 
 /**
@@ -983,7 +1024,20 @@ async function queryClaudeSDK(command, options = {}, ws) {
       }
 
       console.log('Starting async generator loop for session:', capturedSessionId || 'NEW', '(inject mode)');
+      // Background Bash / subagent tasks outlive the turn `result`: the CLI
+      // stays alive and wakes the model again when they settle. Closing stdin
+      // in that window left the run "running" in the registry with no way to
+      // inject, so follow-ups were rejected with RUN_IN_PROGRESS.
+      const inflightTaskIds = new Set();
       for await (const message of queryInstance) {
+        trackBackgroundTask(message, inflightTaskIds);
+        // The CLI resumed on its own (e.g. a task notification woke the
+        // model): the pending drain belongs to a turn that is no longer the
+        // last one, so let the next `result` reschedule it.
+        if (drainTimer && isTurnActivityMessage(message)) {
+          clearTimeout(drainTimer);
+          drainTimer = null;
+        }
         if (message.session_id && !capturedSessionId) {
           capturedSessionId = message.session_id;
           addSession(capturedSessionId, queryInstance, ws, injectExtras);
@@ -1028,7 +1082,10 @@ async function queryClaudeSDK(command, options = {}, ws) {
               if (channel.ended) {
                 return;
               }
-              if (countPendingApprovalsForSession(capturedSessionId || sessionId || null) > 0) {
+              if (
+                countPendingApprovalsForSession(capturedSessionId || sessionId || null) > 0
+                || inflightTaskIds.size > 0
+              ) {
                 scheduleDrain();
                 return;
               }
@@ -1521,4 +1578,6 @@ export {
   createRequestId,
   mapCliOptionsToSDK,
   applyPlanModeAllowedTools,
+  trackBackgroundTask,
+  isTurnActivityMessage,
 };

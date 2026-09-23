@@ -98,13 +98,19 @@ export const sessionSynchronizerService = {
   async synchronizeProviderFile(
     provider: LLMProvider,
     filePath: string
-  ): Promise<{ provider: LLMProvider; indexed: boolean; sessionId: string | null }> {
-    const resolvedProvider = providerRegistry.resolveProvider(provider);
-    const sessionId = await resolvedProvider.sessionSynchronizer.synchronizeFile(filePath);
+  ): Promise<{ provider: LLMProvider; indexed: boolean; sessionId: string | null; sessionIds: string[] }> {
+    const { sessionSynchronizer } = providerRegistry.resolveProvider(provider);
+    // Shared stores (OpenCode's SQLite) can index several sessions per pass;
+    // report all of them so every changed session is broadcast.
+    const sessionIds = sessionSynchronizer.synchronizeFileSessions
+      ? await sessionSynchronizer.synchronizeFileSessions(filePath)
+      : await sessionSynchronizer.synchronizeFile(filePath).then((sessionId) => (sessionId ? [sessionId] : []));
+    const sessionId = sessionIds[0] ?? null;
     return {
       provider,
-      indexed: Boolean(sessionId),
+      indexed: sessionIds.length > 0,
       sessionId,
+      sessionIds,
     };
   },
 };

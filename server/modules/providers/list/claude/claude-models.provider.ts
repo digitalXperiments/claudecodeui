@@ -276,7 +276,13 @@ export class ClaudeProviderModels implements IProviderModels {
    * a new model generation, which is why the CLI is asked directly and the
    * static catalog is only a fallback.
    */
-  async getSupportedModels(): Promise<ProviderModelsDefinition> {
+  async getSupportedModels(options: { bypassCache?: boolean } = {}): Promise<ProviderModelsDefinition> {
+    // "Refresh models" must reach the CLI: after a CLI upgrade remaps an alias
+    // (Opus 5 → Opus 5.5) the memo would otherwise serve the old labels.
+    if (options.bypassCache && !inFlightProbe) {
+      memoizedModels = null;
+    }
+
     if (memoizedModels && memoizedModels.expiresAt > Date.now()) {
       return memoizedModels.models;
     }

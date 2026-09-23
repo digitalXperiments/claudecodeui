@@ -9,6 +9,18 @@ import { sessionsDb } from '@/modules/database/index.js';
 import { parseIncomingJsonObject } from '@/shared/utils.js';
 import { ensureManagedGrokHome } from '@/shared/grok-home.js';
 import { resolveAcpCliCommand } from '@/shared/acp-cli-path.js';
+// Shell runtime readers, imported directly for the same reason as the
+// capabilities service below (the providers barrel loads sessions → websocket).
+/* eslint-disable boundaries/dependencies */
+import {
+  readClaudeShellRuntime,
+  readCodexShellRuntime,
+  readGrokSessionRuntime,
+  readLatestGrokSessionRuntime,
+  readOpenCodeShellRuntime,
+  resolveClaudeShellTranscript,
+} from '@/modules/providers/services/shell-session-sync.service.js';
+/* eslint-enable boundaries/dependencies */
 // Import the capabilities module directly (not the providers barrel) so shell
 // init does not create a circular load path through sessions → websocket.
 // eslint-disable-next-line boundaries/dependencies
@@ -33,6 +45,9 @@ export type ShellIncomingMessage = {
   initialCommand?: string;
   isPlainShell?: boolean;
   forceRestart?: boolean;
+  fastMode?: boolean;
+  model?: string;
+  effort?: string;
   permissionMode?: string;
 };
 
@@ -44,15 +59,327 @@ type PtySessionEntry = {
   projectPath: string;
   sessionId: string | null;
   provider: string;
+  /** Start of the current TUI turn (reset per turn for the running-state registry). */
   startedAt: number;
+  /** When the PTY was spawned; bounds which provider files belong to it. */
+  spawnedAt: number;
   isAgentShell: boolean;
+  /** Launch preferences used to decide whether a parked PTY is stale. */
+  model?: string;
+  effort?: string;
+  fastMode?: boolean;
+  permissionMode?: string;
+  /** Permission mode the PTY was spawned with (echoes may update `permissionMode`). */
+  launchPermissionMode?: string;
+  /** Provider-native id used to read Grok's on-disk model/effort. */
+  providerSessionId?: string | null;
+  /** Last runtime values read from the provider's own files (see diffShellRuntime). */
+  runtimeObserved?: ShellRuntimeObservation;
+  lastRuntimeCheckAt?: number;
+  /** Claude: newest `/model` command already accounted for (see diffShellRuntime). */
+  claudeModelCommandSeenAt?: number;
+  /** Prompt reconstruction state (see trackShellPromptInput). */
+  promptInput: ShellPromptInputState;
 };
+
+/**
+ * Lines the user submitted into an Agent CLI PTY, reconstructed from the raw
+ * keystrokes. Used only as adoption evidence: a provider session created
+ * while the PTY was alive belongs to it only if its transcript contains one
+ * of these prompts (see adoptShellCreatedSession).
+ */
+export type ShellPromptInputState = {
+  line: string;
+  inPaste: boolean;
+  submittedPrompts: string[];
+};
+
+/** Runtime settings observed in a provider's session files. */
+export type ShellRuntimeObservation = {
+  model?: string;
+  effort?: string;
+  fastMode?: boolean;
+  permissionMode?: string;
+};
+
+/** One provider-file read: the observation plus provider-private signals. */
+export type ShellRuntimeReading = ShellRuntimeObservation & {
+  /** Claude: when an explicit `/model` switch last took effect (epoch ms). */
+  modelCommandAt?: number;
+};
+
+const MAX_TRACKED_SHELL_PROMPTS = 20;
+const MAX_TRACKED_PROMPT_CHARS = 8_000;
+
+export function createShellPromptInputState(): ShellPromptInputState {
+  return { line: '', inPaste: false, submittedPrompts: [] };
+}
+
+/**
+ * Feed one `input` payload (raw keystrokes / pastes) into the prompt tracker.
+ * Printable text accumulates, Backspace edits, Ctrl-C / Ctrl-U clear, Enter
+ * outside a bracketed paste submits. Escape sequences (arrows, focus events)
+ * are skipped; a line edited with cursor movement reconstructs imperfectly,
+ * which only means it will not serve as evidence — never a false match.
+ */
+export function trackShellPromptInput(state: ShellPromptInputState, data: string): void {
+  const submit = () => {
+    const prompt = state.line.trim();
+    state.line = '';
+    if (!prompt) return;
+    state.submittedPrompts.push(prompt);
+    if (state.submittedPrompts.length > MAX_TRACKED_SHELL_PROMPTS) {
+      state.submittedPrompts.splice(0, state.submittedPrompts.length - MAX_TRACKED_SHELL_PROMPTS);
+    }
+  };
+  const append = (text: string) => {
+    if (state.line.length < MAX_TRACKED_PROMPT_CHARS) {
+      state.line = `${state.line}${text}`.slice(0, MAX_TRACKED_PROMPT_CHARS);
+    }
+  };
+
+  let index = 0;
+  while (index < data.length) {
+    const char = data[index]!;
+    if (data.startsWith('\x1b[200~', index)) {
+      state.inPaste = true;
+      index += 6;
+      continue;
+    }
+    if (data.startsWith('\x1b[201~', index)) {
+      state.inPaste = false;
+      index += 6;
+      continue;
+    }
+    if (char === '\x1b') {
+      const next = data[index + 1];
+      if (next === '\r' || next === '\n') {
+        // Alt/Shift+Enter: newline inside the prompt, not a submit.
+        append('\n');
+        index += 2;
+      } else if (next === '[') {
+        let end = index + 2;
+        while (end < data.length && !/[@-~]/.test(data[end]!)) end += 1;
+        index = end + 1;
+      } else if (next === 'O') {
+        index += 3;
+      } else {
+        index += 2;
+      }
+      continue;
+    }
+    if (char === '\r' || char === '\n') {
+      if (state.inPaste) {
+        append('\n');
+      } else {
+        submit();
+      }
+      index += 1;
+      continue;
+    }
+    if (char === '\x7f' || char === '\b') {
+      state.line = Array.from(state.line).slice(0, -1).join('');
+    } else if (char === '\x03' || char === '\x15') {
+      state.line = '';
+    } else if (char >= ' ' || char === '\t') {
+      append(char);
+    }
+    index += 1;
+  }
+}
+
+/** Providers whose shell reports model/effort/mode back to Chatbar. */
+const RUNTIME_SYNC_PROVIDERS = new Set(['claude', 'codex', 'grok', 'opencode']);
+/** Providers whose shell launch honors a chat model (parked-PTY staleness input). */
+const SHELL_MODEL_PROVIDERS = new Set(['claude', 'codex', 'grok', 'opencode']);
+/** Providers whose shell launch honors a chat effort. */
+const SHELL_EFFORT_PROVIDERS = new Set(['claude', 'codex', 'grok']);
+/** Minimum gap between two runtime file reads for one PTY. */
+const RUNTIME_POLL_INTERVAL_MS: Record<string, number> = {
+  codex: 300,
+  claude: 750,
+  grok: 750,
+  opencode: 1_500,
+};
+
+const isUnsetPreference = (value: string | undefined): boolean => !value || value === 'default';
+
+/**
+ * Decide which observed runtime values Chatbar must hear about.
+ *
+ * The baseline is what the PTY was launched with, so the first read after
+ * launch never echoes an old value back at the chat. When a launch value was
+ * unset ('default' model/effort) or is an alias the files resolve (Claude's
+ * `opus` → `claude-opus-…`), the first observation is recorded silently and
+ * only later changes — `/model`, `/effort`, Shift+Tab in the TUI — are sent.
+ * Mutates `session.runtimeObserved`; returns null when nothing changed.
+ */
+export function diffShellRuntime(
+  session: Pick<
+    PtySessionEntry,
+    'provider' | 'model' | 'effort' | 'fastMode' | 'permissionMode' | 'runtimeObserved' | 'claudeModelCommandSeenAt'
+  >,
+  observed: ShellRuntimeReading,
+): ShellRuntimeObservation | null {
+  const previous: ShellRuntimeObservation = session.runtimeObserved ?? {};
+  const next: ShellRuntimeObservation = { ...previous };
+  const changes: ShellRuntimeObservation = {};
+
+  const consider = <K extends keyof ShellRuntimeObservation>(
+    key: K,
+    silentFirst: (baseline: ShellRuntimeObservation[K]) => boolean,
+  ) => {
+    const value = observed[key];
+    if (value === undefined || value === null || value === '') return;
+    const prior = previous[key];
+    next[key] = value;
+    if (prior === undefined) {
+      const baseline = session[key] as ShellRuntimeObservation[K];
+      if (silentFirst(baseline) || value === baseline) return;
+      changes[key] = value;
+      return;
+    }
+    if (value !== prior) {
+      changes[key] = value;
+    }
+  };
+
+  if (session.provider === 'claude') {
+    // Claude records the model that ANSWERED each turn, which flips per turn
+    // under `opusplan` / fallback models. Report it only for an explicit
+    // `/model` in the TUI, or when it left the family of the chat's alias.
+    const value = observed.model;
+    const commandAt = observed.modelCommandAt;
+    const explicit = commandAt !== undefined && commandAt > (session.claudeModelCommandSeenAt ?? 0);
+    if (explicit) {
+      session.claudeModelCommandSeenAt = commandAt;
+    }
+    if (value) {
+      next.model = value;
+      if (explicit || (value !== previous.model && !claudeModelMatchesAlias(value, session.model))) {
+        changes.model = value;
+      }
+    }
+  } else {
+    consider('model', (baseline) => isUnsetPreference(baseline));
+  }
+  consider('effort', (baseline) => isUnsetPreference(baseline));
+  consider('fastMode', (baseline) => baseline === undefined);
+  consider('permissionMode', (baseline) => !baseline);
+
+  session.runtimeObserved = next;
+  return Object.keys(changes).length > 0 ? changes : null;
+}
+
+const CLAUDE_MODEL_FAMILIES = ['opus', 'sonnet', 'haiku'] as const;
+
+/**
+ * Whether a resolved Claude model id belongs to the chat's model choice:
+ * `opus` / `claude-opus-…` / `opus[1m]` → opus, `opusplan` → opus or sonnet.
+ * An unset or unrecognised choice accepts anything.
+ */
+export function claudeModelMatchesAlias(resolvedModel: string, alias: string | undefined): boolean {
+  if (isUnsetPreference(alias)) return true;
+  const normalizedAlias = alias!.toLowerCase().replace(/\[[^\]]*\]$/, '');
+  const families: readonly string[] = normalizedAlias === 'opusplan'
+    ? ['opus', 'sonnet']
+    : CLAUDE_MODEL_FAMILIES.filter((family) => normalizedAlias.includes(family));
+  if (families.length === 0) return true;
+  const resolved = resolvedModel.toLowerCase();
+  return families.some((family) => resolved.includes(family));
+}
 
 const ptySessionsMap = new Map<string, PtySessionEntry>();
 const PTY_SESSION_TIMEOUT = 30 * 60 * 1000;
 const SHELL_URL_PARSE_BUFFER_LIMIT = 32768;
 const TUI_IDLE_SETTLE_MS = 450;
+/**
+ * A live turn keeps repainting busy chrome (spinner, "esc to interrupt",
+ * elapsed-time counters) on practically every redraw. If a session marked
+ * busy goes this long without another busy classification, the TUI has gone
+ * quiet at an idle screen the regex classifier never matched (`'unknown'` is
+ * a no-op — see classifyTuiActivity) rather than genuinely still working, so
+ * treat the silence as done instead of leaving the indicator stuck forever.
+ */
+const TUI_BUSY_STALE_MS = 20_000;
 const tuiIdleTimers = new Map<string, NodeJS.Timeout>();
+const tuiBusyStaleTimers = new Map<string, NodeJS.Timeout>();
+const AGENT_SHELL_RELEASE_TIMEOUT_MS = 3_000;
+/**
+ * Upper bound on waiting for a finished PTY's session adoption before Chatbar
+ * (or a relaunched TUI) resumes. Adoption indexes a handful of fresh
+ * transcripts; this only guards against a wedged provider store.
+ */
+const SHELL_SESSION_SYNC_WAIT_MS = 5_000;
+
+/**
+ * In-flight session adoptions per app session (see captureShellSessionSync).
+ * Handoff paths await these so they resume from the provider session the
+ * Agent CLI just created instead of the pre-adoption mapping.
+ */
+const pendingShellSessionSyncs = new Map<string, Set<Promise<void>>>();
+
+function trackShellSessionSync(appSessionId: string | null, sync: Promise<void>): void {
+  if (!appSessionId) {
+    return;
+  }
+  let pending = pendingShellSessionSyncs.get(appSessionId);
+  if (!pending) {
+    pending = new Set();
+    pendingShellSessionSyncs.set(appSessionId, pending);
+  }
+  pending.add(sync);
+  void sync.finally(() => {
+    const current = pendingShellSessionSyncs.get(appSessionId);
+    current?.delete(sync);
+    if (current && current.size === 0) {
+      pendingShellSessionSyncs.delete(appSessionId);
+    }
+  });
+}
+
+/** Resolves once every in-flight adoption for the app session settled (bounded). */
+export async function awaitShellSessionSyncs(
+  appSessionId: string,
+  timeoutMs: number = SHELL_SESSION_SYNC_WAIT_MS,
+): Promise<void> {
+  const pending = pendingShellSessionSyncs.get(appSessionId);
+  if (!pending || pending.size === 0) {
+    return;
+  }
+  let timer: NodeJS.Timeout | null = null;
+  await Promise.race([
+    Promise.allSettled([...pending]),
+    new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, timeoutMs);
+      timer.unref?.();
+    }),
+  ]);
+  if (timer) {
+    clearTimeout(timer);
+  }
+}
+
+/** Kills one PTY and resolves true once it exited (false on timeout/failure). */
+function killPtyAndAwaitExit(shellPty: IPty, timeoutMs: number = AGENT_SHELL_RELEASE_TIMEOUT_MS): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    let settled = false;
+    const settle = (exited: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      exitSubscription.dispose();
+      resolve(exited);
+    };
+    const exitSubscription = shellPty.onExit(() => settle(true));
+    const timeout = setTimeout(() => settle(false), timeoutMs);
+    try {
+      shellPty.kill();
+    } catch {
+      settle(false);
+    }
+  });
+}
 
 shellSessionRegistry.subscribe(() => {
   broadcastSystemEvent({ kind: 'running_sessions_changed' });
@@ -60,14 +387,85 @@ shellSessionRegistry.subscribe(() => {
 
 const clearTuiIdleTimer = (key: string): void => {
   const timer = tuiIdleTimers.get(key);
-  if (!timer) {
-    return;
+  if (timer) {
+    clearTimeout(timer);
+    tuiIdleTimers.delete(key);
   }
-  clearTimeout(timer);
-  tuiIdleTimers.delete(key);
+  const staleTimer = tuiBusyStaleTimers.get(key);
+  if (staleTimer) {
+    clearTimeout(staleTimer);
+    tuiBusyStaleTimers.delete(key);
+  }
 };
 
-const markAgentShellBusy = (key: string, session: PtySessionEntry): void => {
+/**
+ * Hands one app session from Agent CLI back to Chatbar.
+ *
+ * A detached/idle TUI still owns provider resources (Codex in particular
+ * keeps an exclusive writer lock), so registry activity alone is not enough.
+ * Search the parked PTYs as the source of truth and wait for each process to
+ * exit before Chatbar starts another writer for the same provider thread.
+ */
+export async function releaseAgentShellSession(appSessionId: string): Promise<boolean> {
+  const matches = Array.from(ptySessionsMap.entries()).filter(
+    ([, session]) => session.isAgentShell && session.sessionId === appSessionId,
+  );
+  if (matches.length === 0) {
+    // A PTY that exited just before this send may still be adopting.
+    await awaitShellSessionSyncs(appSessionId);
+    return true;
+  }
+
+  const results = await Promise.all(matches.map(([key, session]) => {
+    clearTuiIdleTimer(key);
+    shellSessionRegistry.unregister(key);
+    if (session.ws?.readyState === WebSocket.OPEN) {
+      session.ws.send(JSON.stringify({
+        type: 'output',
+        data: '\r\n\x1b[33m[Agent CLI released to Chatbar]\x1b[0m\r\n',
+      }));
+    }
+    return killPtyAndAwaitExit(session.pty);
+  }));
+
+  // The PTY's own exit handler (registered at spawn, so it ran first) started
+  // the session adoption. Yield once so any exit handler that runs later is
+  // tracked too, then wait for adoption: Chatbar must resume the provider
+  // session the Agent CLI just created, not the pre-handoff mapping.
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  await awaitShellSessionSyncs(appSessionId);
+
+  return results.every(Boolean);
+}
+
+/**
+ * Called once when a busy TUI turn settles (idle screen or busy chrome gone
+ * stale). Lets the caller re-read the provider's session files right away
+ * instead of waiting for the watcher's polling interval.
+ */
+type AgentShellSettledHandler = () => void;
+
+const settleIfWasBusy = (
+  key: string,
+  session: Pick<PtySessionEntry, 'sessionId'>,
+  onSettled?: AgentShellSettledHandler,
+): void => {
+  const wasBusy = Boolean(session.sessionId && shellSessionRegistry.isActive(session.sessionId));
+  shellSessionRegistry.unregister(key);
+  if (wasBusy && onSettled) {
+    try {
+      onSettled();
+    } catch (error) {
+      console.error('[ERROR] Agent shell settle hook failed:', error);
+    }
+  }
+};
+
+const markAgentShellBusy = (
+  key: string,
+  session: PtySessionEntry,
+  onSettled?: AgentShellSettledHandler,
+): void => {
   if (!session.sessionId) {
     return;
   }
@@ -80,15 +478,26 @@ const markAgentShellBusy = (key: string, session: PtySessionEntry): void => {
     provider: session.provider as LLMProvider,
     startedAt: session.startedAt,
   });
+  tuiBusyStaleTimers.set(
+    key,
+    setTimeout(() => {
+      tuiBusyStaleTimers.delete(key);
+      settleIfWasBusy(key, session, onSettled);
+    }, TUI_BUSY_STALE_MS),
+  );
 };
 
-const markAgentShellIdle = (key: string): void => {
+const markAgentShellIdle = (
+  key: string,
+  session: Pick<PtySessionEntry, 'sessionId'>,
+  onSettled?: AgentShellSettledHandler,
+): void => {
   clearTuiIdleTimer(key);
   tuiIdleTimers.set(
     key,
     setTimeout(() => {
       tuiIdleTimers.delete(key);
-      shellSessionRegistry.unregister(key);
+      settleIfWasBusy(key, session, onSettled);
     }, TUI_IDLE_SETTLE_MS),
   );
 };
@@ -97,6 +506,7 @@ const applyAgentTuiActivity = (
   key: string,
   session: PtySessionEntry,
   stripAnsiSequences: (content: string) => string,
+  onSettled?: AgentShellSettledHandler,
 ): void => {
   if (!session.sessionId) {
     return;
@@ -104,11 +514,11 @@ const applyAgentTuiActivity = (
   const stripped = stripAnsiSequences(session.buffer.slice(-80).join(''));
   const activity = classifyTuiActivity(stripped);
   if (activity === 'busy') {
-    markAgentShellBusy(key, session);
+    markAgentShellBusy(key, session, onSettled);
     return;
   }
   if (activity === 'idle') {
-    markAgentShellIdle(key);
+    markAgentShellIdle(key, session, onSettled);
   }
 };
 
@@ -137,7 +547,11 @@ export type ShellWebSocketDependencies = {
     projectPath: string;
     appSessionId: string | null;
     startedAt: number;
-  }) => void;
+    /** When the PTY exited / the sync was requested; upper-bounds candidates. */
+    endedAt: number;
+    /** Prompts typed into the PTY — adoption evidence. */
+    submittedPrompts: string[];
+  }) => Promise<void> | void;
 };
 
 /**
@@ -159,6 +573,26 @@ function readBoolean(value: unknown, fallback = false): boolean {
  */
 function readNumber(value: unknown, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+}
+
+/**
+ * Repaint a parked full-screen TUI when it is attached to a fresh xterm.
+ *
+ * Replaying an arbitrary output tail cannot reconstruct alternate-screen
+ * state reliably. A real dimension change makes the TUI receive SIGWINCH and
+ * redraw its current screen; restoring the requested size immediately keeps
+ * the PTY and browser dimensions in sync. Plain shells only need one resize.
+ */
+export function resizeShellForReconnect(
+  shellProcess: Pick<IPty, 'resize'>,
+  cols: number,
+  rows: number,
+  isAgentShell: boolean,
+): void {
+  if (isAgentShell) {
+    shellProcess.resize(cols > 2 ? cols - 1 : cols + 1, rows);
+  }
+  shellProcess.resize(cols, rows);
 }
 
 function isPlainShellRequest(message: ShellIncomingMessage): boolean {
@@ -186,6 +620,14 @@ export function isAgentShellRequestWithExistingSession(
     readBoolean(message.hasSession) &&
     Boolean(readString(message.sessionId))
   );
+}
+
+/** Navigation reconnects to the parked PTY; only explicit lifecycle actions replace it. */
+export function shouldStartFreshShellSession(
+  isLoginCommand: boolean,
+  forceRestart: boolean,
+): boolean {
+  return isLoginCommand || forceRestart;
 }
 
 /**
@@ -258,6 +700,43 @@ function shellSingleQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
+/** Quote one CLI argument for the PTY's shell (`bash -c` or PowerShell). */
+function quoteShellArg(value: string): string {
+  return os.platform() === 'win32'
+    ? `'${value.replace(/'/g, "''")}'`
+    : shellSingleQuote(value);
+}
+
+/**
+ * Charset allowed for model / effort values interpolated into the PTY's shell
+ * command. Real ids fit it (`gpt-5.6-luna`, `anthropic/claude-sonnet-4-5`,
+ * `us.anthropic.claude-opus`, `opus[1m]` — brackets for Claude's context
+ * suffix); anything else is dropped rather than escaped. Values are ALSO
+ * quoted with quoteShellArg, so this is defense in depth.
+ */
+const SAFE_SHELL_RUNTIME_VALUE_PATTERN = /^[A-Za-z0-9._:/@+\-[\]]+$/;
+
+/** Trimmed model/effort value, or '' when absent, `default`, or unsafe. */
+export function readSafeShellRuntimeValue(value: unknown): string {
+  const trimmed = typeof value === 'string' ? value.trim() : '';
+  if (!trimmed || trimmed === 'default' || trimmed.length > 200) {
+    return '';
+  }
+  return SAFE_SHELL_RUNTIME_VALUE_PATTERN.test(trimmed) ? trimmed : '';
+}
+
+/** Model id from the chatbar, or '' when absent / the provider default / unsafe. */
+function readShellModel(message: ShellIncomingMessage): string {
+  return readSafeShellRuntimeValue(message.model);
+}
+
+/** Effort from the chatbar, or '' when absent / the provider default / unsafe. */
+function readShellEffort(message: ShellIncomingMessage): string {
+  return readSafeShellRuntimeValue(message.effort);
+}
+
+const CLAUDE_SHELL_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
+
 function resolveShellCli(command: string): string {
   return os.platform() === 'win32'
     ? command
@@ -296,6 +775,132 @@ function resolveShellPermissionMode(provider: string, permissionMode: string): s
 }
 
 /**
+ * Map OpenCode's primary agent onto the chat permission mode. `plan` is the
+ * plan agent; `build` cannot tell default/acceptEdits/auto apart, so leaving
+ * plan restores whatever non-plan mode the PTY was launched with.
+ */
+function mapOpenCodeAgentToPermissionMode(agent: string | undefined, launchMode: string | undefined): string | undefined {
+  if (agent === 'plan') return 'plan';
+  if (agent === 'build') return launchMode && launchMode !== 'plan' ? launchMode : 'default';
+  return undefined;
+}
+
+/**
+ * Read the runtime settings the shell's TUI last recorded in its own session
+ * files, restricted to what was written after the PTY spawned. Provider files
+ * are the source of truth — screen text is not (an assistant reply that
+ * mentions a model id must never flip the chat's model).
+ */
+export function readShellRuntime(
+  session: Pick<PtySessionEntry, 'provider' | 'projectPath' | 'sessionId' | 'spawnedAt' | 'providerSessionId' | 'launchPermissionMode'>,
+): ShellRuntimeReading | null {
+  const since = session.spawnedAt;
+  const appRow = session.sessionId ? sessionsDb.getSessionById(session.sessionId) : null;
+  let observed: ShellRuntimeReading | null = null;
+
+  if (session.provider === 'codex') {
+    const runtime = readCodexShellRuntime(appRow?.jsonl_path, { since });
+    observed = runtime ? { ...runtime } : null;
+  } else if (session.provider === 'grok') {
+    const providerSessionId = session.providerSessionId || appRow?.provider_session_id || null;
+    const runtime = providerSessionId
+      ? readGrokSessionRuntime(session.projectPath, providerSessionId, undefined, { since })
+      : readLatestGrokSessionRuntime(session.projectPath, undefined, { since, appSessionId: session.sessionId });
+    observed = runtime
+      ? { model: runtime.model ?? undefined, effort: runtime.effort ?? undefined }
+      : null;
+  } else if (session.provider === 'claude') {
+    const transcript = resolveClaudeShellTranscript({
+      appSessionId: session.sessionId,
+      projectPath: session.projectPath,
+      startedAt: since,
+    });
+    observed = readClaudeShellRuntime(transcript, { since });
+  } else if (session.provider === 'opencode') {
+    const runtime = readOpenCodeShellRuntime({
+      providerSessionId: appRow?.provider === 'opencode' ? appRow.provider_session_id : null,
+      projectPath: session.projectPath,
+      appSessionId: session.sessionId,
+      since,
+    });
+    observed = runtime
+      ? {
+        model: runtime.model,
+        effort: runtime.effort,
+        permissionMode: mapOpenCodeAgentToPermissionMode(runtime.agent, session.launchPermissionMode),
+      }
+      : null;
+  }
+
+  if (!observed) {
+    return null;
+  }
+  if (observed.permissionMode) {
+    observed.permissionMode = resolveShellPermissionMode(session.provider, observed.permissionMode) || undefined;
+  }
+  return observed;
+}
+
+/**
+ * Push shell-side runtime changes (model / effort / Codex Fast / permission
+ * mode) to the attached Shell client, which relays them to Chatbar. Permission
+ * changes are also persisted on the app session so the next chat turn and the
+ * session meta endpoint agree with the TUI.
+ */
+function pollShellRuntime(session: PtySessionEntry, options: { force?: boolean } = {}): void {
+  if (!session.isAgentShell || !RUNTIME_SYNC_PROVIDERS.has(session.provider)) {
+    return;
+  }
+  const ws = session.ws;
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    return;
+  }
+  const now = Date.now();
+  const interval = RUNTIME_POLL_INTERVAL_MS[session.provider] ?? 750;
+  if (!options.force && now - (session.lastRuntimeCheckAt ?? 0) <= interval) {
+    return;
+  }
+  session.lastRuntimeCheckAt = now;
+
+  let changes: ShellRuntimeObservation | null = null;
+  try {
+    const observed = readShellRuntime(session);
+    changes = observed ? diffShellRuntime(session, observed) : null;
+  } catch (error) {
+    console.error('[ERROR] Shell runtime read failed:', error);
+    return;
+  }
+  if (!changes) {
+    return;
+  }
+
+  // Keep the parked-PTY staleness inputs aligned with what the TUI now runs;
+  // the client echoes the chat-normalized values back right after (see the
+  // `runtime_state` handler). Claude reports resolved ids, not the aliases
+  // the chat sends, so its model is left to that echo.
+  if (changes.model && session.provider !== 'claude') session.model = changes.model;
+  if (changes.effort) session.effort = changes.effort;
+  if (typeof changes.fastMode === 'boolean') session.fastMode = changes.fastMode;
+  if (changes.permissionMode) {
+    session.permissionMode = changes.permissionMode;
+    if (session.sessionId) {
+      try {
+        sessionsDb.updateSessionRuntimePreferences(session.sessionId, { permissionMode: changes.permissionMode });
+      } catch (error) {
+        console.error('[ERROR] Failed to persist shell permission mode:', error);
+      }
+    }
+  }
+
+  ws.send(JSON.stringify({
+    type: 'runtime_state',
+    provider: session.provider,
+    sessionId: session.sessionId,
+    ...changes,
+  }));
+}
+
+/**
  * Codex sandbox/approval overrides for the interactive TUI, mirroring
  * mapPermissionModeToCodexOptions in openai-codex.js. `-c` config overrides
  * work for both `codex` and `codex resume <id>`.
@@ -304,7 +909,9 @@ function buildCodexPermissionFlags(permissionMode: string): string {
   switch (permissionMode) {
     case 'auto':
     case 'acceptEdits':
-      return ' -c sandbox_mode="workspace-write" -c sandbox_workspace_write.network_access=true -c approval_policy="never"';
+      return ' -c sandbox_mode="workspace-write" -c sandbox_workspace_write.network_access=true -c approval_policy="on-request"';
+    case 'plan':
+      return ' -c sandbox_mode="read-only" -c approval_policy="untrusted"';
     case 'bypassPermissions':
       return ' -c sandbox_mode="danger-full-access" -c approval_policy="never"';
     case 'default':
@@ -328,7 +935,26 @@ function buildCodexPermissionFlags(permissionMode: string): string {
  * its own home with `[ui] permission_mode` overlaid — see grok-home.js), so
  * the TUI starts in the same mode the chat runtime would use.
  */
-function buildGrokShellCommand(resumeSessionId: string, projectPath: string, permissionMode: string): string {
+function buildGrokRuntimeFlags(model: string | undefined, effort: string | undefined): string {
+  const modelId = readSafeShellRuntimeValue(model);
+  const effortId = readSafeShellRuntimeValue(effort);
+  let flags = '';
+  if (modelId) {
+    flags += ` --model ${quoteShellArg(modelId)}`;
+  }
+  if (effortId) {
+    flags += ` --reasoning-effort ${quoteShellArg(effortId)}`;
+  }
+  return flags;
+}
+
+function buildGrokShellCommand(
+  resumeSessionId: string,
+  projectPath: string,
+  permissionMode: string,
+  model?: string,
+  effort?: string,
+): string {
   // bypassPermissions maps to Grok's always-approve (see
   // resolveGrokPermissionRuntime in grok-cli.js); every other valid mode uses
   // its own identifier verbatim in config.toml.
@@ -349,23 +975,25 @@ function buildGrokShellCommand(resumeSessionId: string, projectPath: string, per
       : ` --cwd ${shellSingleQuote(resolvedCwd)}`
     : '';
 
+  const runtimeFlags = buildGrokRuntimeFlags(model, effort);
+
   if (os.platform() === 'win32') {
     const homePs = managedHome.replace(/'/g, "''");
     const idPs = resumeSessionId.replace(/'/g, "''");
     if (resumeSessionId) {
       // Resume failure (stale/deleted session) falls back to a fresh TUI —
       // same contract as the claude/codex shell commands.
-      return `$env:GROK_HOME='${homePs}'; grok --resume '${idPs}'${cwdFlag}; if ($LASTEXITCODE -ne 0) { grok${cwdFlag} }`;
+      return `$env:GROK_HOME='${homePs}'; grok --resume '${idPs}'${cwdFlag}${runtimeFlags}; if ($LASTEXITCODE -ne 0) { grok${cwdFlag}${runtimeFlags} }`;
     }
-    return `$env:GROK_HOME='${homePs}'; grok${cwdFlag}`;
+    return `$env:GROK_HOME='${homePs}'; grok${cwdFlag}${runtimeFlags}`;
   }
 
   const homeQ = shellSingleQuote(managedHome);
   if (resumeSessionId) {
     const idQ = shellSingleQuote(resumeSessionId);
-    return `export GROK_HOME=${homeQ}; grok --resume ${idQ}${cwdFlag} || exec grok${cwdFlag}`;
+    return `export GROK_HOME=${homeQ}; grok --resume ${idQ}${cwdFlag}${runtimeFlags} || exec grok${cwdFlag}${runtimeFlags}`;
   }
-  return `export GROK_HOME=${homeQ}; exec grok${cwdFlag}`;
+  return `export GROK_HOME=${homeQ}; exec grok${cwdFlag}${runtimeFlags}`;
 }
 
 /**
@@ -393,10 +1021,13 @@ export function buildShellCommand(
   }
 
   if (provider === 'antigravity') {
-    // Antigravity ships an ACP server, not an interactive TUI: spawning it in a
-    // terminal would hand the user a JSON-RPC stdio pipe. Say so instead of
-    // falling through to the Claude default and launching the wrong agent.
-    return 'echo "Antigravity has no interactive terminal agent — it runs as an ACP server. Use the Chat tab."';
+    // Chat drives the managed ACP harness, whose conversations live in
+    // CloudCLI's private profile (<profile>/antigravity-acp/conversations).
+    // The interactive `agy` CLI keeps its own store and auth under
+    // $HOME/.gemini/antigravity-cli with no env override short of replacing
+    // HOME, so `agy --conversation <id>` cannot open a Chat session. Say so
+    // instead of launching a TUI that would silently fork the transcript.
+    return 'echo "Antigravity Chat sessions run on the managed ACP harness; the agy CLI keeps a separate conversation store and cannot resume them. Use the Chat tab."';
   }
 
   if (provider === 'cursor') {
@@ -411,13 +1042,25 @@ export function buildShellCommand(
 
   if (provider === 'codex') {
     const modeFlags = buildCodexPermissionFlags(permissionMode);
+    const codexModel = readShellModel(message);
+    const codexEffort = readShellEffort(message);
+    const modelFlag = codexModel ? ` -m ${quoteShellArg(codexModel)}` : '';
+    // `-c key=value` parses value as TOML and falls back to the raw string,
+    // so the (charset-validated) effort needs no TOML quotes of its own.
+    const effortFlag = codexEffort ? ` -c model_reasoning_effort=${quoteShellArg(codexEffort)}` : '';
+    const runtimeFlags = `${modelFlag}${effortFlag}`;
+    const tierFlags = typeof message.fastMode === 'boolean'
+      ? message.fastMode
+        ? ' -c service_tier="fast"'
+        : ' -c service_tier="default"'
+      : '';
     if (resumeSessionId) {
       if (os.platform() === 'win32') {
-        return `codex resume "${resumeSessionId}"${modeFlags}; if ($LASTEXITCODE -ne 0) { codex${modeFlags} }`;
+        return `codex resume "${resumeSessionId}"${modeFlags}${runtimeFlags}${tierFlags}; if ($LASTEXITCODE -ne 0) { codex${modeFlags}${runtimeFlags}${tierFlags} }`;
       }
-      return `codex resume "${resumeSessionId}"${modeFlags} || codex${modeFlags}`;
+      return `codex resume "${resumeSessionId}"${modeFlags}${runtimeFlags}${tierFlags} || codex${modeFlags}${runtimeFlags}${tierFlags}`;
     }
-    return `codex${modeFlags}`;
+    return `codex${modeFlags}${runtimeFlags}${tierFlags}`;
   }
 
   if (provider === 'opencode') {
@@ -434,6 +1077,12 @@ export function buildShellCommand(
         os.platform() === 'win32'
           ? `$env:OPENCODE_PERMISSION='${permissionJson}'; `
           : `OPENCODE_PERMISSION='${permissionJson}' `;
+    }
+    // `-m provider/model` matches the chat picker's value shape. OpenCode's
+    // TUI has no effort/variant flag, so effort stays chat-only.
+    const opencodeModel = readShellModel(message);
+    if (opencodeModel) {
+      modeArgs += ` -m ${quoteShellArg(opencodeModel)}`;
     }
     if (resumeSessionId) {
       return `${modeEnvPrefix}opencode --session "${resumeSessionId}"${modeArgs}`;
@@ -467,7 +1116,13 @@ export function buildShellCommand(
   }
 
   if (provider === 'grok') {
-    return buildGrokShellCommand(resumeSessionId, projectPath, permissionMode);
+    return buildGrokShellCommand(
+      resumeSessionId,
+      projectPath,
+      permissionMode,
+      readString(message.model),
+      readString(message.effort),
+    );
   }
 
   if (provider === 'cline') {
@@ -486,7 +1141,7 @@ export function buildShellCommand(
     const qwenBin = resolveShellCli('qwen');
     let modeArgs = '';
     if (permissionMode === 'plan' || permissionMode === 'auto') {
-      modeArgs = ` --approval-mode ${permissionMode}`;
+      modeArgs = ` --approval-mode ${quoteShellArg(permissionMode)}`;
     } else if (permissionMode === 'bypassPermissions') {
       modeArgs = ' --yolo';
     }
@@ -536,9 +1191,15 @@ export function buildShellCommand(
     return `omp${modeArgs}`;
   }
 
-  const modeArgs = permissionMode && permissionMode !== 'default'
-    ? ` --permission-mode ${permissionMode}`
-    : '';
+  // Claude: model alias/id and effort as start-up flags (`claude --help`);
+  // invalid efforts are dropped the same way resolveClaudeEffort does.
+  const claudeModel = readShellModel(message);
+  const claudeEffort = readShellEffort(message);
+  const modeArgs = (permissionMode && permissionMode !== 'default'
+    ? ` --permission-mode ${quoteShellArg(permissionMode)}`
+    : '')
+    + (claudeModel ? ` --model ${quoteShellArg(claudeModel)}` : '')
+    + (CLAUDE_SHELL_EFFORTS.has(claudeEffort) ? ` --effort ${quoteShellArg(claudeEffort)}` : '');
   const command = initialCommand || 'claude';
   if (resumeSessionId) {
     if (os.platform() === 'win32') {
@@ -612,21 +1273,79 @@ function prioritizeUserNpmGlobalBin(env: NodeJS.ProcessEnv): { key: string; valu
  */
 function captureShellSessionSync(
   dependencies: ShellWebSocketDependencies,
-  session: Pick<PtySessionEntry, 'provider' | 'projectPath' | 'sessionId' | 'startedAt'> | null | undefined,
-): void {
-  if (!session || !dependencies.syncShellSession) {
-    return;
+  session: Pick<
+    PtySessionEntry,
+    'provider' | 'projectPath' | 'sessionId' | 'spawnedAt' | 'isAgentShell' | 'promptInput'
+  > | null | undefined,
+): Promise<void> {
+  if (!session || !session.isAgentShell || !dependencies.syncShellSession) {
+    return Promise.resolve();
   }
+  let sync: Promise<void>;
   try {
-    dependencies.syncShellSession({
+    // spawnedAt, not the per-turn startedAt: a session the TUI created in its
+    // first turn must still be adoptable after later turns.
+    sync = Promise.resolve(dependencies.syncShellSession({
       provider: session.provider,
       projectPath: session.projectPath,
       appSessionId: session.sessionId,
-      startedAt: session.startedAt,
+      startedAt: session.spawnedAt,
+      endedAt: Date.now(),
+      submittedPrompts: [...session.promptInput.submittedPrompts],
+    })).catch((error) => {
+      console.error('[ERROR] Shell session sync failed:', error);
     });
   } catch (error) {
     console.error('[ERROR] Shell session sync failed:', error);
+    return Promise.resolve();
   }
+  trackShellSessionSync(session.sessionId, sync);
+  return sync;
+}
+
+/** A parked Agent CLI is mid-turn (registry or its latest screen says busy). */
+function isAgentShellBusy(
+  session: Pick<PtySessionEntry, 'sessionId' | 'buffer'>,
+  stripAnsiSequences: (content: string) => string,
+): boolean {
+  if (session.sessionId && shellSessionRegistry.isActive(session.sessionId)) {
+    return true;
+  }
+  try {
+    return classifyTuiActivity(stripAnsiSequences(session.buffer.slice(-80).join(''))) === 'busy';
+  } catch {
+    return false;
+  }
+}
+
+const KEPT_BUSY_AGENT_SHELL_OUTPUT =
+  '\r\n\x1b[33m[Agent CLI is busy, so it keeps its current settings. Restart the shell after this turn to apply the new ones.]\x1b[0m\r\n';
+
+/**
+ * A busy TUI was kept despite a settings mismatch: tell the user, and push
+ * the settings it actually runs with to Chatbar (the client echoes them back
+ * as the new launch baseline, so the next reconnect is not stale either).
+ */
+function reportKeptAgentShellRuntime(ws: WebSocket, session: PtySessionEntry): void {
+  if (ws.readyState !== WebSocket.OPEN) {
+    return;
+  }
+  ws.send(JSON.stringify({ type: 'output', data: KEPT_BUSY_AGENT_SHELL_OUTPUT }));
+  const runtime: ShellRuntimeObservation = {
+    ...(session.model ? { model: session.model } : {}),
+    ...(session.effort ? { effort: session.effort } : {}),
+    ...(typeof session.fastMode === 'boolean' ? { fastMode: session.fastMode } : {}),
+    ...(session.permissionMode ? { permissionMode: session.permissionMode } : {}),
+  };
+  if (Object.keys(runtime).length === 0) {
+    return;
+  }
+  ws.send(JSON.stringify({
+    type: 'runtime_state',
+    provider: session.provider,
+    sessionId: session.sessionId,
+    ...runtime,
+  }));
 }
 
 const CHATBAR_WAIT_OUTPUT =
@@ -741,6 +1460,14 @@ export function handleShellConnection(
   let urlDetectionBuffer = '';
   const announcedAuthUrls = new Set<string>();
 
+  // A shell turn just finished: re-read the provider's files now (runtime
+  // settings + session adoption/upsert) so the turn reaches Chatbar without
+  // waiting for the watcher's 6s polling.
+  const handleAgentShellSettled = (session: PtySessionEntry) => {
+    pollShellRuntime(session, { force: true });
+    void captureShellSessionSync(dependencies, session);
+  };
+
   ws.on('message', async (rawMessage) => {
     try {
       const data = parseShellMessage(rawMessage);
@@ -773,34 +1500,70 @@ export function handleShellConnection(
             : '';
         ptySessionKey = `${projectPath}_${sessionId ?? 'default'}${commandSuffix}`;
 
-        // Interactive agent TUIs (Grok, Claude, Cursor, …) own the full screen.
-        // Reusing a live PTY while the client terminal was reset/hidden leaves
-        // the UI desynced (blank frame, broken chrome). Always start a fresh
-        // process for agent shells; plain shells may still reconnect.
+        // Navigation only detaches the websocket. Reuse its parked PTY so
+        // changing chat sessions does not interrupt a running Agent CLI.
+        // Explicit restart/login flows still replace the old process.
         const isAgentShell = !isPlainShell;
-        const shouldStartFresh = isLoginCommand || forceRestart || isAgentShell;
-
+        // Launch preferences that are baked into the TUI at spawn. A parked
+        // PTY started with different ones is stale: reconnecting would leave
+        // the Agent CLI on settings the chat no longer shows.
+        const requestedModel = isAgentShell && SHELL_MODEL_PROVIDERS.has(provider)
+          ? readString(data.model) || undefined
+          : undefined;
+        const requestedEffort = isAgentShell && SHELL_EFFORT_PROVIDERS.has(provider)
+          ? readString(data.effort) || undefined
+          : undefined;
+        const requestedFastMode = provider === 'codex' && typeof data.fastMode === 'boolean'
+          ? data.fastMode
+          : undefined;
+        const requestedPermissionMode = isAgentShell
+          ? resolveShellPermissionMode(provider, readString(data.permissionMode))
+          : undefined;
         if (!(await waitForChatbarRunIfNeeded(ws, data, dependencies))) {
           return;
         }
 
+        const parkedSession = ptySessionsMap.get(ptySessionKey);
+        const parkedAgentPreferencesMatch = !isAgentShell || !parkedSession
+          || (parkedSession.permissionMode === requestedPermissionMode
+            && parkedSession.model === requestedModel
+            && parkedSession.effort === requestedEffort
+            && parkedSession.fastMode === requestedFastMode);
+        // A settings mismatch alone never kills a TUI that is mid-turn: keep
+        // it, and report the settings it actually runs with back to Chatbar
+        // (below). Explicit restart/login still replaces it.
+        const keepBusyParkedSession = Boolean(
+          isAgentShell
+          && parkedSession
+          && !parkedAgentPreferencesMatch
+          && isAgentShellBusy(parkedSession, dependencies.stripAnsiSequences),
+        );
+        const shouldStartFresh = shouldStartFreshShellSession(isLoginCommand, forceRestart)
+          || (isAgentShell && !parkedAgentPreferencesMatch && !keepBusyParkedSession);
+
         if (shouldStartFresh) {
-          const oldSession = ptySessionsMap.get(ptySessionKey);
+          const restartKey = ptySessionKey;
+          const oldSession = ptySessionsMap.get(restartKey);
           if (oldSession) {
-            // Adopt the session the outgoing TUI created before killing it —
-            // otherwise a fresh Grok TUI's work would be orphaned.
-            captureShellSessionSync(dependencies, oldSession);
             if (oldSession.timeoutId) {
               clearTimeout(oldSession.timeoutId);
             }
-            try {
-              oldSession.pty.kill();
-            } catch {
-              // Already gone.
+            ptySessionsMap.delete(restartKey);
+            clearTuiIdleTimer(restartKey);
+            shellSessionRegistry.unregister(restartKey);
+            // Let the outgoing TUI exit, then adopt the session it created
+            // BEFORE building the new command: the relaunch resumes from the
+            // DB mapping (resolveResumeSessionId), which adoption may have
+            // just written — otherwise a fresh TUI's work would be orphaned
+            // and the new CLI would resume the stale id.
+            await killPtyAndAwaitExit(oldSession.pty);
+            void captureShellSessionSync(dependencies, oldSession);
+            if (oldSession.sessionId) {
+              await awaitShellSessionSyncs(oldSession.sessionId);
             }
-            ptySessionsMap.delete(ptySessionKey);
-            clearTuiIdleTimer(ptySessionKey);
-            shellSessionRegistry.unregister(ptySessionKey);
+            if (ws.readyState !== WebSocket.OPEN || ptySessionKey !== restartKey) {
+              return;
+            }
           }
         }
 
@@ -816,6 +1579,7 @@ export function handleShellConnection(
               ptySessionKey,
               existingSession,
               dependencies.stripAnsiSequences,
+              () => handleAgentShellSettled(existingSession),
             );
           }
 
@@ -838,6 +1602,16 @@ export function handleShellConnection(
           }
 
           existingSession.ws = ws;
+          if (keepBusyParkedSession) {
+            reportKeptAgentShellRuntime(ws, existingSession);
+          }
+          resizeShellForReconnect(
+            existingSession.pty,
+            readNumber(data.cols, 80),
+            readNumber(data.rows, 24),
+            existingSession.isAgentShell,
+          );
+          ws.send(JSON.stringify({ type: 'replay_complete' }));
           return;
         }
 
@@ -860,9 +1634,17 @@ export function handleShellConnection(
 
         const shellCommand = buildShellCommand(data, dependencies);
         const resumeSessionId = resolveResumeSessionId(data, dependencies);
-        const shell = os.platform() === 'win32' ? 'powershell.exe' : 'bash';
-        const shellArgs =
-          os.platform() === 'win32' ? ['-Command', shellCommand] : ['-c', shellCommand];
+        const opensInteractiveProjectShell = isPlainShell && !initialCommand;
+        const shell = opensInteractiveProjectShell
+          ? os.platform() === 'win32'
+            ? 'powershell.exe'
+            : process.env.SHELL || '/bin/sh'
+          : os.platform() === 'win32'
+            ? 'powershell.exe'
+            : 'bash';
+        const shellArgs = opensInteractiveProjectShell
+          ? os.platform() === 'win32' ? ['-NoLogo'] : ['-l']
+          : os.platform() === 'win32' ? ['-Command', shellCommand] : ['-c', shellCommand];
         const termCols = readNumber(data.cols, 80);
         const termRows = readNumber(data.rows, 24);
         const prioritizedPath = prioritizeUserNpmGlobalBin(process.env);
@@ -881,6 +1663,7 @@ export function handleShellConnection(
           },
         });
 
+        const spawnedAt = Date.now();
         ptySessionsMap.set(ptySessionKey, {
           pty: shellProcess,
           ws,
@@ -889,9 +1672,22 @@ export function handleShellConnection(
           projectPath,
           sessionId,
           provider,
-          startedAt: Date.now(),
+          startedAt: spawnedAt,
+          spawnedAt,
           isAgentShell: !isPlainShell,
+          model: requestedModel,
+          effort: requestedEffort,
+          fastMode: requestedFastMode,
+          permissionMode: requestedPermissionMode,
+          launchPermissionMode: requestedPermissionMode,
+          providerSessionId: provider === 'grok' ? resumeSessionId : undefined,
+          promptInput: createShellPromptInputState(),
         });
+
+        // Exit/ownership checks compare against THIS spawn's PTY: the socket's
+        // `shellProcess` may already point at a replacement by the time an
+        // old process's exit fires.
+        const spawnedPty = shellProcess;
 
         shellProcess.onData((chunk) => {
           if (!ptySessionKey) {
@@ -915,8 +1711,11 @@ export function handleShellConnection(
               ptySessionKey,
               session,
               dependencies.stripAnsiSequences,
+              () => handleAgentShellSettled(session),
             );
           }
+
+          pollShellRuntime(session);
 
           if (session.ws && session.ws.readyState === WebSocket.OPEN) {
             let outputData = chunk;
@@ -983,7 +1782,7 @@ export function handleShellConnection(
           }
 
           const session = ptySessionsMap.get(ptySessionKey);
-          if (session && session.pty !== shellProcess) {
+          if (session && session.pty !== spawnedPty) {
             return;
           }
 
@@ -1005,8 +1804,12 @@ export function handleShellConnection(
           ptySessionsMap.delete(ptySessionKey);
           clearTuiIdleTimer(ptySessionKey);
           shellSessionRegistry.unregister(ptySessionKey);
-          shellProcess = null;
-          captureShellSessionSync(dependencies, session);
+          if (shellProcess === spawnedPty) {
+            shellProcess = null;
+          }
+          // Tracked per app session, so a Chatbar handoff awaiting this exit
+          // also awaits the adoption before resuming.
+          void captureShellSessionSync(dependencies, session);
         });
 
         let welcomeMsg = `\x1b[36mStarting terminal in: ${projectPath}\x1b[0m\r\n`;
@@ -1057,11 +1860,42 @@ export function handleShellConnection(
         if (shellProcess) {
           shellProcess.write(payload);
         }
+        const inputSession = ptySessionKey ? ptySessionsMap.get(ptySessionKey) : null;
+        if (inputSession?.isAgentShell) {
+          trackShellPromptInput(inputSession.promptInput, payload);
+        }
         if (ptySessionKey && isTuiSubmitInput(payload)) {
           const session = ptySessionsMap.get(ptySessionKey);
           if (session?.isAgentShell) {
-            markAgentShellBusy(ptySessionKey, session);
+            markAgentShellBusy(ptySessionKey, session, () => handleAgentShellSettled(session));
           }
+        }
+        return;
+      }
+
+      // Echo from the client after Chatbar adopted a shell-reported runtime
+      // change: the chat-normalized preferences (the same values the next
+      // `init` would carry) become the parked PTY's launch baseline, so a
+      // later reconnect does not mistake it for stale and kill the TUI.
+      if (data.type === 'runtime_state') {
+        const session = ptySessionKey ? ptySessionsMap.get(ptySessionKey) : null;
+        if (!session?.isAgentShell) {
+          return;
+        }
+        const permissionMode = readString(data.permissionMode);
+        if (permissionMode) {
+          session.permissionMode = resolveShellPermissionMode(session.provider, permissionMode) || session.permissionMode;
+        }
+        const model = readString(data.model);
+        if (model && SHELL_MODEL_PROVIDERS.has(session.provider)) {
+          session.model = model;
+        }
+        const effort = readString(data.effort);
+        if (effort && SHELL_EFFORT_PROVIDERS.has(session.provider)) {
+          session.effort = effort;
+        }
+        if (session.provider === 'codex' && typeof data.fastMode === 'boolean') {
+          session.fastMode = data.fastMode;
         }
         return;
       }
@@ -1105,7 +1939,7 @@ export function handleShellConnection(
     // PTY stays alive for the reconnect window. Running-state must follow the
     // live socket, not the parked process — otherwise Chat keeps showing
     // "Shell" after the turn already finished.
-    captureShellSessionSync(dependencies, session);
+    void captureShellSessionSync(dependencies, session);
     clearTuiIdleTimer(ptySessionKey);
     shellSessionRegistry.unregister(ptySessionKey);
 

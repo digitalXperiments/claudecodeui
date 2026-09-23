@@ -28,12 +28,19 @@ export type AgentRelayStatus =
   | 'running'
   | 'waiting_approval'
   | 'completed'
+  /**
+   * The worker finished its turn but reported it could not complete the
+   * assignment (a denied action, missing capability, or open question). A
+   * first-class outcome so it is never counted as success.
+   */
+  | 'blocked'
   | 'failed'
   | 'cancelled'
   | 'timed_out';
 
 export const AGENT_RELAY_TERMINAL_STATUSES = new Set<AgentRelayStatus>([
   'completed',
+  'blocked',
   'failed',
   'cancelled',
   'timed_out',
@@ -154,6 +161,14 @@ export type AgentRelayJob = {
   retry_count: number;
   schema_retry_count: number;
   result: AgentRelayResult | null;
+  /**
+   * Worker actions the envelope refused (policy, Jev, or approval timeout).
+   * Durable so the lead learns what was blocked without the worker having to
+   * mention it, and can do those steps itself after review.
+   */
+  denied_actions: AgentRelayDeniedAction[];
+  /** Provider switches Relay made after quota/auth/launch failures, oldest first. */
+  failovers: AgentRelayFailover[];
   error: string | null;
   timeout_ms: number;
   attempt: number;
@@ -161,6 +176,26 @@ export type AgentRelayJob = {
   started_at: string | null;
   finished_at: string | null;
   updated_at: string;
+};
+
+export type AgentRelayFailover = {
+  at: string;
+  fromProvider: LLMProvider;
+  fromModel: string | null;
+  toProvider: LLMProvider;
+  toModel: string | null;
+  failure: string;
+  reason: string;
+};
+
+export type AgentRelayDeniedAction = {
+  at: string;
+  attempt: number;
+  tool: string | null;
+  command: string | null;
+  paths: string[];
+  reason: string;
+  via: 'policy' | 'jev' | 'timeout' | 'lead' | 'operator';
 };
 
 export type CreateAgentRelayJobInput = {
@@ -203,6 +238,18 @@ export type AgentRelayTaskInput = {
   /** Zero-based indices of earlier tasks in the same batch this task needs. */
   dependsOn?: number[];
   retries?: number;
+  /**
+   * What the worker needs to do the job, checked before dispatch instead of
+   * discovered mid-run: MCP servers (granted automatically), network egress,
+   * and command-line tools that must be installed on the host.
+   */
+  requires?: AgentRelayTaskRequirements;
+};
+
+export type AgentRelayTaskRequirements = {
+  mcpServers?: string[];
+  network?: boolean;
+  commands?: string[];
 };
 
 /**
@@ -239,6 +286,10 @@ export type AgentRelayJobSummary = {
   attempt: number;
   retryCount: number;
   pendingApprovalCount: number;
+  /** Most recent actions the envelope refused, so the lead can do them after review. */
+  deniedActions: Array<Pick<AgentRelayDeniedAction, 'tool' | 'command' | 'reason' | 'via'>>;
+  /** Writers only: where the server's verify → rehearse → land pipeline stands. */
+  delivery?: { stage: string; rehearsalId: string | null; landedSha: string | null } | null;
   usage: { totalTokens: number | null; costUsd: number | null; runs: number } | null;
   result: {
     status: AgentRelayStructuredResult['status'];
@@ -290,6 +341,33 @@ export type AgentRelaySettings = {
    * worker still gets to report back instead of being killed mid-answer.
    */
   approvalTimeoutMs: number;
+  /**
+   * OS sandbox for workers. `enforce` confines each worker (Claude SDK
+   * sandbox, Codex seatbelt, or `sandbox-exec` around ACP CLIs) so in-sandbox
+   * actions are auto-approved and only boundary crossings need a decision.
+   */
+  workerSandbox: 'enforce' | 'off';
+  /** Network for sandboxed workers: `open` (default) or `restricted` (no egress). */
+  workerNetwork: 'open' | 'restricted';
+  /** Domain allowlist for providers that filter egress by domain (Claude). Empty = built-in dev defaults. */
+  workerAllowedDomains: string[];
+  /**
+   * Whether a lead may choose `approvalPolicy: "manual"` per task. Off by
+   * default: leads reach for manual out of caution and then spend their turns
+   * approving routine work. The operator's own default policy always applies.
+   */
+  allowLeadManualApproval: boolean;
+  /** Server runs host checks on every writer as soon as it finishes. */
+  autoVerify: boolean;
+  /** When a batch settles, the server rehearses its verified final-stage writers together. */
+  autoRehearse: boolean;
+  /** Land a passing automatic rehearsal without waiting for the lead. Off by default. */
+  autoLand: 'off' | 'on_pass';
+  /**
+   * MCP servers granted to every worker whose provider honors grants (e.g.
+   * project memory, a localhost browser), on top of task grants.
+   */
+  defaultWorkerMcpServers: string[];
 };
 
 export type AgentRelaySettingsPatch = Partial<AgentRelaySettings>;

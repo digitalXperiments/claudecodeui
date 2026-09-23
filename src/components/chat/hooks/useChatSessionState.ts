@@ -4,7 +4,12 @@ import type { MutableRefObject } from 'react';
 import { authenticatedFetch } from '../../../utils/api';
 import type { MarkSessionIdle, SessionActivityMap } from '../../../hooks/useSessionProtection';
 import type { Project, ProjectSession, LLMProvider } from '../../../types/app';
-import type { SessionStore, NormalizedMessage } from '../../../stores/useSessionStore';
+import type {
+  LatestHistoryRefreshResult,
+  NormalizedMessage,
+  SessionSlot,
+  SessionStore,
+} from '../../../stores/useSessionStore';
 import { SESSION_MESSAGES_PAGE_SIZE } from '../../../stores/sessionMessagePagination';
 import type { ChatMessage } from '../types/types';
 import {
@@ -12,15 +17,41 @@ import {
   type MessageHistoryRefreshCoordinator,
 } from '../utils/messageHistoryRefreshCoordinator';
 import { createCachedDiffCalculator, type DiffCalculator } from '../utils/messageTransforms';
-import { getIntrinsicMessageKey } from '../utils/messageKeys';
 import { createTranscriptScrollController } from '../utils/transcriptScrollController';
+import {
+  createHistoryLoadRunner,
+  type HistoryLoadAttemptOutcome,
+  type HistoryLoadResult,
+} from '../utils/sessionHistoryLoadRunner';
 
 import { normalizedToChatMessages } from './useChatMessages';
 
-const INITIAL_VISIBLE_MESSAGES = 100;
 const EMPTY_MESSAGES: NormalizedMessage[] = [];
+/**
+ * Backoff for re-reading the persisted tail while it is not final yet: the
+ * server marked it `historyRefreshing` (Antigravity background replay), the
+ * request failed/was pending, or a just-completed run's live rows are not on
+ * disk yet. Each entry is the wait before the next attempt.
+ */
+const HISTORY_FOLLOW_UP_DELAYS_MS = [1000, 2000, 4000, 8000, 16000, 30000];
+/** A finished run's transcript usually lands within a few seconds. */
+const RUN_COMPLETE_FOLLOW_UP_ATTEMPTS = 4;
+const PERSISTABLE_LIVE_KINDS = new Set<NormalizedMessage['kind']>(['text', 'tool_use', 'thinking', 'stream_delta']);
+
+/** Live rows the transcript should eventually own (prune removes them). */
+function hasUnpersistedLiveRows(slot: SessionSlot | undefined): boolean {
+  return Boolean(slot?.realtimeMessages.some((message) => PERSISTABLE_LIVE_KINDS.has(message.kind)));
+}
+/**
+ * An empty first page for a session the index says has messages is retried
+ * this many times before being accepted as a genuinely empty transcript.
+ */
+const SUSPECT_EMPTY_RETRIES = 2;
+
+export type HistoryLoadError = Exclude<HistoryLoadResult, 'applied'>;
 
 interface UseChatSessionStateArgs {
+  isActive?: boolean;
   selectedProject: Project | null;
   selectedSession: ProjectSession | null;
   ws: WebSocket | null;
@@ -96,6 +127,7 @@ function chatMessageToNormalized(
 /* ------------------------------------------------------------------ */
 
 export function useChatSessionState({
+  isActive = true,
   selectedProject,
   selectedSession,
   ws,
@@ -111,6 +143,10 @@ export function useChatSessionState({
 }: UseChatSessionStateArgs) {
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(selectedSession?.id || null);
   const [isLoadingSessionMessages, setIsLoadingSessionMessages] = useState(false);
+  const [historyLoadError, setHistoryLoadError] = useState<HistoryLoadError | null>(null);
+  const historyLoadRunnerRef = useRef<ReturnType<typeof createHistoryLoadRunner> | null>(null);
+  if (!historyLoadRunnerRef.current) historyLoadRunnerRef.current = createHistoryLoadRunner();
+  const historyRefetchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [isLoadingMoreMessages, setIsLoadingMoreMessages] = useState(false);
   const [hasMoreMessages, setHasMoreMessages] = useState(false);
   const [totalMessages, setTotalMessages] = useState(0);
@@ -121,7 +157,6 @@ export function useChatSessionState({
     updateIsUserScrolledUp(reading);
   }, []);
   const [tokenBudget, setTokenBudget] = useState<Record<string, unknown> | null>(null);
-  const [visibleMessageCount, setVisibleMessageCount] = useState(INITIAL_VISIBLE_MESSAGES);
   const [allMessagesLoaded, setAllMessagesLoaded] = useState(false);
   const [isLoadingAllMessages, setIsLoadingAllMessages] = useState(false);
   const [loadAllJustFinished, setLoadAllJustFinished] = useState(false);
@@ -190,7 +225,6 @@ export function useChatSessionState({
     setTotalMessages(0);
     
     setTokenBudget(null);
-    setVisibleMessageCount(INITIAL_VISIBLE_MESSAGES);
     setAllMessagesLoaded(false);
     allMessagesLoadedRef.current = false;
     setIsLoadingAllMessages(false);
@@ -203,6 +237,9 @@ export function useChatSessionState({
     topLoadLockRef.current = false;
     lastLoadedSessionKeyRef.current = null;
     lastSubscribedSessionRef.current = null;
+    historyLoadRunnerRef.current?.cancel();
+    setIsLoadingSessionMessages(false);
+    setHistoryLoadError(null);
 
     if (loadAllOverlayTimerRef.current) {
       clearTimeout(loadAllOverlayTimerRef.current);
@@ -235,6 +272,29 @@ export function useChatSessionState({
   // every activity transition.
   const processingSessionsRef = useRef(processingSessions);
   processingSessionsRef.current = processingSessions;
+
+  // Live rows are only pruned by server writes, which happen for the viewed
+  // session. Bound a background session's rows once it has no run in flight:
+  // when its run settles off-screen, or when the user navigates away from it.
+  const trimCandidatesRef = useRef<{ processing: Set<string>; active: string | null }>({
+    processing: new Set(),
+    active: null,
+  });
+  useEffect(() => {
+    const previous = trimCandidatesRef.current;
+    const processingNow = new Set(processingSessions?.keys() ?? []);
+    const candidates = new Set<string>();
+    for (const sessionId of previous.processing) {
+      if (!processingNow.has(sessionId)) candidates.add(sessionId);
+    }
+    if (previous.active && previous.active !== activeSessionId) candidates.add(previous.active);
+    trimCandidatesRef.current = { processing: processingNow, active: activeSessionId };
+    for (const sessionId of candidates) {
+      if (sessionId !== activeSessionId && !processingNow.has(sessionId)) {
+        sessionStore.trimSettledRealtime(sessionId);
+      }
+    }
+  }, [processingSessions, activeSessionId, sessionStore]);
 
   /* ---------------------------------------------------------------- */
   /*  Coalesced, visibility-gated persisted-history refresh           */
@@ -272,17 +332,27 @@ export function useChatSessionState({
   const latestRefreshExecutorRef = useRef<(sessionId: string) => Promise<boolean | void>>(
     async () => true,
   );
+  // Outcome of the last executed latest refresh per session, read by the
+  // follow-up retry loop (the coordinator itself only reports completion).
+  const lastLatestRefreshRef = useRef(new Map<string, LatestHistoryRefreshResult>());
+  const followUpLatestHistoryRef = useRef<(sessionId: string) => void>(() => {});
   latestRefreshExecutorRef.current = async (sessionId: string) => {
     const result = await sessionStore.refreshLatestFromServer(sessionId, {
       limit: SESSION_MESSAGES_PAGE_SIZE,
       canRequest: () => canRefreshSessionNow(sessionId),
     });
+    lastLatestRefreshRef.current.set(sessionId, result);
     const slot = result.slot;
     if (slot && activeSessionIdRef.current === sessionId && result.applied) {
       setHasMoreMessages(slot.hasMore);
       setTotalMessages(slot.total);
       messagesOffsetRef.current = slot.offset;
       if (slot.tokenUsage) setTokenBudget(slot.tokenUsage as Record<string, unknown>);
+      // Any trigger (external update, activation) can land on the server's
+      // last-good cache; keep re-reading until the background refresh lands.
+      if (slot.historyRefreshing && !historyRefetchTimerRef.current) {
+        followUpLatestHistoryRef.current(sessionId);
+      }
     }
     // `deferred` means the pane went hidden mid-request: keep the session
     // dirty so the next flush (visibility/activation) retries.
@@ -306,6 +376,41 @@ export function useChatSessionState({
   const requestLatestMessages = useCallback((sessionId: string, allowNetwork = true) => (
     refreshCoordinatorRef.current?.request(sessionId, allowNetwork) ?? Promise.resolve()
   ), []);
+
+  // Reconcile ownership on surface changes, and periodically while a
+  // hidden Chat run is keeping Shell waiting. A missed completion frame
+  // must not leave that handoff stuck. Subscribe also replays missed events.
+  useEffect(() => {
+    const sessionId = selectedSession?.id;
+    if (!sessionId || !ws) return;
+    const reconcile = () => {
+      statusCheckSentAtRef.current.set(sessionId, Date.now());
+      sendMessage({
+        type: 'chat.subscribe',
+        sessions: [{ sessionId, lastSeq: lastSeqRef.current.get(sessionId) ?? 0 }],
+      });
+    };
+    reconcile();
+    if (isActive || !isProcessing) return;
+    const timer = window.setInterval(reconcile, 5000);
+    return () => window.clearInterval(timer);
+  }, [isActive, isProcessing, selectedSession?.id, ws, sendMessage, statusCheckSentAtRef, lastSeqRef]);
+
+  // Shell can update the provider transcript without a file-watcher event.
+  // Refresh the bounded tail on return, preserving the draft and scroll state.
+  const wasActiveRef = useRef(isActive);
+  useEffect(() => {
+    const returning = isActive && !wasActiveRef.current;
+    wasActiveRef.current = isActive;
+    if (!activeSessionId) return;
+    if (returning) {
+      void requestLatestMessages(activeSessionId, !isProcessing).catch(error => {
+        console.error('Error refreshing messages on Chat activation:', error);
+      });
+    } else if (isActive && !isProcessing) {
+      void refreshCoordinatorRef.current?.flushPending(activeSessionId);
+    }
+  }, [isActive, activeSessionId, isProcessing, requestLatestMessages]);
 
   // Flush dirty sessions when the browser tab becomes visible again.
   useEffect(() => {
@@ -359,6 +464,11 @@ export function useChatSessionState({
   }, [activeSessionId, pendingUserMessage, sessionStore]);
 
   const storeMessages = activeSessionId ? sessionStore.getMessages(activeSessionId) : EMPTY_MESSAGES;
+  // Persisted rows loaded so far — the same unit as `totalMessages`, unlike the
+  // rendered row count (tool results merge into their calls, groups collapse).
+  const loadedHistoryCount = activeSessionId
+    ? sessionStore.getSessionSlot(activeSessionId)?.serverMessages.length ?? 0
+    : 0;
 
   // Reset viewHiddenCount when store messages change
   const prevStoreLenRef = useRef(0);
@@ -445,7 +555,6 @@ export function useChatSessionState({
 
         setHasMoreMessages(slot.hasMore);
         setTotalMessages(slot.total);
-        setVisibleMessageCount((prev) => prev + SESSION_MESSAGES_PAGE_SIZE);
         if (!slot.hasMore) {
           allMessagesLoadedRef.current = true;
           setAllMessagesLoaded(true);
@@ -466,14 +575,22 @@ export function useChatSessionState({
     [hasMoreMessages, isLoadingMoreMessages, selectedProject, selectedSession, sessionStore],
   );
 
-  const handleScroll = useCallback(async () => {
+  /**
+   * `programmatic` scrolls are the controller's own anchoring corrections /
+   * follow writes. They may update the top-load lock but never start a fetch
+   * or show the Load-all prompt: a correction landing near the top used to
+   * chain another older-page request with no user movement.
+   */
+  const handleScroll = useCallback(async (programmatic = false) => {
     const container = scrollContainerRef.current;
     if (!container) return;
 
     const scrolledNearTop = container.scrollTop < 100;
 
     // "Load all" prompt: appear (with fade-in) when the user reaches the top
-    if (scrolledNearTop && hasMoreMessages && !allMessagesLoadedRef.current) {
+    if (programmatic) {
+      if (!scrolledNearTop) wasNearTopRef.current = false;
+    } else if (scrolledNearTop && hasMoreMessages && !allMessagesLoadedRef.current) {
       if (!wasNearTopRef.current) {
         wasNearTopRef.current = true;
         if (loadAllOverlayTimerRef.current) clearTimeout(loadAllOverlayTimerRef.current);
@@ -494,6 +611,7 @@ export function useChatSessionState({
         if (container.scrollTop > 20) topLoadLockRef.current = false;
         return;
       }
+      if (programmatic) return;
       const didLoad = await loadOlderMessages(container);
       if (didLoad) topLoadLockRef.current = true;
     }
@@ -501,9 +619,6 @@ export function useChatSessionState({
 
   // Reset scroll/pagination state on session change
   useEffect(() => {
-    if (!searchScrollActiveRef.current) {
-      setVisibleMessageCount(INITIAL_VISIBLE_MESSAGES);
-    }
     searchScrollActiveRef.current = false;
     setSearchTarget(null);
     topLoadLockRef.current = false;
@@ -511,25 +626,193 @@ export function useChatSessionState({
     setIsUserScrolledUp(false);
   }, [selectedProject?.projectId, selectedSession?.id, setIsUserScrolledUp]);
 
+  // Latest-value mirrors so the load effect only re-runs for session identity
+  // and socket changes. Callback identities (resetStreamingState follows the
+  // provider, which syncs one render after opening another provider's
+  // session) used to re-run the effect mid-fetch and cancel its own load.
+  const resetStreamingStateRef = useRef(resetStreamingState);
+  resetStreamingStateRef.current = resetStreamingState;
+  const sendMessageRef = useRef(sendMessage);
+  sendMessageRef.current = sendMessage;
+  const currentSessionIdRef = useRef(currentSessionId);
+  currentSessionIdRef.current = currentSessionId;
+  const expectedMessageCountRef = useRef<number | undefined>(selectedSession?.messageCount);
+  expectedMessageCountRef.current = selectedSession?.messageCount;
+
+  const clearHistoryRefetchTimer = useCallback(() => {
+    if (historyRefetchTimerRef.current) {
+      clearTimeout(historyRefetchTimerRef.current);
+      historyRefetchTimerRef.current = null;
+    }
+  }, []);
+
+  /**
+   * Re-reads the persisted tail through the coordinated refresh path until it
+   * is final, with backoff: while the server reports `historyRefreshing`, the
+   * request failed / was pending / could not be stitched, or (after a run)
+   * live rows are still waiting for the transcript to catch up. A deferred
+   * (hidden-pane) refresh stops the loop — the coordinator keeps it dirty and
+   * flushes it on visibility. Pagination state is synced by the executor.
+   */
+  const followUpLatestHistory = useCallback((
+    sessionId: string,
+    options: { immediate?: boolean; awaitLiveRows?: boolean } = {},
+  ) => {
+    clearHistoryRefetchTimer();
+    const maxAttempts = options.awaitLiveRows
+      ? RUN_COMPLETE_FOLLOW_UP_ATTEMPTS
+      : HISTORY_FOLLOW_UP_DELAYS_MS.length;
+
+    const run = async (attempt: number) => {
+      if (activeSessionIdRef.current !== sessionId) {
+        // Not in view: mark dirty so it refreshes when shown.
+        void requestLatestMessages(sessionId, false);
+        return;
+      }
+      lastLatestRefreshRef.current.delete(sessionId);
+      try {
+        await requestLatestMessages(sessionId);
+      } catch (error) {
+        console.error('Error refreshing latest messages:', error);
+      }
+      if (activeSessionIdRef.current !== sessionId) return;
+      const result = lastLatestRefreshRef.current.get(sessionId);
+      if (!result || result.deferred) return;
+      const slot = sessionStore.getSessionSlot(sessionId);
+      const needsRetry = Boolean(
+        result.failed
+        || result.pending
+        || result.unbridged
+        || slot?.historyRefreshing
+        || (options.awaitLiveRows && hasUnpersistedLiveRows(slot)),
+      );
+      // The executor may have started its own follow-up; this loop owns it.
+      clearHistoryRefetchTimer();
+      if (needsRetry) schedule(attempt + 1);
+    };
+
+    const schedule = (attempt: number) => {
+      if (attempt >= maxAttempts) return;
+      historyRefetchTimerRef.current = setTimeout(() => {
+        historyRefetchTimerRef.current = null;
+        void run(attempt);
+      }, HISTORY_FOLLOW_UP_DELAYS_MS[attempt]);
+    };
+
+    if (options.immediate) void run(0);
+    else schedule(0);
+  }, [clearHistoryRefetchTimer, requestLatestMessages, sessionStore]);
+  followUpLatestHistoryRef.current = followUpLatestHistory;
+
+  /**
+   * Run-complete hook for the realtime handler: sync the viewed conversation
+   * with the now-persisted transcript (hasMore/total/offset included) and keep
+   * retrying briefly while the provider is still writing it.
+   */
+  const refreshAfterRunComplete = useCallback((sessionId: string) => {
+    followUpLatestHistory(sessionId, { immediate: true, awaitLiveRows: true });
+  }, [followUpLatestHistory]);
+
+  /**
+   * First load for a session entering view. Revisiting a cached session keeps
+   * its already-loaded older history and stitches the refreshed tail on (no
+   * collapse to a fresh 20-row page); a first visit fetches the newest page.
+   * Errors and not-yet-persisted history retry with backoff while this load
+   * is current; the flags and pagination are always applied when it settles.
+   */
+  const startInitialHistoryLoad = useCallback((sessionId: string) => {
+    const runner = historyLoadRunnerRef.current!;
+    clearHistoryRefetchTimer();
+    setHistoryLoadError(null);
+    setIsLoadingSessionMessages(true);
+
+    const attempt = async (attemptIndex: number): Promise<HistoryLoadAttemptOutcome> => {
+      const cachedRows = sessionStore.getSessionSlot(sessionId)?.serverMessages.length ?? 0;
+      if (cachedRows > 0) {
+        const result = await sessionStore.refreshLatestFromServer(sessionId, {
+          limit: SESSION_MESSAGES_PAGE_SIZE,
+        });
+        if (result.failed) return 'error';
+        if (result.pending) return 'pending';
+        if (!result.unbridged) return 'applied';
+        // The tail could not be stitched onto the cache: fall back to a
+        // fresh newest page rather than showing a stale transcript.
+      }
+      const { slot, outcome } = await sessionStore.fetchFromServerDetailed(sessionId, {
+        limit: SESSION_MESSAGES_PAGE_SIZE,
+        offset: 0,
+      });
+      if (outcome === 'superseded') return 'applied';
+      if (
+        outcome === 'applied'
+        && slot.serverMessages.length === 0
+        && !slot.hasMore
+        && (expectedMessageCountRef.current ?? 0) > 0
+        && attemptIndex < SUSPECT_EMPTY_RETRIES
+      ) {
+        // The index says this session has messages; an empty page right
+        // after creation/indexing is usually a transcript still being written.
+        return 'error';
+      }
+      return outcome;
+    };
+
+    const onDone = (result: HistoryLoadResult) => {
+      if (activeSessionIdRef.current !== sessionId) return;
+      const slot = sessionStore.getSessionSlot(sessionId);
+      if (slot) {
+        setHasMoreMessages(slot.hasMore);
+        setTotalMessages(slot.total);
+        messagesOffsetRef.current = slot.offset;
+        if (slot.tokenUsage) setTokenBudget(slot.tokenUsage as Record<string, unknown>);
+      }
+      setIsLoadingSessionMessages(false);
+      const hasRows = (slot?.merged.length ?? 0) > 0;
+      setHistoryLoadError(result === 'applied' || hasRows ? null : result);
+      if (result === 'applied' && slot?.historyRefreshing) {
+        // Rows are the server's last-good cache; re-read with backoff until
+        // the background refresh lands (tail merge, no flash).
+        followUpLatestHistory(sessionId);
+      }
+    };
+
+    runner.start(sessionId, attempt, onDone);
+  }, [clearHistoryRefetchTimer, followUpLatestHistory, sessionStore]);
+
+  const retryHistoryLoad = useCallback(() => {
+    const sessionId = activeSessionIdRef.current;
+    if (sessionId) startInitialHistoryLoad(sessionId);
+  }, [startInitialHistoryLoad]);
+
+  useEffect(() => () => {
+    historyLoadRunnerRef.current?.cancel();
+    clearHistoryRefetchTimer();
+  }, [clearHistoryRefetchTimer]);
+
   // Main session loading effect — store-based
   useEffect(() => {
     const projectId = selectedProject?.projectId ?? null;
+    const runner = historyLoadRunnerRef.current!;
 
     if (!selectedSession || !projectId) {
       // A freshly created session can be mid-run before the router has a
       // canonical selectedSession (the URL effect synthesizes one on the
       // next render). Keep the active view intact instead of wiping it.
-      if (currentSessionId && processingSessionsRef.current?.has(currentSessionId)) {
+      const current = currentSessionIdRef.current;
+      if (current && processingSessionsRef.current?.has(current)) {
         return;
       }
 
-      resetStreamingState();
+      runner.cancel();
+      clearHistoryRefetchTimer();
+      resetStreamingStateRef.current();
       setCurrentSessionId(null);
       messagesOffsetRef.current = 0;
       setHasMoreMessages(false);
       setTotalMessages(0);
       setTokenBudget(null);
       setIsLoadingSessionMessages(false);
+      setHistoryLoadError(null);
       lastLoadedSessionKeyRef.current = null;
       lastSubscribedSessionRef.current = null;
       return;
@@ -555,7 +838,7 @@ export function useChatSessionState({
 
       lastSubscribedSessionRef.current = { sessionId: selectedSessionId, ws };
       statusCheckSentAtRef.current.set(selectedSessionId, Date.now());
-      sendMessage({
+      sendMessageRef.current({
         type: 'chat.subscribe',
         sessions: [{
           sessionId: selectedSessionId,
@@ -570,9 +853,11 @@ export function useChatSessionState({
     // Only re-subscribe when the socket changes, and only soft-refresh when
     // the cache is stale. Re-running a full load here used to thrash Grok
     // sessions because every file-watcher `session_upserted` rebuilt the
-    // selected project object and re-entered this effect.
+    // selected project object and re-entered this effect. An initial load
+    // still in flight is left to finish (it is not tied to this effect run).
     if (alreadyLoaded) {
       subscribeToSelectedSession(false);
+      if (runner.inFlightKey === selectedSessionId) return;
       const viewedActivity = processingSessionsRef.current?.get(selectedSessionId);
       if (viewedActivity?.source !== 'chat') {
         if (sessionStore.isStale(selectedSessionId)) {
@@ -588,18 +873,22 @@ export function useChatSessionState({
       return;
     }
 
-    const sessionChanged = currentSessionId !== null && currentSessionId !== selectedSessionId;
+    const previousSessionId = currentSessionIdRef.current;
+    const sessionChanged = previousSessionId !== null && previousSessionId !== selectedSessionId;
     if (sessionChanged) {
-      resetStreamingState();
+      resetStreamingStateRef.current();
     }
 
-    // Reset pagination/scroll state only when actually switching conversations
+    // Reset pagination/scroll state only when actually switching conversations.
+    // A cached revisit starts from the cached pagination so older history
+    // already loaded stays visible and scroll-loading continues from it.
+    const cachedSlot = sessionStore.getSessionSlot(selectedSessionId);
+    const hasCachedHistory = (cachedSlot?.serverMessages.length ?? 0) > 0;
     isLoadingMoreRef.current = false;
     setIsLoadingMoreMessages(false);
-    messagesOffsetRef.current = 0;
-    setHasMoreMessages(false);
-    setTotalMessages(0);
-    setVisibleMessageCount(INITIAL_VISIBLE_MESSAGES);
+    messagesOffsetRef.current = hasCachedHistory ? cachedSlot!.offset : 0;
+    setHasMoreMessages(hasCachedHistory ? cachedSlot!.hasMore : false);
+    setTotalMessages(hasCachedHistory ? cachedSlot!.total : 0);
     setAllMessagesLoaded(false);
     allMessagesLoadedRef.current = false;
     setIsLoadingAllMessages(false);
@@ -628,36 +917,17 @@ export function useChatSessionState({
     // The full initial page load supersedes any refresh deferred while hidden.
     refreshCoordinatorRef.current?.discardPending(selectedSessionId);
 
-    // Fetch from server → store updates → chatMessages re-derives automatically
-    // `cancelled` scopes the loading flag to *this* effect run so a superseded
-    // request can never leave the spinner stuck: `activeSessionIdRef` alone
-    // isn't enough, since it can churn (e.g. Studio's session bootstrap briefly
-    // nulling `selectedSession`) between this fetch starting and settling.
-    let cancelled = false;
-    setIsLoadingSessionMessages(true);
-    sessionStore.fetchFromServer(selectedSessionId, {
-      limit: SESSION_MESSAGES_PAGE_SIZE,
-      offset: 0,
-    }).then(slot => {
-      if (cancelled) return;
-      if (activeSessionIdRef.current === selectedSessionId && slot) {
-        setHasMoreMessages(slot.hasMore);
-        setTotalMessages(slot.total);
-        if (slot.tokenUsage) setTokenBudget(slot.tokenUsage as Record<string, unknown>);
-      }
-      setIsLoadingSessionMessages(false);
-    }).catch(() => {
-      if (!cancelled) setIsLoadingSessionMessages(false);
-    });
-    return () => {
-      cancelled = true;
-    };
+    // Fetch from server → store updates → chatMessages re-derives automatically.
+    // Deliberately no cleanup: the runner's token (superseded only by another
+    // load or a deselect above) decides validity, so effect re-runs caused by
+    // unrelated dependency changes can no longer strand the loading flag.
+    startInitialHistoryLoad(selectedSessionId);
   }, [
-    resetStreamingState,
+    clearHistoryRefetchTimer,
     requestLatestMessages,
     selectedProject?.projectId,
     selectedSession?.id,
-    sendMessage,
+    startInitialHistoryLoad,
     statusCheckSentAtRef,
     lastSeqRef,
     ws,
@@ -740,7 +1010,6 @@ export function useChatSessionState({
               setHasMoreMessages(false);
               setTotalMessages(slot.total);
               messagesOffsetRef.current = slot.total;
-              setVisibleMessageCount(Infinity);
               setAllMessagesLoaded(true);
               allMessagesLoadedRef.current = true;
               await new Promise(resolve => setTimeout(resolve, 300));
@@ -750,7 +1019,6 @@ export function useChatSessionState({
           }
       }
       if (!isCurrent()) { if (!cancelled) finish(); return; }
-      setVisibleMessageCount(Infinity);
 
       const findAndScroll = (retriesLeft: number) => {
         if (!isCurrent()) { if (!cancelled) finish(); return; }
@@ -837,25 +1105,17 @@ export function useChatSessionState({
     };
   }, [selectedProject, selectedSession?.id]);
 
-  const previousWindowRef = useRef({ sessionId: activeSessionId, messages: chatMessages });
-  const previousWindow = previousWindowRef.current;
-  if (previousWindow.messages !== chatMessages || previousWindow.sessionId !== activeSessionId) {
-    previousWindowRef.current = { sessionId: activeSessionId, messages: chatMessages };
-    if (previousWindow.sessionId === activeSessionId && previousWindow.messages.length > 0) {
-      const previousTail = previousWindow.messages[previousWindow.messages.length - 1];
-      const tailKey = getIntrinsicMessageKey(previousTail);
-      const tailIndex = chatMessages.findIndex(message => getIntrinsicMessageKey(message) === tailKey);
-      const appended = tailIndex < 0 ? 0 : chatMessages.length - tailIndex - 1;
-      if (tailKey && appended > 0) setVisibleMessageCount(count => count + appended);
-    }
-  }
+  // Every row renders: LazyMessageRow keeps off-screen rows cheap. The old
+  // tail-anchored visibleMessageCount window cut rows from the top whenever a
+  // refresh replaced the last row (its key changed, so "appended" read as 0).
+  const visibleMessages = chatMessages;
 
-  const visibleMessages = useMemo(() => {
-    if (chatMessages.length <= visibleMessageCount) return chatMessages;
-    return chatMessages.slice(-visibleMessageCount);
-  }, [chatMessages, visibleMessageCount]);
+  const handleScrollRef = useRef(handleScroll);
+  handleScrollRef.current = handleScroll;
 
   // One controller owns follow intent, user input, and geometry correction.
+  // It also classifies each scroll event (own write vs user) before the
+  // history-loading logic sees it.
   useLayoutEffect(() => {
     const container = scrollContainerRef.current;
     if (!container) return;
@@ -864,6 +1124,8 @@ export function useChatSessionState({
     }, () => searchScrollActiveRef.current, () => {
       searchScrollActiveRef.current = false;
       setSearchTarget(null);
+    }, (programmatic) => {
+      void handleScrollRef.current(programmatic);
     });
     scrollControllerRef.current = controller;
     const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(controller.reconcile);
@@ -883,13 +1145,6 @@ export function useChatSessionState({
   useLayoutEffect(() => {
     scrollControllerRef.current?.reconcile();
   });
-
-  useEffect(() => {
-    const container = scrollContainerRef.current;
-    if (!container) return;
-    container.addEventListener('scroll', handleScroll);
-    return () => container.removeEventListener('scroll', handleScroll);
-  }, [handleScroll]);
 
   /**
    * Pull further pages while the transcript is too short to scroll.
@@ -961,7 +1216,6 @@ export function useChatSessionState({
         setHasMoreMessages(false);
         setTotalMessages(slot.total);
         messagesOffsetRef.current = slot.total;
-        setVisibleMessageCount(Infinity);
         setAllMessagesLoaded(true);
 
         setLoadAllJustFinished(true);
@@ -988,10 +1242,6 @@ export function useChatSessionState({
     }
   }, [selectedSession, selectedProject, isLoadingAllMessages, sessionStore]);
 
-  const loadEarlierMessages = useCallback(() => {
-    setVisibleMessageCount((prev) => prev + 100);
-  }, []);
-
   return {
     chatMessages,
     addMessage,
@@ -1003,6 +1253,9 @@ export function useChatSessionState({
     currentSessionId,
     setCurrentSessionId,
     isLoadingSessionMessages,
+    historyLoadError,
+    retryHistoryLoad,
+    loadedHistoryCount,
     isLoadingMoreMessages,
     hasMoreMessages,
     totalMessages,
@@ -1010,9 +1263,7 @@ export function useChatSessionState({
     setIsUserScrolledUp,
     tokenBudget,
     setTokenBudget,
-    visibleMessageCount,
     visibleMessages,
-    loadEarlierMessages,
     loadAllMessages,
     allMessagesLoaded,
     isLoadingAllMessages,
@@ -1025,5 +1276,6 @@ export function useChatSessionState({
     isNearBottom,
     handleScroll,
     requestLatestMessages,
+    refreshAfterRunComplete,
   };
 }

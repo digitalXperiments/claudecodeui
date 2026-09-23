@@ -2,6 +2,8 @@ import { getConnection } from '@/modules/database/index.js';
 import type {
   AgentRelayApproval,
   AgentRelayApprovalStatus,
+  AgentRelayDeniedAction,
+  AgentRelayFailover,
   AgentRelayJob,
   AgentRelayResult,
   AgentRelayStatus,
@@ -9,8 +11,10 @@ import type {
   CreateAgentRelayJobInput,
 } from '@/modules/agent-relay/agent-relay.types.js';
 
-type AgentRelayRow = Omit<AgentRelayJob, 'mcp_servers' | 'result' | 'provider' | 'output_schema' | 'depends_on'> & {
+type AgentRelayRow = Omit<AgentRelayJob, 'mcp_servers' | 'result' | 'provider' | 'output_schema' | 'depends_on' | 'denied_actions' | 'failovers'> & {
   provider: string;
+  denied_actions_json?: string | null;
+  failover_json?: string | null;
   mcp_servers_json: string;
   output_schema_json: string | null;
   depends_on_json: string;
@@ -42,6 +46,19 @@ function parseResult(raw: string | null | undefined): AgentRelayResult | null {
   }
 }
 
+/** Advisory history: a corrupt value is dropped rather than quarantining the job. */
+function parseDeniedActions(raw: string | null | undefined): AgentRelayDeniedAction[] {
+  if (!raw) return [];
+  try {
+    const value = JSON.parse(raw);
+    return Array.isArray(value) ? value.filter((entry) => entry && typeof entry === 'object') as AgentRelayDeniedAction[] : [];
+  } catch {
+    return [];
+  }
+}
+
+const MAX_DENIED_ACTIONS = 50;
+
 type AgentRelayApprovalRow = Omit<AgentRelayApproval, 'paths' | 'status'> & {
   status: string;
   paths_json: string;
@@ -72,7 +89,15 @@ function parseObject(raw: string | null | undefined, field: string): { value: Re
 }
 
 function mapRow(row: AgentRelayRow): ParsedJob {
-  const { mcp_servers_json: _mcp, output_schema_json: _schema, depends_on_json: _deps, result_json: _result, ...rest } = row;
+  const {
+    mcp_servers_json: _mcp,
+    output_schema_json: _schema,
+    depends_on_json: _deps,
+    result_json: _result,
+    denied_actions_json: _denied,
+    failover_json: _failovers,
+    ...rest
+  } = row;
   const mcpServers = parseStringArray(row.mcp_servers_json, 'mcp_servers_json');
   const dependsOn = parseStringArray(row.depends_on_json, 'depends_on_json');
   const outputSchema = parseObject(row.output_schema_json, 'output_schema_json');
@@ -87,6 +112,8 @@ function mapRow(row: AgentRelayRow): ParsedJob {
     output_schema: outputSchema.value,
     depends_on: dependsOn.value,
     result: parseResult(row.result_json),
+    denied_actions: parseDeniedActions(row.denied_actions_json),
+    failovers: parseDeniedActions(row.failover_json) as unknown as AgentRelayFailover[],
   };
   if (durableError) {
     job.status = 'failed';
@@ -339,7 +366,7 @@ export const agentRelayDb = {
       SET status = 'queued', last_prompt = ?, result_json = NULL, error = NULL,
           pending_follow_up = NULL, run_id = NULL, finished_at = NULL, schema_retry_count = 0,
           timeout_ms = COALESCE(?, timeout_ms), updated_at = CURRENT_TIMESTAMP
-      WHERE relay_id = ? AND status IN ('completed', 'failed', 'timed_out', 'cancelled')
+      WHERE relay_id = ? AND status IN ('completed', 'blocked', 'failed', 'timed_out', 'cancelled')
     `).run(prompt, timeoutMs ?? null, relayId);
     return this.get(relayId);
   },
@@ -427,6 +454,57 @@ export const agentRelayDb = {
     return this.get(relayId);
   },
 
+  /**
+   * Re-dispatch a job that failed before doing anything to another provider.
+   * Keeps the brief, the attempt, and the writer's (untouched) worktree.
+   */
+  reassignForFailover(relayId: string, input: {
+    provider: AgentRelayJob['provider'];
+    model: string | null;
+    requestedModel: string | null;
+    modelLabel: string | null;
+    catalogDefaultModel: string | null;
+    catalogResolvedModel: string | null;
+    modelSelectionSource: AgentRelayJob['model_selection_source'];
+    effort: string | null;
+    failover: AgentRelayFailover;
+  }): AgentRelayJob | null {
+    const job = this.get(relayId);
+    if (!job) return null;
+    const failovers = [...job.failovers, input.failover].slice(-10);
+    const changes = getConnection().prepare(`
+      UPDATE agent_relay_jobs
+      SET status = 'queued', provider = ?, model = ?, requested_model = ?, model_label = ?,
+          catalog_default_model = ?, catalog_resolved_model = ?, runtime_resolved_model = NULL,
+          model_selection_source = ?, effort = ?, failover_json = ?,
+          app_session_id = NULL, run_id = NULL, result_json = NULL, error = NULL, finished_at = NULL,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE relay_id = ? AND status IN ('queued', 'running', 'waiting_approval')
+    `).run(
+      input.provider,
+      input.model,
+      input.requestedModel,
+      input.modelLabel,
+      input.catalogDefaultModel,
+      input.catalogResolvedModel,
+      input.modelSelectionSource,
+      input.effort,
+      JSON.stringify(failovers),
+      relayId,
+    ).changes;
+    return changes > 0 ? this.get(relayId) : null;
+  },
+
+  appendDeniedAction(relayId: string, action: AgentRelayDeniedAction): AgentRelayJob | null {
+    const job = this.get(relayId);
+    if (!job) return null;
+    const next = [...job.denied_actions, action].slice(-MAX_DENIED_ACTIONS);
+    getConnection().prepare(`
+      UPDATE agent_relay_jobs SET denied_actions_json = ?, updated_at = CURRENT_TIMESTAMP WHERE relay_id = ?
+    `).run(JSON.stringify(next), relayId);
+    return this.get(relayId);
+  },
+
   // ——— Out-of-envelope permission approvals ———————————————————————————
 
   createApproval(input: CreateAgentRelayApprovalInput): AgentRelayApproval {
@@ -469,6 +547,7 @@ export const agentRelayDb = {
    */
   listApprovals(input: {
     relayId?: string;
+    projectId?: string;
     sourceSessionId?: string;
     status?: AgentRelayApprovalStatus;
     limit?: number;
@@ -486,6 +565,10 @@ export const agentRelayDb = {
     if (input.sourceSessionId) {
       where.push('job.source_session_id = ?');
       params.push(input.sourceSessionId);
+    }
+    if (input.projectId) {
+      where.push('job.project_id = ?');
+      params.push(input.projectId);
     }
     const limit = Math.min(Math.max(Math.trunc(input.limit ?? 50), 1), 200);
     const rows = getConnection().prepare(`
@@ -540,7 +623,7 @@ export const agentRelayDb = {
     const days = Math.min(Math.max(Math.trunc(retentionDays), 1), 365);
     return mapRows((getConnection().prepare(`
       SELECT * FROM agent_relay_jobs
-      WHERE status IN ('completed', 'failed', 'cancelled', 'timed_out')
+      WHERE status IN ('completed', 'blocked', 'failed', 'cancelled', 'timed_out')
         AND finished_at IS NOT NULL
         AND datetime(finished_at) < datetime('now', ?)
     `).all(`-${days} days`) as AgentRelayRow[]));
@@ -557,7 +640,7 @@ export const agentRelayDb = {
     const placeholders = ids.map(() => '?').join(', ');
     return Number(getConnection().prepare(`
       DELETE FROM agent_relay_jobs
-      WHERE status IN ('completed', 'failed', 'cancelled', 'timed_out')
+      WHERE status IN ('completed', 'blocked', 'failed', 'cancelled', 'timed_out')
         AND finished_at IS NOT NULL
         AND datetime(finished_at) < datetime('now', ?)
         AND relay_id IN (${placeholders})

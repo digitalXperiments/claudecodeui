@@ -809,10 +809,10 @@ export function useChatComposerState({
       // stash the message here; it's auto-flushed (re-running this same
       // function) once the turn ends, so it still goes through slash-command
       // interception, image upload, etc.
-      // Claude instead attaches the message to the live run (Claude
-      // Code-style "type while working"), so it falls through to the normal
-      // send path below.
-      const isMidRunInject = isLoading && provider === 'claude';
+      // Claude (open stdin) and Codex (app-server `turn/steer`) instead
+      // attach the message to the live run ("type while working"), so it
+      // falls through to the normal send path below.
+      const isMidRunInject = isLoading && (provider === 'claude' || provider === 'codex');
       if (isLoading && !isMidRunInject) {
         queuedDraftSessionRef.current = sessionKey;
         setQueuedDraft({
@@ -1020,6 +1020,20 @@ export function useChatComposerState({
         return;
       }
 
+      // Commit the accepted send to the local UI before any follow-up
+      // callbacks. A slow or failing preference/navigation callback must not
+      // leave an already-running prompt in the textbox with no chat echo.
+      addMessage(userMessage, targetSessionId, provider);
+      setInput('');
+      inputValueRef.current = '';
+      resetCommandMenuState();
+      setAttachedImages([]);
+      setUploadingImages(new Map());
+      setImageErrors(new Map());
+      setIsTextareaExpanded(false);
+      if (textareaRef.current) textareaRef.current.style.height = 'auto';
+      safeLocalStorage.removeItem(`draft_input_${selectedProject.projectId}`);
+
       // Pin this session to the model/effort the message was sent with, so
       // revisiting the chat shows its own values rather than the last global
       // pick. Covers the first message of a brand-new chat too: its session
@@ -1031,33 +1045,21 @@ export function useChatComposerState({
         sendOptions.effort as string,
       );
 
-      // React navigation has not necessarily committed after session creation.
-      // Write the echo to the same session as chat.send, not the old render's view.
-      addMessage(userMessage, targetSessionId, provider);
       // Mark this request as processing in the per-session activity map (the
       // single source of truth the indicator derives from). The id is always
       // concrete at this point — no pending placeholder exists anymore.
+      // `source: 'chat'` takes over an Agent CLI ('shell') entry the send is
+      // handing off; `localSend` shields it from stale idle/Shell acks.
       onSessionProcessing?.(targetSessionId, {
+        source: 'chat',
         statusText: null,
         canInterrupt: true,
+        localSend: true,
       });
 
       setIsUserScrolledUp(false);
       scrollToBottom();
 
-      setInput('');
-      inputValueRef.current = '';
-      resetCommandMenuState();
-      setAttachedImages([]);
-      setUploadingImages(new Map());
-      setImageErrors(new Map());
-      setIsTextareaExpanded(false);
-
-      if (textareaRef.current) {
-        textareaRef.current.style.height = 'auto';
-      }
-
-      safeLocalStorage.removeItem(`draft_input_${selectedProject.projectId}`);
     },
     [
       selectedSession,

@@ -35,8 +35,11 @@ export default function LoadAllMessagesOverlay({
   }
 
   return (
+    // Zero-height sticky host: the pill overflows it, so showing/hiding it
+    // never changes the scroll content height (no layout shift at the top).
     <div
-      className={`pointer-events-none sticky top-2 z-20 flex justify-center ${!isLoadingAllMessages ? 'load-all-overlay-auto-fade' : ''}`}
+      data-load-all-overlay
+      className={`pointer-events-none sticky top-2 z-20 flex h-0 justify-center overflow-visible ${!isLoadingAllMessages ? 'load-all-overlay-auto-fade' : ''}`}
       style={!isLoadingAllMessages ? { animation: 'loadAllOverlayAutoFade 2500ms ease forwards' } : undefined}
     >
       <style>{loadAllOverlayAnimationStyle}</style>
