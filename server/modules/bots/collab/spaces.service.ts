@@ -69,6 +69,22 @@ function readCapped(file: string): { content: string; truncated: boolean } {
   return { content: (truncated ? raw.subarray(0, MAX_SPACE_BYTES) : raw).toString('utf8'), truncated };
 }
 
+/** True when the file lives outside the bot's own spaces folder (a CLOUDCLI_SPACES_ROOTS root): other tools can write there. */
+export function isExternalSpace(space: BotSpace): boolean {
+  try {
+    return !isInside(realpathLoose(guardedFile(space)), realpathLoose(defaultSpacesDir(space.bot_id)));
+  } catch {
+    return true; // fail closed: an unresolvable path reads as external
+  }
+}
+
+export interface SpaceWriteOptions {
+  /** The writing session had read untrusted input: the space becomes (and stays) tainted. */
+  tainted?: boolean;
+  /** A human edit through the REST API: a full replace clears the taint. */
+  operator?: boolean;
+}
+
 /** The owner's space by id or (case-insensitive) title; null when missing or owned by another bot. */
 export function findOwnedSpace(botId: string, ref: string): BotSpace | null {
   const needle = ref.trim();
@@ -113,13 +129,13 @@ export const spaces = {
 
   list: (botId: string): BotSpace[] => botSpacesDb.list(botId),
 
-  get(botId: string, ref: string): { space: BotSpace; content: string; truncated: boolean } {
+  get(botId: string, ref: string): { space: BotSpace; content: string; truncated: boolean; external: boolean } {
     const space = findOwnedSpace(botId, ref);
     if (!space) throw notFound();
-    return { space, ...readCapped(guardedFile(space)) };
+    return { space, ...readCapped(guardedFile(space)), external: isExternalSpace(space) };
   },
 
-  write(botId: string, ref: string, content: unknown, mode: SpaceWriteMode = 'replace'): BotSpace {
+  write(botId: string, ref: string, content: unknown, mode: SpaceWriteMode = 'replace', opts: SpaceWriteOptions = {}): BotSpace {
     const space = findOwnedSpace(botId, ref);
     if (!space) throw notFound();
     if (typeof content !== 'string') throw invalid('content must be a string.');
@@ -133,6 +149,9 @@ export const spaces = {
     fs.mkdirSync(path.dirname(file), { recursive: true });
     writeAtomic(file, next);
     botSpacesDb.touch(space.space_id);
+    // Sticky: only a human replacing the whole content clears it (an append leaves old text in place).
+    if (opts.tainted) botSpacesDb.setTainted(space.space_id, true);
+    else if (opts.operator && mode === 'replace') botSpacesDb.setTainted(space.space_id, false);
     // No WS union member fits a space update (run-events.ts is not ours to extend); clients read updated_at.
     return botSpacesDb.get(space.space_id)!;
   },

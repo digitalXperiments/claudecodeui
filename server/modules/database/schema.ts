@@ -526,6 +526,7 @@ CREATE TABLE IF NOT EXISTS bot_team_members (
   team_id TEXT NOT NULL, bot_id TEXT NOT NULL, role TEXT NOT NULL DEFAULT '', PRIMARY KEY (team_id, bot_id));
 CREATE TABLE IF NOT EXISTS bot_spaces (
   space_id TEXT PRIMARY KEY, bot_id TEXT NOT NULL, title TEXT NOT NULL, path TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'markdown',
+  tainted INTEGER NOT NULL DEFAULT 0,
   updated_at TEXT NOT NULL, created_at TEXT NOT NULL, FOREIGN KEY (bot_id) REFERENCES mc_sections(section_id) ON DELETE CASCADE);
 CREATE TABLE IF NOT EXISTS bot_operator_profile (
   key TEXT PRIMARY KEY, value TEXT NOT NULL, source TEXT NOT NULL DEFAULT 'manual', updated_at TEXT NOT NULL);

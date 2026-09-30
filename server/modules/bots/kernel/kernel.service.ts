@@ -77,18 +77,33 @@ const DEFAULT_OPTIONS: KernelOptions = {
   listenerTimeoutMs: 30_000,
 };
 
+/** Most a running episode may be stretched past its `episodeMaxMs`, in total, across every extension. */
+export const MAX_EPISODE_EXTENSION_MS = 35 * 60_000;
+
+interface EpisodeDeadline {
+  /** Push the deadline to at least `now + atLeastMs`, clamped to the hard cap. */
+  extend(atLeastMs: number): DeadlineExtension;
+}
+
 /** Live episodes' deadline extenders, keyed by episode id (cleared when the episode settles). */
-const episodeDeadlines = new Map<string, (atLeastMs: number) => void>();
+const episodeDeadlines = new Map<string, EpisodeDeadline>();
+
+export interface DeadlineExtension {
+  /** Milliseconds from now until the episode is aborted (after this call). */
+  remainingMs: number;
+  /** True when the request was cut short by the hard cap (`episodeMaxMs` + 35 minutes from the episode start). */
+  capped: boolean;
+}
 
 /**
  * Keep a running episode alive for at least `atLeastMs` more (e.g. while waiting on a human
- * handoff). No-op for unknown or finished episodes. Returns whether an episode was extended.
+ * handoff). The deadline can never pass the episode's hard cap (its start + `episodeMaxMs` + 35
+ * minutes), however many extensions are asked for. Returns null for an unknown or finished episode.
  */
-export function extendEpisodeDeadline(episodeId: string, atLeastMs: number): boolean {
-  const extend = episodeDeadlines.get(episodeId);
-  if (!extend || !Number.isFinite(atLeastMs) || atLeastMs <= 0) return false;
-  extend(atLeastMs);
-  return true;
+export function extendEpisodeDeadline(episodeId: string, atLeastMs: number): DeadlineExtension | null {
+  const entry = episodeDeadlines.get(episodeId);
+  if (!entry || !Number.isFinite(atLeastMs) || atLeastMs <= 0) return null;
+  return entry.extend(atLeastMs);
 }
 
 
@@ -698,7 +713,9 @@ async function runEpisode(botId: string, wakeOptions: WakeOptions, handoff: Epis
 
     const timeout = new Promise<'timeout'>((resolve) => {
       // Not unref'd: a pending episode deadline must keep the process alive until it fires or is cleared.
-      let deadlineAt = Date.now() + options.episodeMaxMs;
+      const startedAt = Date.now();
+      let deadlineAt = startedAt + options.episodeMaxMs;
+      const hardCapAt = deadlineAt + MAX_EPISODE_EXTENSION_MS;
       const arm = () => {
         if (timeoutTimer) clearTimeout(timeoutTimer);
         timeoutTimer = setTimeout(() => resolve('timeout'), Math.max(0, deadlineAt - Date.now()));
@@ -706,12 +723,16 @@ async function runEpisode(botId: string, wakeOptions: WakeOptions, handoff: Epis
       arm();
       // A human handoff (or anything else that legitimately blocks on the operator) may push the
       // deadline out; it can never shorten it.
-      episodeDeadlines.set(episodeCtx.episodeId, (atLeastMs: number) => {
-        const wanted = Date.now() + atLeastMs;
-        if (wanted > deadlineAt) {
-          deadlineAt = wanted;
-          arm();
-        }
+      episodeDeadlines.set(episodeCtx.episodeId, {
+        extend: (atLeastMs: number) => {
+          const requested = Date.now() + atLeastMs;
+          const wanted = Math.min(requested, hardCapAt);
+          if (wanted > deadlineAt) {
+            deadlineAt = wanted;
+            arm();
+          }
+          return { remainingMs: Math.max(0, deadlineAt - Date.now()), capped: requested > hardCapAt };
+        },
       });
     });
 

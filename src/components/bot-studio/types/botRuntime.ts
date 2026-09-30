@@ -525,16 +525,81 @@ export type BotPeerTraffic = {
 
 export type BotPeers = { teams: BotTeam[]; traffic: BotPeerTraffic[] };
 
-// ---- execution (PROVISIONAL until E1 lands exec.routes.ts) --------------------------------------
+// ---- execution (server/modules/bots/exec) ------------------------------------------------------
 
-/** A credential the bot may use. The API only ever exposes names, never values. */
-export type BotCredentialName = { name: string; [key: string]: unknown };
+/** One per-bot credential as listed by GET /:botId/credentials: names and timestamps, never values. */
+export type BotCredentialName = {
+  /** Normalized server key (`jira-cloud` -> `JIRA_CLOUD`). */
+  server: string;
+  /** Env var (stdio servers) or HTTP header (http/sse servers) the credential overrides. */
+  key: string;
+  /** The vault secret name, `<SERVER>__<KEY>`. */
+  name: string;
+  updated_at: string;
+  last_used_at: string | null;
+};
 
-/** Host/backend probe for the runtime (docker/ssh availability etc). Shape is provisional. */
-export type BotRuntimeHost = Record<string, unknown>;
+/** GET /runtime/host: facts that matter for always-on deployments. */
+export type BotRuntimeHost = {
+  platform: string;
+  /** null = unknown (not macOS, or `pmset` failed): treat as unknown, not as awake. */
+  sleepPrevented: boolean | null;
+  publicUrlConfigured: boolean;
+  uptime: number;
+  hostUptime: number;
+};
 
-/** Teach-mode recording state. Shape is provisional. */
-export type BotTeachState = { recording?: boolean; [key: string]: unknown };
+/** GET /:botId/teach: the running teach session, or null. */
+export type BotTeachSession = { sessionId: string; startedAt: string; startUrl: string | null };
+
+export type BotTeachStartInput = { url?: string; useBotProfile?: boolean };
+
+export type BotTeachStarted = BotTeachSession & { profile: 'bot' | 'temporary'; note: string };
+
+export type BotTeachStopInput = {
+  name?: string;
+  description?: string;
+  successCheck?: string;
+  /** CSS selectors of fields whose typed/selected values may be kept as literals instead of redacted inputs. */
+  safeFields?: string[];
+  /** 1-based step numbers whose typed/selected values may be kept. */
+  safeSteps?: number[];
+  /** Compile and return the steps without saving a skill. */
+  dryRun?: boolean;
+};
+
+export type BotTeachStep = {
+  index: number;
+  kind: string;
+  /** Human-readable instruction; never contains an unredacted typed value. */
+  text: string;
+  selector?: string;
+  input?: string;
+  /** True when a literal value was kept because the operator marked it safe. */
+  safeLiteral?: boolean;
+};
+
+export type BotTeachInput = {
+  name: string;
+  label: string;
+  /** Password-like field: the bot must ask the operator for the value at run time. */
+  secret: boolean;
+  step: number;
+};
+
+export type BotTeachResult = {
+  skill: { name: string; enabled: boolean; origin: string } | null;
+  name: string;
+  content: string;
+  steps: BotTeachStep[];
+  inputs: BotTeachInput[];
+  captured: { actions: number; skipped: number };
+  /** Exactly what teach mode records. */
+  capturedKinds: string[];
+};
+
+/** Kept for callers that only need "a recording is running". */
+export type BotTeachState = BotTeachStarted;
 
 // ---- websocket payloads (server/shared/run-events.ts) -------------------------------------------
 

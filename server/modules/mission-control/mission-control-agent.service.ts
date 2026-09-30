@@ -26,6 +26,7 @@ import { approvedMemoryContext } from '@/modules/mission-control/mission-control
 import {
   classifyFailoverError,
   classifyFailoverFailure,
+  runShowsSideEffects,
   type FailoverReason,
 } from '@/modules/mission-control/mission-control-failover.js';
 
@@ -630,13 +631,44 @@ function fallbackSections(primary: McSection): McSection[] {
   return chain;
 }
 
-/** True when the failed run already executed a write-class tool call; retrying could repeat it. */
+const TOOL_EVENT_PAGE = 500;
+const TOOL_EVENT_MAX_PAGES = 40;
+
+/** Names of every `tool.call` event recorded for a run (paged, bounded). */
+function recordedToolNames(runId: string): unknown[] {
+  const names: unknown[] = [];
+  let afterSeq = 0;
+  for (let page = 0; page < TOOL_EVENT_MAX_PAGES; page += 1) {
+    const events = runService.listEvents(runId, { afterSeq, limit: TOOL_EVENT_PAGE });
+    for (const event of events) {
+      if (event.type === 'tool.call') names.push(event.payload?.tool ?? null);
+    }
+    if (events.length < TOOL_EVENT_PAGE) return names;
+    afterSeq = events[events.length - 1].seq ?? afterSeq;
+  }
+  // More events than we are willing to scan: assume the run acted.
+  names.push(null);
+  return names;
+}
+
+/**
+ * True when the failed run may already have acted; retrying on another provider could repeat it.
+ * Combines the Action Gate's decision rows (any non-read call that was allowed or approved,
+ * including built-in and first-party bot__ calls) with the run's recorded tool calls (native
+ * Bash/Write/Edit/WebFetch..., first-party writes that bypass the gate). Unknown is "maybe".
+ */
 function failedRunHadSideEffects(botId: string, runId: string | null): boolean {
   if (!runId) return false;
   try {
-    return botGateDecisionsDb
-      .listForBot(botId, 500)
-      .some((decision) => decision.run_id === runId && decision.outcome === 'executed' && decision.risk !== 'read' && decision.risk !== 'draft');
+    const run = runService.get(runId);
+    return runShowsSideEffects({
+      provider: String(run?.provider ?? ''),
+      decisions: botGateDecisionsDb
+        .listForBot(botId, 2000)
+        .filter((decision) => decision.run_id === runId)
+        .map((decision) => ({ decision: decision.decision, outcome: decision.outcome, risk: decision.risk })),
+      toolNames: recordedToolNames(runId),
+    });
   } catch {
     // Unknown is treated as "maybe": never risk a duplicate send on a failed diagnostic.
     return true;
@@ -688,7 +720,7 @@ export async function runMissionControlAgent(params: RunMissionControlAgentParam
       hasError = false;
       attempts.push({ runId: result.runId, provider: section.provider, model: section.model ?? null, success: result.success });
       if (result.success) return { ...result, attempts };
-      classification = classifyFailoverFailure(section.provider, result.errorMessage, result.text);
+      classification = classifyFailoverFailure(section.provider, result.errorMessage);
     } catch (error) {
       lastError = error;
       hasError = true;

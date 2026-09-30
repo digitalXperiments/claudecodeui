@@ -7,6 +7,7 @@ export {
   deriveTrigger,
   extendEpisodeDeadline,
   kernel,
+  MAX_EPISODE_EXTENSION_MS,
   onEpisodeFinished,
   runBotNow,
   setKernelOptions,

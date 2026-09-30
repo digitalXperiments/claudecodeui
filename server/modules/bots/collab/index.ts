@@ -15,5 +15,5 @@ export {
   setCollabOptions,
 } from '@/modules/bots/collab/messaging.service.js';
 export { MAX_TEAM_MEMBERS, teams } from '@/modules/bots/collab/teams.service.js';
-export { findOwnedSpace, MAX_SPACE_BYTES, spaces } from '@/modules/bots/collab/spaces.service.js';
+export { findOwnedSpace, isExternalSpace, MAX_SPACE_BYTES, spaces } from '@/modules/bots/collab/spaces.service.js';
 export { listSpacesRoots } from '@/modules/bots/collab/spaces.paths.js';

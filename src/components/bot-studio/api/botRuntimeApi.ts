@@ -4,8 +4,7 @@
  * (the server answers `{ success: false, error: { code, message } }`, or `{ error: string }` on
  * a few public routes; both are understood).
  *
- * Provisional: `exec` (E1: exec/exec.routes.ts) is coded from the planned paths and may need
- * adjusting when that router lands. `collab` mirrors collab/collab.routes.ts as written by E2.
+ * `exec` mirrors exec/exec.routes.ts and `collab` mirrors collab/collab.routes.ts.
  */
 
 import { authenticatedFetch } from '../../../utils/api';
@@ -37,6 +36,7 @@ import type {
   BotOperatorProfileEntry,
   BotOutboundLogEntry,
   BotPeers,
+  BotPhaseRoute,
   BotProposal,
   BotPurgeCounts,
   BotPurgeSelection,
@@ -55,7 +55,11 @@ import type {
   BotSkillSaveInput,
   BotSpace,
   BotSpaceContent,
-  BotTeachState,
+  BotTeachResult,
+  BotTeachSession,
+  BotTeachStartInput,
+  BotTeachStarted,
+  BotTeachStopInput,
   BotTeam,
   BotTeamInput,
   BotThreadMessage,
@@ -377,20 +381,37 @@ export const botRuntimeApi = {
     peers: (botId: string, limit?: number): Promise<BotPeers> => get(`${bot(botId)}/peers${buildQuery({ limit })}`),
   },
 
-  // ---- execution: credentials, teach mode, host (PROVISIONAL until E1 lands) --------------------
+  // ---- execution: credentials, teach mode, host, failover (server/modules/bots/exec/exec.routes.ts)
   exec: {
-    /** Credential names only; values never leave the vault. Tolerates `string[]` or `{ name }[]`. */
+    /** Credential names and timestamps only; values never leave the vault. */
     async listCredentials(botId: string): Promise<BotCredentialName[]> {
-      const payload = await get<{ credentials?: Array<string | BotCredentialName> }>(`${bot(botId)}/credentials`);
-      return (payload.credentials ?? []).map((entry) => (typeof entry === 'string' ? { name: entry } : entry));
+      return (await get<{ credentials?: BotCredentialName[] }>(`${bot(botId)}/credentials`)).credentials ?? [];
     },
-    setCredential: (botId: string, name: string, value: string): Promise<Record<string, unknown>> =>
-      put(`${bot(botId)}/credentials/${seg(name)}`, { value }),
-    removeCredential: (botId: string, name: string): Promise<Record<string, unknown>> =>
-      del(`${bot(botId)}/credentials/${seg(name)}`),
-    startTeach: (botId: string, input: { title?: string } = {}): Promise<BotTeachState> => post(`${bot(botId)}/teach/start`, input),
-    stopTeach: (botId: string, input: { name?: string } = {}): Promise<BotTeachState> => post(`${bot(botId)}/teach/stop`, input),
-    host: (): Promise<BotRuntimeHost> => get('/runtime/host'),
+    /** `server` is any spelling of the MCP server name (the server normalizes it); `key` is the env var / header. */
+    async setCredential(botId: string, server: string, key: string, value: string): Promise<BotCredentialName> {
+      return (await put<{ credential: BotCredentialName }>(`${bot(botId)}/credentials/${seg(server)}/${seg(key)}`, { value })).credential;
+    },
+    removeCredential: (botId: string, server: string, key: string): Promise<{ deleted: boolean }> =>
+      del(`${bot(botId)}/credentials/${seg(server)}/${seg(key)}`),
+    async teachStatus(botId: string): Promise<BotTeachSession | null> {
+      return (await get<{ active: BotTeachSession | null }>(`${bot(botId)}/teach`)).active;
+    },
+    async startTeach(botId: string, input: BotTeachStartInput = {}): Promise<BotTeachStarted> {
+      return (await post<{ teach: BotTeachStarted }>(`${bot(botId)}/teach/start`, input)).teach;
+    },
+    async stopTeach(botId: string, input: BotTeachStopInput = {}): Promise<BotTeachResult> {
+      return (await post<{ teach: BotTeachResult }>(`${bot(botId)}/teach/stop`, input)).teach;
+    },
+    async host(): Promise<BotRuntimeHost> {
+      return (await get<{ host: BotRuntimeHost }>('/runtime/host')).host;
+    },
+    /** Provider failover chain (`routing.fallback`), tried in order when the primary provider errors. */
+    async getFallback(botId: string): Promise<BotPhaseRoute[]> {
+      return (await get<{ fallback: BotPhaseRoute[] }>(`${bot(botId)}/routing/fallback`)).fallback;
+    },
+    async setFallback(botId: string, fallback: BotPhaseRoute[]): Promise<BotPhaseRoute[]> {
+      return (await put<{ fallback: BotPhaseRoute[] }>(`${bot(botId)}/routing/fallback`, { fallback })).fallback;
+    },
   },
 
   // ---- privacy: export + purge ------------------------------------------------------------------

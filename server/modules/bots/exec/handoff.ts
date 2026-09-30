@@ -5,6 +5,7 @@
  * Cancel, the wait times out, or the bot's run ends, then returns the operator's note.
  */
 import { randomUUID } from 'node:crypto';
+import path from 'node:path';
 
 import { browserUseService } from '@/modules/browser-use/index.js';
 import { interruptsDb, interruptsService } from '@/modules/interrupt-queue/index.js';
@@ -12,6 +13,7 @@ import { missionControlDb } from '@/modules/mission-control/index.js';
 import { broadcastSystemEvent } from '@/modules/websocket/index.js';
 import { gatewaySessions } from '@/shared/bot-gateway-sessions.js';
 
+import { resolveBotBrowserProfileDir } from '../bots-home.js';
 import { registerGatewayTool, textResult } from '../gateway/first-party-tools.js';
 import { extendEpisodeDeadline } from '../kernel/kernel.service.js';
 import type { GatewayCallToolResult, GatewayToolContext } from '../gateway/gateway.types.js';
@@ -25,8 +27,15 @@ const GATEWAY_MARGIN_MS = 30_000;
 
 export type HandoffOutcome = 'done' | 'cancelled' | 'timeout' | 'run_ended';
 
+/** Most human handoffs one episode may raise. */
+export const MAX_HANDOFFS_PER_EPISODE = 2;
+/** Room left for the bot to finish its turn after a handoff (and the clamp when the episode's cap is near). */
+const HANDOFF_FINISH_MARGIN_MS = 5 * 60_000;
+
 /** The slice of browser-use a handoff needs to give the operator the wheel of a live session. */
 export interface HandoffBrowser {
+  /** Owner (profile directory) and current driver of a session; throws when it does not exist. */
+  describeAgentSession(sessionId: string): Promise<{ profileDir: string | null; controller: 'agent' | 'human' }>;
   takeHumanControl(sessionId: string): Promise<unknown>;
   returnAgentControl(sessionId: string): Promise<unknown>;
 }
@@ -42,6 +51,33 @@ let options: HandoffOptions = {};
 /** Tests and embedders tune the default wait and poll cadence; null restores the defaults. */
 export function setHandoffOptions(next: HandoffOptions | null): void {
   options = next ?? {};
+}
+
+interface EpisodeHandoffs {
+  count: number;
+  cancelled: boolean;
+}
+/** Per-episode handoff ledger (key: episode id, else run id, else app session). Bounded, in memory. */
+const ledgers = new Map<string, EpisodeHandoffs>();
+const LEDGER_MAX = 500;
+
+function ledgerFor(ctx: GatewayToolContext): EpisodeHandoffs {
+  const key = ctx.episodeId ?? ctx.runId ?? ctx.appSessionId;
+  let ledger = ledgers.get(key);
+  if (!ledger) {
+    ledger = { count: 0, cancelled: false };
+    ledgers.set(key, ledger);
+    if (ledgers.size > LEDGER_MAX) {
+      const oldest = ledgers.keys().next().value;
+      if (oldest !== undefined) ledgers.delete(oldest);
+    }
+  }
+  return ledger;
+}
+
+/** Tests reset the per-episode ledger between cases. */
+export function resetHandoffLedgerForTests(): void {
+  ledgers.clear();
 }
 
 interface Waiter {
@@ -74,6 +110,22 @@ export function resolveHandoffTimeoutMs(requestedMinutes?: unknown): number {
     : configured;
   const ceiling = Math.max(MIN_HANDOFF_TIMEOUT_MS, gatewayApiTimeoutMs() - GATEWAY_MARGIN_MS);
   return Math.min(Math.max(asked, options.timeoutMs ? 1 : MIN_HANDOFF_TIMEOUT_MS), ceiling);
+}
+
+/**
+ * Fit a handoff wait into what the kernel granted. When the episode's hard cap cut the extension
+ * short, the wait shrinks to leave the bot time to finish its turn; with no room left it is refused.
+ */
+export function clampHandoffWindow(
+  timeoutMs: number,
+  extension: { remainingMs: number; capped: boolean } | null,
+): { timeoutMs: number } | { refuse: string } {
+  if (!extension?.capped) return { timeoutMs };
+  const available = extension.remainingMs - HANDOFF_FINISH_MARGIN_MS;
+  if (available < MIN_HANDOFF_TIMEOUT_MS) {
+    return { refuse: 'Handoff refused: this episode has no time left for a human handoff. Finish with what you have.' };
+  }
+  return { timeoutMs: Math.min(timeoutMs, available) };
 }
 
 const clip = (value: unknown, max: number): string => String(value ?? '').trim().slice(0, max);
@@ -130,20 +182,60 @@ export async function requestHandoff(
   const url = validUrl(args.url);
   const browserSessionId = clip(args.browserSessionId ?? args.browser_session_id, 100) || null;
   const browser = options.browser ?? (browserUseService as unknown as HandoffBrowser);
-  const timeoutMs = resolveHandoffTimeoutMs(args.timeout_minutes);
-  // Waiting on a human must not trip the kernel's episode deadline: keep the episode alive
-  // for the whole handoff window plus a margin to finish the turn afterwards.
-  if (ctx.episodeId) extendEpisodeDeadline(ctx.episodeId, timeoutMs + 5 * 60_000);
+
+  // A human handoff parks the episode for up to ~30 minutes, so a bot (or an injected prompt) must
+  // not be able to chain them: two per episode, and none after the operator declined one.
+  const ledger = ledgerFor(ctx);
+  if (ledger.cancelled) {
+    return textResult('Handoff refused: the operator already declined a handoff in this episode. Do not ask again; work around it or stop.', true);
+  }
+  if (ledger.count >= MAX_HANDOFFS_PER_EPISODE) {
+    return textResult(`Handoff refused: at most ${MAX_HANDOFFS_PER_EPISODE} handoffs per episode. Continue without the operator or stop.`, true);
+  }
+
+  // Only a browser session this bot owns may be handed over (launched with the bot's own profile).
+  let takeControl = false;
+  if (browserSessionId) {
+    let info: Awaited<ReturnType<HandoffBrowser['describeAgentSession']>>;
+    try {
+      info = await browser.describeAgentSession(browserSessionId);
+    } catch {
+      return textResult('browserSessionId does not match a browser session of this bot.', true);
+    }
+    const expected = path.resolve(resolveBotBrowserProfileDir(ctx.botId));
+    if (!info.profileDir || path.resolve(info.profileDir) !== expected) {
+      return textResult('browserSessionId does not match a browser session of this bot.', true);
+    }
+    // Only give control back at the end if this handoff is what took it from the agent.
+    takeControl = info.controller !== 'human';
+  }
+
+  let timeoutMs = resolveHandoffTimeoutMs(args.timeout_minutes);
+  // Waiting on a human must not trip the kernel's episode deadline: keep the episode alive for the
+  // handoff window plus a margin to finish the turn afterwards. The kernel caps the total stretch
+  // (episodeMaxMs + 35 min from the episode start), so clamp the wait to what is left.
+  if (ctx.episodeId) {
+    const window = clampHandoffWindow(timeoutMs, extendEpisodeDeadline(ctx.episodeId, timeoutMs + HANDOFF_FINISH_MARGIN_MS));
+    if ('refuse' in window) return textResult(window.refuse, true);
+    timeoutMs = window.timeoutMs;
+  }
+  ledger.count += 1;
   const pollMs = options.pollMs ?? DEFAULT_POLL_MS;
   const handoffId = `bho_${randomUUID()}`;
 
   let liveView = false;
+  let tookControl = false;
   if (browserSessionId) {
-    try {
-      await browser.takeHumanControl(browserSessionId);
-      liveView = true;
-    } catch {
-      liveView = false;
+    if (takeControl) {
+      try {
+        await browser.takeHumanControl(browserSessionId);
+        liveView = true;
+        tookControl = true;
+      } catch {
+        liveView = false;
+      }
+    } else {
+      liveView = true; // the operator already has the wheel; leave it with them afterwards
     }
   }
 
@@ -215,9 +307,10 @@ export async function requestHandoff(
     }, timeoutMs);
   });
 
-  if (liveView && browserSessionId) {
+  if (tookControl && browserSessionId) {
     await browser.returnAgentControl(browserSessionId).catch(() => undefined);
   }
+  if (outcome.outcome === 'cancelled') ledger.cancelled = true;
   return describeResult(outcome.outcome, outcome.note);
 }
 

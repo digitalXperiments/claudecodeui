@@ -23,6 +23,24 @@ const IMPLIED_NAVIGATION_MS = 4_000;
 const clip = (value: unknown, max: number): string =>
   String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, max);
 
+/** Substring hints (kept in step with HINT_STRONG in RECORDER_SCRIPT). */
+const SENSITIVE_STRONG = /pass|pwd|secret|token|otp|cvv|cvc|card|api[_-]?key|apikey|iban|cc-/i;
+/** Whole-word hints: too short to match as substrings ("pin" in "shipping", "ssn" in "classname"). */
+const SENSITIVE_WORDS: ReadonlySet<string> = new Set(['pin', 'key', 'ssn', 'account', 'passcode']);
+
+/** True when a field's name/label/selector/type says it carries a credential or financial identifier. */
+export function looksSensitiveField(field: { name?: string; label?: string; selector?: string; inputType?: string }): boolean {
+  if (String(field.inputType ?? '').toLowerCase() === 'password') return true;
+  const text = [field.name, field.label, field.selector].filter(Boolean).join(' ');
+  if (!text) return false;
+  if (SENSITIVE_STRONG.test(text)) return true;
+  return text
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .some((word) => SENSITIVE_WORDS.has(word));
+}
+
 /** Runs inside the page. Plain ES5-ish source: it must survive being injected verbatim. */
 export const RECORDER_SCRIPT = String.raw`(() => {
   if (window.__cloudcliRecorderInstalled) return;
@@ -62,12 +80,19 @@ export const RECORDER_SCRIPT = String.raw`(() => {
     if (!label && el.labels && el.labels.length) label = el.labels[0].innerText || el.labels[0].textContent;
     return clip(label || attr(el, 'name') || '', 100);
   };
-  var isSensitive = function (el) {
-    var type = String(attr(el, 'type') || '').toLowerCase();
-    var auto = String(attr(el, 'autocomplete') || '').toLowerCase();
-    var hint = String(attr(el, 'name') || '') + ' ' + String(el.id || '');
-    return type === 'password' || auto.indexOf('password') >= 0 || auto.indexOf('cc-') === 0 ||
-      auto.indexOf('one-time-code') >= 0 || /pass|secret|token|otp|cvv|cvc|card/i.test(hint);
+  var HINT_STRONG = /pass|pwd|secret|token|otp|cvv|cvc|card|api[_-]?key|apikey|iban|cc-/i;
+  var HINT_WORDS = { pin: 1, key: 1, ssn: 1, account: 1, passcode: 1 };
+  var hintIsSensitive = function (text) {
+    text = String(text || '');
+    if (HINT_STRONG.test(text)) return true;
+    var words = text.replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase().split(/[^a-z0-9]+/);
+    for (var i = 0; i < words.length; i += 1) { if (HINT_WORDS[words[i]] === 1) return true; }
+    return false;
+  };
+  var formHasPassword = function (el) {
+    var form = el.form || (el.closest ? el.closest('form') : null);
+    if (!form || form === el || typeof form.querySelector !== 'function') return false;
+    try { return !!form.querySelector('input[type=password]'); } catch (e) { return false; }
   };
   var isTextField = function (el) {
     var tag = String(el.tagName).toLowerCase();
@@ -75,6 +100,18 @@ export const RECORDER_SCRIPT = String.raw`(() => {
     if (tag !== 'input') return el.isContentEditable === true;
     var type = String(attr(el, 'type') || 'text').toLowerCase();
     return ['button', 'submit', 'reset', 'checkbox', 'radio', 'file', 'image', 'range', 'color'].indexOf(type) < 0;
+  };
+  var isSensitive = function (el) {
+    var type = String(attr(el, 'type') || '').toLowerCase();
+    var auto = String(attr(el, 'autocomplete') || '').toLowerCase();
+    var mode = String(attr(el, 'inputmode') || '').toLowerCase();
+    var hint = [attr(el, 'name'), el.id, attr(el, 'placeholder'), attr(el, 'aria-label'), labelFor(el)].join(' ');
+    if (type === 'password') return true;
+    if (auto.indexOf('password') >= 0 || auto.indexOf('one-time-code') >= 0 || auto.indexOf('cc-') >= 0) return true;
+    if (hintIsSensitive(hint)) return true;
+    // Anything typed into a form that also asks for a password (username, PIN pad, 2FA) is credential-adjacent.
+    if ((isTextField(el) || mode === 'numeric') && formHasPassword(el)) return true;
+    return false;
   };
   var pending = [];
   var flush = function () {
@@ -120,6 +157,8 @@ export const RECORDER_SCRIPT = String.raw`(() => {
 })();`;
 
 type Frame = unknown;
+/** Playwright's binding source: which page and frame called the exposed function. */
+type BindingSource = { page?: unknown; frame?: unknown } | null | undefined;
 type PageLike = {
   on?: (event: string, handler: (...args: any[]) => void) => unknown;
   off?: (event: string, handler: (...args: any[]) => void) => unknown;
@@ -134,6 +173,15 @@ type ContextLike = {
   off?: (event: string, handler: (...args: any[]) => void) => unknown;
 };
 
+function originOf(rawUrl: string): string {
+  try {
+    const parsed = new URL(rawUrl);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? parsed.origin : '';
+  } catch {
+    return '';
+  }
+}
+
 export class ActionRecorder {
   private attached = false;
   private recording = false;
@@ -143,6 +191,10 @@ export class ActionRecorder {
   private readonly navHandlers = new Map<PageLike, (frame: any) => void>();
   private context: ContextLike | null = null;
   private pageHandler: ((page: PageLike) => void) | null = null;
+  /** The page recording started on: only its top frame may report actions. Null = no source check (unit tests). */
+  private startPage: PageLike | null = null;
+  /** Origins the start page's top frame has been at since recording began. */
+  private readonly allowedOrigins = new Set<string>();
 
   isRecording(): boolean {
     return this.recording;
@@ -154,7 +206,7 @@ export class ActionRecorder {
     if (!context?.exposeBinding || !context.addInitScript) {
       throw new Error('This browser runtime cannot record actions (no context binding support).');
     }
-    await context.exposeBinding(RECORDER_BINDING_NAME, (_source, payload) => this.handle(payload));
+    await context.exposeBinding(RECORDER_BINDING_NAME, (source, payload) => this.handleFromSource(source as BindingSource, payload));
     await context.addInitScript(RECORDER_SCRIPT);
     this.context = context;
     const pages = context.pages?.() ?? [];
@@ -172,21 +224,34 @@ export class ActionRecorder {
     const handler = (frame: Frame) => {
       if (page.mainFrame && frame !== page.mainFrame()) return;
       const url = typeof (frame as { url?: () => string })?.url === 'function' ? (frame as { url: () => string }).url() : '';
+      if (page === this.startPage) {
+        const origin = originOf(url);
+        if (origin) this.allowedOrigins.add(origin);
+      }
       this.recordNavigation(url);
     };
     this.navHandlers.set(page, handler);
     page.on('framenavigated', handler);
   }
 
-  start(): void {
+  /**
+   * Begin a recording. With `page`, only that page's top frame is believed: a popup, another tab or
+   * an embedded iframe (all of which can call the exposed binding) cannot add steps.
+   */
+  start(options: { page?: PageLike | null } = {}): void {
     this.actions = [];
     this.startedAt = Date.now();
     this.stoppedAt = 0;
+    this.startPage = options.page ?? null;
+    this.allowedOrigins.clear();
+    const origin = this.startPage ? originOf(this.topFrameUrl(this.startPage)) : '';
+    if (origin) this.allowedOrigins.add(origin);
     this.recording = true;
   }
 
   stop(): { actions: RecordedAction[]; startedAt: number; stoppedAt: number } {
     this.recording = false;
+    this.startPage = null;
     this.stoppedAt = Date.now();
     return { actions: this.snapshot(), startedAt: this.startedAt, stoppedAt: this.stoppedAt };
   }
@@ -203,6 +268,24 @@ export class ActionRecorder {
     if (this.pageHandler) this.context?.off?.('page', this.pageHandler);
     this.pageHandler = null;
     this.actions = [];
+  }
+
+  private topFrameUrl(page: PageLike): string {
+    const frame = page.mainFrame?.() as { url?: () => string } | undefined;
+    return typeof frame?.url === 'function' ? frame.url() : '';
+  }
+
+  /** Binding entry point: drop events from anything but the page recording started on. */
+  private handleFromSource(source: BindingSource, payload: unknown): void {
+    if (!this.recording) return; // a binding called after stop is ignored
+    if (this.startPage) {
+      if (!source || source.page !== this.startPage) return;
+      const top = this.startPage.mainFrame?.();
+      if (top === undefined || source.frame !== top) return;
+      const origin = originOf(this.topFrameUrl(this.startPage));
+      if (!origin || !this.allowedOrigins.has(origin)) return;
+    }
+    this.handle(payload);
   }
 
   private push(action: RecordedAction): void {
@@ -240,13 +323,17 @@ export class ActionRecorder {
       }
       case 'fill': {
         if (!selector) return;
-        const sensitive = event.sensitive === true;
+        const name = clip(event.name, 60);
+        const label = clip(event.label, 100);
+        const inputType = clip(event.inputType, 30);
+        // The page's own verdict, plus ours from the name/label/selector: a page cannot un-flag a field.
+        const sensitive = event.sensitive === true || looksSensitiveField({ name, label, selector, inputType });
         const action: RecordedAction = {
           kind: 'fill',
           selector,
-          label: clip(event.label, 100) || undefined,
-          name: clip(event.name, 60) || undefined,
-          inputType: clip(event.inputType, 30) || undefined,
+          label: label || undefined,
+          name: name || undefined,
+          inputType: inputType || undefined,
           value: sensitive || typeof event.value !== 'string' ? null : event.value.slice(0, 2_000),
           sensitive,
           at,
@@ -259,7 +346,9 @@ export class ActionRecorder {
       }
       case 'select': {
         if (!selector) return;
-        this.push({ kind: 'select', selector, label: clip(event.label, 100) || undefined, value: typeof event.value === 'string' ? clip(event.value, 200) : null, at });
+        const label = clip(event.label, 100);
+        const value = typeof event.value === 'string' && !looksSensitiveField({ label, selector }) ? clip(event.value, 200) : null;
+        this.push({ kind: 'select', selector, label: label || undefined, value, at });
         return;
       }
       case 'press': {

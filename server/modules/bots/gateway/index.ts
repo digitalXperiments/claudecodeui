@@ -10,6 +10,7 @@ export {
   callGatewayTool,
   DEFAULT_ASK_TIMEOUT_MS,
   isSessionTainted,
+  markSessionTainted,
   listGatewayToolsForSession,
   setGatewayGate,
   setGatewayOptions,

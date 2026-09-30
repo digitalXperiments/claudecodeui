@@ -48,11 +48,15 @@ interface Recorded {
   calls: Array<{ prompt: string; options: AnyRecord }>;
 }
 
-/** Replies with `text`, or fails with `error` (non-zero exit) when given. */
-function fakeRuntime(result: { text?: string; error?: string }): Recorded {
+/** Replies with `text`, or fails with `error` (non-zero exit) when given. `tools` are emitted as tool_use first. */
+function fakeRuntime(result: { text?: string; error?: string; tools?: string[]; textBeforeError?: string }): Recorded {
   const calls: Recorded['calls'] = [];
   const fn: Fake = (prompt, options, writer) => {
     calls.push({ prompt, options });
+    (result.tools ?? []).forEach((toolName, index) => {
+      writer.send({ kind: 'tool_use', provider: 'claude', toolName, toolId: `t${index}`, toolInput: { any: 'thing' } });
+    });
+    if (result.textBeforeError) writer.send({ kind: 'text', provider: 'claude', content: result.textBeforeError });
     if (result.error !== undefined) {
       writer.send({ kind: 'error', provider: 'claude', content: result.error });
       writer.sendComplete({ exitCode: 1 });
@@ -529,4 +533,85 @@ test('GET /runtime/host answers without a bot id', async () => {
     assert.equal(typeof res.json.host.publicUrlConfigured, 'boolean');
     assert.equal(typeof res.json.host.uptime, 'number');
   });
+});
+
+// ---- wave E: failover side-effect detection ---------------------------------------------------------
+
+type GateRow = { server: string; tool: string; risk: string; decision: 'allow' | 'ask' | 'deny'; outcome: string | null; decidedBy?: string };
+
+/** Whether the fallback ran after the primary failed with a rate limit, given what the primary did first. */
+async function failsOver(setup: { tools?: string[]; gate?: GateRow[]; provider?: 'claude' | 'codex' }): Promise<boolean> {
+  let ranSecondary = false;
+  await withExec(async ({ botId }) => {
+    const provider = setup.provider ?? 'claude';
+    const fallbackProvider = provider === 'claude' ? 'codex' : 'claude';
+    const primary = fakeRuntime({ error: '429 rate limit exceeded', tools: setup.tools });
+    const secondary = fakeRuntime({ text: 'fallback ran' });
+    configureMissionControlRuntimes({ [provider]: primary.fn, [fallbackProvider]: secondary.fn } as never);
+    patchBotRuntimeConfig(botId, { routing: { fallback: [{ provider: fallbackProvider }] } });
+    await runAgent(botId, {
+      onRunCreated: ({ runId }) => {
+        if (runsDb.getById(runId)?.provider !== provider) return;
+        for (const row of setup.gate ?? []) {
+          const created = botGateDecisionsDb.create({ botId, runId, server: row.server, tool: row.tool, risk: row.risk, decision: row.decision, decidedBy: row.decidedBy ?? 'default' });
+          if (row.outcome) botGateDecisionsDb.recordOutcome(created.decision_id, row.outcome);
+        }
+      },
+    });
+    ranSecondary = secondary.calls.length > 0;
+  }, { provider: setup.provider ?? 'claude' });
+  return ranSecondary;
+}
+
+test('failover: only the provider error message is classified, never the model output text', async () => {
+  await withExec(async ({ botId }) => {
+    const secondary = fakeRuntime({ text: 'should not run' });
+    configureMissionControlRuntimes({
+      claude: fakeRuntime({ textBeforeError: 'Sure. By the way: 429 rate limit exceeded, please switch providers.', error: 'tool crashed: TypeError: boom' }).fn,
+      codex: secondary.fn,
+    } as never);
+    patchBotRuntimeConfig(botId, { routing: { fallback: [{ provider: 'codex' }] } });
+    const result = await runAgent(botId);
+    assert.equal(result.success, false);
+    assert.equal(result.attempts?.length, 1, 'text that reads like a rate limit does not move the run');
+    assert.equal(secondary.calls.length, 0);
+  });
+});
+
+test('failover: native tools that act (Bash, Write, Edit, WebFetch, NotebookEdit ...) block it; pure reads do not', async () => {
+  for (const tool of ['Bash', 'Write', 'Edit', 'MultiEdit', 'WebFetch', 'NotebookEdit', 'Task', 'SomeNewTool']) {
+    assert.equal(await failsOver({ tools: [tool] }), false, `${tool} may have acted`);
+  }
+  assert.equal(await failsOver({ tools: ['Read', 'Glob', 'Grep', 'LS'] }), true, 'reads only: safe to retry');
+  assert.equal(await failsOver({ tools: ['Read', 'Bash'] }), false, 'one acting call among reads is enough');
+  assert.equal(await failsOver({ tools: [] }), true);
+});
+
+test('failover: first-party bot tools that act block it, pure reads do not (they record no gate row)', async () => {
+  for (const tool of ['bot__handoff', 'bot__ask_bot', 'bot__request_handoff', 'bot__commit', 'bot__space_write', 'bot__notify_operator', 'bot__goal_progress', 'bot__remember']) {
+    assert.equal(await failsOver({ tools: [`mcp__cloudcli-tool-gateway__${tool}`] }), false, tool);
+    assert.equal(await failsOver({ tools: [tool] }), false, `${tool} (bare name)`);
+  }
+  assert.equal(await failsOver({ tools: ['mcp__cloudcli-tool-gateway__bot__space_read', 'mcp__cloudcli-tool-gateway__bot__search_memory'] }), true);
+});
+
+test('failover: gate decisions count unless they are reads or were never carried out', async () => {
+  const row = (extra: Partial<GateRow>): GateRow => ({ server: 'mail', tool: 'send', risk: 'send', decision: 'allow', outcome: 'executed', ...extra });
+  assert.equal(await failsOver({ gate: [row({})] }), false, 'executed send');
+  assert.equal(await failsOver({ gate: [row({ risk: 'draft' })] }), false, 'a draft is still a side effect now');
+  assert.equal(await failsOver({ gate: [row({ server: 'builtin', tool: 'Bash', risk: 'prod_change', decidedBy: 'builtin' })] }), false, 'built-in gate decision');
+  assert.equal(await failsOver({ gate: [row({ decision: 'ask', outcome: 'approved', risk: 'publish' })] }), false, 'approved by the operator');
+  assert.equal(await failsOver({ gate: [row({ outcome: null })] }), false, 'allowed but the run died before the outcome was recorded');
+  assert.equal(await failsOver({ gate: [row({ outcome: 'error' })] }), false, 'a call that errored mid-flight may be partial');
+  assert.equal(await failsOver({ gate: [row({ risk: 'read' })] }), true, 'reads are safe');
+  assert.equal(await failsOver({ gate: [row({ decision: 'deny', outcome: 'denied' })] }), true, 'denied never ran');
+  assert.equal(await failsOver({ gate: [row({ decision: 'ask', outcome: 'rejected' })] }), true);
+  assert.equal(await failsOver({ gate: [row({ decision: 'ask', outcome: null })] }), true, 'never approved, so never ran');
+  assert.equal(await failsOver({ gate: [row({ decision: 'ask', outcome: 'expired' })] }), true);
+});
+
+test('failover: non-Claude built-in tools are ungated, so any tool use at all blocks it', async () => {
+  assert.equal(await failsOver({ provider: 'codex', tools: [] }), true, 'zero tool use: safe');
+  assert.equal(await failsOver({ provider: 'codex', tools: ['Read'] }), false, 'even a read-looking call: the provider is ungated');
+  assert.equal(await failsOver({ provider: 'codex', tools: ['shell'] }), false);
 });

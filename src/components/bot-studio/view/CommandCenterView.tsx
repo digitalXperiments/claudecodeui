@@ -23,6 +23,7 @@ import Skeleton from '../ui/Skeleton';
 import StatusPill from '../ui/StatusPill';
 
 import { selectCommandCenterSnapshot } from './dashboard/commandCenterSelectors';
+import RuntimeStrip from './runtime/RuntimeStrip';
 
 type CommandCenterViewProps = {
   bots: Bot[];
@@ -33,6 +34,9 @@ type CommandCenterViewProps = {
   onSelectBot: (bot: Bot) => void;
   onOpenInbox: () => void;
   onOpenActivity: () => void;
+  /** Bot runtime v2: shows the runtime strip and its Brief shortcut. */
+  runtimeV2?: boolean;
+  onOpenBrief?: () => void;
 };
 
 const healthLabels: Record<BotHealth, string> = {
@@ -90,6 +94,8 @@ export default function CommandCenterView({
   onSelectBot,
   onOpenInbox,
   onOpenActivity,
+  runtimeV2 = false,
+  onOpenBrief,
 }: CommandCenterViewProps) {
   useEffect(() => { onLoad?.(); }, [onLoad]);
   const needle = search.trim().toLowerCase();
@@ -116,6 +122,8 @@ export default function CommandCenterView({
         </div>
         {needle ? <p className="rounded-full bg-muted px-2.5 py-1 text-[10px] text-muted-foreground">Showing {visibleBots.length} of {bots.length} bots</p> : null}
       </div>
+
+      {runtimeV2 && onOpenBrief ? <RuntimeStrip bots={bots} onOpenBrief={onOpenBrief} /> : null}
 
       <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-4">
         <Metric label="Running now" value={String(snapshot.runningRuns.length)} detail={snapshot.runningRuns.length === 1 ? 'active tick' : 'active ticks'} icon={PlayCircle} onClick={onOpenActivity} />

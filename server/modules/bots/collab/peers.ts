@@ -6,6 +6,7 @@ import { parseJsonObject } from '@/modules/bots/bots.util.js';
 import { botEpisodesDb } from '@/modules/bots/kernel/bot-episodes.repository.js';
 import { botTeamsDb } from '@/modules/bots/collab/bot-teams.repository.js';
 import { botSpacesDb } from '@/modules/bots/collab/bot-spaces.repository.js';
+import { isExternalSpace } from '@/modules/bots/collab/spaces.service.js';
 
 const MEMBER_SUMMARY_CHARS = 200;
 const MAX_MEMBERS_SHOWN = 6;
@@ -110,7 +111,14 @@ export function collabPerceiveSection(ctx: CollabPerceiveContext): string {
   }
   if (spaces.length > 0) {
     lines.push('YOUR SPACES (living documents you own; update them with bot__space_write, read with bot__space_read):');
-    for (const space of spaces.slice(0, 10)) lines.push(`- ${oneLine(space.title, 80)} [id ${space.space_id}], updated ${space.updated_at}`);
+    for (const space of spaces.slice(0, 10)) {
+      // A tainted or external-root space is untrusted: its title (bot-chosen) is withheld, not fenced in prose.
+      if (space.tainted || isExternalSpace(space)) {
+        lines.push(`- [id ${space.space_id}] (untrusted contents; title withheld; reading it marks your run tainted), updated ${space.updated_at}`);
+      } else {
+        lines.push(`- ${oneLine(space.title, 80)} [id ${space.space_id}], updated ${space.updated_at}`);
+      }
+    }
   }
   return lines.join('\n');
 }

@@ -82,9 +82,14 @@ type BrowserUseSession = {
   workspacePath: string;
   networkRecording: boolean;
   controller: 'agent' | 'human';
+  /**
+   * Persistent profile directory this session was launched with (bot sessions: `<botHome>/browser-profile`).
+   * Server-side only: it proves which bot a session belongs to and is never sent to clients.
+   */
+  profileDir?: string | null;
 };
 
-type PublicBrowserUseSession = Omit<BrowserUseSession, 'ownerId'>;
+type PublicBrowserUseSession = Omit<BrowserUseSession, 'ownerId' | 'profileDir'>;
 
 type RuntimeHandle = {
   browser?: any;
@@ -533,7 +538,7 @@ async function assessAfterAction(
 }
 
 function publicSession(session: BrowserUseSession): PublicBrowserUseSession {
-  const { ownerId: _ownerId, ...publicFields } = session;
+  const { ownerId: _ownerId, profileDir: _profileDir, ...publicFields } = session;
   return publicFields;
 }
 
@@ -947,6 +952,7 @@ export const browserUseService = {
       workspacePath: sessionWorkspacePath,
       networkRecording: options?.recordNetwork ?? NETWORK_RECORDING_DEFAULT,
       controller: 'agent',
+      profileDir,
     };
 
     const activeOwnerSessions = ownerSessions(AGENT_OWNER_ID).filter((item) => item.status === 'ready');
@@ -1598,7 +1604,7 @@ export const browserUseService = {
       actionRecorders.delete(sessionId);
       throw error;
     }
-    recorder.start();
+    recorder.start({ page: handle.page });
     return { recording: true };
   },
 
@@ -1608,6 +1614,15 @@ export const browserUseService = {
     const recorder = actionRecorders.get(sessionId);
     if (!recorder) throw new Error('This session is not being recorded.');
     return recorder.stop();
+  },
+
+  /**
+   * Server-side facts a human handoff needs before it may take the wheel: which profile directory
+   * the session was launched with (its owner) and who is driving it now.
+   */
+  async describeAgentSession(sessionId: string): Promise<{ profileDir: string | null; controller: 'agent' | 'human' }> {
+    const session = await this.getAgentSession(sessionId);
+    return { profileDir: session.profileDir ?? null, controller: session.controller };
   },
 
   async takeHumanControl(sessionId: string) {

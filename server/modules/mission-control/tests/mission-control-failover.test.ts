@@ -23,7 +23,8 @@ test('auth failures, rate/usage limits and unavailable providers are failover-el
   ];
   for (const [provider, text, reason] of cases) {
     assert.equal(classifyFailoverFailure(provider, text, null)?.reason, reason, text);
-    assert.equal(classifyFailoverFailure(provider, null, text)?.reason, reason, `${text} (as output text)`);
+    // The model's own output text is never consulted, even when it reads like a provider error.
+    assert.equal(classifyFailoverFailure(provider, null, text), null, `${text} (as output text)`);
   }
 });
 

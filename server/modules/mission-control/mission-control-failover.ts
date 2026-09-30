@@ -69,20 +69,23 @@ function detail(text: string, pattern?: RegExp): string {
 }
 
 /**
- * Classify a failed run's provider error text. Returns null for normal task failures and for
- * anything that mentions a gate denial.
+ * Classify a failed run's provider error. Returns null for normal task failures and for anything
+ * that mentions a gate denial. Only `errorMessage` (what the provider/runtime reported) is read:
+ * the model's own output text is attacker-influenced, and a prompt-injected "429 rate limit" in it
+ * must not be able to steer a run onto another provider. `_outputText` is accepted for call-site
+ * compatibility and deliberately ignored.
  */
 export function classifyFailoverFailure(
   provider: string,
   errorMessage: string | null | undefined,
-  text: string | null | undefined,
+  _outputText?: string | null,
 ): FailoverClassification | null {
-  if (isGateDenialText(errorMessage, text)) return null;
+  if (isGateDenialText(errorMessage)) return null;
 
-  const auth = resolveProviderAuthFailure(provider, errorMessage, text);
+  const auth = resolveProviderAuthFailure(provider, errorMessage, null);
   if (auth) return { reason: 'auth', detail: auth.slice(0, 300) };
 
-  const combined = scan(errorMessage, text);
+  const combined = scan(errorMessage);
   if (!combined) return null;
 
   const limit = detectProviderLimit({ kind: 'error', content: combined } as unknown as NormalizedMessage);
@@ -104,4 +107,71 @@ export function classifyFailoverError(provider: string, error: unknown): Failove
   const message = error instanceof Error ? error.message : String(error);
   if (code === 'MC_RUNTIME_UNAVAILABLE') return { reason: 'unavailable', detail: message.slice(0, 300) };
   return classifyFailoverFailure(provider, message, null);
+}
+
+// ---------------------------------------------------------------------------
+// Side-effect detection: a failed run that may already have acted must not be retried elsewhere.
+// ---------------------------------------------------------------------------
+
+/** Claude built-in tools that only read or keep local bookkeeping; every other native tool counts as acting. */
+const READ_ONLY_NATIVE_TOOLS: ReadonlySet<string> = new Set([
+  'Read',
+  'Glob',
+  'Grep',
+  'LS',
+  'NotebookRead',
+  'TodoWrite',
+  'ToolSearch',
+  'ExitPlanMode',
+]);
+
+/** First-party gateway tools that never change anything. */
+const READ_ONLY_FIRST_PARTY_TOOLS: ReadonlySet<string> = new Set(['bot__space_read', 'bot__search_memory']);
+
+const FIRST_PARTY_TOOL = /(?:^|__)(bot__[a-z0-9_]+)$/i;
+
+export type ToolSideEffect = 'none' | 'acted' | 'covered-by-gate';
+
+/**
+ * Classify one recorded tool call by its name. `covered-by-gate` is an MCP call routed through the
+ * tool gateway: the Action Gate recorded a decision (with its risk) for it, so the decision rows
+ * answer the question, not the name.
+ */
+export function classifyToolCallName(toolName: unknown): ToolSideEffect {
+  if (typeof toolName !== 'string' || !toolName.trim()) return 'acted'; // unknown: assume it acted
+  const name = toolName.trim();
+  const firstParty = FIRST_PARTY_TOOL.exec(name);
+  if (firstParty) return READ_ONLY_FIRST_PARTY_TOOLS.has(firstParty[1].toLowerCase()) ? 'none' : 'acted';
+  if (name.startsWith('mcp__')) return 'covered-by-gate';
+  return READ_ONLY_NATIVE_TOOLS.has(name) ? 'none' : 'acted';
+}
+
+export interface RunSideEffectEvidence {
+  provider: string;
+  /** Gate decisions recorded for the run (first-party, upstream MCP and built-in). */
+  decisions: Array<{ decision: string; outcome: string | null; risk: string }>;
+  /** Tool names from the run's `tool.call` events. */
+  toolNames: unknown[];
+}
+
+const NOT_EXECUTED_OUTCOMES: ReadonlySet<string> = new Set(['denied', 'rejected', 'expired']);
+
+/**
+ * True when the failed run may already have changed something, so failing over could do it twice.
+ *  - any non-read gate decision that was allowed/approved (outcome executed/approved/error, or an
+ *    allow whose outcome was never recorded because the run died mid-call);
+ *  - Claude: a native tool call other than the read-only ones, or a first-party bot__ tool that is
+ *    not a pure read (bot__handoff, bot__ask_bot, bot__commit, bot__space_write ... record no gate row);
+ *  - any other provider: the built-in tools are ungated there, so any tool use at all counts.
+ */
+export function runShowsSideEffects(evidence: RunSideEffectEvidence): boolean {
+  for (const decision of evidence.decisions) {
+    if (decision.risk === 'read') continue;
+    const outcome = decision.outcome ?? '';
+    if (NOT_EXECUTED_OUTCOMES.has(outcome)) continue;
+    if (decision.decision === 'deny') continue;
+    if (decision.decision === 'allow' || outcome === 'executed' || outcome === 'approved' || outcome === 'error') return true;
+  }
+  if (evidence.provider !== 'claude') return evidence.toolNames.length > 0;
+  return evidence.toolNames.some((name) => classifyToolCallName(name) === 'acted');
 }

@@ -138,7 +138,7 @@ botCollabRouter.put(
     const input = body(req);
     const mode = input.mode === undefined ? 'replace' : input.mode;
     if (mode !== 'replace' && mode !== 'append') throw new AppError('mode must be replace or append', { code: 'BOT_SPACE_INVALID', statusCode: 400 });
-    res.json({ space: spaces.write(requireBot(req), param(req.params.spaceId), input.content, mode) });
+    res.json({ space: spaces.write(requireBot(req), param(req.params.spaceId), input.content, mode, { operator: true }) });
   }),
 );
 

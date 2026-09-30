@@ -97,9 +97,40 @@ test('channel test resolves a delivery failure instead of throwing', async () =>
   await assert.rejects(botRuntimeApi.channels.test('c1'), /Channel not found/);
 });
 
-test('provisional exec credentials tolerate string or object entries', async () => {
-  reset(() => ({ body: { credentials: ['GITHUB_TOKEN', { name: 'SLACK_TOKEN' }] } }));
-  assert.deepEqual(await botRuntimeApi.exec.listCredentials('b1'), [{ name: 'GITHUB_TOKEN' }, { name: 'SLACK_TOKEN' }]);
+test('exec credentials list as server/key entries and write per server + key', async () => {
+  const entry = { server: 'JIRA', key: 'JIRA_TOKEN', name: 'JIRA__JIRA_TOKEN', updated_at: 't', last_used_at: null };
+  reset(() => ({ body: { credentials: [entry] } }));
+  assert.deepEqual(await botRuntimeApi.exec.listCredentials('b1'), [entry]);
   reset(() => ({ body: {} }));
   assert.deepEqual(await botRuntimeApi.exec.listCredentials('b1'), []);
+
+  reset(() => ({ body: { credential: entry } }));
+  assert.deepEqual(await botRuntimeApi.exec.setCredential('b1', 'jira cloud', 'x-api-key', 's3cret'), entry);
+  assert.deepEqual(calls.at(-1), { url: '/api/bots/b1/credentials/jira%20cloud/x-api-key', method: 'PUT', body: { value: 's3cret' } });
+  reset(() => ({ body: { deleted: true } }));
+  await botRuntimeApi.exec.removeCredential('b1', 'jira', 'JIRA_TOKEN');
+  assert.deepEqual(calls.at(-1), { url: '/api/bots/b1/credentials/jira/JIRA_TOKEN', method: 'DELETE', body: undefined });
+});
+
+test('exec teach endpoints unwrap the { teach } envelope', async () => {
+  reset(() => ({ body: { active: null } }));
+  assert.equal(await botRuntimeApi.exec.teachStatus('b1'), null);
+  assert.equal(calls.at(-1)?.url, '/api/bots/b1/teach');
+  reset(() => ({ body: { teach: { sessionId: 's1', startedAt: 't', startUrl: null, profile: 'bot', note: 'n' } } }));
+  assert.equal((await botRuntimeApi.exec.startTeach('b1', { url: 'https://example.com', useBotProfile: true })).sessionId, 's1');
+  assert.deepEqual(calls.at(-1)?.body, { url: 'https://example.com', useBotProfile: true });
+  reset(() => ({ body: { teach: { skill: { name: 'x', enabled: false, origin: 'teach' }, name: 'x', content: '', steps: [], inputs: [], captured: { actions: 0, skipped: 0 }, capturedKinds: [] } } }));
+  assert.equal((await botRuntimeApi.exec.stopTeach('b1', { dryRun: true })).skill?.name, 'x');
+  assert.equal(calls.at(-1)?.url, '/api/bots/b1/teach/stop');
+});
+
+test('exec host unwraps and the failover chain round-trips', async () => {
+  reset(() => ({ body: { host: { platform: 'darwin', sleepPrevented: null, publicUrlConfigured: false, uptime: 1, hostUptime: 2 } } }));
+  assert.equal((await botRuntimeApi.exec.host()).sleepPrevented, null);
+  assert.equal(calls.at(-1)?.url, '/api/bots/runtime/host');
+  reset(() => ({ body: { fallback: [{ provider: 'codex' }] } }));
+  assert.deepEqual(await botRuntimeApi.exec.getFallback('b1'), [{ provider: 'codex' }]);
+  assert.equal(calls.at(-1)?.url, '/api/bots/b1/routing/fallback');
+  assert.deepEqual(await botRuntimeApi.exec.setFallback('b1', [{ provider: 'codex', model: 'm' }]), [{ provider: 'codex' }]);
+  assert.deepEqual(calls.at(-1), { url: '/api/bots/b1/routing/fallback', method: 'PUT', body: { fallback: [{ provider: 'codex', model: 'm' }] } });
 });

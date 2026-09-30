@@ -3,6 +3,7 @@ import { GripVertical, Menu } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
 
 import type { Project } from '../../../types/app';
+import { useAppFeatures } from '../../../hooks/useAppFeatures';
 import { useDeviceSettings } from '../../../hooks/useDeviceSettings';
 import type { CreateMcSectionInput, McAction, McItem, McSection, WorkProjectMatch } from '../../mission-control/api/missionControlApi';
 import BotArchitect from '../architect/BotArchitect';
@@ -22,44 +23,25 @@ import BotDetailView from './BotDetailView';
 import { resolveDetailTab } from './detail/detailTabs';
 import BotRoster from './BotRoster';
 import BotStudioHeader from './BotStudioHeader';
+import { botTabPath, isRuntimePage, parseRoute, viewPath, type BotStudioViewKey } from './botStudioRoute';
 import CommandCenterView from './CommandCenterView';
 import ExceptionsView from './ExceptionsView';
 import ContextPane from './ContextPane';
 import ImportView from './ImportView';
 import InboxView from './InboxView';
+import BriefView from './runtime/BriefView';
+import ChannelsView from './runtime/ChannelsView';
+import RuntimeDisabledCard from './runtime/RuntimeDisabledCard';
+import TeamsView from './runtime/TeamsView';
 
-type BotStudioViewKey = 'dashboard' | 'inbox' | 'board' | 'bots' | 'templates' | 'activity' | 'exceptions' | 'import';
-
-type BotStudioRoute = {
-  page: BotStudioViewKey | 'import' | 'new';
-  botId?: string;
-  /** Raw tab id from the URL; BotDetailView maps legacy ids to the consolidated tabs. */
-  tab?: string;
-};
-
-
-function parseRoute(pathname: string): BotStudioRoute {
-  const parts = pathname.split('/').filter(Boolean);
-  const tail = parts[0] === 'bots' ? parts.slice(1) : [];
-  if (tail[0] === 'new') return { page: 'new' };
-  if (tail[0] === 'templates') return { page: 'templates' };
-  if (tail[0] === 'board') return { page: 'board' };
-  if (tail[0] === 'activity') return { page: 'activity' };
-  if (tail[0] === 'exceptions') return { page: 'exceptions' };
-  if (tail[0] === 'import') return { page: 'import' };
-  if (tail[0] === 'b' && tail[1]) {
-    const tab = tail[2] || 'overview';
-    return { page: 'bots', botId: decodeURIComponent(tail[1]), tab };
-  }
-  if (tail[0] === 'inbox') return { page: 'inbox' };
-  if (!tail.length) return { page: 'dashboard' };
-  return { page: 'dashboard' };
-}
+const RUNTIME_PAGE_LABELS = { brief: 'Brief', channels: 'Channels', teams: 'Teams' } as const;
 
 export default function BotStudioView({ projects, isMobile, onMenuClick, onBackToChat, onWorkThis }: { projects: Project[]; isMobile: boolean; onMenuClick?: () => void; onBackToChat: () => void; onWorkThis?: (request: WorkThisSessionRequest) => void }) {
   const navigate = useNavigate();
   const location = useLocation();
   const route = useMemo(() => parseRoute(location.pathname), [location.pathname]);
+  const { features, loaded: featuresLoaded } = useAppFeatures();
+  const runtimeV2 = features.botsRuntimeV2;
   const data = useBotStudio();
   const layout = useBotStudioLayout();
   const { isMobile: belowXl } = useDeviceSettings({ mobileBreakpoint: 1280, trackPWA: false });
@@ -289,14 +271,13 @@ export default function BotStudioView({ projects, isMobile, onMenuClick, onBackT
     }
   }, [allPaused, data]);
 
-  const openView = useCallback((view: BotStudioViewKey | 'import') => {
-    const path = view === 'dashboard' ? '/bots' : '/bots/' + view;
-    go(path);
+  const openView = useCallback((view: BotStudioViewKey) => {
+    go(viewPath(view));
   }, [go]);
 
-  const activeView = route.page === 'new' || route.page === 'exceptions' ? 'inbox' : route.page === 'dashboard' || route.page === 'inbox' || route.page === 'board' || route.page === 'activity' ? route.page : undefined;
+  const activeView = route.page === 'new' || route.page === 'exceptions' ? 'inbox' : route.page === 'dashboard' || route.page === 'inbox' || route.page === 'board' || route.page === 'activity' || (runtimeV2 && isRuntimePage(route.page)) ? route.page : undefined;
   const projectsForArchitect = projects.map((project) => ({ id: project.projectId, name: project.displayName, path: project.fullPath }));
-  const contextTemporarilyCollapsed = architectOpen || route.page === 'dashboard' || route.page === 'board' || route.page === 'templates' || (route.page === 'bots' && resolveDetailTab(route.tab).tab === 'test') || layout.contextTemporarilyCollapsed;
+  const contextTemporarilyCollapsed = architectOpen || route.page === 'dashboard' || route.page === 'board' || route.page === 'templates' || isRuntimePage(route.page) || (route.page === 'bots' && resolveDetailTab(route.tab).tab === 'test') || layout.contextTemporarilyCollapsed;
   const contextOpen = !contextTemporarilyCollapsed;
   const contextWorkChoice = workChoice?.itemId === itemForContext?.item_id ? workChoice : null;
   const gridStyle = { '--bot-grid': `${layout.rosterWidth}px 8px minmax(480px,1fr)${contextOpen ? ` 8px ${layout.contextWidth}px` : ''}` } as CSSProperties;
@@ -309,14 +290,21 @@ export default function BotStudioView({ projects, isMobile, onMenuClick, onBackT
     {data.error ? <div className="mx-4 mt-3 rounded-lg bg-destructive/10 px-3 py-2 text-xs text-destructive">{data.error}<button type="button" className="ml-2 rounded underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={() => void data.refreshAll({ includeRuns: true })}>Retry</button></div> : null}
     {toast ? <div className="pointer-events-none fixed bottom-4 right-4 z-20"><div className="pointer-events-auto"><InlineToast message={toast.message} tone={toast.tone} onDismiss={() => setToast(null)} /></div></div> : null}
     {architectOpen ? <div className="min-h-0 flex-1 overflow-y-auto"><BotArchitect mode={architectInitial?.section_id ? 'edit' : 'create'} initialSection={architectInitial} projects={projectsForArchitect} onSaved={saveArchitect} onCancel={() => go(selectedBot ? `/bots/b/${encodeURIComponent(selectedBot.section_id)}/overview` : '/bots')} /></div> : <div ref={layout.containerRef} className="grid min-h-0 flex-1 grid-cols-1 xl:[grid-template-columns:var(--bot-grid)]" style={gridStyle}>
-      <BotRoster bots={data.bots} selectedBotId={route.botId ?? null} search={search} activeView={activeView} onNavigate={openView} onSelect={(bot: Bot) => go(`/bots/b/${encodeURIComponent(bot.section_id)}/overview`)} /><button type="button" className="group hidden w-2 cursor-col-resize items-center justify-center border-border/70 bg-background/60 xl:flex" onPointerDown={(event) => layout.startResize('roster', event)} aria-label="Resize bot roster" title="Resize bot roster"><GripVertical className="h-5 w-3 text-muted-foreground/50 group-hover:text-primary" /></button>
+      <BotRoster bots={data.bots} selectedBotId={route.botId ?? null} search={search} activeView={activeView} runtimeV2={runtimeV2} onNavigate={openView} onSelect={(bot: Bot) => go(`/bots/b/${encodeURIComponent(bot.section_id)}/overview`)} /><button type="button" className="group hidden w-2 cursor-col-resize items-center justify-center border-border/70 bg-background/60 xl:flex" onPointerDown={(event) => layout.startResize('roster', event)} aria-label="Resize bot roster" title="Resize bot roster"><GripVertical className="h-5 w-3 text-muted-foreground/50 group-hover:text-primary" /></button>
       <section ref={layout.centerRef} className="flex min-h-0 min-w-0 flex-col overflow-hidden">
-        {route.page === 'dashboard' ? <CommandCenterView bots={data.bots} runsBySection={data.runsBySection} search={search} isLoading={data.activityLoading} onLoad={loadActivity} onSelectBot={(bot) => go('/bots/b/' + encodeURIComponent(bot.section_id) + '/overview')} onOpenInbox={() => openView('inbox')} onOpenActivity={() => openView('activity')} /> : null}
+        {route.page === 'dashboard' ? <CommandCenterView bots={data.bots} runsBySection={data.runsBySection} search={search} isLoading={data.activityLoading} onLoad={loadActivity} onSelectBot={(bot) => go('/bots/b/' + encodeURIComponent(bot.section_id) + '/overview')} onOpenInbox={() => openView('inbox')} onOpenActivity={() => openView('activity')} runtimeV2={runtimeV2} onOpenBrief={() => openView('brief')} /> : null}
         {route.page === 'inbox' || route.page === 'exceptions' ? <InboxView initialView={route.page === 'exceptions' ? 'exceptions' : 'items'} exceptionCount={data.exceptionCount} exceptions={<ExceptionsView onOpen={openException} onLoaded={data.setExceptionCount} />} items={filteredItems} bots={data.bots} search="" selectedItemId={selectedItem?.item_id ?? null} onSelectItem={selectItem} onAction={(item, entry) => void action(item, entry)} onPreview={(item, entry) => void previewItem(item, entry)} onRetry={(item) => void data.retryItem(item.item_id)} onWork={(item) => void workItem(item)} onStartWork={(item) => void startWork(item)} onAcceptWork={(item) => void acceptWork(item)} onRetryWork={(item) => void followUpWork(item, workRetryMessage(item), 'Retry sent to the work session.')} onSendBack={(item) => { selectItem(item); setToast({ message: 'Write your feedback in the context pane, then send it back.', tone: 'default' }); }} onGenerateAssets={(item, force) => data.generateAssets(item.item_id, force)} onNotice={(message) => setToast({ message, tone: 'default' })} /> : null}
         {route.page === 'board' ? <BoardView items={data.items} bots={data.bots} projects={workProjects} search={search} onOpenItem={openInInbox} onAction={(item, entry) => void action(item, entry)} onOpenSession={(item) => void workItem(item)} onStartWork={startWorkFromBoard} onAcceptWork={(item) => void acceptWork(item)} onSendBack={(item, message) => void followUpWork(item, message, 'Sent back to the work session.')} onRetryWork={(item) => void followUpWork(item, workRetryMessage(item), 'Retry sent to the work session.')} onRetry={(item) => void data.retryItem(item.item_id).catch((error) => setToast({ message: error instanceof Error ? error.message : 'Retry failed.', tone: 'error' }))} /> : null}
         {route.page === 'bots' ? (selectedBot ? <BotDetailView workProjects={workProjects} bot={selectedBot} projectName={projects.find((project) => project.projectId === selectedBot.project_id)?.displayName ?? null} workProjectName={projects.find((project) => project.projectId === selectedBot.work_project_id)?.displayName ?? null} items={data.items.filter((item) => item.section_id === selectedBot.section_id)} runs={data.runsFor(selectedBot.section_id)} selectedTab={route.tab} onTabChange={(tab) => navigate(`/bots/b/${encodeURIComponent(selectedBot.section_id)}/${tab}`)} onUpdate={async (patch) => { await data.saveBot(selectedBot.section_id, patch); }} onRun={() => data.runBot(selectedBot)} onCancelRun={(run) => void data.cancelRun(selectedBot.section_id, run.run_id).catch((error) => setToast({ message: error instanceof Error ? error.message : 'Unable to cancel tick.', tone: 'error' }))} onDelete={async () => { await data.deleteBot(selectedBot.section_id); go('/bots/inbox'); }} onDuplicate={async () => { const duplicate = await data.duplicateBot(selectedBot.section_id); go(`/bots/b/${encodeURIComponent(duplicate.section_id)}/overview`); }} onEdit={() => openArchitect(selectedBot)} onSelectItem={(item) => { setSelectedItem(item); setSelectedRun(null); setPreview(null); }} onSelectRun={(run) => { setSelectedItem(null); setSelectedRun({ ...run, bot_id: selectedBot.section_id, bot_title: selectedBot.title }); }} /> : <div className="flex flex-1 items-center justify-center p-8 text-center text-xs text-muted-foreground">Select a bot from the roster to inspect it.</div>) : null}
         {route.page === 'templates' ? <div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6"><BotTemplatesGallery connectedMcpServers={connectedMcpServers} onUse={(template: BotTemplate) => openArchitect(template.section)} /></div> : null}
         {route.page === 'activity' ? <ActivityView bots={data.bots} runsBySection={data.runsBySection} isLoading={data.activityLoading} onLoad={loadActivity} onLoadMore={() => void data.loadActivityRuns(data.activityPage + 1)} hasMore={data.activityHasMore} isLoadingMore={data.activityLoading} onSelectRun={(run, bot) => { setSelectedItem(null); setSelectedRun({ ...run, bot_id: bot.section_id, bot_title: bot.title }); }} /> : null}
+        {isRuntimePage(route.page) ? (runtimeV2
+          ? <>
+            {route.page === 'brief' ? <BriefView bots={data.bots} onNavigate={go} onNotice={(message, tone) => setToast({ message, tone })} /> : null}
+            {route.page === 'channels' ? <ChannelsView bots={data.bots} onNotice={(message, tone) => setToast({ message, tone })} /> : null}
+            {route.page === 'teams' ? <TeamsView bots={data.bots} onNavigate={go} onNotice={(message, tone) => setToast({ message, tone })} /> : null}
+          </>
+          : featuresLoaded ? <RuntimeDisabledCard pageLabel={RUNTIME_PAGE_LABELS[route.page]} /> : <div className="p-6" role="status" aria-label="Loading"><Skeleton className="h-24 w-full max-w-md" /></div>) : null}
         {route.page === 'import' ? <ImportView projects={projects} onImported={() => void data.refreshAll()} /> : null}
       </section>
       {contextOpen ? <><button type="button" className="group hidden w-2 cursor-col-resize items-center justify-center border-border/70 bg-background/60 xl:flex" onPointerDown={(event) => layout.startResize('context', event)} aria-label="Resize context pane" title="Resize context pane"><GripVertical className="h-5 w-3 text-muted-foreground/50 group-hover:text-primary" /></button><ContextPane item={itemForContext} selectedRun={selectedRun} bot={botForContext} preview={preview} operatorContext={itemForContext ? operatorContexts[itemForContext.item_id] ?? (typeof itemForContext.body.operatorContext === 'string' ? itemForContext.body.operatorContext : '') : ''} onOperatorContextChange={(value) => { if (itemForContext) setOperatorContexts((current) => ({ ...current, [itemForContext.item_id]: value })); }} onBodyChange={(body) => { if (itemForContext) setBodyDrafts((current) => ({ ...current, [itemForContext.item_id]: body })); }} onGenerateAssets={(item, force) => data.generateAssets(item.item_id, force)} workCandidates={contextWorkChoice?.candidates ?? null} workLoading={contextWorkChoice?.loading ?? false} workError={contextWorkChoice?.error ?? null} onWork={(item, projectId) => void workItem(item, projectId)} workProjects={workProjects} onStartWork={(item, projectId) => void startWork(item, projectId)} onAcceptWork={(item) => void acceptWork(item)} onSendBack={(item, message) => void followUpWork(item, message, 'Sent back to the work session.')} onRetryWork={(item) => void followUpWork(item, workRetryMessage(item), 'Retry sent to the work session.')} onClose={() => { setSelectedItem(null); setSelectedRun(null); setWorkChoice(null); }} /></> : null}

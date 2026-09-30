@@ -3,15 +3,19 @@ import { newBotSpaceId } from '@/shared/ids.js';
 import { nowIso } from '@/modules/bots/bots.util.js';
 import type { BotSpace } from '@/modules/bots/bots.types.js';
 
-const SELECT = 'SELECT space_id, bot_id, title, path, kind, created_at, updated_at FROM bot_spaces';
+const SELECT = 'SELECT space_id, bot_id, title, path, kind, tainted, created_at, updated_at FROM bot_spaces';
+
+type SpaceRow = Omit<BotSpace, 'tainted'> & { tainted: number };
+const toSpace = (row: SpaceRow): BotSpace => ({ ...row, tainted: row.tainted === 1 });
 
 export const botSpacesDb = {
   get(spaceId: string): BotSpace | null {
-    return (getConnection().prepare(`${SELECT} WHERE space_id = ?`).get(spaceId) as BotSpace | undefined) ?? null;
+    const row = getConnection().prepare(`${SELECT} WHERE space_id = ?`).get(spaceId) as SpaceRow | undefined;
+    return row ? toSpace(row) : null;
   },
 
   list(botId: string): BotSpace[] {
-    return getConnection().prepare(`${SELECT} WHERE bot_id = ? ORDER BY updated_at DESC`).all(botId) as BotSpace[];
+    return (getConnection().prepare(`${SELECT} WHERE bot_id = ? ORDER BY updated_at DESC`).all(botId) as SpaceRow[]).map(toSpace);
   },
 
   create(input: { botId: string; title: string; path: string; kind?: string }): BotSpace {
@@ -35,6 +39,10 @@ export const botSpacesDb = {
   /** Bump updated_at without changing metadata (after the space file was written). */
   touch(spaceId: string): void {
     getConnection().prepare('UPDATE bot_spaces SET updated_at = ? WHERE space_id = ?').run(nowIso(), spaceId);
+  },
+
+  setTainted(spaceId: string, tainted: boolean): void {
+    getConnection().prepare('UPDATE bot_spaces SET tainted = ? WHERE space_id = ?').run(tainted ? 1 : 0, spaceId);
   },
 
   delete(spaceId: string): boolean {

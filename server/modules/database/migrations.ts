@@ -730,6 +730,11 @@ const ensureBotsRuntimeSchema = (db: Database): void => {
     const columns = getTableInfo(db, 'bot_events').map((column) => column.name);
     addColumnToTableIfNotExists(db, 'bot_events', columns, 'attempts', 'INTEGER NOT NULL DEFAULT 0');
   }
+  // Spaces: written by a tainted session => the content is untrusted until an operator edit.
+  if (tableExists(db, 'bot_spaces')) {
+    const columns = getTableInfo(db, 'bot_spaces').map((column) => column.name);
+    addColumnToTableIfNotExists(db, 'bot_spaces', columns, 'tainted', 'INTEGER NOT NULL DEFAULT 0');
+  }
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_bot_triggers_bot ON bot_triggers(bot_id, enabled);
     CREATE INDEX IF NOT EXISTS idx_bot_events_queue ON bot_events(bot_id, status, received_at);

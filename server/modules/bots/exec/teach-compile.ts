@@ -7,7 +7,7 @@
  * safe, in which case the literal value is written into the step. Password-like fields are never
  * captured at all and always become secret inputs.
  */
-import type { RecordedAction } from '@/modules/browser-use/index.js';
+import { looksSensitiveField, type RecordedAction } from '@/modules/browser-use/index.js';
 
 export interface TeachInput {
   name: string;
@@ -53,6 +53,24 @@ export interface CompiledTeach {
 export const MAX_TEACH_STEPS = 80;
 
 const clip = (value: string, max: number): string => (value.length > max ? `${value.slice(0, max - 1)}…` : value);
+
+/**
+ * Page-derived text ends up in a SKILL.md an agent will read as instructions, so neutralize markdown
+ * control characters (a label like "x\n# New steps" or "`; rm" must stay inert text) and keep it on one line.
+ */
+export function mdText(text: string): string {
+  return String(text).replace(/[\r\n\u2028\u2029]+/g, ' ').replace(/([\\`*_{}[\]<>#|~])/g, '\\$1');
+}
+
+/** An inline code span that cannot be closed early: a backtick or newline in the selector is replaced. */
+export function codeSpan(text: string): string {
+  return `\`${String(text).replace(/[`\r\n\u2028\u2029]/g, "'").replace(/\{\{/g, '{ {')}\``;
+}
+
+/** A URL in prose: percent-encode the characters that could open code, tags or template placeholders. */
+function safeUrl(url: string): string {
+  return url.replace(/[`<>{}\s]/g, (char) => encodeURIComponent(char));
+}
 
 export function slugifyName(text: string, fallback = 'taught-workflow'): string {
   const slug = text
@@ -117,34 +135,45 @@ export function compileTeachSteps(
         const last = steps[steps.length - 1];
         if (action.implied && last) {
           // The page that loaded because of the previous step; note it instead of adding a step.
-          last.text += ` (the page then loads ${url})`;
+          last.text += ` (the page then loads ${safeUrl(url)})`;
           break;
         }
-        steps.push({ index, kind: 'navigate', text: `Open ${url}${hadQuery ? ' (query parameters omitted)' : ''}.` });
+        steps.push({ index, kind: 'navigate', text: `Open ${safeUrl(url)}${hadQuery ? ' (query parameters omitted)' : ''}.` });
         break;
       }
       case 'click': {
-        const target = action.text ? `"${clip(action.text, 60)}"` : `the ${action.tag ?? 'element'}`;
-        steps.push({ index, kind: 'click', selector: action.selector, text: `Click ${target} (\`${action.selector}\`).` });
+        const target = action.text ? `"${mdText(clip(action.text, 60))}"` : `the ${mdText(action.tag ?? 'element')}`;
+        steps.push({ index, kind: 'click', selector: action.selector, text: `Click ${target} (${codeSpan(action.selector)}).` });
         break;
       }
       case 'press': {
-        steps.push({ index, kind: 'press', selector: action.selector || undefined, text: `Press ${action.key}${action.selector ? ` in \`${action.selector}\`` : ''}.` });
+        steps.push({ index, kind: 'press', selector: action.selector || undefined, text: `Press ${mdText(action.key)}${action.selector ? ` in ${codeSpan(action.selector)}` : ''}.` });
         break;
       }
       case 'fill':
       case 'select': {
         const label = action.label || (action.kind === 'fill' ? action.name : '') || 'field';
-        const secret = action.kind === 'fill' && action.sensitive;
-        if (!secret && action.value !== null && sameSafe(action, index, options)) {
+        const shown = mdText(label);
+        const sel = codeSpan(action.selector);
+        // Our own reading of the field on top of the recorded flag: a recording cannot un-flag a
+        // credential, and marking a step or selector safe never overrides it.
+        const credential = looksSensitiveField({
+          name: action.kind === 'fill' ? action.name : undefined,
+          label: action.label,
+          selector: action.selector,
+          inputType: action.kind === 'fill' ? action.inputType : undefined,
+        });
+        const secret = action.kind === 'fill' && (action.sensitive || credential);
+        const locked = secret || credential;
+        if (!locked && action.value !== null && sameSafe(action, index, options)) {
           steps.push({
             index,
             kind: action.kind,
             selector: action.selector,
             safeLiteral: true,
             text: action.kind === 'fill'
-              ? `Type "${clip(action.value, 120)}" into ${label} (\`${action.selector}\`).`
-              : `Choose "${clip(action.value, 120)}" in ${label} (\`${action.selector}\`).`,
+              ? `Type "${mdText(clip(action.value, 120))}" into ${shown} (${sel}).`
+              : `Choose "${mdText(clip(action.value, 120))}" in ${shown} (${sel}).`,
           });
           break;
         }
@@ -156,10 +185,10 @@ export function compileTeachSteps(
           selector: action.selector,
           input: name,
           text: secret
-            ? `Enter the ${label} secret into \`${action.selector}\` with browser_type_secret (ask the operator with browser_ask_human first; never type it with browser_type).`
+            ? `Enter the ${shown} secret into ${sel} with browser_type_secret (ask the operator with browser_ask_human first; never type it with browser_type).`
             : action.kind === 'fill'
-              ? `Type {{${name}}} into ${label} (\`${action.selector}\`).`
-              : `Choose {{${name}}} in ${label} (\`${action.selector}\`).`,
+              ? `Type {{${name}}} into ${shown} (${sel}).`
+              : `Choose {{${name}}} in ${shown} (${sel}).`,
         });
         break;
       }
@@ -192,7 +221,7 @@ export function compileTeachSkill(actions: RecordedAction[], options: CompileOpt
   const finalUrl = lastNavigate?.kind === 'navigate' ? redactUrl(lastNavigate.url).url : '';
   const success = options.successCheck?.trim()
     || (finalUrl
-      ? `The browser ends on ${finalUrl} and shows no error message. (Edit this line to name something only a successful run shows.)`
+      ? `The browser ends on ${safeUrl(finalUrl)} and shows no error message. (Edit this line to name something only a successful run shows.)`
       : 'The last step completes and the page shows no error message. (Edit this line to name something only a successful run shows.)');
 
   const lines: string[] = [
@@ -207,11 +236,11 @@ export function compileTeachSkill(actions: RecordedAction[], options: CompileOpt
     '',
     '## Inputs',
     ...(inputs.length > 0
-      ? inputs.map((input) => `- \`${input.name}\`${input.secret ? ' (secret)' : ''}: ${input.label}${input.secret ? '. Ask the operator; never store or echo it.' : ''}`)
+      ? inputs.map((input) => `- \`${input.name}\`${input.secret ? ' (secret)' : ''}: ${mdText(input.label)}${input.secret ? '. Ask the operator; never store or echo it.' : ''}`)
       : ['- None.']),
     '',
     '## Steps',
-    ...(startUrl ? [`Start: ${startUrl}`, ''] : []),
+    ...(startUrl ? [`Start: ${safeUrl(startUrl)}`, ''] : []),
     ...steps.map((step) => `${step.index}. ${step.text}`),
     ...(skipped > 0 ? ['', `(${skipped} further recorded action${skipped === 1 ? '' : 's'} were not included.)`] : []),
     '',

@@ -263,6 +263,8 @@ export interface BotSpace {
   title: string;
   path: string;
   kind: string;
+  /** Sticky: the content was written by a session that had read untrusted input (an operator edit clears it). */
+  tainted: boolean;
   created_at: string;
   updated_at: string;
 }

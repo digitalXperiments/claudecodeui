@@ -146,6 +146,25 @@ function taintSession(appSessionId: string, binding: GatewaySessionBinding): voi
   }
 }
 
+/**
+ * First-party tools that hand back content written elsewhere (another bot's answer, an external
+ * Space) call this so the caller's session and episode row read as tainted from then on.
+ * `episodeId` is the tool context's episode, used when the session has no live binding.
+ */
+export function markSessionTainted(appSessionId: string, episodeId?: string): void {
+  const binding = gatewaySessions.get(appSessionId);
+  if (binding) {
+    taintSession(appSessionId, binding);
+    return;
+  }
+  if (!episodeId) return;
+  try {
+    botEpisodesDb.update(episodeId, { tainted: true });
+  } catch (error) {
+    console.warn('[BotGateway] could not persist episode taint:', errorText(error));
+  }
+}
+
 function resultHasContent(result: GatewayCallToolResult): boolean {
   if (result.structuredContent && Object.keys(result.structuredContent).length > 0) return true;
   return (result.content ?? []).some((part) => {
