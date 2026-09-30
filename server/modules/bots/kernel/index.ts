@@ -5,6 +5,7 @@ import { botGoalsDb } from '@/modules/bots/kernel/bot-goals.repository.js';
 export {
   applyRoute,
   deriveTrigger,
+  extendEpisodeDeadline,
   kernel,
   onEpisodeFinished,
   runBotNow,
@@ -23,8 +24,15 @@ export type { KernelNotification, KernelNotifier } from '@/modules/bots/kernel/k
 export { botKernelRouter } from '@/modules/bots/kernel/kernel.routes.js';
 export { parseKernelEnvelope, parseTriageVerdict } from '@/modules/bots/kernel/envelope.js';
 export type { KernelEnvelope } from '@/modules/bots/kernel/envelope.js';
-export { buildKernelPrompt, buildTriagePrompt, renderEvent } from '@/modules/bots/kernel/perceive.js';
-export { applyGoalProgress, createCommitmentChecked } from '@/modules/bots/kernel/kernel-actions.js';
+export {
+  buildKernelPrompt,
+  buildKernelPromptAsync,
+  buildTriagePrompt,
+  registerPerceiveSection,
+  renderEvent,
+} from '@/modules/bots/kernel/perceive.js';
+export type { PerceiveSectionContext, PerceiveSectionFn } from '@/modules/bots/kernel/perceive.js';
+export { applyGoalProgress, createCommitmentChecked, isProvenanceTainted } from '@/modules/bots/kernel/kernel-actions.js';
 export { registerKernelGatewayTools } from '@/modules/bots/kernel/kernel-tools.js';
 export { installKernel } from '@/modules/bots/kernel/install.js';
 

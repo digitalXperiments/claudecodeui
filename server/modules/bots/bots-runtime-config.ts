@@ -1,4 +1,5 @@
 import { getConnection } from '@/modules/database/index.js';
+import { MC_PROVIDERS } from '@/modules/mission-control/index.js';
 import { parseJsonObject } from '@/modules/bots/bots.util.js';
 
 export interface BotPhaseRoute {
@@ -9,7 +10,16 @@ export interface BotPhaseRoute {
 
 export interface BotRuntimeConfig {
   identity?: { persona?: string; avatar?: string };
-  routing?: { perceive?: BotPhaseRoute; act?: BotPhaseRoute; reflect?: BotPhaseRoute };
+  routing?: {
+    perceive?: BotPhaseRoute;
+    act?: BotPhaseRoute;
+    reflect?: BotPhaseRoute;
+    /**
+     * Tried in order when a run fails on an auth failure, a rate/usage limit or an unavailable
+     * provider (never on a normal task failure or a gate denial). Each entry is its own agent run.
+     */
+    fallback?: BotPhaseRoute[];
+  };
   backend?: 'local' | 'docker' | 'ssh';
   backend_config?: Record<string, unknown>;
   /** Route tool calls through the bot tool gateway (default true when the runtime flag is on). */
@@ -22,6 +32,8 @@ export interface BotRuntimeConfig {
 const BACKENDS = new Set(['local', 'docker', 'ssh']);
 const ENFORCEMENT = new Set(['enforced', 'advisory']);
 const PHASES = ['perceive', 'act', 'reflect'] as const;
+/** More than a handful of fallbacks is a config mistake, not resilience. */
+export const MAX_FALLBACK_ROUTES = 5;
 
 const asString = (value: unknown): string | undefined =>
   typeof value === 'string' && value.trim() ? value.trim() : undefined;
@@ -42,6 +54,22 @@ function normalizeRoute(value: unknown): BotPhaseRoute | undefined {
   return route;
 }
 
+/** Provider ids a route may name. Read lazily: mission-control imports this module (import cycle). */
+export function isKnownRouteProvider(provider: unknown): provider is string {
+  return typeof provider === 'string' && (MC_PROVIDERS as readonly string[]).includes(provider);
+}
+
+function normalizeFallback(value: unknown): BotPhaseRoute[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const routes: BotPhaseRoute[] = [];
+  for (const entry of value) {
+    const route = normalizeRoute(entry);
+    if (route && isKnownRouteProvider(route.provider)) routes.push(route);
+    if (routes.length >= MAX_FALLBACK_ROUTES) break;
+  }
+  return routes;
+}
+
 /** Validate/clean untrusted runtime config: unknown keys and malformed values are dropped. */
 export function normalizeBotRuntimeConfig(raw: unknown): BotRuntimeConfig {
   const source = isObject(raw) ? raw : {};
@@ -60,6 +88,8 @@ export function normalizeBotRuntimeConfig(raw: unknown): BotRuntimeConfig {
       const route = normalizeRoute(source.routing[phase]);
       if (route) routing[phase] = route;
     }
+    const fallback = normalizeFallback(source.routing.fallback);
+    if (fallback && fallback.length > 0) routing.fallback = fallback;
     config.routing = routing;
   }
   if (typeof source.backend === 'string' && BACKENDS.has(source.backend)) {
@@ -105,4 +135,31 @@ export function patchBotRuntimeConfig(
   const next = normalizeBotRuntimeConfig(merged);
   getConnection().prepare('UPDATE mc_sections SET runtime_json = ? WHERE section_id = ?').run(JSON.stringify(next), botId);
   return next;
+}
+
+export type BotRoutePhase = 'perceive' | 'act' | 'work' | 'produce' | 'resolve' | 'reflect';
+
+/**
+ * The provider/model/effort a phase runs on: the bot's `routing.<phase>` override when set, else
+ * the section's own agent. `work`, `produce` and `resolve` all use the `act` route. A route that
+ * names the same provider as the section inherits the section's model/effort when it sets none.
+ */
+export function pickRoute(
+  section: { section_id: string; provider: string; model?: string | null; effort?: string | null },
+  phase: BotRoutePhase,
+  config: BotRuntimeConfig | null = readBotRuntimeConfig(section.section_id),
+): BotPhaseRoute {
+  const key = phase === 'perceive' || phase === 'reflect' ? phase : 'act';
+  const override = config?.routing?.[key];
+  const base: BotPhaseRoute = { provider: section.provider };
+  if (section.model) base.model = section.model;
+  if (section.effort) base.effort = section.effort;
+  if (!override) return base;
+  const same = override.provider === section.provider;
+  const route: BotPhaseRoute = { provider: override.provider };
+  const model = override.model ?? (same ? section.model : null);
+  const effort = override.effort ?? (same ? section.effort : null);
+  if (model) route.model = model;
+  if (effort) route.effort = effort;
+  return route;
 }

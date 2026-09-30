@@ -3,7 +3,7 @@ import os from 'node:os';
 import { jsonrepair } from 'jsonrepair';
 
 import { isBotsRuntimeV2Enabled } from '@/modules/app-features/index.js';
-import { buildGatewayRunGuards, readBotRuntimeConfig } from '@/modules/bots/index.js';
+import { botGateDecisionsDb, buildGatewayRunGuards, readBotRuntimeConfig, resolveBotHome } from '@/modules/bots/index.js';
 import { gatewaySessions } from '@/shared/bot-gateway-sessions.js';
 import { projectsDb } from '@/modules/database/index.js';
 import { recordNormalizedRunEvent, runService } from '@/modules/runs/index.js';
@@ -23,6 +23,11 @@ import type { McSection, McToolPolicyDecision } from '@/modules/mission-control/
 import { missionControlDb } from '@/modules/mission-control/mission-control.repository.js';
 import { recordSectionVersion } from '@/modules/mission-control/mission-control-versions.service.js';
 import { approvedMemoryContext } from '@/modules/mission-control/mission-control-memory.service.js';
+import {
+  classifyFailoverError,
+  classifyFailoverFailure,
+  type FailoverReason,
+} from '@/modules/mission-control/mission-control-failover.js';
 
 export { expandMcpSelectionsToTools };
 
@@ -388,6 +393,9 @@ function resolveProjectPath(section: McSection): string {
     }
     return path;
   }
+  // Bot runtime v2: a global bot works in its own home (created on demand, outside Documents /
+  // Desktop / Downloads) instead of the user's home directory.
+  if (isBotsRuntimeV2Enabled()) return resolveBotHome(section.section_id);
   // Global sections run from the user home by default (MCP / personal tools).
   return os.homedir();
 }
@@ -531,6 +539,30 @@ export type McAgentRunResult = {
   success: boolean;
   /** Provider/runtime error text when the run failed, otherwise null. */
   errorMessage: string | null;
+  /**
+   * Bot runtime v2 provider failover: every attempt in order (the primary first). Only present when
+   * the bot has `routing.fallback` entries; each attempt is its own agent run.
+   */
+  attempts?: McAgentAttempt[];
+};
+
+export type McAgentAttempt = {
+  runId: string | null;
+  provider: string;
+  model: string | null;
+  success: boolean;
+  /** Why this attempt was abandoned for the next fallback (absent on the last attempt). */
+  failoverReason?: FailoverReason;
+};
+
+/** `meta.fallback_from` on a fallback attempt's agent run. */
+export type McFallbackFrom = {
+  run_id: string | null;
+  provider: string;
+  model: string | null;
+  reason: FailoverReason;
+  detail: string;
+  attempt: number;
 };
 
 /**
@@ -549,7 +581,7 @@ export function sectionForPhase(section: McSection, phase?: string): McSection {
   return { ...section, provider: section.resolve_provider, model: section.resolve_model, effort: section.resolve_effort };
 }
 
-export async function runMissionControlAgent(params: {
+export type RunMissionControlAgentParams = {
   section: McSection;
   prompt: string;
   tools: string[];
@@ -560,9 +592,133 @@ export async function runMissionControlAgent(params: {
   episodeId?: string;
   /** Called once the canonical run exists (before the provider starts) so callers can abort it. */
   onRunCreated?: (run: { runId: string; appSessionId: string }) => void;
-}): Promise<McAgentRunResult> {
+};
+
+const MAX_FALLBACK_ATTEMPTS = 5;
+
+function sameAgent(a: McSection, b: McSection): boolean {
+  return a.provider === b.provider && (a.model ?? null) === (b.model ?? null) && (a.effort ?? null) === (b.effort ?? null);
+}
+
+/** The section as seen by one fallback route; a same-provider route inherits model/effort it leaves unset. */
+function sectionForFallback(base: McSection, route: { provider: string; model?: string; effort?: string }): McSection {
+  const same = route.provider === base.provider;
+  return {
+    ...base,
+    provider: route.provider as McSection['provider'],
+    model: route.model ?? (same ? base.model : null),
+    effort: route.effort ?? (same ? base.effort : null),
+  };
+}
+
+/** Ordered fallback agents for a section (runtime flag on), minus any identical to the primary. */
+function fallbackSections(primary: McSection): McSection[] {
+  let routes: Array<{ provider: string; model?: string; effort?: string }> = [];
+  try {
+    routes = readBotRuntimeConfig(primary.section_id)?.routing?.fallback ?? [];
+  } catch {
+    return [];
+  }
+  const chain: McSection[] = [];
+  let previous = primary;
+  for (const route of routes.slice(0, MAX_FALLBACK_ATTEMPTS)) {
+    const candidate = sectionForFallback(primary, route);
+    if (sameAgent(candidate, previous)) continue;
+    chain.push(candidate);
+    previous = candidate;
+  }
+  return chain;
+}
+
+/** True when the failed run already executed a write-class tool call; retrying could repeat it. */
+function failedRunHadSideEffects(botId: string, runId: string | null): boolean {
+  if (!runId) return false;
+  try {
+    return botGateDecisionsDb
+      .listForBot(botId, 500)
+      .some((decision) => decision.run_id === runId && decision.outcome === 'executed' && decision.risk !== 'read' && decision.risk !== 'draft');
+  } catch {
+    // Unknown is treated as "maybe": never risk a duplicate send on a failed diagnostic.
+    return true;
+  }
+}
+
+function wasAborted(runId: string | null): boolean {
+  if (!runId) return false;
+  try {
+    return runService.get(runId)?.status === 'aborted';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Headless provider run. With the bot runtime flag on and `routing.fallback` configured, a run
+ * that fails on an auth failure, rate/usage limit or unavailable provider is retried once per
+ * fallback entry in order (each attempt is its own agent run carrying `meta.fallback_from`) and
+ * stops at the first success. A normal task failure, a gate denial, an aborted run, or a failed
+ * run that already executed a write-class tool never falls over.
+ */
+export async function runMissionControlAgent(params: RunMissionControlAgentParams): Promise<McAgentRunResult> {
+  const primary = sectionForPhase(params.section, params.phase);
+  const chain = isBotsRuntimeV2Enabled() ? fallbackSections(primary) : [];
+  if (chain.length === 0) return runAgentAttempt(params, { section: primary });
+
+  const attempts: McAgentAttempt[] = [];
+  const all = [primary, ...chain];
+  let fallbackFrom: McFallbackFrom | undefined;
+  let lastResult: McAgentRunResult | null = null;
+  let lastError: unknown;
+  let hasError = false;
+
+  for (let index = 0; index < all.length; index += 1) {
+    const section = all[index];
+    let runId: string | null = null;
+    const attemptParams: RunMissionControlAgentParams = {
+      ...params,
+      onRunCreated: (run) => {
+        runId = run.runId;
+        params.onRunCreated?.(run);
+      },
+    };
+    let classification: ReturnType<typeof classifyFailoverFailure> = null;
+    try {
+      const result = await runAgentAttempt(attemptParams, { section, fallbackFrom });
+      lastResult = result;
+      hasError = false;
+      attempts.push({ runId: result.runId, provider: section.provider, model: section.model ?? null, success: result.success });
+      if (result.success) return { ...result, attempts };
+      classification = classifyFailoverFailure(section.provider, result.errorMessage, result.text);
+    } catch (error) {
+      lastError = error;
+      hasError = true;
+      attempts.push({ runId, provider: section.provider, model: section.model ?? null, success: false });
+      classification = classifyFailoverError(section.provider, error);
+    }
+
+    const last = index === all.length - 1;
+    if (!classification || last || wasAborted(runId) || failedRunHadSideEffects(primary.section_id, runId)) break;
+    attempts[attempts.length - 1].failoverReason = classification.reason;
+    fallbackFrom = {
+      run_id: runId ?? lastResult?.runId ?? null,
+      provider: section.provider,
+      model: section.model ?? null,
+      reason: classification.reason,
+      detail: classification.detail,
+      attempt: index + 1,
+    };
+  }
+
+  if (hasError) throw lastError;
+  return { ...(lastResult as McAgentRunResult), attempts };
+}
+
+async function runAgentAttempt(
+  params: RunMissionControlAgentParams,
+  attempt: { section: McSection; fallbackFrom?: McFallbackFrom },
+): Promise<McAgentRunResult> {
   const { prompt, tools } = params;
-  const section = sectionForPhase(params.section, params.phase);
+  const section = attempt.section;
   const provider = section.provider as LLMProvider;
   const spawnFn = runtimeSpawnFns[provider];
   if (!spawnFn) {
@@ -597,6 +753,7 @@ export async function runMissionControlAgent(params: {
       ...(params.sourceRef && params.sourceRef !== section.section_id ? { item_id: params.sourceRef } : {}),
       phase: params.phase ?? 'produce',
       ...(params.episodeId ? { runtime: 'v2', episode_id: params.episodeId } : {}),
+      ...(attempt.fallbackFrom ? { fallback_from: attempt.fallbackFrom } : {}),
     },
   });
   params.onRunCreated?.({ runId: canonicalRun.run_id, appSessionId });

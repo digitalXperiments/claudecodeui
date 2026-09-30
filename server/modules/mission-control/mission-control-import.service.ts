@@ -12,6 +12,7 @@ import {
 } from '@/modules/mission-control/mission-control.types.js';
 import { AppError } from '@/shared/utils.js';
 import { syncMissionControlSchedules } from '@/modules/mission-control/mission-control-scheduler.service.js';
+import { notifySectionScheduleChanged } from '@/modules/mission-control/mission-control-schedule-hook.js';
 
 type LegacySectionRow = {
   id: string;
@@ -127,6 +128,7 @@ export function importFromMissionControlDb(dbPath: string): ImportResult {
     let imported = 0;
     let skipped = 0;
     const sectionNames: string[] = [];
+    const sectionIds: string[] = [];
     const errors: string[] = [];
 
     for (const row of rows) {
@@ -165,6 +167,7 @@ export function importFromMissionControlDb(dbPath: string): ImportResult {
         existingTitles.add(finalTitle.toLowerCase());
         imported++;
         sectionNames.push(section.title);
+        sectionIds.push(section.section_id);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         errors.push(`${row.id}: ${message}`);
@@ -172,6 +175,7 @@ export function importFromMissionControlDb(dbPath: string): ImportResult {
     }
 
     syncMissionControlSchedules();
+    for (const sectionId of sectionIds) notifySectionScheduleChanged(sectionId);
     return {
       path: resolved,
       imported,

@@ -42,7 +42,7 @@ import { botLeasesDb } from '@/modules/bots/kernel/bot-leases.repository.js';
 import { parseKernelEnvelope, parseTriageVerdict, type KernelEnvelope } from '@/modules/bots/kernel/envelope.js';
 import { applyGoalProgress, createCommitmentChecked } from '@/modules/bots/kernel/kernel-actions.js';
 import { dispatchKernelNotification } from '@/modules/bots/kernel/kernel-notifier.js';
-import { buildKernelPrompt, buildTriagePrompt } from '@/modules/bots/kernel/perceive.js';
+import { buildKernelPromptAsync, buildTriagePrompt } from '@/modules/bots/kernel/perceive.js';
 
 export interface KernelOptions {
   /** Max bots woken at once by `notify`. */
@@ -56,9 +56,14 @@ export interface KernelOptions {
   stopGraceMs: number;
   /** Delay before re-trying a bot that hit its wakes-per-hour limit. */
   rateLimitRetryMs: number;
-  /** Wakes per hour for a bot with no budget row (a configured budget overrides this). */
+  /** Wakes per hour for a bot with no budget row, or a row without a wakes cap (a configured cap overrides this). */
   defaultWakesPerHour: number;
+  /** Longest an episode-finished listener may run before the kernel stops waiting for it. */
+  listenerTimeoutMs: number;
 }
+
+/** An event claimed this many times without its episode finishing is dropped as poison. */
+export const MAX_EVENT_ATTEMPTS = 3;
 
 const DEFAULT_OPTIONS: KernelOptions = {
   maxConcurrency: 3,
@@ -69,7 +74,23 @@ const DEFAULT_OPTIONS: KernelOptions = {
   stopGraceMs: 10_000,
   rateLimitRetryMs: 5 * 60_000,
   defaultWakesPerHour: 12,
+  listenerTimeoutMs: 30_000,
 };
+
+/** Live episodes' deadline extenders, keyed by episode id (cleared when the episode settles). */
+const episodeDeadlines = new Map<string, (atLeastMs: number) => void>();
+
+/**
+ * Keep a running episode alive for at least `atLeastMs` more (e.g. while waiting on a human
+ * handoff). No-op for unknown or finished episodes. Returns whether an episode was extended.
+ */
+export function extendEpisodeDeadline(episodeId: string, atLeastMs: number): boolean {
+  const extend = episodeDeadlines.get(episodeId);
+  if (!extend || !Number.isFinite(atLeastMs) || atLeastMs <= 0) return false;
+  extend(atLeastMs);
+  return true;
+}
+
 
 let options: KernelOptions = { ...DEFAULT_OPTIONS };
 
@@ -117,6 +138,9 @@ interface EpisodeContext {
   aborted: boolean;
   interrupted: boolean;
   abortReason: string;
+  /** Resolves once the episode was interrupted (shutdown, lost lease), so the wake need not wait for a stuck run. */
+  interruptSignal: Promise<'interrupted'>;
+  triggerInterrupt: () => void;
 }
 
 type WorkOutcome = {
@@ -184,30 +208,33 @@ export function deriveTrigger(events: BotEvent[], reason: string): string {
 
 // ---- run tracking -----------------------------------------------------------
 
+/** Record a run under the episode; a run that appears after an abort is killed straight away. */
+function trackRun(ctx: EpisodeContext): (run: { runId: string }) => void {
+  return ({ runId }) => {
+    ctx.runIds.add(runId);
+    if (ctx.aborted) void abortMissionControlRun(runId);
+  };
+}
+
 async function runAgentTracked(
   ctx: EpisodeContext,
   params: Parameters<typeof runMissionControlAgent>[0],
 ): Promise<Awaited<ReturnType<typeof runMissionControlAgent>>> {
-  return runMissionControlAgent({
-    ...params,
-    episodeId: ctx.episodeId,
-    onRunCreated: ({ runId }) => {
-      ctx.runIds.add(runId);
-      // Aborted before the run even existed (timeout race): kill it straight away.
-      if (ctx.aborted) void abortMissionControlRun(runId);
-    },
-  });
+  return runMissionControlAgent({ ...params, episodeId: ctx.episodeId, onRunCreated: trackRun(ctx) });
 }
 
-function episodeRuns(episodeId: string): { runIds: string[]; costUsd: number } {
+/** Cost and run ids of the runs this episode tracked (no scan of the runs table). */
+function episodeRuns(ctx: EpisodeContext): { runIds: string[]; costUsd: number } {
+  const ids = [...ctx.runIds];
+  if (ids.length === 0) return { runIds: [], costUsd: 0 };
   const rows = getConnection()
     .prepare(
-      `SELECT run_id, cost_usd_estimate FROM agent_runs
-       WHERE json_extract(meta_json, '$.episode_id') = ? ORDER BY created_at ASC`,
+      `SELECT run_id, cost_usd_estimate FROM agent_runs WHERE run_id IN (${ids.map(() => '?').join(',')}) ORDER BY created_at ASC`,
     )
-    .all(episodeId) as { run_id: string; cost_usd_estimate: number | null }[];
+    .all(...ids) as { run_id: string; cost_usd_estimate: number | null }[];
+  const found = new Set(rows.map((row) => row.run_id));
   return {
-    runIds: rows.map((row) => row.run_id),
+    runIds: [...rows.map((row) => row.run_id), ...ids.filter((id) => !found.has(id))],
     costUsd: rows.reduce((sum, row) => sum + (row.cost_usd_estimate ?? 0), 0),
   };
 }
@@ -255,14 +282,14 @@ function applyEnvelope(
   ctx: EpisodeContext,
   envelope: KernelEnvelope,
   produce: ProduceRunResult,
-): { commitments: number; commitmentErrors: string[]; goalUpdates: number; goalErrors: string[] } {
+): { commitments: number; commitmentErrors: string[]; goalUpdates: number; goalErrors: string[]; goalNotes: string[] } {
   const botId = section.section_id;
   const recent = produce.items.map((item) => ({ item_id: item.item_id, dedupe_key: item.dedupe_key, title: item.title }));
   const commitmentErrors: string[] = [];
   let commitments = 0;
   for (const raw of envelope.commitments.slice(0, 10)) {
     try {
-      const result = createCommitmentChecked(botId, raw, recent);
+      const result = createCommitmentChecked(botId, raw, recent, new Date(), { episodeId: ctx.episodeId });
       if (result.ok) commitments += 1;
       else commitmentErrors.push(result.error);
     } catch (error) {
@@ -270,24 +297,27 @@ function applyEnvelope(
     }
   }
   const goalErrors: string[] = [];
+  const goalNotes: string[] = [];
   let goalUpdates = 0;
   for (const raw of envelope.goalProgress.slice(0, 20)) {
     try {
       const result = applyGoalProgress(botId, raw, ctx.episodeId);
-      if (result.ok) goalUpdates += 1;
-      else goalErrors.push(result.error);
+      if (result.ok) {
+        goalUpdates += 1;
+        if (result.ignoredStatus) goalNotes.push(`${result.goal.goal_id}: status "${result.ignoredStatus}" ignored (tainted episode)`);
+      } else goalErrors.push(result.error);
     } catch (error) {
       goalErrors.push(errorText(error));
     }
   }
-  return { commitments, commitmentErrors, goalUpdates, goalErrors };
+  return { commitments, commitmentErrors, goalUpdates, goalErrors, goalNotes };
 }
 
 async function act(ctx: EpisodeContext, section: McSection, events: BotEvent[], reason: string): Promise<WorkOutcome> {
   const botId = section.section_id;
   const runtime = readBotRuntimeConfig(botId);
   const trigger = deriveTrigger(events, reason);
-  const { prompt } = buildKernelPrompt({ section, events, reason });
+  const { prompt } = await buildKernelPromptAsync({ section, events, reason });
   const result = await runAgentTracked(ctx, {
     section: applyRoute(section, runtime?.routing?.act),
     prompt,
@@ -320,7 +350,12 @@ async function act(ctx: EpisodeContext, section: McSection, events: BotEvent[], 
 
   let produce: ProduceRunResult;
   try {
-    produce = await ingestProduceDrafts(section, envelope.items, { trigger, episodeId: ctx.episodeId });
+    produce = await ingestProduceDrafts(section, envelope.items, {
+      trigger,
+      episodeId: ctx.episodeId,
+      onRunCreated: trackRun(ctx),
+      isAborted: () => ctx.aborted,
+    });
   } catch (error) {
     const message = errorText(error);
     finishMissionControlSectionRun(botId, message);
@@ -351,6 +386,7 @@ async function act(ctx: EpisodeContext, section: McSection, events: BotEvent[], 
       ...(applied.commitmentErrors.length ? { commitment_errors: applied.commitmentErrors } : {}),
       goal_updates: applied.goalUpdates,
       ...(applied.goalErrors.length ? { goal_errors: applied.goalErrors } : {}),
+      ...(applied.goalNotes.length ? { goal_notes: applied.goalNotes } : {}),
       notified,
       ...(envelope.reply ? { reply: envelope.reply } : {}),
       ...(produce.error ? { error: produce.error } : {}),
@@ -358,12 +394,22 @@ async function act(ctx: EpisodeContext, section: McSection, events: BotEvent[], 
   };
 }
 
+/** One listener at a time, each given `listenerTimeoutMs`; a hung or throwing listener is skipped. */
 async function notifyListeners(episode: BotEpisode): Promise<void> {
   for (const listener of [...listeners]) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      await listener(episode);
+      const timeout = new Promise<'timeout'>((resolve) => {
+        // Not unref'd: the timeout is bounded, and an unref'd timer lets the process exit while
+        // a hung listener is still being waited on.
+        timer = setTimeout(() => resolve('timeout'), options.listenerTimeoutMs);
+      });
+      const outcome = await Promise.race([Promise.resolve().then(() => listener(episode)).then(() => 'done' as const), timeout]);
+      if (outcome === 'timeout') console.warn('[BotKernel] episode listener timed out', { episodeId: episode.episode_id });
     } catch (error) {
       console.warn('[BotKernel] episode listener failed', { episodeId: episode.episode_id, error: errorText(error) });
+    } finally {
+      if (timer) clearTimeout(timer);
     }
   }
 }
@@ -371,7 +417,7 @@ async function notifyListeners(episode: BotEpisode): Promise<void> {
 /** Reflect: persist the episode, settle its events, index it, tell the listeners. */
 async function reflect(ctx: EpisodeContext, eventIds: string[], work: WorkOutcome): Promise<BotEpisode> {
   const botId = ctx.botId;
-  const runs = episodeRuns(ctx.episodeId);
+  const runs = episodeRuns(ctx);
   const status: BotEpisodeStatus = ctx.interrupted ? 'interrupted' : work.status;
   const finished = botEpisodesDb.update(ctx.episodeId, {
     status,
@@ -385,15 +431,15 @@ async function reflect(ctx: EpisodeContext, eventIds: string[], work: WorkOutcom
   botEpisodesDb.indexEpisode(ctx.episodeId);
 
   if (ctx.interrupted) {
-    // Shutdown mid-episode: hand the events back so the next start re-runs them.
-    botEventsDb.releaseClaimed(botId);
+    // Shutdown (or a lost lease) mid-episode: hand this episode's events back so a later wake re-runs
+    // them. Scoped to the episode: another process may already hold the bot and its own claims.
+    botEventsDb.releaseClaimedForEpisode(ctx.episodeId);
   } else {
     const remaining = eventIds.filter((id) => botEventsDb.get(id)?.status === 'claimed');
     botSignals.markConsumed(remaining, ctx.episodeId);
     if (status === 'succeeded') completeDueCommitments(botId, eventIds);
   }
   broadcastEpisode(botId, ctx.episodeId, status);
-  await notifyListeners(finished);
   return finished;
 }
 
@@ -422,6 +468,67 @@ function toResult(episode: BotEpisode, produce: ProduceRunResult | null): Episod
   };
 }
 
+// ---- recovery -----------------------------------------------------------------
+
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    // EPERM: the process exists but belongs to someone else, so it is alive. ESRCH: gone.
+    return (error as NodeJS.ErrnoException).code !== 'ESRCH';
+  }
+}
+
+/**
+ * A foreign lease is dead only when its holder (`${pid}:${random}`) names a process that no longer
+ * exists. The same pid with another random part is a previous in-process runtime: dead as well.
+ */
+function holderIsDead(holder: string): boolean {
+  const pid = Number.parseInt(holder.split(':')[0] ?? '', 10);
+  if (!Number.isInteger(pid) || pid <= 0) return true;
+  if ([...heldLeases.values()].includes(holder)) return false;
+  if (pid === process.pid) return true;
+  return !pidAlive(pid);
+}
+
+/**
+ * Boot-time recovery that never touches work another live process owns: expired leases and leases
+ * of dead holders are freed, only episodes whose lease is gone become 'interrupted', and only the
+ * events of those episodes are re-queued (or dropped as poison once they have been claimed
+ * `MAX_EVENT_ATTEMPTS` times). Returns the bots that have events to re-run.
+ */
+function recoverAbandonedWork(): Set<string> {
+  botLeasesDb.expireStale();
+  for (const lease of botLeasesDb.list()) {
+    if (heldLeases.get(lease.bot_id) === lease.holder) continue;
+    if (holderIsDead(lease.holder)) botLeasesDb.release(lease.bot_id, lease.holder);
+  }
+
+  const interruptedIds: string[] = [];
+  for (const episode of botEpisodesDb.listByStatus('running')) {
+    if (contexts.has(episode.bot_id)) continue;
+    const lease = botLeasesDb.get(episode.bot_id);
+    if (lease && lease.episode_id === episode.episode_id) continue; // a live process is still running it
+    botEpisodesDb.update(episode.episode_id, {
+      status: 'interrupted',
+      summary: episode.summary || 'Interrupted by a server restart; its events were re-queued.',
+      finishedAt: new Date().toISOString(),
+      outcome: { ...episode.outcome, interrupted: true },
+    });
+    botEpisodesDb.indexEpisode(episode.episode_id);
+    broadcastEpisode(episode.bot_id, episode.episode_id, 'interrupted');
+    interruptedIds.push(episode.episode_id);
+  }
+
+  const leasedBots = botLeasesDb.list().map((lease) => lease.bot_id);
+  const fromEpisodes = botEventsDb.requeueClaimedForEpisodes(interruptedIds, MAX_EVENT_ATTEMPTS);
+  const orphaned = botEventsDb.requeueOrphanedClaimed([...leasedBots, ...active.keys()], MAX_EVENT_ATTEMPTS);
+  const poisoned = [...fromEpisodes.poisoned, ...orphaned.poisoned];
+  if (poisoned.length > 0) console.warn('[BotKernel] dropped poison events after repeated crashes', { eventIds: poisoned });
+  return new Set([...fromEpisodes.botIds, ...orphaned.botIds]);
+}
+
 // ---- the wake ---------------------------------------------------------------
 
 function uniqueKinds(events: BotEvent[], fallback: string): string {
@@ -437,10 +544,11 @@ function botVersion(section: McSection): number | null {
   }
 }
 
-/** The configured wakes-per-hour budget, or the kernel default when the bot has no budget row. */
+/** The configured wakes-per-hour cap, or the kernel default when the bot has no budget row or the row sets no cap. */
 function wakeAllowedNow(botId: string): boolean {
   if (!budgets.wakeAllowed(botId)) return false;
-  if (budgets.get(botId)) return true;
+  const budget = budgets.get(botId);
+  if (budget && budget.max_wakes_per_hour !== null && budget.max_wakes_per_hour !== undefined) return true;
   const since = new Date(Date.now() - 3_600_000).toISOString();
   return botSpendDb.episodesStartedSince(botId, since) < options.defaultWakesPerHour;
 }
@@ -455,7 +563,12 @@ function scheduleRateLimitRetry(botId: string): void {
   retryTimers.set(botId, timer);
 }
 
-async function runEpisode(botId: string, wakeOptions: WakeOptions): Promise<EpisodeResult> {
+/** Filled by `runEpisode` with the finished episode so `wake` can notify listeners after releasing the slot. */
+interface EpisodeHandoff {
+  finished: BotEpisode | null;
+}
+
+async function runEpisode(botId: string, wakeOptions: WakeOptions, handoff: EpisodeHandoff): Promise<EpisodeResult> {
   const reason = wakeOptions.reason;
   if (!accepting) return skip('kernel_stopped', 'The bot runtime is shutting down.');
   if (!isBotsRuntimeV2Enabled()) return skip('flag_off', 'Bot runtime v2 is off.');
@@ -468,12 +581,28 @@ async function runEpisode(botId: string, wakeOptions: WakeOptions): Promise<Epis
     return skip('lease_held', 'Another wake already holds this bot.');
   }
   heldLeases.set(botId, holder);
+  let ctx: EpisodeContext | null = null;
   const renewTimer = setInterval(() => {
-    botLeasesDb.renew(botId, holder, options.leaseTtlMs);
+    let renewed = false;
+    try {
+      renewed = botLeasesDb.renew(botId, holder, options.leaseTtlMs);
+    } catch (error) {
+      console.warn('[BotKernel] lease renew failed', { botId, error: errorText(error) });
+    }
+    if (renewed) return;
+    // The lease expired under us or was taken over: another process may now own this bot, so this
+    // episode must stop producing side effects and hand its events back.
+    clearInterval(renewTimer);
+    const running = ctx;
+    if (!running || running.aborted) return;
+    running.interrupted = true;
+    console.warn('[BotKernel] lease lost; interrupting the episode', { botId, episodeId: running.episodeId });
+    const aborting = abortEpisodeRuns(running, 'Interrupted: the bot lease was lost');
+    running.triggerInterrupt();
+    void aborting;
   }, options.leaseRenewMs);
   renewTimer.unref?.();
 
-  let ctx: EpisodeContext | null = null;
   let timeoutTimer: ReturnType<typeof setTimeout> | null = null;
   try {
     if (!wakeOptions.force && !wakeAllowedNow(botId)) {
@@ -518,7 +647,13 @@ async function runEpisode(botId: string, wakeOptions: WakeOptions): Promise<Epis
       eventIds,
       botVersion: botVersion(section),
     });
+    let triggerInterrupt: () => void = () => undefined;
+    const interruptSignal = new Promise<'interrupted'>((resolve) => {
+      triggerInterrupt = () => resolve('interrupted');
+    });
     const episodeCtx: EpisodeContext = {
+      interruptSignal,
+      triggerInterrupt,
       botId,
       episodeId: episode.episode_id,
       runIds: new Set(),
@@ -563,13 +698,29 @@ async function runEpisode(botId: string, wakeOptions: WakeOptions): Promise<Epis
 
     const timeout = new Promise<'timeout'>((resolve) => {
       // Not unref'd: a pending episode deadline must keep the process alive until it fires or is cleared.
-      timeoutTimer = setTimeout(() => resolve('timeout'), options.episodeMaxMs);
+      let deadlineAt = Date.now() + options.episodeMaxMs;
+      const arm = () => {
+        if (timeoutTimer) clearTimeout(timeoutTimer);
+        timeoutTimer = setTimeout(() => resolve('timeout'), Math.max(0, deadlineAt - Date.now()));
+      };
+      arm();
+      // A human handoff (or anything else that legitimately blocks on the operator) may push the
+      // deadline out; it can never shorten it.
+      episodeDeadlines.set(episodeCtx.episodeId, (atLeastMs: number) => {
+        const wanted = Date.now() + atLeastMs;
+        if (wanted > deadlineAt) {
+          deadlineAt = wanted;
+          arm();
+        }
+      });
     });
 
     let outcome: WorkOutcome;
     try {
-      const raced = await Promise.race([work, timeout]);
-      if (raced === 'timeout') {
+      const raced = await Promise.race([work, timeout, episodeCtx.interruptSignal]);
+      if (raced === 'interrupted') {
+        outcome = { status: 'failed', summary: episodeCtx.abortReason, plan: '', outcome: { aborted: true, interrupted: true }, produce: null };
+      } else if (raced === 'timeout') {
         const message = `Episode exceeded the maximum duration of ${Math.round(options.episodeMaxMs / 1000)}s and was aborted.`;
         await abortEpisodeRuns(episodeCtx, message);
         finishMissionControlSectionRun(botId, message);
@@ -584,6 +735,7 @@ async function runEpisode(botId: string, wakeOptions: WakeOptions): Promise<Epis
     }
 
     const finished = await reflect(episodeCtx, eventIds, outcome);
+    handoff.finished = finished;
     return toResult(finished, outcome.produce);
   } catch (error) {
     // Bookkeeping failed (e.g. database error): never leave the episode 'running'.
@@ -601,6 +753,7 @@ async function runEpisode(botId: string, wakeOptions: WakeOptions): Promise<Epis
     return { ...skip('kernel_error', message), status: 'failed', episodeId: ctx?.episodeId ?? null, error: message };
   } finally {
     if (timeoutTimer) clearTimeout(timeoutTimer);
+    if (ctx) episodeDeadlines.delete(ctx.episodeId);
     clearInterval(renewTimer);
     contexts.delete(botId);
     heldLeases.delete(botId);
@@ -666,7 +819,8 @@ export const kernel = {
       rewake.add(botId);
       return Promise.resolve(skip('already_running', 'This bot is already running an episode.'));
     }
-    const tracked: Promise<EpisodeResult> = runEpisode(botId, wakeOptions)
+    const handoff: EpisodeHandoff = { finished: null };
+    const tracked: Promise<EpisodeResult> = runEpisode(botId, wakeOptions, handoff)
       .catch((error): EpisodeResult => ({ ...skip('kernel_error', errorText(error)), status: 'failed', error: errorText(error) }))
       .finally(() => {
         active.delete(botId);
@@ -674,7 +828,12 @@ export const kernel = {
         pump();
       });
     active.set(botId, tracked);
-    return tracked;
+    // Listeners run once the concurrency slot and the lease are free (the lease is released in
+    // `runEpisode`'s finally), so a slow listener cannot hold a slot; the caller still awaits them.
+    return tracked.then(async (result) => {
+      if (handoff.finished) await notifyListeners(handoff.finished);
+      return result;
+    });
   },
 
   /** Boot: recover from a crash, hand legacy cron to the signals scheduler, resume queued work. */
@@ -682,23 +841,7 @@ export const kernel = {
     accepting = true;
     started = true;
 
-    // Leases left by a previous process are stale by definition: nothing of ours is running yet.
-    botLeasesDb.expireStale();
-    for (const lease of botLeasesDb.list()) {
-      if (heldLeases.get(lease.bot_id) !== lease.holder) botLeasesDb.release(lease.bot_id, lease.holder);
-    }
-    for (const episode of botEpisodesDb.listByStatus('running')) {
-      if (contexts.has(episode.bot_id)) continue;
-      botEpisodesDb.update(episode.episode_id, {
-        status: 'interrupted',
-        summary: episode.summary || 'Interrupted by a server restart; its events were re-queued.',
-        finishedAt: new Date().toISOString(),
-        outcome: { ...episode.outcome, interrupted: true },
-      });
-      botEpisodesDb.indexEpisode(episode.episode_id);
-      broadcastEpisode(episode.bot_id, episode.episode_id, 'interrupted');
-    }
-    const released = botEventsDb.releaseAllClaimed();
+    const recovered = recoverAbandonedWork();
 
     try {
       for (const section of missionControlDb.listEnabledScheduledSections()) {
@@ -711,7 +854,7 @@ export const kernel = {
     }
     setMissionControlScheduleFilter((sectionId) => botTriggers.hasTriggers(sectionId));
 
-    const wake = new Set([...released, ...botEventsDb.listBotsWithQueued()]);
+    const wake = new Set([...recovered, ...botEventsDb.listBotsWithQueued()]);
     for (const botId of wake) {
       const bot = missionControlDb.getSection(botId);
       if (bot?.enabled) kernel.notify(botId);
@@ -740,7 +883,9 @@ export const kernel = {
     if (active.size > 0) {
       for (const ctx of contexts.values()) {
         ctx.interrupted = true;
-        await abortEpisodeRuns(ctx, 'Interrupted by server shutdown');
+        const aborting = abortEpisodeRuns(ctx, 'Interrupted by server shutdown');
+        ctx.triggerInterrupt();
+        await aborting;
       }
       await Promise.race([
         Promise.allSettled([...active.values()]).then(() => undefined),

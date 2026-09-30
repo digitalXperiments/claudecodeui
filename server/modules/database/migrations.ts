@@ -720,6 +720,16 @@ const ensureBotsRuntimeSchema = (db: Database): void => {
     const columns = getTableInfo(db, 'mc_sections').map((column) => column.name);
     addColumnToTableIfNotExists(db, 'mc_sections', columns, 'runtime_json', "TEXT NOT NULL DEFAULT '{}'");
   }
+  // Kernel hardening: commitment taint provenance and the event crash-loop counter.
+  if (tableExists(db, 'bot_commitments')) {
+    const columns = getTableInfo(db, 'bot_commitments').map((column) => column.name);
+    addColumnToTableIfNotExists(db, 'bot_commitments', columns, 'source_episode_id', 'TEXT');
+    addColumnToTableIfNotExists(db, 'bot_commitments', getTableInfo(db, 'bot_commitments').map((column) => column.name), 'tainted', 'INTEGER NOT NULL DEFAULT 0');
+  }
+  if (tableExists(db, 'bot_events')) {
+    const columns = getTableInfo(db, 'bot_events').map((column) => column.name);
+    addColumnToTableIfNotExists(db, 'bot_events', columns, 'attempts', 'INTEGER NOT NULL DEFAULT 0');
+  }
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_bot_triggers_bot ON bot_triggers(bot_id, enabled);
     CREATE INDEX IF NOT EXISTS idx_bot_events_queue ON bot_events(bot_id, status, received_at);

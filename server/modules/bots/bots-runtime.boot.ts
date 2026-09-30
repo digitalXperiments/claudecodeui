@@ -10,6 +10,9 @@ import { registerBotGatewayMcp, setGatewayGate, unregisterBotGatewayMcp } from '
 import { installChannels } from './channels/install.js';
 import { installKernel } from './kernel/install.js';
 import { installLearning } from './learning/index.js';
+import { installExec } from './exec/index.js';
+import { collabPerceiveSection, installCollab } from './collab/index.js';
+import { registerPerceiveSection } from './kernel/index.js';
 import { botSignals, startSignals, stopSignals } from './signals/index.js';
 
 type WakeHandler = (botId: string) => void;
@@ -105,6 +108,9 @@ export async function bootBotsRuntime(): Promise<void> {
   installKernel();
   installChannels();
   installLearning();
+  installExec();
+  installCollab();
+  registerPerceiveSection('collab', collabPerceiveSection);
   if (!flagListenerInstalled) {
     flagListenerInstalled = true;
     onAppFeaturesChanged((next, previous) => {

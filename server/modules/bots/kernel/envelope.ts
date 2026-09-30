@@ -14,7 +14,12 @@ export interface KernelEnvelope {
   reply: string;
 }
 
-const ENVELOPE_KEYS = ['summary', 'plan', 'items', 'commitments', 'goal_progress', 'notify', 'reply'] as const;
+/**
+ * Keys that mark an object as an envelope. `summary` is deliberately absent: a produce draft has a
+ * `summary` too, so it cannot tell the two apart.
+ */
+const ENVELOPE_KEYS = ['items', 'commitments', 'goal_progress', 'notify', 'plan', 'reply'] as const;
+const LEGACY_WRAPPER_KEYS = ['drafts', 'results'] as const;
 
 const isObject = (value: unknown): value is Record<string, unknown> =>
   Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -35,28 +40,39 @@ function parseNotify(value: unknown): KernelEnvelope['notify'] {
   return { title, body, urgency: Math.min(1, Math.max(0, urgency)) };
 }
 
+function buildEnvelope(parsed: Record<string, unknown>, empty: KernelEnvelope): KernelEnvelope {
+  return {
+    summary: toText(parsed.summary, 2000),
+    plan: toText(parsed.plan, 8000),
+    items: Array.isArray(parsed.items) ? parsed.items : parsed.items && isObject(parsed.items) ? [parsed.items] : empty.items,
+    commitments: objectArray(parsed.commitments),
+    goalProgress: objectArray(parsed.goal_progress),
+    notify: parseNotify(parsed.notify),
+    reply: toText(parsed.reply, 4000),
+  };
+}
+
 /**
- * Accepts the full envelope, a bare array of items (legacy produce prompts) or a single draft
- * object. Throws when the text contains no JSON at all.
+ * Accepts the full envelope, a bare array of items (legacy produce prompts), a single draft object
+ * or a legacy `{ drafts | results | items }` wrapper. An object with a `title` or `dedupeKey` is
+ * always a single draft, whatever else it carries. Throws when the text contains no JSON at all.
  */
 export function parseKernelEnvelope(text: string): KernelEnvelope {
   const parsed = parseJsonFromAgentText(text);
   const empty: KernelEnvelope = { summary: '', plan: '', items: [], commitments: [], goalProgress: [], notify: null, reply: '' };
   if (Array.isArray(parsed)) return { ...empty, items: parsed };
   if (!isObject(parsed)) return empty;
-  if (!ENVELOPE_KEYS.some((key) => key in parsed)) {
-    // A single draft object or a legacy { drafts | results } wrapper: let the pipeline sort it out.
-    return { ...empty, items: [parsed] };
+  if ('title' in parsed || 'dedupeKey' in parsed) return { ...empty, items: [parsed] };
+  if (ENVELOPE_KEYS.some((key) => key in parsed)) return buildEnvelope(parsed, empty);
+  for (const key of LEGACY_WRAPPER_KEYS) {
+    const wrapped = parsed[key];
+    if (Array.isArray(wrapped)) return { ...empty, items: wrapped };
+    if (isObject(wrapped)) return { ...empty, items: [wrapped] };
   }
-  return {
-    summary: toText(parsed.summary, 2000),
-    plan: toText(parsed.plan, 8000),
-    items: Array.isArray(parsed.items) ? parsed.items : parsed.items && isObject(parsed.items) ? [parsed.items] : [],
-    commitments: objectArray(parsed.commitments),
-    goalProgress: objectArray(parsed.goal_progress),
-    notify: parseNotify(parsed.notify),
-    reply: toText(parsed.reply, 4000),
-  };
+  // A bare { summary } is an envelope with nothing to do; anything else is handed to the pipeline
+  // as a (probably invalid) draft so the operator sees the "0 valid drafts" failure.
+  if ('summary' in parsed) return buildEnvelope(parsed, empty);
+  return { ...empty, items: [parsed] };
 }
 
 export interface TriageVerdict {

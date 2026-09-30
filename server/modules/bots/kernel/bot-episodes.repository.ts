@@ -164,6 +164,17 @@ export const botEpisodesDb = {
          WHERE bot_episodes_fts MATCH ? AND bot_id = ? ORDER BY bm25(bot_episodes_fts) LIMIT ?`,
       )
       .all(match, botId, Math.max(1, limit)) as { episode_id: string; summary: string; score: number }[];
-    return rows.map((row) => ({ episode_id: row.episode_id, summary: row.summary, score: row.score }));
+    if (rows.length === 0) return [];
+    const ids = rows.map((row) => row.episode_id);
+    const taintedRows = getConnection()
+      .prepare(`SELECT episode_id FROM bot_episodes WHERE tainted = 1 AND episode_id IN (${ids.map(() => '?').join(',')})`)
+      .all(...ids) as { episode_id: string }[];
+    const tainted = new Set(taintedRows.map((row) => row.episode_id));
+    return rows.map((row) => ({
+      episode_id: row.episode_id,
+      summary: row.summary,
+      score: row.score,
+      tainted: tainted.has(row.episode_id),
+    }));
   },
 };

@@ -13,6 +13,8 @@ type CommitmentRow = {
   due_at: string;
   nudge_policy_json: string;
   status: string;
+  source_episode_id: string | null;
+  tainted: number | null;
   created_at: string;
   updated_at: string;
 };
@@ -28,6 +30,8 @@ function mapCommitment(row: CommitmentRow): BotCommitment {
     due_at: row.due_at,
     nudge_policy: parseJsonObject(row.nudge_policy_json),
     status: row.status as BotCommitmentStatus,
+    source_episode_id: row.source_episode_id ?? null,
+    tainted: row.tainted === 1,
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
@@ -41,6 +45,8 @@ export interface CreateBotCommitmentInput {
   goalId?: string | null;
   waitingOn?: string | null;
   nudgePolicy?: Record<string, unknown>;
+  sourceEpisodeId?: string | null;
+  tainted?: boolean;
 }
 
 export const botCommitmentsDb = {
@@ -72,8 +78,8 @@ export const botCommitmentsDb = {
     const ts = nowIso();
     getConnection()
       .prepare(
-        `INSERT INTO bot_commitments (commitment_id, bot_id, item_id, goal_id, description, waiting_on, due_at, nudge_policy_json, status, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)`,
+        `INSERT INTO bot_commitments (commitment_id, bot_id, item_id, goal_id, description, waiting_on, due_at, nudge_policy_json, status, source_episode_id, tainted, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?)`,
       )
       .run(
         id,
@@ -84,6 +90,8 @@ export const botCommitmentsDb = {
         input.waitingOn ?? null,
         input.dueAt,
         JSON.stringify(input.nudgePolicy ?? {}),
+        input.sourceEpisodeId ?? null,
+        input.tainted ? 1 : 0,
         ts,
         ts,
       );

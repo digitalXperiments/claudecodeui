@@ -10,12 +10,14 @@ import { AppError, asyncHandler } from '@/shared/utils.js';
 import { normalizeBotRuntimeConfig, patchBotRuntimeConfig, readBotRuntimeConfig, type BotRuntimeConfig } from '@/modules/bots/bots-runtime-config.js';
 import type { BotCommitmentStatus, BotGoalStatus } from '@/modules/bots/bots.types.js';
 import { botGateDecisionsDb } from '@/modules/bots/gate/bot-gate-decisions.repository.js';
+import { redactValue, toGateDecisionView } from '@/modules/bots/gate/gate.routes.js';
 import { botEventsDb } from '@/modules/bots/signals/bot-events.repository.js';
 import { botCommitmentsDb } from '@/modules/bots/kernel/bot-commitments.repository.js';
 import { botEpisodesDb } from '@/modules/bots/kernel/bot-episodes.repository.js';
 import { botGoalsDb } from '@/modules/bots/kernel/bot-goals.repository.js';
 import { createCommitmentChecked } from '@/modules/bots/kernel/kernel-actions.js';
 import { kernel } from '@/modules/bots/kernel/kernel.service.js';
+import { validateFallbackRoutes } from '@/modules/bots/exec/runtime-validation.js';
 import { runsDb } from '@/modules/runs/index.js';
 
 export const botKernelRouter = express.Router();
@@ -217,8 +219,11 @@ botKernelRouter.get(
       }));
     res.json({
       episode,
-      events: botEventsDb.listForEpisode(episode.episode_id),
-      gate_decisions: botGateDecisionsDb.listForBot(botId, 500).filter((decision) => decision.episode_id === episode.episode_id),
+      // Same display redaction as /:botId/gate-decisions: never echo raw tool args or payload secrets.
+      events: botEventsDb.listForEpisode(episode.episode_id).map((event) => ({ ...event, payload: redactValue(event.payload) as Record<string, unknown> })),
+      gate_decisions: botGateDecisionsDb.listForBot(botId, 500)
+        .filter((decision) => decision.episode_id === episode.episode_id)
+        .map(toGateDecisionView),
       runs,
     });
   }),
@@ -238,6 +243,12 @@ function validateRouting(routing: unknown): void {
   if (routing === null) return;
   if (!routing || typeof routing !== 'object' || Array.isArray(routing)) throw invalid('routing must be an object');
   for (const [phase, route] of Object.entries(routing as Record<string, unknown>)) {
+    if (phase === 'fallback') {
+      // The failover chain is a list, not a phase route; exec owns its rules.
+      const error = validateFallbackRoutes(route);
+      if (error) throw invalid(error);
+      continue;
+    }
     if (!(PHASES as readonly string[]).includes(phase)) throw invalid(`Unknown routing phase "${phase}"`);
     if (route === null) continue;
     const provider = route && typeof route === 'object' ? (route as Record<string, unknown>).provider : undefined;

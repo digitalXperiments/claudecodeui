@@ -8,6 +8,9 @@ import { mcpCatalogService } from '@/modules/providers/index.js';
 import { secretsService } from '@/modules/secrets/index.js';
 import type { LLMProvider } from '@/shared/types.js';
 
+import { resolveBotBrowserProfileDir } from '../bots-home.js';
+import { botCredentials } from '../exec/bot-credentials.js';
+
 import type { GatewayCallToolResult, GatewayToolDescriptor } from './gateway.types.js';
 
 /** Connection details for one upstream MCP server (structurally a catalog `ResolvedMcpServerConnection`). */
@@ -27,10 +30,20 @@ export type UpstreamClient = Pick<Client, 'listTools' | 'callTool' | 'close'>;
 
 export type UpstreamConnector = (connection: UpstreamConnection) => Promise<UpstreamClient>;
 export type UpstreamResolver = (provider: string, server: string) => Promise<UpstreamConnection | null>;
+/** Adjusts a resolved connection for one bot (per-bot credentials, persistent browser profile). */
+export type UpstreamConnectionDecorator = (
+  connection: UpstreamConnection,
+  context: { botId: string; provider: string; server: string },
+) => UpstreamConnection;
 
 export interface UpstreamPoolOptions {
   connector?: UpstreamConnector;
   resolver?: UpstreamResolver;
+  /**
+   * Per-bot connection adjustments. Defaults to `defaultConnectionDecorator` when the default
+   * resolver is used; a pool built with a custom `resolver` decorates nothing unless told to.
+   */
+  decorate?: UpstreamConnectionDecorator;
   toolTtlMs?: number;
   idleMs?: number;
   callTimeoutMs?: number;
@@ -70,6 +83,32 @@ export const defaultUpstreamResolver: UpstreamResolver = async (provider, server
     url: raw.url,
     headers: secretsService.resolveInObject(raw.headers ?? {}, { provider: provider as LLMProvider }),
   };
+};
+
+/** The browser MCP server whose sessions get the bot's persistent profile. */
+export const BROWSER_MCP_SERVER_NAME = 'cloudcli-browser';
+/** Env the stdio browser MCP script forwards to `browser_create_session` as `profileDir`. */
+export const BROWSER_PROFILE_DIR_ENV = 'CLOUDCLI_BROWSER_USE_PROFILE_DIR';
+
+/**
+ * Per-bot connection decoration:
+ *  1. a stdio `cloudcli-browser` server gets `CLOUDCLI_BROWSER_USE_PROFILE_DIR=<botHome>/browser-profile`
+ *     so the bot keeps its logins between wake-ups;
+ *  2. per-bot credential secrets (see exec/bot-credentials.ts) replace the server's env vars (stdio)
+ *     or headers (http/sse) of the same name.
+ * Errors propagate: a bot must never silently fall back to another identity's credentials.
+ */
+export const defaultConnectionDecorator: UpstreamConnectionDecorator = (connection, { botId, server }) => {
+  if (!botId) return connection;
+  let next = connection;
+  if (connection.transport === 'stdio' && server === BROWSER_MCP_SERVER_NAME) {
+    next = { ...next, env: { ...(next.env ?? {}), [BROWSER_PROFILE_DIR_ENV]: resolveBotBrowserProfileDir(botId) } };
+  }
+  const overrides = botCredentials.resolveOverrides(botId, server);
+  if (Object.keys(overrides).length === 0) return next;
+  return next.transport === 'stdio'
+    ? { ...next, env: { ...(next.env ?? {}), ...overrides } }
+    : { ...next, headers: { ...(next.headers ?? {}), ...overrides } };
 };
 
 async function connectWithTransport(transport: Transport): Promise<Client> {
@@ -119,6 +158,8 @@ export interface UpstreamPool {
   listTools(provider: string, server: string, botId?: string): Promise<GatewayToolDescriptor[]>;
   callTool(provider: string, server: string, tool: string, args: Record<string, unknown>, botId?: string): Promise<GatewayCallToolResult>;
   closeAll(): Promise<void>;
+  /** Drop every connection of one bot so the next call reconnects (credentials changed). */
+  invalidateBot?(botId: string): Promise<void>;
   /** Number of live upstream connections (diagnostics and tests). */
   size(): number;
 }
@@ -126,6 +167,7 @@ export interface UpstreamPool {
 export function createUpstreamPool(options: UpstreamPoolOptions = {}): UpstreamPool {
   const connector = options.connector ?? defaultUpstreamConnector;
   const resolver = options.resolver ?? defaultUpstreamResolver;
+  const decorate = options.decorate ?? (options.resolver ? undefined : defaultConnectionDecorator);
   const toolTtlMs = options.toolTtlMs ?? DEFAULT_TOOL_TTL_MS;
   const idleMs = options.idleMs ?? DEFAULT_IDLE_MS;
   const callTimeoutMs = options.callTimeoutMs ?? DEFAULT_CALL_TIMEOUT_MS;
@@ -156,7 +198,7 @@ export function createUpstreamPool(options: UpstreamPoolOptions = {}): UpstreamP
           if (!connection) {
             throw new Error(`MCP server "${server}" is not available through the gateway (not in the catalog, or a provider-hosted connector that cannot be proxied).`);
           }
-          return connector(connection);
+          return connector(decorate ? decorate(connection, { botId, provider, server }) : connection);
         })(),
       };
       entries.set(key, created);
@@ -209,6 +251,11 @@ export function createUpstreamPool(options: UpstreamPoolOptions = {}): UpstreamP
         await drop(key);
         throw error;
       }
+    },
+
+    async invalidateBot(botId) {
+      const prefix = `${botId}\u0000`;
+      await Promise.all([...entries.keys()].filter((key) => key.startsWith(prefix)).map((key) => drop(key)));
     },
 
     async closeAll() {

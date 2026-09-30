@@ -185,7 +185,7 @@ export default function AppearanceSettingsTab({
       </SettingsSection>
 
       <SettingsSection title={t('appearanceSettings.surfaces.title', { defaultValue: 'Surfaces' })}>
-        <SettingsCard>
+        <SettingsCard divided>
           <SettingsRow
             label={t('appearanceSettings.surfaces.kanban.label', { defaultValue: 'Kanban board' })}
             description={t('appearanceSettings.surfaces.kanban.description', {
@@ -198,6 +198,20 @@ export default function AppearanceSettingsTab({
                 void update({ kanbanEnabled: value });
               }}
               ariaLabel={t('appearanceSettings.surfaces.kanban.label', { defaultValue: 'Kanban board' })}
+            />
+          </SettingsRow>
+          <SettingsRow
+            label={t('appearanceSettings.surfaces.botsRuntimeV2.label', { defaultValue: 'Bot runtime v2 (preview)' })}
+            description={t('appearanceSettings.surfaces.botsRuntimeV2.description', {
+              defaultValue: "Always-on bots: event triggers, goals, action gate, channels, learning. Off keeps today's Bot Studio.",
+            })}
+          >
+            <SettingsToggle
+              checked={features.botsRuntimeV2}
+              onChange={(value) => {
+                void update({ botsRuntimeV2: value });
+              }}
+              ariaLabel={t('appearanceSettings.surfaces.botsRuntimeV2.label', { defaultValue: 'Bot runtime v2 (preview)' })}
             />
           </SettingsRow>
         </SettingsCard>

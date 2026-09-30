@@ -156,6 +156,9 @@ import {
     botChannelsRouter,
     botThreadRouter,
     botLearningRouter,
+    botGateRouter,
+    botCollabRouter,
+    botExecRouter,
     stopBotsRuntime,
 } from './modules/bots/index.js';
 import { appFeaturesRoutes } from './modules/app-features/index.js';
@@ -675,9 +678,13 @@ app.use('/api/browser-capture', authenticateToken, browserCaptureRoutes);
 app.use('/api/mission-control', authenticateToken, missionControlRoutes);
 // Routers with static prefixes (/channels, /brief, /operator-profile) go before the
 // /:botId/* routers so a bot id can never shadow them.
+app.use('/api/bots', authenticateToken, botGateRouter);
 app.use('/api/bots', authenticateToken, botChannelsRouter);
 app.use('/api/bots', authenticateToken, botLearningRouter);
 app.use('/api/bots', authenticateToken, botThreadRouter);
+app.use('/api/bots', authenticateToken, botCollabRouter);
+// Exec guards PATCH /:botId/runtime (backend + fallback validation) before the kernel handler.
+app.use('/api/bots', authenticateToken, botExecRouter);
 app.use('/api/bots', authenticateToken, botTriggersRouter);
 app.use('/api/bots', authenticateToken, botKernelRouter);
 

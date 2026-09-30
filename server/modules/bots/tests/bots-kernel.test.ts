@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { rm } from 'node:fs/promises';
 import type { AddressInfo } from 'node:net';
+import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import test from 'node:test';
 
@@ -472,7 +473,7 @@ test('a bot without a budget row gets the default wakes-per-hour cap; a budget r
     assert.equal(limited.reason, 'wake_rate_limit');
     assert.equal((await kernel.wake(botId, { reason: 'manual', force: true })).status, 'succeeded', 'force bypasses the cap');
 
-    budgets.put(otherBotId, { dailyUsd: 100 });
+    budgets.put(otherBotId, { dailyUsd: 100, maxWakesPerHour: 5 });
     for (const text of ['a', 'b', 'c']) assert.equal((await wakeWith(otherBotId, text)).status, 'succeeded');
   });
 });
@@ -484,7 +485,10 @@ test('restart recovery: running episodes become interrupted, claimed events are 
     assert.equal(claimed.length, 1);
     const crashed = botEpisodesDb.create({ botId, triggerKinds: 'operator_message', eventIds: [event.event_id] });
     botEventsDb.attachToEpisode([event.event_id], crashed.episode_id);
-    assert.ok(botLeasesDb.acquire(botId, '1:dead-process', 900_000, crashed.episode_id));
+    // A pid that has exited: its lease is dead even though it has not expired yet.
+    const deadPid = spawnSync(process.execPath, ['-e', '0']).pid;
+    const deadHolder = `${deadPid}:dead-process`;
+    assert.ok(botLeasesDb.acquire(botId, deadHolder, 900_000, crashed.episode_id));
     botSignals.cancelWakes();
 
     const runtime = fakeRuntime('{"summary":"recovered","items":[]}');
@@ -494,7 +498,7 @@ test('restart recovery: running episodes become interrupted, claimed events are 
     const interrupted = botEpisodesDb.get(crashed.episode_id)!;
     assert.equal(interrupted.status, 'interrupted');
     assert.ok(interrupted.finished_at);
-    assert.notEqual(botLeasesDb.get(botId)?.holder, '1:dead-process', 'stale lease released');
+    assert.notEqual(botLeasesDb.get(botId)?.holder, deadHolder, 'stale lease released');
     await until(() => botEventsDb.get(event.event_id)!.status === 'consumed' && kernel.status().running.length === 0);
     assert.match(runtime.prompts[0]!, /survive the crash/);
     const recovered = botEpisodesDb.list(botId).find((episode) => episode.episode_id !== crashed.episode_id)!;

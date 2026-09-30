@@ -34,6 +34,7 @@ export {
   syncMissionControlSchedules,
   getMissionControlScheduledJobCount,
 } from '@/modules/mission-control/mission-control-scheduler.service.js';
+export { setSectionScheduleHook, notifySectionScheduleChanged } from '@/modules/mission-control/mission-control-schedule-hook.js';
 export {
   importFromMissionControlDb,
   resolveDefaultLegacyDbPath,

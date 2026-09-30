@@ -34,6 +34,8 @@ export interface BotEvent {
   episode_id: string | null;
   received_at: string;
   claimed_at: string | null;
+  /** How many times the event has been claimed by an episode (crash-loop guard). */
+  attempts?: number;
 }
 
 export interface IngestEventInput {
@@ -81,6 +83,10 @@ export interface BotCommitment {
   due_at: string;
   nudge_policy: Record<string, unknown>;
   status: BotCommitmentStatus;
+  /** The episode that authored this commitment (null for operator-created ones). */
+  source_episode_id: string | null;
+  /** Authored by an episode that had read external content: its text is never trusted context. */
+  tainted: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -109,6 +115,8 @@ export interface BotEpisodeSearchHit {
   episode_id: string;
   summary: string;
   score: number;
+  /** The hit's episode read external content, so its summary is not trusted context. */
+  tainted?: boolean;
 }
 
 export type BotRuleScope = 'global' | 'bot';

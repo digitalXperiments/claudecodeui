@@ -310,7 +310,9 @@ export function scanCommitments(now: Date = new Date()): number {
         source: 'commitment',
         kind: 'commitment_due',
         dedupeKey: `commitment:${commitment.commitment_id}:${commitment.due_at}`,
-        trust: 'internal',
+        // A commitment written while the bot was reading untrusted content replays as untrusted
+        // input, so the episode that handles it is tainted and the text is fenced.
+        trust: commitment.tainted ? 'external' : 'internal',
         payload: {
           commitment_id: commitment.commitment_id,
           description: commitment.description,

@@ -15,8 +15,9 @@ const apiToken = process.env.CLOUDCLI_BOT_GATEWAY_MCP_TOKEN || '';
 // per-server stamp some runtimes (OpenCode ACP, Claude mcpServers env) use instead.
 const callerSessionId = (process.env.CLOUDCLI_SESSION_ID || process.env.CLOUDCLI_LEAD_SESSION_ID || '').trim();// Per-binding secret stamped by the provider runtime (claude-sdk.js); the route checks it.
 const bindingSecret = (process.env.CLOUDCLI_BOT_GATEWAY_BINDING_SECRET || '').trim();
-// Must exceed the gateway's human-approval wait (10 minutes by default).
-const API_TIMEOUT_MS = Number.parseInt(process.env.CLOUDCLI_BOT_GATEWAY_API_TIMEOUT_MS || '660000', 10);
+// Must exceed the longest blocking gateway call: human approvals (10 minutes by default) and
+// bot__request_handoff (30 minutes by default), plus a margin.
+const API_TIMEOUT_MS = Number.parseInt(process.env.CLOUDCLI_BOT_GATEWAY_API_TIMEOUT_MS || '2100000', 10);
 
 async function callGatewayApi(route: 'tools/list' | 'tools/call', body: Record<string, unknown>) {
   if (!apiToken) {

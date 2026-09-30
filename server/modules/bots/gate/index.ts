@@ -1,3 +1,4 @@
+export { botGateRouter } from '@/modules/bots/gate/gate.routes.js';
 export { botSpendDb } from '@/modules/bots/gate/bot-spend.repository.js';
 export {
   SAFETY_FLOOR,

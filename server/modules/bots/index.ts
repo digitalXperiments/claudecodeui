@@ -32,6 +32,8 @@ export * from '@/modules/bots/signals/index.js';
 export * from '@/modules/bots/kernel/index.js';
 export * from '@/modules/bots/channels/index.js';
 export * from '@/modules/bots/learning/index.js';
+export * from '@/modules/bots/exec/index.js';
+export * from '@/modules/bots/collab/index.js';
 export {
   bootBotsRuntime,
   isBotsRuntimeForcedOff,

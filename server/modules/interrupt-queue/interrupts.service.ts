@@ -26,6 +26,13 @@ type BotGateResolver = (
   options: { alwaysAllow: boolean },
 ) => void | Promise<void>;
 let resolveBotGate: BotGateResolver | null = null;
+/** A bot asked a human to do something (log in, solve a captcha). `done` hands control back. */
+type BotHandoffResolver = (
+  handoffId: string,
+  outcome: 'done' | 'cancelled',
+  options: { note: string },
+) => void | Promise<void>;
+let resolveBotHandoff: BotHandoffResolver | null = null;
 
 function emitInterrupt(kind: 'interrupt_created' | 'interrupt_updated', interrupt: Interrupt): void {
   broadcastSystemEvent({ kind, interrupt });
@@ -78,6 +85,9 @@ export const interruptsService = {
   },
   configureBotGateResolver(resolver: BotGateResolver | null): void {
     resolveBotGate = resolver;
+  },
+  configureBotHandoffResolver(resolver: BotHandoffResolver | null): void {
+    resolveBotHandoff = resolver;
   },
   list(filter: InterruptListFilter = {}): Interrupt[] {
     return interruptsDb.list(filter);
@@ -234,6 +244,24 @@ export const interruptsService = {
           });
         }
         resolved = interruptsDb.resolve(id, 'resolved', input.actor ?? null, input.key)!;
+        break;
+      }
+      case 'done':
+      case 'cancel': {
+        // Only bot_handoff interrupts use these keys; anything else stays unsupported.
+        const handoffId = interrupt.kind === 'bot_handoff' && typeof interrupt.meta.handoffId === 'string' ? interrupt.meta.handoffId : null;
+        if (!handoffId) {
+          throw new CloudError('INTERRUPT_NOT_FOUND', `Unsupported interrupt action: ${input.key}`);
+        }
+        if (resolveBotHandoff) {
+          const note = typeof input.body?.note === 'string' ? input.body.note.slice(0, 2_000) : '';
+          void Promise.resolve(
+            resolveBotHandoff(handoffId, input.key === 'done' ? 'done' : 'cancelled', { note }),
+          ).catch(() => {
+            // The waiter also polls the interrupt row; the interrupt closes regardless.
+          });
+        }
+        resolved = interruptsDb.resolve(id, 'resolved', input.actor ?? null, input.key === 'done' ? 'handoff_done' : 'handoff_cancel')!;
         break;
       }
       case 'retry_run': {

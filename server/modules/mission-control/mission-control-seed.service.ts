@@ -2,6 +2,7 @@ import { appConfigDb } from '@/modules/database/index.js';
 import { missionControlDb } from '@/modules/mission-control/mission-control.repository.js';
 import type { CreateMcSectionInput, McSection } from '@/modules/mission-control/mission-control.types.js';
 import { syncMissionControlSchedules } from '@/modules/mission-control/mission-control-scheduler.service.js';
+import { notifySectionScheduleChanged } from '@/modules/mission-control/mission-control-schedule-hook.js';
 import {
   getTrelloSeedConfigPath,
   loadTrelloSeedConfig,
@@ -265,6 +266,7 @@ export function ensureTrelloTasksSection(): EnsureSectionResult {
     const section = missionControlDb.createSection(input);
     try {
       syncMissionControlSchedules();
+      notifySectionScheduleChanged(section.section_id);
     } catch {
       // Scheduler may not be running in tests.
     }
@@ -296,6 +298,7 @@ export function ensureTrelloTasksSection(): EnsureSectionResult {
 
   try {
     syncMissionControlSchedules();
+    notifySectionScheduleChanged(existing.section_id);
   } catch {
     // ignore in tests
   }
@@ -339,6 +342,7 @@ function ensureVersionedSeedSection(
     const section = missionControlDb.createSection(input);
     try {
       syncMissionControlSchedules();
+      notifySectionScheduleChanged(section.section_id);
     } catch {
       // Scheduler may not be running in tests.
     }

@@ -458,7 +458,7 @@ CREATE TABLE IF NOT EXISTS bot_events (
   event_id TEXT PRIMARY KEY, bot_id TEXT NOT NULL, trigger_id TEXT, source TEXT NOT NULL, kind TEXT NOT NULL,
   dedupe_key TEXT, trust TEXT NOT NULL DEFAULT 'external',                       -- operator|internal|external
   payload_json TEXT NOT NULL DEFAULT '{}', status TEXT NOT NULL DEFAULT 'queued', -- queued|claimed|consumed|dropped
-  episode_id TEXT, received_at TEXT NOT NULL, claimed_at TEXT,
+  episode_id TEXT, received_at TEXT NOT NULL, claimed_at TEXT, attempts INTEGER NOT NULL DEFAULT 0, -- attempts: times claimed (crash-loop guard)
   FOREIGN KEY (bot_id) REFERENCES mc_sections(section_id) ON DELETE CASCADE);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_bot_events_dedupe ON bot_events(bot_id, dedupe_key) WHERE dedupe_key IS NOT NULL;
 CREATE TABLE IF NOT EXISTS bot_leases (
@@ -472,6 +472,7 @@ CREATE TABLE IF NOT EXISTS bot_commitments (
   commitment_id TEXT PRIMARY KEY, bot_id TEXT NOT NULL, item_id TEXT, goal_id TEXT, description TEXT NOT NULL,
   waiting_on TEXT, due_at TEXT NOT NULL, nudge_policy_json TEXT NOT NULL DEFAULT '{}',
   status TEXT NOT NULL DEFAULT 'open',                                            -- open|fired|done|cancelled
+  source_episode_id TEXT, tainted INTEGER NOT NULL DEFAULT 0,                     -- tainted: authored by an episode that read external content
   created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
   FOREIGN KEY (bot_id) REFERENCES mc_sections(section_id) ON DELETE CASCADE);
 CREATE TABLE IF NOT EXISTS bot_episodes (

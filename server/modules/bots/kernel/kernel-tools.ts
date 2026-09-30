@@ -49,7 +49,10 @@ export function registerKernelGatewayTools(): void {
     },
     risk: 'draft',
     handler: (ctx, args) => {
-      const result = createCommitmentChecked(ctx.botId, { ...args, item_ref: args.item_id });
+      const result = createCommitmentChecked(ctx.botId, { ...args, item_ref: args.item_id }, [], new Date(), {
+        episodeId: ctx.episodeId,
+        tainted: ctx.tainted,
+      });
       if (!result.ok) return textResult(result.error, true);
       const { commitment } = result;
       return textResult(JSON.stringify({ commitment_id: commitment.commitment_id, due_at: commitment.due_at, status: commitment.status }));
@@ -70,9 +73,14 @@ export function registerKernelGatewayTools(): void {
     },
     risk: 'draft',
     handler: (ctx, args) => {
-      const result = applyGoalProgress(ctx.botId, args, ctx.episodeId);
+      const result = applyGoalProgress(ctx.botId, args, ctx.episodeId, { tainted: ctx.tainted });
       if (!result.ok) return textResult(result.error, true);
-      return textResult(JSON.stringify({ goal_id: result.goal.goal_id, status: result.goal.status, progress: result.goal.progress }));
+      return textResult(JSON.stringify({
+          goal_id: result.goal.goal_id,
+          status: result.goal.status,
+          progress: result.goal.progress,
+          ...(result.ignoredStatus ? { ignored: `status "${result.ignoredStatus}" needs the operator: this run read untrusted content` } : {}),
+        }));
     },
   });
 

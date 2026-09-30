@@ -225,6 +225,12 @@ export function finishMissionControlSectionRun(sectionId: string, error: string 
   });
 }
 
+/** The kernel episode that proposed an item (recorded in `source_json.episodeId`), if any. */
+function itemEpisodeId(item: McItem): string | undefined {
+  const id = item.source?.episodeId;
+  return typeof id === 'string' && id ? id : undefined;
+}
+
 /** Kernel-created items record their episode in `source_json` (no new columns). */
 function withEpisodeRef(draft: McDraftItem, episodeId: string | undefined): McDraftItem {
   if (!episodeId) return draft;
@@ -364,7 +370,14 @@ export async function runSectionProduce(
 export async function ingestProduceDrafts(
   section: McSection,
   rawDrafts: unknown,
-  opts: { trigger?: string; episodeId?: string } = {},
+  opts: {
+    trigger?: string;
+    episodeId?: string;
+    /** Called for every agent run the auto-approve resolve step starts (the kernel tracks them). */
+    onRunCreated?: (run: { runId: string; appSessionId: string }) => void;
+    /** Checked before each draft: a timed-out or interrupted episode must stop approving. */
+    isAborted?: () => boolean;
+  } = {},
 ): Promise<ProduceRunResult> {
   const trigger = opts.trigger ?? 'manual';
   const episodeId = opts.episodeId;
@@ -410,6 +423,7 @@ export async function ingestProduceDrafts(
   let skipped = 0;
 
   for (const draft of drafts) {
+    if (opts.isAborted?.()) break;
     // Strict dedupe: never re-open dismissed/denied/resolved/failed items.
     // Trello: also skip when an alias id (shortLink vs full id) already exists.
     const trelloRefs = collectTrelloCardRefs({
@@ -446,7 +460,13 @@ export async function ingestProduceDrafts(
       // Only approve-kind actions ever run without a human.
       const approve = current.actions.find((a) => a.kind === 'approve' && a.terminal !== false);
       if (approve) {
-        const next = await applyItemAction(current.item_id, approve.id, undefined, { trigger, actor: 'auto' });
+        const next = await applyItemAction(current.item_id, approve.id, undefined, {
+          trigger,
+          actor: 'auto',
+          // The resolve run belongs to the episode that proposed the item, so the gateway sees its taint.
+          episodeId: itemEpisodeId(current) ?? episodeId,
+          onRunCreated: opts.onRunCreated,
+        });
         // auto-approve should never hard-delete; if it did, skip the item
         if (!next) continue;
         current = next;
@@ -491,7 +511,13 @@ export async function applyItemAction(
   itemId: string,
   actionId: string,
   editedBody?: Record<string, unknown>,
-  opts: { trigger?: string; actor?: 'human' | 'auto' } = {},
+  opts: {
+    trigger?: string;
+    actor?: 'human' | 'auto';
+    /** Run the resolve step as part of this kernel episode (auto-approve only; see `itemEpisodeId`). */
+    episodeId?: string;
+    onRunCreated?: (run: { runId: string; appSessionId: string }) => void;
+  } = {},
 ): Promise<McItem | null> {
   const item = missionControlDb.getItem(itemId);
   if (!item) {
@@ -605,6 +631,11 @@ export async function applyItemAction(
       sourceRef: itemId,
       trigger: opts.trigger ?? 'manual',
       phase: 'resolve',
+      // Auto-approve only: a human approving an item is their own decision, not the episode's.
+      ...(opts.actor === 'auto' && (opts.episodeId ?? itemEpisodeId(item))
+        ? { episodeId: opts.episodeId ?? itemEpisodeId(item) }
+        : {}),
+      ...(opts.onRunCreated ? { onRunCreated: opts.onRunCreated } : {}),
     });
 
     // Provider/runtime failure: mark the item failed (retryable) instead of

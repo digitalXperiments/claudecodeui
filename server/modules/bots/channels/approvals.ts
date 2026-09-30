@@ -4,7 +4,7 @@ import { addAutomationEventSink, type AutomationFireInput } from '@/modules/auto
 import { interruptsService } from '@/modules/interrupt-queue/index.js';
 import { notifyOperator, type NotifyResult } from '@/modules/bots/channels/notify.service.js';
 
-export const APPROVAL_INTERRUPT_KINDS: readonly string[] = ['bot_gate', 'approval_pending'];
+export const APPROVAL_INTERRUPT_KINDS: readonly string[] = ['bot_gate', 'approval_pending', 'bot_handoff'];
 export const APPROVAL_URGENCY = 0.8;
 const SEEN_CAP = 500;
 

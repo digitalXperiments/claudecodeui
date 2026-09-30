@@ -21,6 +21,7 @@ type EventRow = {
   episode_id: string | null;
   received_at: string;
   claimed_at: string | null;
+  attempts: number | null;
 };
 
 function mapEvent(row: EventRow): BotEvent {
@@ -37,10 +38,33 @@ function mapEvent(row: EventRow): BotEvent {
     episode_id: row.episode_id,
     received_at: row.received_at,
     claimed_at: row.claimed_at,
+    attempts: row.attempts ?? 0,
   };
 }
 
 const placeholders = (count: number): string => new Array(count).fill('?').join(',');
+
+/** Re-queue (attempts < max) or drop as poison (attempts >= max) each claimed row. Runs inside a transaction. */
+function settleClaimedRows(
+  rows: { event_id: string; bot_id: string; attempts: number | null; payload_json: string }[],
+  maxAttempts: number,
+): { botIds: string[]; poisoned: string[] } {
+  const db = getConnection();
+  const botIds = new Set<string>();
+  const poisoned: string[] = [];
+  for (const row of rows) {
+    if ((row.attempts ?? 0) >= maxAttempts) {
+      const payload = parseJsonObject(row.payload_json);
+      payload._drop_reason = 'poison';
+      db.prepare("UPDATE bot_events SET status = 'dropped', payload_json = ? WHERE event_id = ?").run(JSON.stringify(payload), row.event_id);
+      poisoned.push(row.event_id);
+    } else {
+      db.prepare("UPDATE bot_events SET status = 'queued', claimed_at = NULL, episode_id = NULL WHERE event_id = ?").run(row.event_id);
+      botIds.add(row.bot_id);
+    }
+  }
+  return { botIds: [...botIds], poisoned };
+}
 
 export const botEventsDb = {
   get(eventId: string): BotEvent | null {
@@ -109,9 +133,9 @@ export const botEventsDb = {
       const ts = nowIso();
       const ids = selected.map((row) => row.event_id);
       db.prepare(
-        `UPDATE bot_events SET status = 'claimed', claimed_at = ? WHERE status = 'queued' AND event_id IN (${placeholders(ids.length)})`,
+        `UPDATE bot_events SET status = 'claimed', claimed_at = ?, attempts = attempts + 1 WHERE status = 'queued' AND event_id IN (${placeholders(ids.length)})`,
       ).run(ts, ...ids);
-      return selected.map((row) => mapEvent({ ...row, status: 'claimed', claimed_at: ts }));
+      return selected.map((row) => mapEvent({ ...row, status: 'claimed', claimed_at: ts, attempts: (row.attempts ?? 0) + 1 }));
     });
     return claim.immediate();
   },
@@ -146,11 +170,27 @@ export const botEventsDb = {
     return drop();
   },
 
-  /** Return claimed events to the queue (used when an episode is interrupted). */
+  /**
+   * Return a bot's claimed events to the queue after a graceful shutdown. The claim is not counted
+   * as an attempt: an orderly stop is not evidence of a crash-looping event.
+   */
   releaseClaimed(botId: string): number {
     return getConnection()
-      .prepare("UPDATE bot_events SET status = 'queued', claimed_at = NULL WHERE bot_id = ? AND status = 'claimed'")
+      .prepare(
+        `UPDATE bot_events SET status = 'queued', claimed_at = NULL, attempts = MAX(attempts - 1, 0)
+         WHERE bot_id = ? AND status = 'claimed'`,
+      )
       .run(botId).changes;
+  },
+
+  /** Graceful hand-back of one episode's claimed events (not counted as an attempt). */
+  releaseClaimedForEpisode(episodeId: string): number {
+    return getConnection()
+      .prepare(
+        `UPDATE bot_events SET status = 'queued', claimed_at = NULL, episode_id = NULL, attempts = MAX(attempts - 1, 0)
+         WHERE episode_id = ? AND status = 'claimed'`,
+      )
+      .run(episodeId).changes;
   },
 
   /** Tag claimed events with the episode that is working on them (used to re-queue after a crash). */
@@ -161,15 +201,38 @@ export const botEventsDb = {
       .run(episodeId, ...eventIds).changes;
   },
 
-  /** Restart recovery: every claimed event goes back to the queue. Returns the affected bot ids. */
-  releaseAllClaimed(): string[] {
+  /**
+   * Crash recovery for specific episodes: their claimed events go back to the queue, except events
+   * already claimed `maxAttempts` times, which are dropped as poison (a crash-loop guard: an event
+   * that keeps killing its episode must not wedge the bot forever). Returns the affected bot ids
+   * and the ids of the poisoned events.
+   */
+  requeueClaimedForEpisodes(episodeIds: string[], maxAttempts: number): { botIds: string[]; poisoned: string[] } {
+    if (episodeIds.length === 0) return { botIds: [], poisoned: [] };
     const db = getConnection();
-    const release = db.transaction((): string[] => {
-      const rows = db.prepare("SELECT DISTINCT bot_id FROM bot_events WHERE status = 'claimed'").all() as { bot_id: string }[];
-      db.prepare("UPDATE bot_events SET status = 'queued', claimed_at = NULL, episode_id = NULL WHERE status = 'claimed'").run();
-      return rows.map((row) => row.bot_id);
+    const requeue = db.transaction((): { botIds: string[]; poisoned: string[] } => {
+      const rows = db
+        .prepare(`SELECT event_id, bot_id, attempts, payload_json FROM bot_events WHERE status = 'claimed' AND episode_id IN (${placeholders(episodeIds.length)})`)
+        .all(...episodeIds) as { event_id: string; bot_id: string; attempts: number | null; payload_json: string }[];
+      return settleClaimedRows(rows, maxAttempts);
     });
-    return release();
+    return requeue();
+  },
+
+  /**
+   * Claimed events that were never attached to an episode (a crash between claim and episode
+   * creation), for bots that hold no lease. Same re-queue / poison rules.
+   */
+  requeueOrphanedClaimed(excludeBotIds: string[], maxAttempts: number): { botIds: string[]; poisoned: string[] } {
+    const db = getConnection();
+    const requeue = db.transaction((): { botIds: string[]; poisoned: string[] } => {
+      const rows = (db
+        .prepare("SELECT event_id, bot_id, attempts, payload_json FROM bot_events WHERE status = 'claimed' AND episode_id IS NULL")
+        .all() as { event_id: string; bot_id: string; attempts: number | null; payload_json: string }[])
+        .filter((row) => !excludeBotIds.includes(row.bot_id));
+      return settleClaimedRows(rows, maxAttempts);
+    });
+    return requeue();
   },
 
   listBotsWithQueued(): string[] {
