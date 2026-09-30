@@ -181,7 +181,12 @@ export type BotLease = {
 };
 
 export type BotRuntimeStatus = {
+  /** The feature flag. */
   enabled: boolean;
+  /** Whether this server process is actually running the runtime (absent on older servers). */
+  runtime_running?: boolean;
+  /** True when CLOUDCLI_BOTS_RUNTIME=off keeps the runtime stopped despite the flag. */
+  forced_off?: boolean;
   running: string[];
   queuedWakes: number;
   queuedEvents: number;

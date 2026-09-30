@@ -17,6 +17,7 @@ import { botEpisodesDb } from '@/modules/bots/kernel/bot-episodes.repository.js'
 import { botGoalsDb } from '@/modules/bots/kernel/bot-goals.repository.js';
 import { createCommitmentChecked } from '@/modules/bots/kernel/kernel-actions.js';
 import { kernel } from '@/modules/bots/kernel/kernel.service.js';
+import { isBotsRuntimeForcedOff, isBotsRuntimeRunning } from '@/modules/bots/bots-runtime.boot.js';
 import { validateFallbackRoutes } from '@/modules/bots/exec/runtime-validation.js';
 import { runsDb } from '@/modules/runs/index.js';
 
@@ -58,7 +59,9 @@ function parseLimit(value: unknown, fallback: number, max = 200): number {
 botKernelRouter.get(
   '/runtime/status',
   asyncHandler(async (_req, res) => {
-    res.json(kernel.status());
+    // `enabled` is the feature flag; `runtime_running` says whether this process actually runs
+    // the runtime (it can be forced off with CLOUDCLI_BOTS_RUNTIME=off, or have failed to start).
+    res.json({ ...kernel.status(), runtime_running: isBotsRuntimeRunning(), forced_off: isBotsRuntimeForcedOff() });
   }),
 );
 

@@ -22,13 +22,17 @@ export function runtimeState(status: BotRuntimeStatus | null, error: string | nu
       ? { state: 'unknown', label: 'Unknown', detail: error, tone: 'warning' }
       : { state: 'unknown', label: 'Checking', detail: 'Reading runtime status', tone: 'default' };
   }
-  if (status.enabled) {
+  const running = status.runtime_running ?? status.enabled;
+  if (status.enabled && running) {
     return { state: 'running', label: 'Running', detail: status.running.length ? `${status.running.length} active` : 'Idle', tone: 'success' };
+  }
+  if (status.forced_off) {
+    return { state: 'stopped', label: 'Forced off', detail: 'CLOUDCLI_BOTS_RUNTIME=off keeps the runtime stopped on this server', tone: 'warning' };
   }
   return {
     state: 'stopped',
     label: 'Stopped',
-    detail: 'Flag is on but the runtime is not running (forced off by CLOUDCLI_BOTS_RUNTIME=off?)',
+    detail: status.enabled ? 'Flag is on but the runtime is not running (it may have failed to start — check the server log)' : 'Bot runtime v2 is off',
     tone: 'warning',
   };
 }

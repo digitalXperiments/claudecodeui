@@ -16,3 +16,10 @@ test('describeRuntimeStatus covers unknown, disabled, running, queued and idle',
   assert.match(queued.label, /4 queued across all bots \(1 wake, 3 events\)/);
   assert.deepEqual(describeRuntimeStatus(base, 'b1'), { tone: 'idle', label: 'Idle · nothing queued' });
 });
+
+test('describeRuntimeStatus surfaces a forced-off or stopped runtime', () => {
+  const base = { enabled: true, running: [], queuedWakes: 0, queuedEvents: 0 };
+  assert.match(describeRuntimeStatus({ ...base, runtime_running: false, forced_off: true }, 'b').label, /forced off/);
+  assert.match(describeRuntimeStatus({ ...base, runtime_running: false }, 'b').label, /not running/);
+  assert.equal(describeRuntimeStatus({ ...base, runtime_running: true }, 'b').tone, 'idle');
+});

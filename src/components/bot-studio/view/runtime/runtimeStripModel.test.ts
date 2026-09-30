@@ -22,7 +22,7 @@ test('runtimeState covers running, idle, stopped, unknown and error', () => {
   assert.equal(runtimeState(status(), null).detail, 'Idle');
   const stopped = runtimeState(status({ enabled: false }), null);
   assert.equal(stopped.state, 'stopped');
-  assert.match(stopped.detail, /forced off/);
+  assert.match(stopped.detail, /is off/, 'the server now reports forced-off explicitly, so flag-off is just "off"');
   assert.equal(runtimeState(null, null).label, 'Checking');
   assert.deepEqual([runtimeState(null, 'boom').state, runtimeState(null, 'boom').detail], ['unknown', 'boom']);
   // A stale status wins over a transient refresh error.
@@ -55,4 +55,13 @@ test('botsToSample caps the fan-out', () => {
   const many = Array.from({ length: STRIP_EPISODE_BOT_CAP + 10 }, (_, i) => ({ section_id: String(i) }));
   assert.equal(botsToSample(many).length, STRIP_EPISODE_BOT_CAP);
   assert.equal(botsToSample(many.slice(0, 3)).length, 3);
+});
+
+test('runtimeState reports forced-off and not-running instead of trusting the flag', () => {
+  assert.equal(runtimeState(status({ runtime_running: false, forced_off: true }), null).label, 'Forced off');
+  const stopped = runtimeState(status({ runtime_running: false }), null);
+  assert.equal(stopped.state, 'stopped');
+  assert.match(stopped.detail, /failed to start/);
+  assert.equal(runtimeState(status({ runtime_running: true }), null).state, 'running');
+  assert.equal(runtimeState(status(), null).state, 'running', 'older servers without runtime_running fall back to the flag');
 });
