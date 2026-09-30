@@ -174,7 +174,7 @@ function notifyPendingItems(section: McSection, count: number, itemIds: string[]
       title: `${section.title}: ${actionableCount} item${actionableCount === 1 ? '' : 's'} need review`,
       body: `Mission Control produced ${actionableCount} new draft${actionableCount === 1 ? '' : 's'}.`,
       source: 'mission-control',
-      href: null,
+      href: `/bots/b/${encodeURIComponent(section.section_id)}/overview`,
       meta: { sectionId: section.section_id },
       dedupeKey: `mc-section-${section.section_id}-pending`,
     });
@@ -191,7 +191,7 @@ function notifyPendingItems(section: McSection, count: number, itemIds: string[]
           severity: 'warning',
           title: `${section.title}: review needed`,
           body: 'A Mission Control draft is waiting for approval.',
-          href: '/mission-control',
+          href: `/bots/b/${encodeURIComponent(section.section_id)}/overview`,
           actions: [
             { id: 'approve_mc_item', label: 'Approve', style: 'primary' },
             { id: 'deny_mc_item', label: 'Deny', style: 'destructive' },
@@ -238,7 +238,11 @@ export type ProduceRunResult = {
   message: string;
 };
 
-export async function runSectionProduce(sectionId: string): Promise<ProduceRunResult> {
+export async function runSectionProduce(
+  sectionId: string,
+  opts: { trigger?: string } = {},
+): Promise<ProduceRunResult> {
+  const trigger = opts.trigger ?? 'manual';
   const section = missionControlDb.getSection(sectionId);
   if (!section) {
     throw new AppError('Section not found', {
@@ -268,7 +272,7 @@ export async function runSectionProduce(sectionId: string): Promise<ProduceRunRe
       prompt,
       tools: section.produce_tools,
       sourceRef: section.section_id,
-      trigger: 'manual',
+      trigger,
       phase: 'produce',
     });
 
@@ -417,7 +421,7 @@ export async function runSectionProduce(sectionId: string): Promise<ProduceRunRe
         // Only approve-kind actions ever run without a human.
         const approve = current.actions.find((a) => a.kind === 'approve' && a.terminal !== false);
         if (approve) {
-          const next = await applyItemAction(current.item_id, approve.id, undefined);
+          const next = await applyItemAction(current.item_id, approve.id, undefined, { trigger });
           // auto-approve should never hard-delete; if it did, skip the item
           if (!next) continue;
           current = next;
@@ -461,6 +465,7 @@ export async function applyItemAction(
   itemId: string,
   actionId: string,
   editedBody?: Record<string, unknown>,
+  opts: { trigger?: string } = {},
 ): Promise<McItem | null> {
   const item = missionControlDb.getItem(itemId);
   if (!item) {
@@ -564,7 +569,7 @@ export async function applyItemAction(
       prompt,
       tools: section.resolve_tools,
       sourceRef: itemId,
-      trigger: 'manual',
+      trigger: opts.trigger ?? 'manual',
       phase: 'resolve',
     });
 

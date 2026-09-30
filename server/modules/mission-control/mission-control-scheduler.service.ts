@@ -19,14 +19,15 @@ function clearJob(sectionId: string): void {
   }
 }
 
-async function tickSection(sectionId: string): Promise<void> {
+/** Runs one scheduled produce tick for a section (exported for tests). */
+export async function tickSection(sectionId: string): Promise<void> {
   if (running.has(sectionId)) {
     console.warn('[MissionControl] skip overlapping schedule tick', { sectionId });
     return;
   }
   running.add(sectionId);
   try {
-    await runSectionProduce(sectionId);
+    await runSectionProduce(sectionId, { trigger: 'schedule' });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error('[MissionControl] scheduled produce failed', { sectionId, error: message });

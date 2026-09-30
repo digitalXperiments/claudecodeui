@@ -16,7 +16,8 @@ export type RunEventSource =
   | 'ship'
   | 'automation'
   | 'swarm'
-  | 'agent_relay';
+  | 'agent_relay'
+  | 'bot';
 
 export type RunEventSeverity = 'debug' | 'info' | 'warn' | 'error';
 
@@ -172,4 +173,10 @@ export type SystemWsEvent =
   | { kind: 'agent_relay_updated'; job: unknown }
   | { kind: 'agent_relay_approval_updated'; approval: unknown }
   | { kind: 'continuity_updated'; sessionId: string; recovery: unknown }
-  | { kind: 'running_sessions_changed' };
+  | { kind: 'running_sessions_changed' }
+  | { kind: 'bot_event_received'; bot_id: string; event_id: string; event_kind: string }
+  | { kind: 'bot_episode_updated'; bot_id: string; episode_id: string; status: string }
+  | { kind: 'bot_gate_decision'; bot_id: string; decision_id: string; decision: string; tool: string }
+  | { kind: 'bot_thread_message'; bot_id: string; message: unknown }
+  | { kind: 'bot_proposal_updated'; bot_id: string; proposal_id: string; status: string }
+  | { kind: 'bot_goal_updated'; bot_id: string; goal_id: string };

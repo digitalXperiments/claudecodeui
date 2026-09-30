@@ -17,6 +17,7 @@ import { cn } from '../../../lib/utils';
 import type { BotRun } from '../api/botStudioApi';
 import type { Bot, BotHealth } from '../types';
 import { formatAge } from '../types';
+import { formatTrigger } from '../ui/runFormatting';
 import BotIcon from '../ui/BotIcon';
 import Skeleton from '../ui/Skeleton';
 import StatusPill from '../ui/StatusPill';
@@ -159,7 +160,7 @@ export default function CommandCenterView({
               <span className="min-w-0 flex-1">
                 <span className="block truncate text-xs font-medium">{bot.title}</span>
                 <span className="mt-1 flex min-w-0 items-center gap-2 text-[10px] text-muted-foreground">
-                  <span className="truncate">{run.trigger || 'manual'} tick</span><span>·</span><span className="shrink-0">{formatAge(run.started_at)}</span>
+                  <span className="truncate">{formatTrigger(run.trigger)} tick</span><span>·</span><span className="shrink-0">{formatAge(run.started_at)}</span>
                   {run.cost_usd != null ? <><span>·</span><span className="shrink-0">{'$'}{run.cost_usd.toFixed(2)}</span></> : null}
                 </span>
               </span>

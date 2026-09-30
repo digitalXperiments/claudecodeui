@@ -15,3 +15,19 @@ export function formatDuration(durationMs: number | null | undefined): string {
   const hours = Math.floor(minutes / 60);
   return `${hours}h ${String(minutes % 60).padStart(2, '0')}m`;
 }
+
+const TRIGGER_LABELS: Record<string, string> = {
+  schedule: 'Scheduled',
+  cron: 'Scheduled',
+  manual: 'Manual',
+  replay: 'Replay',
+  preview: 'Preview',
+  work: 'Work',
+};
+
+/** Human label for a run trigger; unknown values are title-cased, empty means manual. */
+export function formatTrigger(trigger: string | null | undefined): string {
+  const key = (trigger ?? '').trim().toLowerCase();
+  if (!key) return 'Manual';
+  return TRIGGER_LABELS[key] ?? key.replace(/[-_]+/g, ' ').replace(/^./, (c) => c.toUpperCase());
+}

@@ -2,6 +2,7 @@ import { authenticatedFetch } from '../../../utils/api';
 
 export type AppFeatures = {
   kanbanEnabled: boolean;
+  botsRuntimeV2: boolean;
   spendSoftCostUsd: number | null;
   spendHardCostUsd: number | null;
 };

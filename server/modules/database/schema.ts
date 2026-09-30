@@ -440,6 +440,96 @@ ${MC_SECTIONS_TABLE_SCHEMA_SQL}
 ${MC_ITEMS_TABLE_SCHEMA_SQL}
 `;
 
+/**
+ * Bot Runtime v2 tables (docs/prd/bot-runtime/IMPLEMENTATION.md). A bot is an
+ * mc_sections row; tables are keyed by bot_id -> mc_sections(section_id).
+ * Indexes live in the migration (ensureBotsRuntimeSchema), per the convention
+ * above. NOTE: bot_episodes_fts is a normal (content-storing) FTS5 table, not
+ * contentless: contentless tables return NULL for UNINDEXED columns and need
+ * the original values to delete rows.
+ */
+export const BOTS_RUNTIME_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS bot_triggers (
+  trigger_id TEXT PRIMARY KEY, bot_id TEXT NOT NULL, kind TEXT NOT NULL,       -- cron|interval|nl_schedule|webhook|kanban_event|run_completed|interrupt_created|watch|peer_message|ask_bot|commitment_due|operator_message|manual
+  config_json TEXT NOT NULL DEFAULT '{}', enabled INTEGER NOT NULL DEFAULT 1,
+  cursor_json TEXT NOT NULL DEFAULT '{}', last_fired_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+  FOREIGN KEY (bot_id) REFERENCES mc_sections(section_id) ON DELETE CASCADE);
+CREATE TABLE IF NOT EXISTS bot_events (
+  event_id TEXT PRIMARY KEY, bot_id TEXT NOT NULL, trigger_id TEXT, source TEXT NOT NULL, kind TEXT NOT NULL,
+  dedupe_key TEXT, trust TEXT NOT NULL DEFAULT 'external',                       -- operator|internal|external
+  payload_json TEXT NOT NULL DEFAULT '{}', status TEXT NOT NULL DEFAULT 'queued', -- queued|claimed|consumed|dropped
+  episode_id TEXT, received_at TEXT NOT NULL, claimed_at TEXT,
+  FOREIGN KEY (bot_id) REFERENCES mc_sections(section_id) ON DELETE CASCADE);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_bot_events_dedupe ON bot_events(bot_id, dedupe_key) WHERE dedupe_key IS NOT NULL;
+CREATE TABLE IF NOT EXISTS bot_leases (
+  bot_id TEXT PRIMARY KEY, holder TEXT NOT NULL, episode_id TEXT, acquired_at TEXT NOT NULL, expires_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS bot_goals (
+  goal_id TEXT PRIMARY KEY, bot_id TEXT NOT NULL, statement TEXT NOT NULL, success_criteria TEXT NOT NULL DEFAULT '',
+  horizon TEXT, status TEXT NOT NULL DEFAULT 'active',                            -- active|paused|achieved|abandoned
+  progress_json TEXT NOT NULL DEFAULT '{}', sort_order INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+  FOREIGN KEY (bot_id) REFERENCES mc_sections(section_id) ON DELETE CASCADE);
+CREATE TABLE IF NOT EXISTS bot_commitments (
+  commitment_id TEXT PRIMARY KEY, bot_id TEXT NOT NULL, item_id TEXT, goal_id TEXT, description TEXT NOT NULL,
+  waiting_on TEXT, due_at TEXT NOT NULL, nudge_policy_json TEXT NOT NULL DEFAULT '{}',
+  status TEXT NOT NULL DEFAULT 'open',                                            -- open|fired|done|cancelled
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+  FOREIGN KEY (bot_id) REFERENCES mc_sections(section_id) ON DELETE CASCADE);
+CREATE TABLE IF NOT EXISTS bot_episodes (
+  episode_id TEXT PRIMARY KEY, bot_id TEXT NOT NULL, status TEXT NOT NULL,        -- running|succeeded|failed|interrupted
+  trigger_kinds TEXT NOT NULL DEFAULT '', event_ids_json TEXT NOT NULL DEFAULT '[]', run_ids_json TEXT NOT NULL DEFAULT '[]',
+  plan_text TEXT NOT NULL DEFAULT '', summary TEXT NOT NULL DEFAULT '', outcome_json TEXT NOT NULL DEFAULT '{}',
+  feedback_json TEXT NOT NULL DEFAULT '[]', tainted INTEGER NOT NULL DEFAULT 0, cost_usd REAL NOT NULL DEFAULT 0,
+  bot_version INTEGER, started_at TEXT NOT NULL, finished_at TEXT,
+  FOREIGN KEY (bot_id) REFERENCES mc_sections(section_id) ON DELETE CASCADE);
+CREATE VIRTUAL TABLE IF NOT EXISTS bot_episodes_fts USING fts5(episode_id UNINDEXED, bot_id UNINDEXED, summary, plan_text);
+CREATE TABLE IF NOT EXISTS bot_rules (
+  rule_id TEXT PRIMARY KEY, scope TEXT NOT NULL, bot_id TEXT,                    -- scope: global|bot
+  match_json TEXT NOT NULL DEFAULT '{}',                                          -- {server?, tool?, risk?: Risk[], args?: {path, op: eq|contains|regex|in, value}[]}
+  decision TEXT NOT NULL, priority INTEGER NOT NULL DEFAULT 0,                    -- allow|ask|deny
+  created_from TEXT NOT NULL DEFAULT 'manual', note TEXT NOT NULL DEFAULT '', expires_at TEXT,
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS bot_gate_decisions (
+  decision_id TEXT PRIMARY KEY, bot_id TEXT NOT NULL, episode_id TEXT, run_id TEXT, server TEXT NOT NULL, tool TEXT NOT NULL,
+  risk TEXT NOT NULL, args_json TEXT NOT NULL DEFAULT '{}', decision TEXT NOT NULL,          -- allow|ask|deny
+  decided_by TEXT NOT NULL,                                                       -- rule:<id>|floor|taint|reviewer|budget|human|default
+  reason TEXT NOT NULL DEFAULT '', interrupt_id TEXT, outcome TEXT,               -- executed|denied|approved|rejected|expired|error
+  created_at TEXT NOT NULL, resolved_at TEXT);
+CREATE TABLE IF NOT EXISTS bot_budgets (
+  bot_id TEXT PRIMARY KEY, daily_usd REAL, monthly_usd REAL, daily_actions INTEGER, max_wakes_per_hour INTEGER,
+  soft_ratio REAL NOT NULL DEFAULT 0.8, updated_at TEXT NOT NULL,
+  FOREIGN KEY (bot_id) REFERENCES mc_sections(section_id) ON DELETE CASCADE);
+CREATE TABLE IF NOT EXISTS bot_learning_proposals (
+  proposal_id TEXT PRIMARY KEY, bot_id TEXT NOT NULL, kind TEXT NOT NULL,         -- memory|skill_patch|new_skill|rule|goal
+  title TEXT NOT NULL, body TEXT NOT NULL DEFAULT '', payload_json TEXT NOT NULL DEFAULT '{}',
+  evidence_json TEXT NOT NULL DEFAULT '[]', confidence REAL NOT NULL DEFAULT 0.5,
+  status TEXT NOT NULL DEFAULT 'proposed',                                        -- proposed|approved|rejected|applied|superseded
+  created_at TEXT NOT NULL, decided_at TEXT,
+  FOREIGN KEY (bot_id) REFERENCES mc_sections(section_id) ON DELETE CASCADE);
+CREATE TABLE IF NOT EXISTS bot_skills (
+  link_id TEXT PRIMARY KEY, bot_id TEXT NOT NULL, name TEXT NOT NULL, path TEXT NOT NULL, origin TEXT NOT NULL DEFAULT 'manual', -- manual|reflector|teach|catalog
+  version INTEGER NOT NULL DEFAULT 1, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+  UNIQUE(bot_id, name), FOREIGN KEY (bot_id) REFERENCES mc_sections(section_id) ON DELETE CASCADE);
+CREATE TABLE IF NOT EXISTS bot_channels (
+  channel_id TEXT PRIMARY KEY, bot_id TEXT, kind TEXT NOT NULL,                   -- inapp|webpush|slack|telegram|email ; bot_id NULL = global default
+  config_json TEXT NOT NULL DEFAULT '{}', policy_json TEXT NOT NULL DEFAULT '{}', -- policy: {quiet_hours:{start,end,tz}, max_pings_per_day, min_urgency, digest: bool}
+  enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS bot_thread_messages (
+  message_id TEXT PRIMARY KEY, bot_id TEXT NOT NULL, role TEXT NOT NULL,          -- operator|bot|system
+  body TEXT NOT NULL, channel TEXT NOT NULL DEFAULT 'inapp', meta_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL,
+  FOREIGN KEY (bot_id) REFERENCES mc_sections(section_id) ON DELETE CASCADE);
+CREATE TABLE IF NOT EXISTS bot_outbound_log (
+  bot_id TEXT, channel_kind TEXT NOT NULL, urgency REAL NOT NULL, delivered INTEGER NOT NULL, reason TEXT, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS bot_teams (
+  team_id TEXT PRIMARY KEY, name TEXT NOT NULL, goal TEXT NOT NULL DEFAULT '', coordinator_bot_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS bot_team_members (
+  team_id TEXT NOT NULL, bot_id TEXT NOT NULL, role TEXT NOT NULL DEFAULT '', PRIMARY KEY (team_id, bot_id));
+CREATE TABLE IF NOT EXISTS bot_spaces (
+  space_id TEXT PRIMARY KEY, bot_id TEXT NOT NULL, title TEXT NOT NULL, path TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'markdown',
+  updated_at TEXT NOT NULL, created_at TEXT NOT NULL, FOREIGN KEY (bot_id) REFERENCES mc_sections(section_id) ON DELETE CASCADE);
+CREATE TABLE IF NOT EXISTS bot_operator_profile (
+  key TEXT PRIMARY KEY, value TEXT NOT NULL, source TEXT NOT NULL DEFAULT 'manual', updated_at TEXT NOT NULL);
+`;
+
 /** Inbound webhooks — source-routed headless agent runs. */
 export const WEBHOOK_SOURCES_TABLE_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS webhook_sources (

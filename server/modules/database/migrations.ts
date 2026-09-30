@@ -11,6 +11,7 @@ import {
   CONTINUITY_SCHEMA_SQL,
   KANBAN_SCHEMA_SQL,
   LAST_SCANNED_AT_SQL,
+  BOTS_RUNTIME_SCHEMA_SQL,
   MISSION_CONTROL_SCHEMA_SQL,
   RUN_SPINE_SCHEMA_SQL,
   WEBHOOKS_SCHEMA_SQL,
@@ -713,6 +714,35 @@ const ensureMissionControlKanbanBridgeSchema = (db: Database): void => {
   addColumnToTableIfNotExists(db, 'mc_sections', columns, 'tool_policy_json', "TEXT NOT NULL DEFAULT '{}'");
 };
 
+/** Bot Runtime v2: runtime_json on mc_sections + indexes over the bots_* tables. Idempotent. */
+const ensureBotsRuntimeSchema = (db: Database): void => {
+  if (tableExists(db, 'mc_sections')) {
+    const columns = getTableInfo(db, 'mc_sections').map((column) => column.name);
+    addColumnToTableIfNotExists(db, 'mc_sections', columns, 'runtime_json', "TEXT NOT NULL DEFAULT '{}'");
+  }
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_bot_triggers_bot ON bot_triggers(bot_id, enabled);
+    CREATE INDEX IF NOT EXISTS idx_bot_events_queue ON bot_events(bot_id, status, received_at);
+    CREATE INDEX IF NOT EXISTS idx_bot_events_episode ON bot_events(episode_id);
+    CREATE INDEX IF NOT EXISTS idx_bot_leases_expires ON bot_leases(expires_at);
+    CREATE INDEX IF NOT EXISTS idx_bot_goals_bot ON bot_goals(bot_id, status, sort_order);
+    CREATE INDEX IF NOT EXISTS idx_bot_commitments_due ON bot_commitments(status, due_at);
+    CREATE INDEX IF NOT EXISTS idx_bot_commitments_bot ON bot_commitments(bot_id, status);
+    CREATE INDEX IF NOT EXISTS idx_bot_episodes_bot ON bot_episodes(bot_id, started_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_bot_episodes_status ON bot_episodes(status);
+    CREATE INDEX IF NOT EXISTS idx_bot_rules_scope ON bot_rules(scope, bot_id, priority DESC);
+    CREATE INDEX IF NOT EXISTS idx_bot_gate_decisions_bot ON bot_gate_decisions(bot_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_bot_gate_decisions_interrupt ON bot_gate_decisions(interrupt_id);
+    CREATE INDEX IF NOT EXISTS idx_bot_proposals_bot ON bot_learning_proposals(bot_id, status, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_bot_skills_bot ON bot_skills(bot_id);
+    CREATE INDEX IF NOT EXISTS idx_bot_channels_bot ON bot_channels(bot_id);
+    CREATE INDEX IF NOT EXISTS idx_bot_thread_bot ON bot_thread_messages(bot_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_bot_outbound_bot ON bot_outbound_log(bot_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_bot_team_members_bot ON bot_team_members(bot_id);
+    CREATE INDEX IF NOT EXISTS idx_bot_spaces_bot ON bot_spaces(bot_id);
+  `);
+};
+
 /** Separate the bot's execution project from its Work this destination. */
 const ensureMissionControlWorkProjectSchema = (db: Database): void => {
   if (!tableExists(db, 'mc_sections')) return;
@@ -1163,6 +1193,10 @@ export const runMigrations = (db: Database) => {
     ensureMissionControlKanbanBridgeSchema(db);
     ensureMissionControlWorkProjectSchema(db);
     dropAbandonedBotStudioPrototypeTables(db);
+
+    // Bot Runtime v2 (signals, kernel, gate, learning, channels, collab).
+    db.exec(BOTS_RUNTIME_SCHEMA_SQL);
+    ensureBotsRuntimeSchema(db);
 
     // Inbound webhooks (source-routed headless agent runs).
     db.exec(WEBHOOKS_SCHEMA_SQL);

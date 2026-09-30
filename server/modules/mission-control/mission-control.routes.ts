@@ -40,6 +40,7 @@ import {
   type SectionWorkshopMessage,
   type SectionWorkshopDraft,
 } from '@/modules/mission-control/mission-control-section-workshop.service.js';
+import { deleteBotRuntimeData } from '@/modules/bots/index.js';
 
 import { acceptWorkItem, dispatchWorkItem, followUpWorkItem } from './mission-control-dispatch.service.js';
 import { parseWorkProfile } from './mission-control-work-profile.js';
@@ -466,6 +467,7 @@ router.delete(
     // next ensure*() does not resurrect the row we are about to delete.
     suppressSeedByTitle(existing.title);
     const ok = missionControlDb.deleteSection(sectionId);
+    if (ok) deleteBotRuntimeData(sectionId);
     if (!ok) {
       throw new AppError('Section not found', {
         code: 'MC_SECTION_NOT_FOUND',
