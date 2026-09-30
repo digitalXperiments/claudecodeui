@@ -8,6 +8,7 @@
  * same session.
  */
 
+import { buildGatewayRunGuards } from '@/modules/bots/index.js';
 import { gatewaySessions } from '@/shared/bot-gateway-sessions.js';
 import { recordNormalizedRunEvent, runService } from '@/modules/runs/index.js';
 import { getConnection, projectsDb, sessionsDb } from '@/modules/database/index.js';
@@ -114,14 +115,20 @@ async function runWorkTurn(params: {
     let failure: string | null = null;
     // With the tool gateway on, the work session reaches its MCP servers only through the
     // gateway, so it must be bound to this bot for the turn (unbound when the turn settles).
-    if (shouldUseToolGateway(section)) {
+    const gatewayBound = shouldUseToolGateway(section);
+    if (gatewayBound) {
       gatewaySessions.bind(work.sessionId, {
         botId: section.section_id,
         runId: runId ?? undefined,
         servers: sameAgent ? profile.mcp_servers : [],
         provider: work.provider,
+        // Work acts on items derived from possibly-untrusted inputs: consequential calls need a human.
+        tainted: true,
       });
     }
+    const guards = gatewayBound
+      ? buildGatewayRunGuards(section, { appSessionId: work.sessionId, runId: runId ?? undefined, projectPath: params.projectPath })
+      : null;
     const started = await startProviderRun({
       appSessionId: work.sessionId, provider: work.provider, providerSessionId: params.providerSessionId,
       projectPath: params.projectPath, spawnFn: getMissionControlRuntime(work.provider), content: params.content,
@@ -129,6 +136,7 @@ async function runWorkTurn(params: {
         ...buildRuntimeOptions({ ...section, provider: work.provider, model: work.model, effort: null }, sameAgent ? profile.mcp_servers : []),
         ...(sameAgent && profile.effort ? { effort: profile.effort } : {}),
         strictMcpSelection: true,
+        ...(guards ? { builtinToolGate: guards.builtinToolGate, botGatewaySecret: guards.bindingSecret } : {}),
       },
       connection: DETACHED_CONNECTION, userId: null,
       onEvent: (event) => {

@@ -127,22 +127,36 @@ export function cronSummary(cron: string | null | undefined): string {
 
 export const READ_ONLY_WRITE_PATTERN = /create|send|update|delete|put|post|transition|merge|trash|click|fill/i;
 
+/**
+ * Holds write-like tools for approval. Only explicit operator choices are persisted: write-like names
+ * become 'ask' (an existing 'deny' stays 'deny'); every other tool is left exactly as saved, and tools
+ * with no saved decision stay unset rather than being written as 'allow'.
+ */
 export function applyReadOnlyPreset(policy: ToolPolicy, toolsByServer: Record<string, string[]> = {}): ToolPolicy {
   const servers = new Set([...Object.keys(policy), ...Object.keys(toolsByServer)]);
-  return Object.fromEntries(
-    Array.from(servers).map((server) => [
-      server,
-      Object.fromEntries(Array.from(new Set([
-        ...Object.keys(policy[server] ?? {}),
-        ...(toolsByServer[server] ?? []),
-      ])).map((tool) => [
-        tool,
-        READ_ONLY_WRITE_PATTERN.test(tool) ? 'ask' : policy[server]?.[tool] ?? 'allow',
-      ])),
-    ]),
-  );
+  const next: ToolPolicy = {};
+  for (const server of servers) {
+    const tools = new Set([...Object.keys(policy[server] ?? {}), ...(toolsByServer[server] ?? [])]);
+    const decisions: Record<string, ToolPolicyDecision> = {};
+    for (const tool of tools) {
+      const saved = policy[server]?.[tool];
+      if (READ_ONLY_WRITE_PATTERN.test(tool)) decisions[tool] = saved === 'deny' ? 'deny' : 'ask';
+      else if (saved) decisions[tool] = saved;
+    }
+    if (Object.keys(decisions).length > 0) next[server] = decisions;
+  }
+  return next;
 }
 
-export function defaultToolDecision(toolName: string, readOnlyPreset = false): ToolPolicyDecision {
-  return readOnlyPreset && READ_ONLY_WRITE_PATTERN.test(toolName) ? 'ask' : 'allow';
+/** What an unset tool is treated as: the gate decides ('default'); the preset only flags write-like names. */
+export function defaultToolDecision(toolName: string, readOnlyPreset = false): ToolPolicyDecision | 'default' {
+  return readOnlyPreset && READ_ONLY_WRITE_PATTERN.test(toolName) ? 'ask' : 'default';
+}
+
+/** Set one explicit decision, or clear it with 'default' (an untouched tool must never be persisted as 'allow'). */
+export function setToolDecision(policy: ToolPolicy, server: string, tool: string, decision: ToolPolicyDecision | 'default'): ToolPolicy {
+  const { [tool]: _removed, ...rest } = policy[server] ?? {};
+  const tools = decision === 'default' ? rest : { ...rest, [tool]: decision };
+  const { [server]: _server, ...others } = policy;
+  return Object.keys(tools).length > 0 ? { ...others, [server]: tools } : others;
 }

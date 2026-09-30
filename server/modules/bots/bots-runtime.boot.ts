@@ -6,7 +6,8 @@
 import { isBotsRuntimeV2Enabled, onAppFeaturesChanged } from '@/modules/app-features/index.js';
 
 import { actionGate, initBotGate } from './gate/index.js';
-import { registerBotGatewayMcp, setGatewayGate } from './gateway/index.js';
+import { registerBotGatewayMcp, setGatewayGate, unregisterBotGatewayMcp } from './gateway/index.js';
+import { installKernel } from './kernel/install.js';
 import { botSignals, startSignals, stopSignals } from './signals/index.js';
 
 type WakeHandler = (botId: string) => void;
@@ -59,7 +60,7 @@ export async function startBotsRuntime(): Promise<void> {
   console.log('[bots] runtime v2 started');
 }
 
-export async function stopBotsRuntime(): Promise<void> {
+export async function stopBotsRuntime(options: { unregisterGateway?: boolean } = {}): Promise<void> {
   if (!running) return;
   running = false;
   for (const hook of [...hooks].reverse()) {
@@ -67,6 +68,13 @@ export async function stopBotsRuntime(): Promise<void> {
   }
   stopSignals();
   botSignals.setWakeHandler(null);
+  // Turning the flag off leaves no stale gateway entry in provider configs. A plain server
+  // shutdown keeps it, so restarts don't rewrite ~/.claude.json and friends each time.
+  if (options.unregisterGateway) {
+    await Promise.resolve(unregisterBotGatewayMcp()).catch((error: unknown) => {
+      console.error('[bots] failed to unregister cloudcli-tool-gateway MCP:', error);
+    });
+  }
   console.log('[bots] runtime v2 stopped');
 }
 
@@ -79,11 +87,12 @@ let flagListenerInstalled = false;
 /** Boot entry: start if the flag is on and follow later flag flips. */
 export async function bootBotsRuntime(): Promise<void> {
   initCore();
+  installKernel();
   if (!flagListenerInstalled) {
     flagListenerInstalled = true;
     onAppFeaturesChanged((next, previous) => {
       if (next.botsRuntimeV2 === previous.botsRuntimeV2) return;
-      void (next.botsRuntimeV2 ? startBotsRuntime() : stopBotsRuntime());
+      void (next.botsRuntimeV2 ? startBotsRuntime() : stopBotsRuntime({ unregisterGateway: true }));
     });
   }
   await startBotsRuntime();

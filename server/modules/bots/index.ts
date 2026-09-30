@@ -29,6 +29,7 @@ export { botSpacesDb } from '@/modules/bots/collab/bot-spaces.repository.js';
 export * from '@/modules/bots/gate/index.js';
 export * from '@/modules/bots/gateway/index.js';
 export * from '@/modules/bots/signals/index.js';
+export * from '@/modules/bots/kernel/index.js';
 export {
   bootBotsRuntime,
   isBotsRuntimeRunning,

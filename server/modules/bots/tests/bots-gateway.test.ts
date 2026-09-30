@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import type { AddressInfo } from 'node:net';
 import { rm } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
@@ -14,12 +15,17 @@ import { isBotsRuntimeV2Enabled, updateAppFeatures } from '@/modules/app-feature
 import { botEpisodesDb, patchBotRuntimeConfig } from '@/modules/bots/index.js';
 import {
   botGatewayMcpRoutes,
+  buildGatewayRunGuards,
   buildToolNameMap,
   callGatewayTool,
   createUpstreamPool,
   getBotGatewayMcpToken,
   getGatewayEnforcement,
   gatewaySessions,
+  isIsolatedServer,
+  isSessionTainted,
+  registerBotGatewayMcp,
+  unregisterBotGatewayMcp,
   listGatewayToolsForSession,
   setGatewayGate,
   setGatewayUpstreamPool,
@@ -111,6 +117,8 @@ interface FakeGate extends GatewayGate {
   outcomes: Array<{ decisionId: string; outcome: GatewayCallOutcome }>;
   humanAnswer: 'approved' | 'rejected' | 'expired';
   humanAsked: string[];
+  /** Runs while the operator 'deliberates' (tests end the run here). */
+  duringHuman?: () => void;
   verdicts: Record<string, Partial<GatewayGateVerdict>>;
 }
 
@@ -135,6 +143,7 @@ function createFakeGate(): FakeGate {
     },
     async awaitHuman(decisionId) {
       gate.humanAsked.push(decisionId);
+      gate.duringHuman?.();
       return gate.humanAnswer;
     },
     recordOutcome(decisionId, outcome) {
@@ -238,7 +247,7 @@ test('ask -> approve calls upstream and records the outcome; reject and expiry d
     assert.deepEqual(upstream.calls, [{ server: 'mail', tool: 'send_email', args: { to: 'a@b.c' } }]);
     assert.equal(gate.humanAsked.length, 1);
     assert.equal(gate.outcomes[0]?.outcome.ok, true);
-    assert.equal(gatewaySessions.get(SESSION)?.tainted, false, 'a send is not an external read');
+    assert.equal(gatewaySessions.get(SESSION)?.tainted, true, 'any external result that carries content taints the run, not only reads');
 
     gate.humanAnswer = 'rejected';
     assert.equal((await callGatewayTool(SESSION, 'mail__send_email', {})).isError, true);
@@ -326,11 +335,13 @@ test('route rejects bad tokens with 401 and serves list/call with the right one'
     const server = app.listen(0, '127.0.0.1');
     await new Promise((resolve) => server.once('listening', resolve));
     const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api/bot-gateway-mcp`;
-    const post = (route: string, token: string | null, body: unknown) => fetch(`${base}${route}`, {
+    const secret = gatewaySessions.get(SESSION)!.secret;
+    const post = (route: string, token: string | null, body: unknown, bindingSecret: string | null = secret) => fetch(`${base}${route}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'x-bot-gateway-session-id': SESSION,
+        ...(bindingSecret ? { 'x-bot-gateway-binding-secret': bindingSecret } : {}),
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
       body: JSON.stringify(body),
@@ -341,6 +352,10 @@ test('route rejects bad tokens with 401 and serves list/call with the right one'
       assert.equal((await post('/tools/call', 'x'.repeat(200), { name: 'mail__search_inbox' })).status, 401);
 
       const token = getBotGatewayMcpToken();
+      // M5: the per-binding secret is required on top of the shared token.
+      assert.equal((await post('/tools/list', token, {}, null)).status, 401, 'missing binding secret');
+      assert.equal((await post('/tools/call', token, { name: 'mail__search_inbox' }, 'not-the-secret')).status, 401, 'wrong binding secret');
+      assert.equal(upstream.calls.length, 0, 'a wrong secret never reaches the upstream');
       const list = await (await post('/tools/list', token, {})).json() as { data: { tools: Array<{ name: string }> } };
       assert.ok(list.data.tools.some((tool) => tool.name === 'mail__search_inbox'));
       const call = await (await post('/tools/call', token, { name: 'mail__search_inbox', arguments: { q: 1 } })).json() as {
@@ -424,8 +439,144 @@ test('every Mission Control provider has an enforcement level', () => {
   for (const provider of MC_PROVIDERS) {
     assert.ok(['enforced', 'advisory'].includes(getGatewayEnforcement(provider)), provider);
   }
-  assert.equal(getGatewayEnforcement('claude'), 'enforced');
-  assert.equal(getGatewayEnforcement('opencode'), 'enforced');
+  // Claude is enforced only with the built-in tool gate; everything else is advisory.
+  assert.equal(getGatewayEnforcement('claude'), 'advisory');
+  assert.equal(getGatewayEnforcement('claude', { builtinToolGate: false }), 'advisory');
+  assert.equal(getGatewayEnforcement('claude', { builtinToolGate: true }), 'enforced');
+  assert.equal(getGatewayEnforcement('opencode'), 'advisory');
+  assert.equal(getGatewayEnforcement('opencode', { builtinToolGate: true }), 'advisory');
   assert.equal(getGatewayEnforcement('codex'), 'advisory');
   assert.equal(getGatewayEnforcement('not-a-provider'), 'advisory');
+});
+
+// ---------------------------------------------------------------------------
+// Security review regressions (M3, M5, M6 and the low items)
+
+test('M3(a): calls of every risk whose result carries content taint the session; empty results do not', async () => {
+  await withDatabase(async (botId) => {
+    const upstream = createFakeUpstream();
+    const gate = createFakeGate();
+    gate.verdicts.send_email = { risk: 'draft' };
+    setGatewayUpstreamPool(upstream.pool);
+    setGatewayGate(gate);
+    gatewaySessions.bind(SESSION, { botId, servers: ['mail'], provider: 'claude' });
+    assert.equal(gatewaySessions.get(SESSION)?.tainted, false);
+    await callGatewayTool(SESSION, 'mail__send_email', {});
+    assert.equal(gatewaySessions.get(SESSION)?.tainted, true, 'a draft-risk call with content taints');
+    await upstream.pool.closeAll();
+  });
+});
+
+test('M3(b): a session whose episode row is tainted is tainted at the first call and on every later call', async () => {
+  await withDatabase(async (botId) => {
+    const upstream = createFakeUpstream();
+    const gate = createFakeGate();
+    setGatewayUpstreamPool(upstream.pool);
+    setGatewayGate(gate);
+    const episode = botEpisodesDb.create({ botId });
+    gatewaySessions.bind(SESSION, { botId, episodeId: episode.episode_id, servers: ['mail'], provider: 'claude' });
+    botEpisodesDb.update(episode.episode_id, { tainted: true }); // the kernel marks a batch with external events
+    assert.equal(gatewaySessions.get(SESSION)?.tainted, false, 'binding flag not yet refreshed');
+    await callGatewayTool(SESSION, 'mail__send_email', {});
+    assert.equal(gate.evaluated[0]?.ctx.tainted, true, 'first call already sees the episode taint');
+    assert.equal(gatewaySessions.get(SESSION)?.tainted, true, 'and it sticks on the binding');
+    assert.equal(isSessionTainted(SESSION), true);
+    await upstream.pool.closeAll();
+  });
+});
+
+test('M5: each binding has its own random secret, required only for providers that stamp it', async () => {
+  await withDatabase(async (botId) => {
+    const a = gatewaySessions.bind('s-a', { botId, servers: [], provider: 'claude' });
+    const b = gatewaySessions.bind('s-b', { botId, servers: [], provider: 'claude' });
+    const other = gatewaySessions.bind('s-c', { botId, servers: [], provider: 'codex' });
+    assert.match(a.secret, /^[0-9a-f]{48}$/);
+    assert.notEqual(a.secret, b.secret);
+    assert.equal(gatewaySessions.get('s-a')?.secret, a.secret);
+    assert.equal(a.secretRequired, true);
+    assert.equal(other.secretRequired, false, 'providers that cannot stamp it stay advisory');
+  });
+});
+
+test('M5: the gateway stdio child forwards the secret header', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const source = await readFile(new URL('../../../bot-tool-gateway-mcp.ts', import.meta.url), 'utf8');
+  assert.match(source, /CLOUDCLI_BOT_GATEWAY_BINDING_SECRET/);
+  assert.match(source, /'x-bot-gateway-binding-secret'/);
+});
+
+test('low: an approval that lands after the run ended is denied and never executes', async () => {
+  await withDatabase(async (botId) => {
+    const upstream = createFakeUpstream();
+    const gate = createFakeGate();
+    gate.verdicts.send_email = { decision: 'ask', reason: 'needs approval', risk: 'send' };
+    gate.duringHuman = () => {
+      gatewaySessions.unbind(SESSION);
+    };
+    setGatewayUpstreamPool(upstream.pool);
+    setGatewayGate(gate);
+    gatewaySessions.bind(SESSION, { botId, servers: ['mail'], provider: 'claude' });
+    const result = await callGatewayTool(SESSION, 'mail__send_email', { to: 'a@b.c' });
+    assert.equal(result.isError, true);
+    assert.match(resultText(result), /run ended/i);
+    assert.equal(upstream.calls.length, 0);
+    await upstream.pool.closeAll();
+  });
+});
+
+test('low: the upstream pool is keyed by bot as well as provider and server', async () => {
+  const upstream = createFakeUpstream();
+  await upstream.pool.listTools('claude', 'mail', 'bot-1');
+  await upstream.pool.listTools('claude', 'mail', 'bot-1');
+  await upstream.pool.listTools('claude', 'mail', 'bot-2');
+  assert.deepEqual(upstream.connects, ['mail', 'mail']);
+  assert.equal(upstream.pool.size(), 2);
+  await upstream.pool.closeAll();
+});
+
+test('M6: gateway registration is skipped for isolated servers and when CLOUDCLI_BOT_GATEWAY_REGISTER=0', async () => {
+  await withDatabase(async () => {
+    // withDatabase points DATABASE_PATH at a scratch dir under tmp/.
+    assert.equal(isIsolatedServer(), true);
+    const registered = await registerBotGatewayMcp();
+    assert.match(registered.skipped ?? '', /isolated/);
+    const removed = await unregisterBotGatewayMcp();
+    assert.equal(removed.removed, false);
+    assert.match(removed.skipped ?? '', /isolated/);
+
+    const saved = process.env.CLOUDCLI_BOT_GATEWAY_REGISTER;
+    process.env.CLOUDCLI_BOT_GATEWAY_REGISTER = '0';
+    try {
+      assert.match((await registerBotGatewayMcp()).skipped ?? '', /REGISTER=0/);
+    } finally {
+      if (saved === undefined) delete process.env.CLOUDCLI_BOT_GATEWAY_REGISTER;
+      else process.env.CLOUDCLI_BOT_GATEWAY_REGISTER = saved;
+    }
+
+    const savedDb = process.env.DATABASE_PATH;
+    try {
+      delete process.env.DATABASE_PATH;
+      assert.equal(isIsolatedServer(), false, 'no DATABASE_PATH is the default install');
+      process.env.DATABASE_PATH = path.join(os.homedir(), '.cloudcli', 'auth.db');
+      assert.equal(isIsolatedServer(), false, 'the default path is not isolated');
+    } finally {
+      process.env.DATABASE_PATH = savedDb;
+    }
+  });
+});
+
+test('buildGatewayRunGuards hands back the bound secret and a live, per-call gate', async () => {
+  await withDatabase(async (botId) => {
+    const episode = botEpisodesDb.create({ botId });
+    const binding = gatewaySessions.bind(SESSION, { botId, episodeId: episode.episode_id, servers: [], provider: 'claude' });
+    const guards = buildGatewayRunGuards({ section_id: botId }, {
+      appSessionId: SESSION, episodeId: episode.episode_id, projectPath: '/tmp/not-a-real-project',
+    });
+    assert.equal(guards.bindingSecret, binding.secret);
+    assert.equal(typeof guards.builtinToolGate, 'function');
+    assert.equal((await guards.builtinToolGate('mcp__cloudcli-tool-gateway__x', {})).behavior, 'allow');
+    assert.equal((await guards.builtinToolGate('Read', { file_path: path.join(os.homedir(), '.claude.json') })).behavior, 'deny');
+    gatewaySessions.unbind(SESSION);
+    assert.equal(buildGatewayRunGuards({ section_id: botId }, { appSessionId: 'nope', projectPath: '/tmp/x' }).bindingSecret, undefined);
+  });
 });

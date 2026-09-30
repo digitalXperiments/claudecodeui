@@ -238,6 +238,8 @@ export async function updateClaudePermissionMode(sessionId, mode, appSessionId) 
   const instance = entry?.instance || live?.queryInstance;
   const sdkOptions = entry?.sdkOptions || live?.sdkOptions;
   if (!instance?.setPermissionMode || !sdkOptions) return false;
+  // A run under the bot built-in tool gate must keep consulting canUseTool.
+  if (builtinToolGates.has(sdkOptions) && mode !== 'default') return false;
   await instance.setPermissionMode(mode);
   sdkOptions.permissionMode = mode;
   if (mode === 'bypassPermissions') {
@@ -758,16 +760,43 @@ function countPendingApprovalsForSession(sessionId) {
  * config object, so the value has to travel on the server entry rather than on
  * the (process-wide, run-shared) `process.env`.
  */
-function stampLeadSessionOnMcpServers(mcpServers, appSessionId) {
+const BOT_GATEWAY_SERVER_NAME = 'cloudcli-tool-gateway';
+const BOT_GATEWAY_TOOL_PATTERN = 'mcp__cloudcli-tool-gateway__*';
+
+function stampLeadSessionOnMcpServers(mcpServers, appSessionId, bindingSecret) {
   if (!appSessionId) return mcpServers;
   const stamped = {};
   for (const [name, entry] of Object.entries(mcpServers)) {
     // Only stdio children inherit an env; remote transports have no process.
-    stamped[name] = entry && typeof entry === 'object' && entry.command
-      ? { ...entry, env: { ...(entry.env || {}), CLOUDCLI_LEAD_SESSION_ID: appSessionId } }
-      : entry;
+    if (!(entry && typeof entry === 'object' && entry.command)) {
+      stamped[name] = entry;
+      continue;
+    }
+    const env = { ...(entry.env || {}), CLOUDCLI_LEAD_SESSION_ID: appSessionId };
+    // The per-binding secret goes ONLY to the gateway child, never to third-party servers.
+    if (bindingSecret && name === BOT_GATEWAY_SERVER_NAME) {
+      env.CLOUDCLI_BOT_GATEWAY_BINDING_SECRET = bindingSecret;
+    }
+    stamped[name] = { ...entry, env };
   }
   return stamped;
+}
+
+// sdkOptions -> built-in tool gate. Kept out of the options object so the SDK never sees it.
+const builtinToolGates = new WeakMap();
+
+/**
+ * Gateway-bound runs: every built-in tool (Bash/Read/Write/...) must be decided by the bot's
+ * built-in tool gate, so nothing may be pre-approved (allowedTools, bypass mode, user/project
+ * settings allow rules) - canUseTool has to be consulted.
+ */
+function installBuiltinToolGate(sdkOptions, gate) {
+  builtinToolGates.set(sdkOptions, gate);
+  sdkOptions.permissionMode = 'default';
+  delete sdkOptions.allowDangerouslySkipPermissions;
+  sdkOptions.allowedTools = (sdkOptions.allowedTools || []).filter((entry) => entry === BOT_GATEWAY_TOOL_PATTERN);
+  // Settings files can carry allow rules and hooks that would pre-approve a call.
+  sdkOptions.settingSources = [];
 }
 
 // Parsed-JSON cache keyed by path and invalidated by mtime+size. loadMcpConfig
@@ -1788,8 +1817,11 @@ async function prepareClaudeSdkOptions(options = {}) {
     // user/project MCP config or account connectors on top of the filtered set.
     sdkOptions.extraArgs = { ...(sdkOptions.extraArgs || {}), 'strict-mcp-config': null };
   }
+  if (options.botGatewayStrict && typeof options.builtinToolGate === 'function') {
+    installBuiltinToolGate(sdkOptions, options.builtinToolGate);
+  }
   if (mcpServers) {
-    sdkOptions.mcpServers = stampLeadSessionOnMcpServers(mcpServers, options.appSessionId);
+    sdkOptions.mcpServers = stampLeadSessionOnMcpServers(mcpServers, options.appSessionId, options.botGatewaySecret);
   }
   // Token-level streaming for interactive chat (only the inject/live path
   // handles `stream_event` frames; it is enabled exactly when appSessionId
@@ -2262,6 +2294,20 @@ async function handleCanUseTool(toolName, input, context, ctx) {
     return { behavior: 'deny', message: 'Tool disallowed by settings' };
   }
 
+  // Bot gateway runs: the bot's built-in tool gate decides everything except the interactive
+  // tools, which keep the normal path below (they are disallowed for unattended bot runs).
+  const builtinToolGate = builtinToolGates.get(sdkOptions);
+  if (builtinToolGate && !requiresInteraction) {
+    try {
+      const verdict = await builtinToolGate(toolName, input);
+      return verdict.behavior === 'allow'
+        ? { behavior: 'allow', updatedInput: input }
+        : { behavior: 'deny', message: verdict.message || 'Blocked by the bot tool gate' };
+    } catch (error) {
+      return { behavior: 'deny', message: `Bot tool gate failed, call refused: ${error?.message || error}` };
+    }
+  }
+
   if (!requiresInteraction) {
     if (sdkOptions.permissionMode === 'bypassPermissions') {
       return { behavior: 'allow', updatedInput: input };
@@ -2542,6 +2588,10 @@ export {
   extractTokenBudget,
   createRequestId,
   mapCliOptionsToSDK,
+  prepareClaudeSdkOptions,
+  handleCanUseTool,
+  installBuiltinToolGate,
+  stampLeadSessionOnMcpServers,
   applyPlanModeAllowedTools,
   trackBackgroundTask,
   isTurnActivityMessage,

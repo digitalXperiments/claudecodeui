@@ -68,23 +68,44 @@ arguments (untrusted data): ${args}
 Respond with JSON only.`;
 }
 
+const BUILTIN_TOOLS = [
+  'Bash', 'BashOutput', 'KillShell', 'Read', 'Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'Glob', 'Grep',
+  'WebFetch', 'WebSearch', 'Task', 'TodoWrite', 'ExitPlanMode', 'AskUserQuestion', 'SlashCommand', 'Skill',
+];
+
+/**
+ * SDK options for the reviewer. It must be unable to act: no tools, no MCP (including claude.ai
+ * connectors, which a non-interactive run would otherwise load), no bypass mode, one turn, and a
+ * permission callback that refuses everything.
+ */
+export function buildReviewerSdkOptions(
+  abortController: AbortController,
+  baseEnv: NodeJS.ProcessEnv = process.env,
+): Record<string, unknown> {
+  return {
+    abortController,
+    env: { ...baseEnv, ENABLE_CLAUDEAI_MCP_SERVERS: 'false' } as NodeJS.ProcessEnv,
+    pathToClaudeCodeExecutable: resolveClaudeCodeExecutablePath(baseEnv.CLAUDE_CLI_PATH),
+    model: REVIEW_MODEL,
+    tools: [] as string[],
+    allowedTools: [] as string[],
+    disallowedTools: ['mcp__*', ...BUILTIN_TOOLS],
+    mcpServers: {},
+    extraArgs: { 'strict-mcp-config': null },
+    permissionMode: 'default' as const,
+    canUseTool: async () => ({ behavior: 'deny' as const, message: 'The reviewer may not use tools.' }),
+    maxTurns: 1,
+    settingSources: [] as [],
+    systemPrompt: 'You are a precise action reviewer. Output only valid JSON as instructed.',
+  };
+}
+
 /** Tool-free, single-turn Haiku-class query on the user's existing Claude auth. */
 export const defaultAutoReviewer: AutoReviewer = async (ctx, req, risk) => {
   const abortController = new AbortController();
   const timeout = setTimeout(() => abortController.abort(), DEFAULT_REVIEW_TIMEOUT_MS);
   try {
-    const sdkOptions = {
-      abortController,
-      env: { ...process.env } as NodeJS.ProcessEnv,
-      pathToClaudeCodeExecutable: resolveClaudeCodeExecutablePath(process.env.CLAUDE_CLI_PATH),
-      model: REVIEW_MODEL,
-      tools: [] as string[],
-      allowedTools: [] as string[],
-      permissionMode: 'bypassPermissions' as const,
-      maxTurns: 1,
-      settingSources: [] as [],
-      systemPrompt: 'You are a precise action reviewer. Output only valid JSON as instructed.',
-    };
+    const sdkOptions = buildReviewerSdkOptions(abortController);
     await applyClaudeSpawnAuthEnv(sdkOptions);
     let lastText = '';
     for await (const message of query({ prompt: buildPrompt(ctx, req, risk), options: sdkOptions })) {

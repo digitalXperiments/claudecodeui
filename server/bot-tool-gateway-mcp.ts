@@ -13,7 +13,8 @@ const apiToken = process.env.CLOUDCLI_BOT_GATEWAY_MCP_TOKEN || '';
 // The app session this stdio child serves. CLOUDCLI_SESSION_ID is stamped on the provider
 // CLI's spawn env (claude-sdk.js, grok-cli.js, ...); CLOUDCLI_LEAD_SESSION_ID is the
 // per-server stamp some runtimes (OpenCode ACP, Claude mcpServers env) use instead.
-const callerSessionId = (process.env.CLOUDCLI_SESSION_ID || process.env.CLOUDCLI_LEAD_SESSION_ID || '').trim();
+const callerSessionId = (process.env.CLOUDCLI_SESSION_ID || process.env.CLOUDCLI_LEAD_SESSION_ID || '').trim();// Per-binding secret stamped by the provider runtime (claude-sdk.js); the route checks it.
+const bindingSecret = (process.env.CLOUDCLI_BOT_GATEWAY_BINDING_SECRET || '').trim();
 // Must exceed the gateway's human-approval wait (10 minutes by default).
 const API_TIMEOUT_MS = Number.parseInt(process.env.CLOUDCLI_BOT_GATEWAY_API_TIMEOUT_MS || '660000', 10);
 
@@ -27,6 +28,7 @@ async function callGatewayApi(route: 'tools/list' | 'tools/call', body: Record<s
       Authorization: `Bearer ${apiToken}`,
       'Content-Type': 'application/json',
       'x-bot-gateway-session-id': callerSessionId,
+      ...(bindingSecret ? { 'x-bot-gateway-binding-secret': bindingSecret } : {}),
     },
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(API_TIMEOUT_MS),

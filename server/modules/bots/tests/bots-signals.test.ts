@@ -395,11 +395,14 @@ test('automation sink maps run_completed / kanban_event / interrupt_created / we
   });
 });
 
-test('automation sink loop guard ignores the bot\'s own runs and interrupts, and a throwing sink never breaks fire', async () => {
+test('automation sink loop guard ignores runs and interrupts of ANY bot unless allow_bot_origin, and a throwing sink never breaks fire', async () => {
   await withBots(async ({ botId, otherBotId }) => {
     botSignals.setWakeHandler(() => {});
     botTriggers.create({ botId, kind: 'run_completed', config: {} });
     botTriggers.create({ botId, kind: 'interrupt_created', config: {} });
+    // The other bot opts in to bot-origin events.
+    botTriggers.create({ botId: otherBotId, kind: 'run_completed', config: { allow_bot_origin: true } });
+    botTriggers.create({ botId: otherBotId, kind: 'interrupt_created', config: { allow_bot_origin: true } });
     const ownRun = runService.create({ source: 'mission_control', meta: { sectionId: botId } });
     const snakeRun = runService.create({ source: 'mission_control', meta: { section_id: botId } });
     const foreignRun = runService.create({ source: 'mission_control', meta: { sectionId: otherBotId } });
@@ -409,7 +412,13 @@ test('automation sink loop guard ignores the bot\'s own runs and interrupts, and
     }
     assert.deepEqual(
       botEventsDb.listRecent(botId).map((e) => e.payload.run_id).sort(),
-      [foreignRun.run_id, plainRun.run_id].sort(),
+      [plainRun.run_id],
+      'a foreign bot\'s run is ignored too (bot-to-bot loops)',
+    );
+    assert.deepEqual(
+      botEventsDb.listRecent(otherBotId).filter((e) => e.kind === 'run_completed').map((e) => e.payload.run_id).sort(),
+      [ownRun.run_id, snakeRun.run_id, foreignRun.run_id, plainRun.run_id].sort(),
+      'allow_bot_origin opts back in',
     );
 
     const ownInterrupt = interruptsDb.create({ kind: 'bot_gate', title: 'mine', meta: { botId } });
@@ -420,8 +429,9 @@ test('automation sink loop guard ignores the bot\'s own runs and interrupts, and
     }
     assert.deepEqual(
       botEventsDb.listRecent(botId).filter((e) => e.kind === 'interrupt_created').map((e) => e.payload.interrupt_id).sort(),
-      [foreignInterrupt.interrupt_id, plainInterrupt.interrupt_id].sort(),
+      [plainInterrupt.interrupt_id],
     );
+    assert.equal(botEventsDb.listRecent(otherBotId).filter((e) => e.kind === 'interrupt_created').length, 3);
 
     const { configureAutomationEventSink } = await import('@/modules/automation/index.js');
     configureAutomationEventSink(() => {
@@ -606,6 +616,29 @@ test('authenticated router: trigger CRUD, test fire, compile-schedule preview, e
       assert.equal((await call('DELETE', `/api/bots/${botId}/triggers/${id}`)).json.ok, true);
       assert.equal((await call('DELETE', `/api/bots/${botId}/triggers/${id}`)).status, 404);
     });
+    botSignals.cancelWakes();
+  });
+});
+
+test('M7: kanban_event from a bot-created task is ignored unless the trigger sets allow_bot_origin', async () => {
+  await withBots(async ({ botId, otherBotId }) => {
+    const { kanbanDb } = await import('@/modules/kanban/index.js');
+    botSignals.setWakeHandler(() => {});
+    botTriggers.create({ botId, kind: 'kanban_event', config: {} });
+    botTriggers.create({ botId: otherBotId, kind: 'kanban_event', config: { allow_bot_origin: true } });
+    const board = kanbanDb.getOrCreateGlobalBoard();
+    const botTask = kanbanDb.createTask({ boardId: board.board_id, projectId: 'p', title: 'Follow up', description: `[bot:${otherBotId}] created by a bot` });
+    const humanTask = kanbanDb.createTask({ boardId: board.board_id, projectId: 'p', title: 'Human task' });
+
+    const fire = (taskId: string, extra: Record<string, unknown> = {}) =>
+      handleAutomationEvent({ type: 'kanban_event', event: 'task.done', payload: { taskId, ...extra } });
+    fire(botTask.task_id);
+    fire(humanTask.task_id);
+    fire('t-meta', { meta: { botId: otherBotId } });
+    fire('t-source', { source: `bot:${otherBotId}` });
+
+    assert.deepEqual(botEventsDb.listRecent(botId).map((e) => e.payload.task_id), [humanTask.task_id]);
+    assert.equal(botEventsDb.listRecent(otherBotId).length, 4, 'opted-in trigger sees all four');
     botSignals.cancelWakes();
   });
 });

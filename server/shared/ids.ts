@@ -20,21 +20,45 @@ const encodeTime = (now: number): string => {
   return chars.join('');
 };
 
-const encodeRandom = (): string => {
+const encodeRandomValue = (value: bigint): string => {
+  const chars = new Array<string>(16);
+  let rest = value;
+  for (let index = 15; index >= 0; index -= 1) {
+    chars[index] = CROCKFORD[Number(rest % 32n)];
+    rest /= 32n;
+  }
+  return chars.join('');
+};
+
+const randomValue = (): bigint => {
   const bytes = randomBytes(10); // 80 bits
   let value = 0n;
   for (const byte of bytes) {
     value = value * 256n + BigInt(byte);
   }
-  const chars = new Array<string>(16);
-  for (let index = 15; index >= 0; index -= 1) {
-    chars[index] = CROCKFORD[Number(value % 32n)];
-    value /= 32n;
-  }
-  return chars.join('');
+  return value;
 };
 
-export const ulid = (now: number = Date.now()): string => `${encodeTime(now)}${encodeRandom()}`;
+const MAX_RANDOM = (1n << 80n) - 1n;
+let lastTime = -1;
+let lastRandom = 0n;
+
+/**
+ * Monotonic within a millisecond (ULID spec): ids minted in the same ms increment the
+ * random part instead of re-rolling it, so `ORDER BY id` matches creation order.
+ * An explicit `now` in the past (tests, backfills) gets fresh randomness.
+ */
+export const ulid = (now: number = Date.now()): string => {
+  if (now === lastTime && lastRandom < MAX_RANDOM) {
+    lastRandom += 1n;
+  } else if (now >= lastTime) {
+    lastTime = now;
+    lastRandom = randomValue();
+  } else {
+    return `${encodeTime(now)}${encodeRandomValue(randomValue())}`;
+  }
+  return `${encodeTime(lastTime)}${encodeRandomValue(lastRandom)}`;
+};
 
 export const newEventId = (): string => `evt_${ulid()}`;
 export const newRunId = (): string => `run_${ulid()}`;

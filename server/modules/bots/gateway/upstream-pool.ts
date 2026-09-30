@@ -115,8 +115,9 @@ interface PoolEntry {
 }
 
 export interface UpstreamPool {
-  listTools(provider: string, server: string): Promise<GatewayToolDescriptor[]>;
-  callTool(provider: string, server: string, tool: string, args: Record<string, unknown>): Promise<GatewayCallToolResult>;
+  /** `botId` isolates connections per bot (env/secrets are resolved per provider+server, not shared across bots). */
+  listTools(provider: string, server: string, botId?: string): Promise<GatewayToolDescriptor[]>;
+  callTool(provider: string, server: string, tool: string, args: Record<string, unknown>, botId?: string): Promise<GatewayCallToolResult>;
   closeAll(): Promise<void>;
   /** Number of live upstream connections (diagnostics and tests). */
   size(): number;
@@ -145,8 +146,8 @@ export function createUpstreamPool(options: UpstreamPoolOptions = {}): UpstreamP
     entry.idleTimer.unref?.();
   }
 
-  async function acquire(provider: string, server: string): Promise<{ key: string; entry: PoolEntry; client: UpstreamClient }> {
-    const key = `${provider}\u0000${server}`;
+  async function acquire(provider: string, server: string, botId = ''): Promise<{ key: string; entry: PoolEntry; client: UpstreamClient }> {
+    const key = `${botId}\u0000${provider}\u0000${server}`;
     let entry = entries.get(key);
     if (!entry) {
       const created: PoolEntry = {
@@ -172,8 +173,8 @@ export function createUpstreamPool(options: UpstreamPoolOptions = {}): UpstreamP
   }
 
   return {
-    async listTools(provider, server) {
-      const { entry, client, key } = await acquire(provider, server);
+    async listTools(provider, server, botId) {
+      const { entry, client, key } = await acquire(provider, server, botId);
       if (entry.tools && Date.now() - entry.tools.at < toolTtlMs) return entry.tools.list;
       try {
         const list: GatewayToolDescriptor[] = [];
@@ -198,8 +199,8 @@ export function createUpstreamPool(options: UpstreamPoolOptions = {}): UpstreamP
       }
     },
 
-    async callTool(provider, server, tool, args) {
-      const { client, key } = await acquire(provider, server);
+    async callTool(provider, server, tool, args, botId) {
+      const { client, key } = await acquire(provider, server, botId);
       try {
         const result = await client.callTool({ name: tool, arguments: args }, undefined, { timeout: callTimeoutMs });
         return result as GatewayCallToolResult;

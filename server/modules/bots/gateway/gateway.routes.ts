@@ -1,5 +1,6 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -9,6 +10,7 @@ import { appConfigDb } from '@/modules/database/index.js';
 import { mcpCatalogService } from '@/modules/providers/index.js';
 
 import { callGatewayTool, listGatewayToolsForSession } from './gateway.service.js';
+import { gatewaySessions } from './sessions.js';
 
 export const BOT_GATEWAY_MCP_SERVER_NAME = 'cloudcli-tool-gateway';
 const MCP_TOKEN_CONFIG_KEY = 'bot_gateway_mcp_token';
@@ -44,8 +46,33 @@ function getMcpCommand(): { command: string; args: string[] } {
   return { command: 'cloudcli', args: ['bot-tool-gateway-mcp'] };
 }
 
+/**
+ * True for an isolated/test server: a non-default DATABASE_PATH under a tmp/ directory. Such a
+ * server must not rewrite the operator's real provider configs.
+ */
+export function isIsolatedServer(): boolean {
+  const dbPath = process.env.DATABASE_PATH?.trim();
+  if (!dbPath) return false;
+  const resolved = path.resolve(dbPath);
+  if (resolved === path.resolve(os.homedir(), '.cloudcli', 'auth.db')) return false;
+  if (resolved.split(path.sep).includes('tmp')) return true;
+  return [os.tmpdir(), fs.realpathSync.native(os.tmpdir())].some((dir) => {
+    const rel = path.relative(dir, resolved);
+    return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
+  });
+}
+
+/** Why registration is skipped in this process, or null when it should proceed. */
+function registrationSkipReason(): string | null {
+  if (process.env.CLOUDCLI_BOT_GATEWAY_REGISTER === '0') return 'CLOUDCLI_BOT_GATEWAY_REGISTER=0';
+  if (isIsolatedServer()) return 'isolated server (non-default DATABASE_PATH under tmp/)';
+  return null;
+}
+
 /** Upserts the `cloudcli-tool-gateway` catalog entry (stdio proxy) and projects it to providers. */
-export async function registerBotGatewayMcp(): Promise<{ name: string }> {
+export async function registerBotGatewayMcp(): Promise<{ name: string; skipped?: string }> {
+  const skipped = registrationSkipReason();
+  if (skipped) return { name: BOT_GATEWAY_MCP_SERVER_NAME, skipped };
   const { command, args } = getMcpCommand();
   await mcpCatalogService.upsert({
     name: BOT_GATEWAY_MCP_SERVER_NAME,
@@ -59,10 +86,18 @@ export async function registerBotGatewayMcp(): Promise<{ name: string }> {
     },
     // Codex only forwards named parent variables to MCP children; providers that
     // inherit the whole environment get these for free.
-    envVars: ['CLOUDCLI_SESSION_ID', 'CLOUDCLI_LEAD_SESSION_ID'],
+    envVars: ['CLOUDCLI_SESSION_ID', 'CLOUDCLI_LEAD_SESSION_ID', 'CLOUDCLI_BOT_GATEWAY_BINDING_SECRET'],
     providers: [...GATEWAY_PROVIDERS],
   });
   return { name: BOT_GATEWAY_MCP_SERVER_NAME };
+}
+
+/** Removes the gateway catalog entry (and its provider projections). Call when the runtime stops or the flag turns off. */
+export async function unregisterBotGatewayMcp(): Promise<{ removed: boolean; skipped?: string }> {
+  const skipped = registrationSkipReason();
+  if (skipped) return { removed: false, skipped };
+  const result = await mcpCatalogService.remove(BOT_GATEWAY_MCP_SERVER_NAME);
+  return { removed: result.removed };
 }
 
 function digest(value: string): Buffer {
@@ -84,6 +119,23 @@ router.use((req, res, next) => {
   if (!tokenMatches(readBearerToken(req.headers.authorization), getBotGatewayMcpToken())) {
     res.status(401).json({ success: false, error: 'Invalid Bot Gateway MCP token.' });
     return;
+  }
+  next();
+});
+
+/**
+ * Per-binding secret: a session id alone (guessable, visible to other processes) cannot speak for a
+ * run. Checked whenever the binding's provider stamps the secret on the gateway child.
+ */
+router.use((req, res, next) => {
+  const sessionId = String(req.headers['x-bot-gateway-session-id'] || '').trim();
+  const binding = sessionId ? gatewaySessions.get(sessionId) : null;
+  if (binding?.secretRequired) {
+    const presented = String(req.headers['x-bot-gateway-binding-secret'] || '').trim();
+    if (!binding.secret || !tokenMatches(presented, binding.secret)) {
+      res.status(401).json({ success: false, error: 'Invalid Bot Gateway binding secret.' });
+      return;
+    }
   }
   next();
 });

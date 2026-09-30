@@ -3,7 +3,7 @@ import os from 'node:os';
 import { jsonrepair } from 'jsonrepair';
 
 import { isBotsRuntimeV2Enabled } from '@/modules/app-features/index.js';
-import { readBotRuntimeConfig } from '@/modules/bots/index.js';
+import { buildGatewayRunGuards, readBotRuntimeConfig } from '@/modules/bots/index.js';
 import { gatewaySessions } from '@/shared/bot-gateway-sessions.js';
 import { projectsDb } from '@/modules/database/index.js';
 import { recordNormalizedRunEvent, runService } from '@/modules/runs/index.js';
@@ -11,9 +11,11 @@ import { sessionsService } from '@/modules/providers/index.js';
 import {
   chatRunRegistry,
   DETACHED_CONNECTION,
+  getProviderAbortFn,
   startProviderRun,
   type ProviderSpawnFn,
 } from '@/modules/websocket/index.js';
+import { TERMINAL_RUN_STATUSES } from '@/shared/run-events.js';
 import type { AnyRecord, LLMProvider } from '@/shared/types.js';
 import { expandMcpSelectionsToTools } from '@/shared/mcp-tool-expand.js';
 import { AppError } from '@/shared/utils.js';
@@ -38,9 +40,13 @@ export function getMissionControlRuntime(provider: LLMProvider): ProviderSpawnFn
   return runtime;
 }
 
+/** The shape of one produce draft; the bot kernel embeds it in its own envelope. */
+export const PRODUCE_ITEM_SHAPE =
+  '{ "title": string, "summary": string, "body": object, "dedupeKey": string (a STABLE source id), "confidence": number }';
+
 const PRODUCE_ENVELOPE =
   'Return ONLY a JSON array of items, each exactly ' +
-  '{ "title": string, "summary": string, "body": object, "dedupeKey": string (a STABLE source id), "confidence": number }. ' +
+  `${PRODUCE_ITEM_SHAPE}. ` +
   'If there is nothing to produce, return [] (empty array) — do not invent items and do not write prose. ' +
   'No tool narration, no code fences. ' +
   'Strict JSON only: escape every " and \\ and newline inside strings (use \\n for line breaks). ' +
@@ -552,6 +558,8 @@ export async function runMissionControlAgent(params: {
   phase?: 'produce' | 'resolve' | 'retry' | 'architect';
   /** Bot runtime v2 episode this run belongs to (bound to the gateway session for taint tracking). */
   episodeId?: string;
+  /** Called once the canonical run exists (before the provider starts) so callers can abort it. */
+  onRunCreated?: (run: { runId: string; appSessionId: string }) => void;
 }): Promise<McAgentRunResult> {
   const { prompt, tools } = params;
   const section = sectionForPhase(params.section, params.phase);
@@ -588,8 +596,10 @@ export async function runMissionControlAgent(params: {
       ...(botVersion != null ? { bot_version: botVersion } : {}),
       ...(params.sourceRef && params.sourceRef !== section.section_id ? { item_id: params.sourceRef } : {}),
       phase: params.phase ?? 'produce',
+      ...(params.episodeId ? { runtime: 'v2', episode_id: params.episodeId } : {}),
     },
   });
+  params.onRunCreated?.({ runId: canonicalRun.run_id, appSessionId });
 
   // Bot runtime v2: bind this app session to its bot so the Tool Gateway (spawned by the
   // provider as a stdio child) knows which servers and gate context apply. Unbound in finally.
@@ -602,6 +612,14 @@ export async function runMissionControlAgent(params: {
       servers: tools,
       provider,
     });
+  }
+  // Gateway-bound runs also route Claude's built-in tools through the gate and prove their
+  // binding with a per-run secret (see gateway/ENFORCEMENT.md).
+  const runOptions = buildRuntimeOptions(section, tools);
+  if (gatewayBound) {
+    const guards = buildGatewayRunGuards(section, { appSessionId, episodeId: params.episodeId, runId: canonicalRun.run_id, projectPath });
+    runOptions.builtinToolGate = guards.builtinToolGate;
+    runOptions.botGatewaySecret = guards.bindingSecret;
   }
   try {
     let result: Awaited<ReturnType<typeof startProviderRun>>;
@@ -616,7 +634,7 @@ export async function runMissionControlAgent(params: {
         content: ['codex', 'grok', 'opencode', 'kimi', 'cursor'].includes(provider)
           ? [prompt, buildToolPolicyAdvisoryPrompt(section, tools)].filter(Boolean).join('\n\n')
           : prompt,
-        options: buildRuntimeOptions(section, tools),
+        options: runOptions,
         connection: DETACHED_CONNECTION,
         userId: null,
         onEvent: (message) => recordNormalizedRunEvent(canonicalRun.run_id, message, 'mission_control'),
@@ -650,6 +668,37 @@ export async function runMissionControlAgent(params: {
     return { appSessionId, runId: canonicalRun.run_id, text, success: !failed, errorMessage };
   } finally {
     if (gatewayBound) gatewaySessions.unbind(appSessionId);
+  }
+}
+
+/**
+ * Best-effort cancel of a live Mission Control run (same path as the runs API cancel):
+ * kill the provider process, complete the registry entry and flip the DB status.
+ */
+export async function abortMissionControlRun(runId: string): Promise<void> {
+  const run = runService.get(runId);
+  if (!run) return;
+  const appSessionId = run.app_session_id;
+  const registryRun = appSessionId ? chatRunRegistry.getRun(appSessionId) : undefined;
+  if (appSessionId && registryRun && registryRun.status === 'running') {
+    const abortFn = run.provider ? getProviderAbortFn(run.provider) : undefined;
+    let success = false;
+    if (abortFn) {
+      try {
+        success = Boolean(await abortFn(registryRun.providerSessionId || appSessionId));
+      } catch (error) {
+        console.error(`[MissionControl] provider abort failed for run ${runId}:`, error);
+      }
+    }
+    chatRunRegistry.completeRun(appSessionId, { exitCode: success ? 0 : 1, aborted: true });
+  }
+  const current = runService.get(runId);
+  if (current && !TERMINAL_RUN_STATUSES.has(current.status)) {
+    try {
+      runService.markTerminal(runId, { status: 'aborted', errorSummary: 'aborted by bot kernel (episode timeout)' });
+    } catch {
+      // already terminal
+    }
   }
 }
 

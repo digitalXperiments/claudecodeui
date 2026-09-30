@@ -2,16 +2,20 @@ export { default as botGatewayMcpRoutes } from './gateway.routes.js';
 export {
   BOT_GATEWAY_MCP_SERVER_NAME,
   getBotGatewayMcpToken,
+  isIsolatedServer,
   registerBotGatewayMcp,
+  unregisterBotGatewayMcp,
 } from './gateway.routes.js';
 export {
   callGatewayTool,
   DEFAULT_ASK_TIMEOUT_MS,
+  isSessionTainted,
   listGatewayToolsForSession,
   setGatewayGate,
   setGatewayOptions,
   setGatewayUpstreamPool,
 } from './gateway.service.js';
+export { buildGatewayRunGuards, type GatewayRunGuards } from './run-guards.js';
 export { getGatewayEnforcement } from './enforcement.js';
 export type { GatewayEnforcement } from './enforcement.js';
 export {

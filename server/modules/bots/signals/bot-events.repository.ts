@@ -153,6 +153,39 @@ export const botEventsDb = {
       .run(botId).changes;
   },
 
+  /** Tag claimed events with the episode that is working on them (used to re-queue after a crash). */
+  attachToEpisode(eventIds: string[], episodeId: string): number {
+    if (eventIds.length === 0) return 0;
+    return getConnection()
+      .prepare(`UPDATE bot_events SET episode_id = ? WHERE status = 'claimed' AND event_id IN (${placeholders(eventIds.length)})`)
+      .run(episodeId, ...eventIds).changes;
+  },
+
+  /** Restart recovery: every claimed event goes back to the queue. Returns the affected bot ids. */
+  releaseAllClaimed(): string[] {
+    const db = getConnection();
+    const release = db.transaction((): string[] => {
+      const rows = db.prepare("SELECT DISTINCT bot_id FROM bot_events WHERE status = 'claimed'").all() as { bot_id: string }[];
+      db.prepare("UPDATE bot_events SET status = 'queued', claimed_at = NULL, episode_id = NULL WHERE status = 'claimed'").run();
+      return rows.map((row) => row.bot_id);
+    });
+    return release();
+  },
+
+  listBotsWithQueued(): string[] {
+    const rows = getConnection()
+      .prepare("SELECT DISTINCT bot_id FROM bot_events WHERE status = 'queued'")
+      .all() as { bot_id: string }[];
+    return rows.map((row) => row.bot_id);
+  },
+
+  listForEpisode(episodeId: string): BotEvent[] {
+    const rows = getConnection()
+      .prepare('SELECT * FROM bot_events WHERE episode_id = ? ORDER BY received_at ASC, event_id ASC')
+      .all(episodeId) as EventRow[];
+    return rows.map(mapEvent);
+  },
+
   countQueued(botId: string): number {
     const row = getConnection()
       .prepare("SELECT COUNT(*) AS n FROM bot_events WHERE bot_id = ? AND status = 'queued'")

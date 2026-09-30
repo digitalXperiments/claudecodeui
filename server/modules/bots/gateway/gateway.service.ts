@@ -48,7 +48,7 @@ async function listUpstream(binding: GatewaySessionBinding): Promise<Listing> {
   const errors: Listing['errors'] = [];
   const perServer = await Promise.all(binding.servers.map(async (server) => {
     try {
-      return { server, tools: await pool.listTools(String(binding.provider), server) };
+      return { server, tools: await pool.listTools(String(binding.provider), server, binding.botId) };
     } catch (error) {
       errors.push({ server, error: errorText(error) });
       return { server, tools: [] as GatewayToolDescriptor[] };
@@ -73,9 +73,34 @@ async function listUpstream(binding: GatewaySessionBinding): Promise<Listing> {
   return { tools, names, byExposed, errors };
 }
 
+/**
+ * Whether the session must be treated as having read untrusted content: its own binding flag, or
+ * its episode row (the kernel sets `tainted` when a batch contains external events). Persisting the
+ * episode flag onto the binding means it is never forgotten mid-run.
+ */
+export function isSessionTainted(appSessionId: string): boolean {
+  const binding = gatewaySessions.get(appSessionId);
+  if (!binding) return false;
+  if (binding.tainted) return true;
+  if (binding.episodeId) {
+    try {
+      if (botEpisodesDb.get(binding.episodeId)?.tainted) {
+        gatewaySessions.markTainted(appSessionId);
+        return true;
+      }
+    } catch (error) {
+      // Fail closed: an unreadable episode row reads as tainted.
+      console.warn('[BotGateway] could not read episode taint; treating session as tainted:', errorText(error));
+      return true;
+    }
+  }
+  return false;
+}
+
 export async function listGatewayToolsForSession(appSessionId: string): Promise<GatewayToolDescriptor[]> {
   const binding = gatewaySessions.get(appSessionId);
   if (!binding) return [];
+  isSessionTainted(appSessionId);
   const firstParty = listGatewayTools().map((tool) => ({
     name: tool.name,
     description: tool.description,
@@ -121,6 +146,15 @@ function taintSession(appSessionId: string, binding: GatewaySessionBinding): voi
   }
 }
 
+function resultHasContent(result: GatewayCallToolResult): boolean {
+  if (result.structuredContent && Object.keys(result.structuredContent).length > 0) return true;
+  return (result.content ?? []).some((part) => {
+    if (!part) return false;
+    if (part.type === 'text') return typeof part.text === 'string' && part.text.trim().length > 0;
+    return true;
+  });
+}
+
 function summarize(result: GatewayCallToolResult): string {
   const text = (result.content ?? [])
     .map((part) => (part && part.type === 'text' && typeof part.text === 'string' ? part.text : `[${String(part?.type ?? 'content')}]`))
@@ -138,12 +172,13 @@ async function recordOutcome(decisionId: string, outcome: Parameters<GatewayGate
 
 async function callFirstParty(
   appSessionId: string,
-  binding: GatewaySessionBinding,
+  initialBinding: GatewaySessionBinding,
   name: string,
   args: Record<string, unknown>,
 ): Promise<GatewayCallToolResult> {
   const tool = getGatewayTool(name);
   if (!tool) return textResult(`Unknown gateway tool "${name}".`, true);
+  const binding = gatewaySessions.get(appSessionId) ?? initialBinding;
   const ctx = {
     appSessionId,
     botId: binding.botId,
@@ -155,7 +190,7 @@ async function callFirstParty(
   if (tool.risk !== 'read' && tool.risk !== 'draft') {
     if (!gate) return textResult('Tool gateway has no action gate configured; refusing the call.', true);
     const verdict = await gate.evaluate(buildGateContext(binding), { server: 'bot', tool: name.slice(FIRST_PARTY_PREFIX.length), args });
-    const blocked = await resolveVerdict(verdict);
+    const blocked = await resolveVerdict(appSessionId, verdict);
     if (blocked) return blocked;
     try {
       const result = await tool.handler(ctx, args);
@@ -174,7 +209,7 @@ async function callFirstParty(
 }
 
 /** Returns an error result when the verdict (after any human wait) does not permit the call. */
-async function resolveVerdict(verdict: GatewayGateVerdict): Promise<GatewayCallToolResult | null> {
+async function resolveVerdict(appSessionId: string, verdict: GatewayGateVerdict): Promise<GatewayCallToolResult | null> {
   if (verdict.decision === 'deny') {
     return textResult(`Blocked by the action gate (${verdict.risk}): ${verdict.reason}`, true);
   }
@@ -182,6 +217,11 @@ async function resolveVerdict(verdict: GatewayGateVerdict): Promise<GatewayCallT
     const answer = await gate!.awaitHuman(verdict.decisionId, { timeoutMs: askTimeoutMs });
     if (answer === 'rejected') return textResult(`The operator rejected this call (${verdict.risk}): ${verdict.reason}`, true);
     if (answer === 'expired') return textResult(`No operator decision before the approval expired (${verdict.risk}); the call was not made.`, true);
+    // The run may have ended (unbound) while the operator deliberated; never execute for a dead run.
+    if (!gatewaySessions.get(appSessionId)) {
+      await recordOutcome(verdict.decisionId, { ok: false, error: 'run ended before approval' });
+      return textResult('The run ended before the approval arrived; the call was not made.', true);
+    }
   }
   return null;
 }
@@ -195,6 +235,7 @@ export async function callGatewayTool(
   if (!binding) {
     return textResult('This session is not bound to a bot; the tool gateway refused the call.', true);
   }
+  isSessionTainted(appSessionId);
   const args = rawArgs && typeof rawArgs === 'object' && !Array.isArray(rawArgs) ? (rawArgs as Record<string, unknown>) : {};
 
   if (name.startsWith(FIRST_PARTY_PREFIX) && getGatewayTool(name)) {
@@ -228,16 +269,17 @@ export async function callGatewayTool(
   } catch (error) {
     return textResult(`Action gate failed, call refused: ${errorText(error)}`, true);
   }
-  const blocked = await resolveVerdict(verdict).catch((error) => textResult(`Approval failed, call refused: ${errorText(error)}`, true));
+  const blocked = await resolveVerdict(appSessionId, verdict).catch((error) => textResult(`Approval failed, call refused: ${errorText(error)}`, true));
   if (blocked) return blocked;
 
   const started = Date.now();
   try {
-    const result = await pool.callTool(String(binding.provider), target.server, resolved.tool, args);
+    const result = await pool.callTool(String(binding.provider), target.server, resolved.tool, args, binding.botId);
     const ok = !result.isError;
     await recordOutcome(verdict.decisionId, { ok, durationMs: Date.now() - started, summary: summarize(result) });
-    // Every non-first-party server is external: what a read brings back is untrusted input.
-    if (ok && verdict.risk === 'read') taintSession(appSessionId, binding);
+    // Every non-first-party server is external: what it brings back is untrusted input.
+    // Any successful result that carries content can carry an injection, whatever the call's risk.
+    if (ok && resultHasContent(result)) taintSession(appSessionId, binding);
     return result;
   } catch (error) {
     await recordOutcome(verdict.decisionId, { ok: false, durationMs: Date.now() - started, error: errorText(error) });

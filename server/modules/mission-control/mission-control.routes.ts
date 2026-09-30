@@ -40,7 +40,7 @@ import {
   type SectionWorkshopMessage,
   type SectionWorkshopDraft,
 } from '@/modules/mission-control/mission-control-section-workshop.service.js';
-import { deleteBotRuntimeData } from '@/modules/bots/index.js';
+import { deleteBotRuntimeData, runBotNow, syncBotScheduleTrigger } from '@/modules/bots/index.js';
 
 import { acceptWorkItem, dispatchWorkItem, followUpWorkItem } from './mission-control-dispatch.service.js';
 import { parseWorkProfile } from './mission-control-work-profile.js';
@@ -306,6 +306,7 @@ router.post(
     // ensure*() can maintain prompts/bindings for that seed again.
     clearSeedSuppressionByTitle(input.title);
     const section = missionControlDb.createSection(input);
+    syncBotScheduleTrigger(section.section_id);
     syncMissionControlSchedules();
     res.status(201).json({ section });
   }),
@@ -446,6 +447,7 @@ router.put(
         statusCode: 404,
       });
     }
+    syncBotScheduleTrigger(section.section_id);
     syncMissionControlSchedules();
     res.json({ section });
   }),
@@ -483,7 +485,15 @@ router.delete(
 router.post(
   '/sections/:id/run',
   asyncHandler(async (req, res) => {
-    const result = await runSectionProduce(paramId(req.params.id));
+    const sectionId = paramId(req.params.id);
+    // Runtime v2: a manual run is an operator event handled by the kernel; the response keeps
+    // the legacy { created, skipped, items, message } shape.
+    const kernelResult = await runBotNow(sectionId);
+    if (kernelResult) {
+      res.json(kernelResult);
+      return;
+    }
+    const result = await runSectionProduce(sectionId);
     res.json(result);
   }),
 );

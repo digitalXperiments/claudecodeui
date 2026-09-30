@@ -1,3 +1,5 @@
+import { randomBytes } from 'node:crypto';
+
 export interface GatewaySessionBinding {
   botId: string;
   episodeId?: string;
@@ -7,9 +9,16 @@ export interface GatewaySessionBinding {
   provider: string;
   /** True once the run read external-trust content. */
   tainted: boolean;
+  /** Random per-binding secret. The provider stamps it on the gateway stdio child; the route checks it. */
+  secret: string;
+  /** True when the provider stamps `secret` on the gateway child (so the route must see it). */
+  secretRequired: boolean;
 }
 
-export type GatewaySessionBindInput = Omit<GatewaySessionBinding, 'tainted'> & { tainted?: boolean };
+/** Providers whose runtime stamps the binding secret onto the gateway stdio entry (claude-sdk.js). */
+export const SECRET_STAMPING_PROVIDERS: readonly string[] = ['claude'];
+
+export type GatewaySessionBindInput = Omit<GatewaySessionBinding, 'tainted' | 'secret' | 'secretRequired'> & { tainted?: boolean };
 
 /**
  * Lives in shared/ so Mission Control can bind sessions without importing the bots module (which
@@ -31,6 +40,8 @@ export const gatewaySessions = {
       servers: [...new Set(input.servers)],
       provider: input.provider,
       tainted: input.tainted === true,
+      secret: randomBytes(24).toString('hex'),
+      secretRequired: SECRET_STAMPING_PROVIDERS.includes(String(input.provider)),
     };
     bindings.set(appSessionId, binding);
     return binding;

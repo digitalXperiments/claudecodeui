@@ -224,6 +224,12 @@ export function finishMissionControlSectionRun(sectionId: string, error: string 
   });
 }
 
+/** Kernel-created items record their episode in `source_json` (no new columns). */
+function withEpisodeRef(draft: McDraftItem, episodeId: string | undefined): McDraftItem {
+  if (!episodeId) return draft;
+  return { ...draft, source: { ...(draft.source ?? { dedupeKey: draft.dedupeKey }), episodeId } };
+}
+
 /**
  * Run a section's produce step (scheduled or manual): parse draft items and
  * move each new one into the pipeline (auto-resolve, work queue, or review).
@@ -340,121 +346,134 @@ export async function runSectionProduce(
       };
     }
 
-    const parsedDrafts = coerceDrafts(parsed);
-    const drafts = filterSectionDrafts(section, parsedDrafts);
-    if (drafts.length === 0) {
-      if (isSlackSection(section) && parsedDrafts.length > 0) {
-        finishMissionControlSectionRun(sectionId);
-        return {
-          created: 0,
-          skipped: 0,
-          items: [],
-          message: 'Produce finished: no Slack messages addressed to you that need your reply.',
-        };
-      }
-      const candidateCount = draftCandidates(parsed).length;
-      // Empty produce is a normal no-op: nothing to queue and nothing to
-      // resolve/auto-approve. Only treat as an error when the model returned
-      // objects that were missing required title + dedupeKey.
-      if (candidateCount === 0) {
-        drainWorkQueue(sectionId);
-        finishMissionControlSectionRun(sectionId);
-        return {
-          created: 0,
-          skipped: 0,
-          items: [],
-          message: 'Produce finished: nothing new to review.',
-        };
-      }
-      const msg =
-        'Produce finished but returned 0 valid drafts (each item needs title + dedupeKey).';
-      finishMissionControlSectionRun(sectionId, msg);
-      return {
-        created: 0,
-        skipped: 0,
-        items: [],
-        error: msg,
-        message: msg,
-      };
-    }
-
-    const createdItems: McItem[] = [];
-    let skipped = 0;
-
-    for (const draft of drafts) {
-      // Strict dedupe: never re-open dismissed/denied/resolved/failed items.
-      // Trello: also skip when an alias id (shortLink vs full id) already exists.
-      const trelloRefs = collectTrelloCardRefs({
-        dedupeKey: draft.dedupeKey,
-        body: draft.body,
-        source: draft.source,
-      });
-      if (trelloRefs.length > 0) {
-        const existing =
-          missionControlDb.findItemByDedupeAliases(
-            section.section_id,
-            trelloDedupeKeyAliases(trelloRefs),
-          ) ?? missionControlDb.findItemByTrelloRefs(section.section_id, trelloRefs);
-        if (existing) {
-          refreshQueuedWork(section, existing, prepareDraftForSection(section, draft).body);
-          skipped++;
-          continue;
-        }
-      }
-      const item = missionControlDb.insertItemIfNew(
-        section,
-        prepareDraftForSection(section, draft),
-      );
-      if (!item) {
-        const existing = missionControlDb.findItemByDedupeAliases(section.section_id, [draft.dedupeKey]);
-        if (existing) refreshQueuedWork(section, existing, prepareDraftForSection(section, draft).body);
-        skipped++;
-        continue;
-      }
-      let current = item;
-      const hasResolve = Boolean(section.resolve_prompt.trim());
-      if (!hasResolve && section.work_profile) {
-        // No resolve stage: the item goes straight to the work gate.
-        current = markWorkReady(section, item.item_id);
-      } else if (section.auto_approve) {
-        // Automatic resolve (or record-only when there is no resolve prompt).
-        // Only approve-kind actions ever run without a human.
-        const approve = current.actions.find((a) => a.kind === 'approve' && a.terminal !== false);
-        if (approve) {
-          const next = await applyItemAction(current.item_id, approve.id, undefined, { trigger });
-          // auto-approve should never hard-delete; if it did, skip the item
-          if (!next) continue;
-          current = next;
-        }
-      }
-      createdItems.push(current);
-    }
-
-    finishMissionControlSectionRun(sectionId);
-    drainWorkQueue(sectionId);
-    const needsHuman = createdItems.filter((entry) => entry.status === 'pending' || entry.status === 'awaiting_work' || entry.status === 'failed');
-    notifyPendingItems(section, needsHuman.length, needsHuman.map((entry) => entry.item_id));
-
-    const parts: string[] = [];
-    if (createdItems.length) parts.push(`${createdItems.length} new`);
-    if (skipped) parts.push(`${skipped} skipped (already seen)`);
-    if (section.auto_approve && createdItems.length) parts.push('auto-approve ran');
-    const message =
-      parts.length > 0
-        ? `Produce finished: ${parts.join(', ')}.`
-        : 'Produce finished with no new drafts.';
-
-    return {
-      created: createdItems.length,
-      skipped,
-      items: createdItems,
-      message,
-    };
+    return await ingestProduceDrafts(section, parsed, { trigger });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     finishMissionControlSectionRun(sectionId, message);
     throw error;
   }
+}
+
+/**
+ * Post-parse half of a produce run: validate drafts, dedupe against existing items,
+ * insert the new ones and move them into the pipeline (auto-resolve, work queue or
+ * review), then finish/drain/notify. Shared by `runSectionProduce` and the bot kernel.
+ * `rawDrafts` is the parsed model output (array, single draft or `{ items }` wrapper).
+ */
+export async function ingestProduceDrafts(
+  section: McSection,
+  rawDrafts: unknown,
+  opts: { trigger?: string; episodeId?: string } = {},
+): Promise<ProduceRunResult> {
+  const trigger = opts.trigger ?? 'manual';
+  const episodeId = opts.episodeId;
+  const parsedDrafts = coerceDrafts(rawDrafts);
+  const drafts = filterSectionDrafts(section, parsedDrafts);
+  if (drafts.length === 0) {
+    if (isSlackSection(section) && parsedDrafts.length > 0) {
+      finishMissionControlSectionRun(section.section_id);
+      return {
+        created: 0,
+        skipped: 0,
+        items: [],
+        message: 'Produce finished: no Slack messages addressed to you that need your reply.',
+      };
+    }
+    const candidateCount = draftCandidates(rawDrafts).length;
+    // Empty produce is a normal no-op: nothing to queue and nothing to
+    // resolve/auto-approve. Only treat as an error when the model returned
+    // objects that were missing required title + dedupeKey.
+    if (candidateCount === 0) {
+      drainWorkQueue(section.section_id);
+      finishMissionControlSectionRun(section.section_id);
+      return {
+        created: 0,
+        skipped: 0,
+        items: [],
+        message: 'Produce finished: nothing new to review.',
+      };
+    }
+    const msg =
+      'Produce finished but returned 0 valid drafts (each item needs title + dedupeKey).';
+    finishMissionControlSectionRun(section.section_id, msg);
+    return {
+      created: 0,
+      skipped: 0,
+      items: [],
+      error: msg,
+      message: msg,
+    };
+  }
+
+  const createdItems: McItem[] = [];
+  let skipped = 0;
+
+  for (const draft of drafts) {
+    // Strict dedupe: never re-open dismissed/denied/resolved/failed items.
+    // Trello: also skip when an alias id (shortLink vs full id) already exists.
+    const trelloRefs = collectTrelloCardRefs({
+      dedupeKey: draft.dedupeKey,
+      body: draft.body,
+      source: draft.source,
+    });
+    if (trelloRefs.length > 0) {
+      const existing =
+        missionControlDb.findItemByDedupeAliases(
+          section.section_id,
+          trelloDedupeKeyAliases(trelloRefs),
+        ) ?? missionControlDb.findItemByTrelloRefs(section.section_id, trelloRefs);
+      if (existing) {
+        refreshQueuedWork(section, existing, prepareDraftForSection(section, draft).body);
+        skipped++;
+        continue;
+      }
+    }
+    const item = missionControlDb.insertItemIfNew(section, withEpisodeRef(prepareDraftForSection(section, draft), episodeId));
+    if (!item) {
+      const existing = missionControlDb.findItemByDedupeAliases(section.section_id, [draft.dedupeKey]);
+      if (existing) refreshQueuedWork(section, existing, prepareDraftForSection(section, draft).body);
+      skipped++;
+      continue;
+    }
+    let current = item;
+    const hasResolve = Boolean(section.resolve_prompt.trim());
+    if (!hasResolve && section.work_profile) {
+      // No resolve stage: the item goes straight to the work gate.
+      current = markWorkReady(section, item.item_id);
+    } else if (section.auto_approve) {
+      // Automatic resolve (or record-only when there is no resolve prompt).
+      // Only approve-kind actions ever run without a human.
+      const approve = current.actions.find((a) => a.kind === 'approve' && a.terminal !== false);
+      if (approve) {
+        const next = await applyItemAction(current.item_id, approve.id, undefined, { trigger });
+        // auto-approve should never hard-delete; if it did, skip the item
+        if (!next) continue;
+        current = next;
+      }
+    }
+    createdItems.push(current);
+  }
+
+  finishMissionControlSectionRun(section.section_id);
+  drainWorkQueue(section.section_id);
+  const needsHuman = createdItems.filter((entry) => entry.status === 'pending' || entry.status === 'awaiting_work' || entry.status === 'failed');
+  notifyPendingItems(section, needsHuman.length, needsHuman.map((entry) => entry.item_id));
+
+  const parts: string[] = [];
+  if (createdItems.length) parts.push(`${createdItems.length} new`);
+  if (skipped) parts.push(`${skipped} skipped (already seen)`);
+  if (section.auto_approve && createdItems.length) parts.push('auto-approve ran');
+  const message =
+    parts.length > 0
+      ? `Produce finished: ${parts.join(', ')}.`
+      : 'Produce finished with no new drafts.';
+
+  return {
+    created: createdItems.length,
+    skipped,
+    items: createdItems,
+    message,
+  };
 }
 
 /**

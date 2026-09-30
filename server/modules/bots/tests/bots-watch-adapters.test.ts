@@ -230,3 +230,37 @@ test('http_json adapter resolves secret headers, diffs by id_field and never lea
   payload = { not: 'an array' };
   await assert.rejects(adapter.poll(config, second.cursor), /JSON array/);
 });
+
+test('M7/low: rss and http_json readers cap the response body at 2MB', async () => {
+  const huge = 'x'.repeat(2 * 1024 * 1024 + 1);
+  const rss = createRssAdapter({ fetch: fakeFetch(huge) });
+  await assert.rejects(rss.poll({ url: 'https://example.com/feed.xml' }, {}), /exceeds/);
+  const json = createHttpJsonAdapter({ fetch: fakeFetch(huge) });
+  await assert.rejects(json.poll({ url: 'https://example.com/a.json', id_field: 'id' }, {}), /exceeds/);
+
+  // A declared content-length over the cap fails before reading; a streaming body stops at the cap.
+  const declared: WatchFetch = async () => ({
+    ok: true, status: 200, headers: { get: () => String(3 * 1024 * 1024) }, text: async () => { throw new Error('must not read'); },
+  });
+  await assert.rejects(createRssAdapter({ fetch: declared }).poll({ url: 'https://example.com/f' }, {}), /exceeds/);
+  let cancelled = false;
+  const chunk = new Uint8Array(512 * 1024);
+  const streaming: WatchFetch = async () => ({
+    ok: true, status: 200, text: async () => { throw new Error('must not buffer'); },
+    body: { getReader: () => ({ read: async () => ({ done: false, value: chunk }), cancel: async () => { cancelled = true; } }) },
+  });
+  await assert.rejects(createRssAdapter({ fetch: streaming }).poll({ url: 'https://example.com/f' }, {}), /exceeds/);
+  assert.equal(cancelled, true);
+  // A normal feed still works.
+  const ok = await createRssAdapter({ fetch: fakeFetch(RSS(['a'])) }).poll({ url: 'https://example.com/f' }, {});
+  assert.equal(ok.cursor.initialized, true);
+});
+
+test('low: github repo pattern rejects .. and . segments', () => {
+  const adapter = createGithubAdapter({ exec: async () => ({ stdout: '[]' }) });
+  assert.equal(adapter.validate?.({ repo: 'owner/name', what: 'issues' }), null);
+  assert.equal(adapter.validate?.({ repo: 'owner/na.me-1_x', what: 'issues' }), null);
+  for (const repo of ['owner/..', '../name', 'owner/../x', './name', 'owner/.', '..//x', 'a/b/c', 'owner']) {
+    assert.match(adapter.validate?.({ repo, what: 'issues' }) ?? '', /owner\/name/, repo);
+  }
+});

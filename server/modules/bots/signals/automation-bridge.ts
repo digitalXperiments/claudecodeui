@@ -6,6 +6,7 @@
 
 import { configureAutomationEventSink, type AutomationFireInput } from '@/modules/automation/index.js';
 import { interruptsService } from '@/modules/interrupt-queue/index.js';
+import { kanbanDb } from '@/modules/kanban/index.js';
 import { runService } from '@/modules/runs/index.js';
 import type { BotTrigger, BotTrust } from '@/modules/bots/bots.types.js';
 import { botTriggersDb } from '@/modules/bots/signals/bot-triggers.repository.js';
@@ -28,11 +29,36 @@ function matches(filter: unknown, actual: unknown): boolean {
 function originBotOfRun(runId: string): string {
   if (!runId) return '';
   try {
-    return botIdFromMeta(runService.get(runId)?.meta);
+    const run = runService.get(runId);
+    if (!run) return '';
+    const fromMeta = botIdFromMeta(run.meta);
+    if (fromMeta) return fromMeta;
+    // Bot runs are Mission Control runs whose sourceRef is the bot (section) id.
+    return run.source === 'mission_control' ? str(run.source_ref) : '';
   } catch {
     return '';
   }
 }
+
+/** Marker a bot-authored kanban task carries in its title/description/prompt: `[bot:<id>]`. */
+const BOT_TASK_MARKER = /\[bot:[^\]\s]+\]/i;
+
+/** True when the kanban task (or its event payload) says a bot created it. Fails open (false) only when nothing says so. */
+function taskCreatedByBot(taskId: string, payload: Record<string, unknown>): boolean {
+  const origin = str(payload.source) || str(payload.createdBy) || str(payload.created_by) || str(payload.origin);
+  if (/^bot(?::|$)/i.test(origin) || botIdFromMeta(payload.meta)) return true;
+  if (!taskId) return false;
+  try {
+    const task = kanbanDb.getTask(taskId);
+    if (!task) return false;
+    return [task.title, task.description, task.prompt].some((text) => BOT_TASK_MARKER.test(str(text)));
+  } catch {
+    return false;
+  }
+}
+
+/** Bot-origin events wake a trigger only when it opts in with `allow_bot_origin: true` (loop guard). */
+const allowsBotOrigin = (trigger: BotTrigger): boolean => trigger.config.allow_bot_origin === true;
 
 function originBotOfInterrupt(interruptId: string): string {
   if (!interruptId) return '';
@@ -61,8 +87,8 @@ function map(trigger: BotTrigger, input: AutomationFireInput): Mapped | null {
       if (!matches(trigger.config.source, payload.source)) return null;
       if (!matches(trigger.config.project_id, projectId)) return null;
       const runId = str(payload.runId);
-      // Loop guard: a bot must not wake on its own runs.
-      if (originBotOfRun(runId) === trigger.bot_id) return null;
+      // Loop guard: a bot must not wake on runs of ANY bot unless the trigger opts in.
+      if (originBotOfRun(runId) && !allowsBotOrigin(trigger)) return null;
       return {
         source: 'automation:run_completed',
         kind: 'run_completed',
@@ -76,6 +102,8 @@ function map(trigger: BotTrigger, input: AutomationFireInput): Mapped | null {
       if (!matches(trigger.config.event, input.event)) return null;
       if (!matches(trigger.config.project_id, projectId)) return null;
       const taskId = str(payload.taskId);
+      // Loop guard: a task a bot created must not wake a bot (same opt-in as runs).
+      if (taskCreatedByBot(taskId, payload) && !allowsBotOrigin(trigger)) return null;
       return {
         source: 'automation:kanban_event',
         kind: 'kanban_event',
@@ -89,7 +117,7 @@ function map(trigger: BotTrigger, input: AutomationFireInput): Mapped | null {
       if (!matches(trigger.config.kind, payload.kind)) return null;
       if (!matches(trigger.config.severity, payload.severity)) return null;
       const interruptId = str(payload.interruptId);
-      if (originBotOfInterrupt(interruptId) === trigger.bot_id) return null;
+      if (originBotOfInterrupt(interruptId) && !allowsBotOrigin(trigger)) return null;
       return {
         source: 'automation:interrupt_created',
         kind: 'interrupt_created',

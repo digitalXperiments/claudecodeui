@@ -1,15 +1,21 @@
 export { default as missionControlRoutes } from '@/modules/mission-control/mission-control.routes.js';
 export { missionControlDb } from '@/modules/mission-control/mission-control.repository.js';
 export { MC_PROVIDERS } from '@/modules/mission-control/mission-control.types.js';
-export { listBotMemories, proposeBotMemory } from '@/modules/mission-control/mission-control-memory.service.js';
+export { approvedMemoryContext, listBotMemories, proposeBotMemory, reviewBotMemory } from '@/modules/mission-control/mission-control-memory.service.js';
 export type { BotMemory } from '@/modules/mission-control/mission-control-memory.service.js';
 export {
   buildRuntimeOptions,
+  abortMissionControlRun,
+  buildProducePrompt,
   configureMissionControlRuntimes,
   extractRunOutcome,
+  PRODUCE_ITEM_SHAPE,
+  runMissionControlAgent,
   parseJsonFromAgentText,
 } from '@/modules/mission-control/mission-control-agent.service.js';
 export {
+  finishMissionControlSectionRun,
+  ingestProduceDrafts,
   runSectionProduce,
   applyItemAction,
   retryItem,
@@ -24,6 +30,7 @@ export type {
 export {
   startMissionControlScheduler,
   stopMissionControlScheduler,
+  setMissionControlScheduleFilter,
   syncMissionControlSchedules,
   getMissionControlScheduledJobCount,
 } from '@/modules/mission-control/mission-control-scheduler.service.js';
@@ -91,3 +98,4 @@ export {
   WORK_GMAIL_SECTION_TITLE,
 } from '@/modules/mission-control/action-centre-seed.js';
 export * from '@/modules/mission-control/mission-control.types.js';
+export { recordSectionVersion } from '@/modules/mission-control/mission-control-versions.service.js';

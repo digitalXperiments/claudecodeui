@@ -92,16 +92,20 @@ function classifyTokens(rawTokens: string[]): Risk | null {
   return null;
 }
 
-/**
- * Infer the risk of an MCP tool call. MCP annotations win (`destructiveHint` →
- * delete, `readOnlyHint` → read), then the tool name, then the first words of
- * the description. Anything unrecognised is `unknown` (the gate asks).
- */
-export function classifyToolRisk(input: ClassifyToolInput): Risk {
-  const { annotations } = input;
-  if (annotations?.destructiveHint === true) return 'delete';
-  if (annotations?.readOnlyHint === true) return 'read';
+const RISK_RANK: Record<Risk, number> = {
+  read: 0,
+  draft: 1,
+  unknown: 2,
+  send: 3,
+  publish: 3,
+  purchase: 3,
+  credential: 3,
+  prod_change: 3,
+  delete: 4,
+};
 
+/** Name/description-derived risk only (no annotations). */
+function classifyByText(input: ClassifyToolInput): Risk {
   const fromName = classifyTokens(tokenize(input.tool));
   if (fromName) return fromName;
 
@@ -113,4 +117,19 @@ export function classifyToolRisk(input: ClassifyToolInput): Risk {
     if (fromDescription) return fromDescription;
   }
   return 'unknown';
+}
+
+/**
+ * Infer the risk of an MCP tool call: the higher of the name/description risk and the
+ * annotation risk (`destructiveHint` -> delete, `readOnlyHint` -> read). Annotations come
+ * from the (untrusted) server, so they can raise a risk but never lower one: a
+ * `readOnlyHint` cannot downgrade `send_message`, or make an unrecognised name safe.
+ * Anything unrecognised is `unknown` (the gate asks).
+ */
+export function classifyToolRisk(input: ClassifyToolInput): Risk {
+  const fromText = classifyByText(input);
+  const { annotations } = input;
+  let fromAnnotations: Risk = 'read';
+  if (annotations?.destructiveHint === true) fromAnnotations = 'delete';
+  return RISK_RANK[fromAnnotations] > RISK_RANK[fromText] ? fromAnnotations : fromText;
 }

@@ -150,6 +150,7 @@ import {
     bootBotsRuntime,
     botGatewayMcpRoutes,
     botHooksPublicRouter,
+    botKernelRouter,
     botTriggersRouter,
     stopBotsRuntime,
 } from './modules/bots/index.js';
@@ -563,6 +564,14 @@ app.get('/health', (req, res) => {
 // it before the installation-wide optional API key middleware as well as JWT;
 // provider-native MCP clients only receive the dedicated Relay credential.
 app.use('/api/agent-relay-mcp', agentRelayMcpRoutes);
+// Same for the bot runtime tool gateway (stdio MCP proxy → gate; its own token plus a
+// per-run binding secret) and the webhook ingest routes (HMAC / webhook API key). External
+// senders and MCP children never hold the installation API key or a JWT, so these must
+// precede both validateApiKey and the `app.use('/api', authenticateToken, ...)` routers.
+// Per-bot hooks precede /api/hooks, which would swallow them.
+app.use('/api/bot-gateway-mcp', botGatewayMcpRoutes);
+app.use('/api/hooks/bots', botHooksPublicRouter);
+app.use('/api/hooks', webhooksIngestRoutes);
 
 // Optional API key validation (if configured)
 app.use('/api', validateApiKey);
@@ -577,13 +586,6 @@ app.use('/api/auth', authRoutes);
 // with a 403 before this router's own token guard ever runs.
 app.use('/api/browser-use-mcp', browserUseMcpRoutes);
 app.use('/api/session-mailbox-mcp', sessionMailboxMcpRoutes);
-// Bot runtime tool gateway (stdio MCP proxy → gate). Token-checked in the router, like the mailbox.
-app.use('/api/bot-gateway-mcp', botGatewayMcpRoutes);
-// Webhook ingest routes carry their own auth (HMAC / API key, no JWT), so they must be
-// mounted before the `app.use('/api', authenticateToken, ...)` routers below for the same
-// reason as the MCP bridges. Per-bot hooks precede /api/hooks, which would swallow them.
-app.use('/api/hooks/bots', botHooksPublicRouter);
-app.use('/api/hooks', webhooksIngestRoutes);
 // Public OAuth callback: the browser landing here may have no CloudCLI session.
 // Security lives in the single-use `state` row. Mounted before authenticateToken
 // for the same reason as the MCP routers above.
@@ -666,6 +668,7 @@ app.use('/api/browser-capture', authenticateToken, browserCaptureRoutes);
 // Mission Control — global + project produce/resolve queues
 app.use('/api/mission-control', authenticateToken, missionControlRoutes);
 app.use('/api/bots', authenticateToken, botTriggersRouter);
+app.use('/api/bots', authenticateToken, botKernelRouter);
 
 // Product flags (Kanban visibility, live spend caps)
 app.use('/api/features', authenticateToken, appFeaturesRoutes);

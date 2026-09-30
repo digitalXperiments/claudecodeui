@@ -29,6 +29,8 @@ export interface GateRequest {
   args: Record<string, unknown>;
   annotations?: Record<string, unknown>;
   description?: string;
+  /** Caller-classified risk (built-in tools); skips name/annotation inference. */
+  riskOverride?: Risk;
 }
 
 export interface GateVerdict {

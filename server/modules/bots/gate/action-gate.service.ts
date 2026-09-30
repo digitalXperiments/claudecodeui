@@ -13,11 +13,31 @@ import {
   type HumanGateOutcome,
   type Risk,
 } from '@/modules/bots/gate/gate.types.js';
-import { rules } from '@/modules/bots/gate/rules.service.js';
+import { escapeGlobLiteral, rules } from '@/modules/bots/gate/rules.service.js';
 import { classifyToolRisk } from '@/modules/bots/gate/tool-risk.js';
 import type { BotRule } from '@/modules/bots/bots.types.js';
 
 type Verdict = Pick<GateVerdict, 'decision' | 'decidedBy' | 'reason'>;
+
+const FIRST_PARTY_SERVER = 'bot';
+const URL_PATTERN = /\b(?:https?|ftp|wss?):\/\/|\bwww\.\S/i;
+const SQL_PATTERN = /\b(?:drop|delete|update|insert|alter|truncate)\b\s+\S/i;
+const SHELL_PATTERN = /\$\(|`|&&|\|\||[;|]\s*(?:rm|curl|wget|bash|sh|zsh|nc|ncat|chmod|chown|sudo|python3?|node|perl|ruby|cat|scp)\b|^\s*(?:sudo|rm|curl|wget|bash|sh|zsh|nc|ncat|chmod|chown|python3?|node|perl|ruby|scp)\s/im;
+
+/** True when any string in `value` carries a URL, SQL-like text, or a shell-like command. */
+function argsLookActionable(value: unknown, depth = 0): boolean {
+  if (depth > 6 || value === null || value === undefined) return false;
+  if (typeof value === 'string') {
+    const text = value.slice(0, 10_000);
+    return URL_PATTERN.test(text) || SQL_PATTERN.test(text) || SHELL_PATTERN.test(text);
+  }
+  if (Array.isArray(value)) return value.some((entry) => argsLookActionable(entry, depth + 1));
+  if (typeof value === 'object') return Object.values(value as Record<string, unknown>).some((entry) => argsLookActionable(entry, depth + 1));
+  return false;
+}
+
+/** "Always allow" rules lapse after 30 days. */
+const ALWAYS_ALLOW_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 const isFloor = (risk: Risk): boolean => SAFETY_FLOOR.includes(risk);
 const isSafe = (risk: Risk): boolean => risk === 'read' || risk === 'draft';
@@ -34,7 +54,7 @@ function provisionalDecision(risk: Risk, rule: BotRule | null): { verdict: Verdi
         verdict: {
           decision: 'ask',
           decidedBy: 'floor',
-          reason: `Risk "${risk}" needs approval; a global rule cannot loosen it (rule ${rule.rule_id})`,
+          reason: `Risk "${risk}" needs approval; only an explicit bot rule can loosen it (rule ${rule.rule_id} is ${rule.scope === 'bot' ? 'an implicit section policy' : 'global'})`,
         },
         rule: null,
       };
@@ -79,13 +99,20 @@ function persistAndBroadcast(ctx: GateContext, req: GateRequest, risk: Risk, ver
   return { ...verdict, risk, decisionId: row.decision_id, ...(soft ? { soft: true } : {}) };
 }
 
+/** Persist and broadcast a denial the caller decided itself (e.g. the built-in tool denylist). */
+export function recordGateDenial(ctx: GateContext, req: GateRequest, risk: Risk, decidedBy: string, reason: string): GateVerdict {
+  return persistAndBroadcast(ctx, req, risk, { decision: 'deny', decidedBy, reason }, false);
+}
+
 async function evaluate(ctx: GateContext, req: GateRequest): Promise<GateVerdict> {
-  const risk = classifyToolRisk({
-    server: req.server,
-    tool: req.tool,
-    annotations: req.annotations,
-    description: req.description,
-  });
+  const risk =
+    req.riskOverride ??
+    classifyToolRisk({
+      server: req.server,
+      tool: req.tool,
+      annotations: req.annotations,
+      description: req.description,
+    });
   const finish = (verdict: Verdict, soft = false) => persistAndBroadcast(ctx, req, risk, verdict, soft);
 
   // 1. Dry run: nothing but reads and drafts may act.
@@ -93,7 +120,8 @@ async function evaluate(ctx: GateContext, req: GateRequest): Promise<GateVerdict
   try {
     dryRun = Boolean(missionControlDb.getSection(ctx.botId)?.dry_run);
   } catch {
-    dryRun = false;
+    // Fail closed: if the flag cannot be read, behave as if dry run were on.
+    dryRun = true;
   }
   if (dryRun && !isSafe(risk)) {
     return finish({ decision: 'deny', decidedBy: 'dry_run', reason: `Dry run is on; "${req.tool}" (${risk}) was not executed` });
@@ -119,7 +147,10 @@ async function evaluate(ctx: GateContext, req: GateRequest): Promise<GateVerdict
   }
 
   // 6. Auto-review: allow on unknown risk, or a tainted call that is neither read-only nor floor.
-  const needsReview = risk === 'unknown' || (ctx.tainted && risk === 'draft');
+  const needsReview =
+    risk === 'unknown' ||
+    (ctx.tainted && risk === 'draft') ||
+    (ctx.tainted && risk === 'read' && req.server !== FIRST_PARTY_SERVER && argsLookActionable(req.args));
   if (needsReview) {
     const review = await runAutoReviewer(ctx, req, risk);
     if (!review.ok) {
@@ -145,19 +176,35 @@ export function setGateHumanPollInterval(ms: number | null): void {
   pollIntervalMs = ms ?? 1_000;
 }
 
-function summarizeArgs(args: Record<string, unknown>): string {
-  let text: string;
-  try {
-    text = JSON.stringify(args);
-  } catch {
-    text = '[unserializable]';
-  }
-  if (text.length > 600) text = `${text.slice(0, 600)}...`;
+const ARG_VALUE_LIMIT = 300;
+/** Fields that say where something goes; the operator must see them in full. */
+const RECIPIENT_KEYS = new Set(['to', 'cc', 'bcc', 'channel', 'url', 'path', 'recipients', 'recipient']);
+
+function redactText(text: string): string {
   try {
     return secretsService.redact(text);
   } catch {
     return text;
   }
+}
+
+/** One `key: value` line per argument; values truncated individually, recipient-like fields never. */
+export function summarizeArgs(args: Record<string, unknown>): string {
+  const lines: string[] = [];
+  for (const [key, value] of Object.entries(args ?? {})) {
+    let text: string;
+    try {
+      text = typeof value === 'string' ? value : JSON.stringify(value) ?? String(value);
+    } catch {
+      text = '[unserializable]';
+    }
+    text = redactText(text);
+    if (!RECIPIENT_KEYS.has(key.toLowerCase()) && text.length > ARG_VALUE_LIMIT) {
+      text = `${text.slice(0, ARG_VALUE_LIMIT)}... (${text.length} chars)`;
+    }
+    lines.push(`  ${key}: ${text}`);
+  }
+  return lines.length ? `\n${lines.join('\n')}` : ' (none)';
 }
 
 /**
@@ -174,12 +221,14 @@ export function resolveBotGateDecision(
   const settled = row.outcome === 'approved' || row.outcome === 'rejected' || row.outcome === 'expired' || row.outcome === 'executed';
   if (settled) return;
   botGateDecisionsDb.recordOutcome(decisionId, decision);
-  if (decision === 'approved' && options.alwaysAllow) {
+  // "Always allow" is never stored for built-in tools: a bare `Bash` rule would allow every command.
+  if (decision === 'approved' && options.alwaysAllow && row.server !== 'builtin') {
     rules.create({
       scope: 'bot',
       botId: row.bot_id,
-      match: { server: row.server, tool: row.tool },
+      match: { server: escapeGlobLiteral(row.server), tool: escapeGlobLiteral(row.tool) },
       decision: 'allow',
+      expiresAt: new Date(Date.now() + ALWAYS_ALLOW_TTL_MS).toISOString(),
       createdFrom: 'always_allow_click',
       note: `Always allow ${row.server}/${row.tool}`,
     });
@@ -228,7 +277,7 @@ async function awaitHuman(decisionId: string, options: { timeoutMs: number }): P
       `Server: ${row.server}`,
       `Tool: ${row.tool}`,
       `Risk: ${row.risk}`,
-      `Args: ${summarizeArgs(row.args)}`,
+      `Args:${summarizeArgs(row.args)}`,
       row.reason ? `Why: ${row.reason}` : '',
     ]
       .filter(Boolean)

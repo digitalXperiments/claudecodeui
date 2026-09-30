@@ -7,6 +7,7 @@ import {
   cronSummary,
   defaultToolDecision,
   isValidCron,
+  setToolDecision,
   type CreateMcSectionInput,
 } from './types';
 
@@ -54,16 +55,27 @@ test('cron presets validate and summarize raw cron', () => {
   assert.equal(cronSummary(null), 'Manual only');
 });
 
-test('read-only preset holds write-like tools for approval', () => {
+test('read-only preset holds write-like tools for approval without loosening or inventing decisions', () => {
   const result = applyReadOnlyPreset({
     github: { list_issues: 'allow', create_issue: 'allow', merge_pull_request: 'deny' },
     browser: { click: 'allow', read_page: 'allow' },
-  });
+  }, { github: ['list_issues', 'get_issue', 'send_review'] });
   assert.equal(result.github.list_issues, 'allow');
   assert.equal(result.github.create_issue, 'ask');
-  assert.equal(result.github.merge_pull_request, 'ask');
-  assert.equal(result.browser.click, 'ask');
+  assert.equal(result.github.merge_pull_request, 'deny');
+  assert.equal(result.github.send_review, 'ask');
+  assert.equal('get_issue' in result.github, false);
   assert.equal(result.browser.read_page, 'allow');
   assert.equal(defaultToolDecision('create_issue', true), 'ask');
-  assert.equal(defaultToolDecision('list_issues', true), 'allow');
+  assert.equal(defaultToolDecision('list_issues', true), 'default');
+  assert.equal(defaultToolDecision('list_issues'), 'default');
+});
+
+test('untouched tools are never persisted as allow; default clears an explicit decision', () => {
+  const policy = setToolDecision({}, 'mail', 'send_message', 'default');
+  assert.deepEqual(policy, {});
+  const allowed = setToolDecision({ mail: { read: 'ask' } }, 'mail', 'send_message', 'allow');
+  assert.deepEqual(allowed, { mail: { read: 'ask', send_message: 'allow' } });
+  assert.deepEqual(setToolDecision(allowed, 'mail', 'send_message', 'default'), { mail: { read: 'ask' } });
+  assert.deepEqual(setToolDecision({ mail: { send_message: 'deny' } }, 'mail', 'send_message', 'default'), {});
 });

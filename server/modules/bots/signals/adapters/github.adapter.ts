@@ -8,7 +8,8 @@ import {
   type WatchExec,
 } from '@/modules/bots/signals/adapters/adapter.types.js';
 
-const REPO_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+/** owner/name; `..` and bare `.` segments would escape the repos/ API path. */
+const REPO_PATTERN = /^(?!.*\.\.)(?!\.\/)(?!.*\/\.$)[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const WHAT = ['issues', 'pulls', 'notifications'] as const;
 type What = (typeof WHAT)[number];
 

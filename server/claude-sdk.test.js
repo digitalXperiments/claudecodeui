@@ -9,10 +9,12 @@ import {
   createRequestId,
   extractPermissionPaths,
   extractTokenBudget,
+  handleCanUseTool,
   getWarmClaudeSessionStats,
   isClaudeSDKSessionActive,
   isTurnActivityMessage,
   mapCliOptionsToSDK,
+  prepareClaudeSdkOptions,
   prewarmClaudeSession,
   queryClaudeSDK,
   readJsonFileCached,
@@ -805,4 +807,118 @@ test('interactive Claude enables live bypass switching without selecting bypass'
   assert.equal(options.allowDangerouslySkipPermissions, true);
   assert.notEqual(options.permissionMode, 'bypassPermissions');
   assert.equal(mapCliOptionsToSDK({ appSessionId: 'worker', relayWorker: true }).allowDangerouslySkipPermissions, undefined);
+});
+
+// ---------------------------------------------------------------------------
+// Bot gateway runs: built-in tool gate (H3) and per-binding secret (M5)
+
+const gatewayRunOptions = (overrides = {}) => ({
+  appSessionId: 'app-gw-1',
+  model: 'sonnet',
+  permissionMode: 'bypassPermissions',
+  toolsSettings: {
+    allowedTools: ['Read', 'Bash(git status:*)', 'mcp__cloudcli-tool-gateway__*'],
+    disallowedTools: ['AskUserQuestion'],
+    skipPermissions: true,
+  },
+  mcpServers: ['cloudcli-tool-gateway'],
+  strictMcpSelection: true,
+  botGatewayStrict: true,
+  unattended: true,
+  ...overrides,
+});
+
+async function prepareGateway(options) {
+  __setClaudeSdkTestOverrides({
+    loadMcpConfig: async () => ({
+      'cloudcli-tool-gateway': { command: 'node', args: ['gw.js'], env: { KEEP: '1' } },
+      'third-party': { command: 'node', args: ['tp.js'] },
+    }),
+    loadEffortModels: async () => ({}),
+    resolveResumeModel: async (_sessionId, model) => model,
+    applyClaudeSpawnAuthEnv: async () => {},
+  });
+  try {
+    return await prepareClaudeSdkOptions(options);
+  } finally {
+    __setClaudeSdkTestOverrides(null);
+  }
+}
+
+test('gateway run with a built-in gate: default mode, no pre-approvals, strict MCP, secret only on the gateway entry', async () => {
+  const gate = async () => ({ behavior: 'allow' });
+  const sdkOptions = await prepareGateway(gatewayRunOptions({ builtinToolGate: gate, botGatewaySecret: 'shh-123' }));
+  assert.equal(sdkOptions.permissionMode, 'default', 'bypass is forced back to default so canUseTool is consulted');
+  assert.equal(sdkOptions.allowDangerouslySkipPermissions, undefined);
+  assert.deepEqual(sdkOptions.allowedTools, ['mcp__cloudcli-tool-gateway__*'], 'built-ins are not pre-approved');
+  assert.deepEqual(sdkOptions.settingSources, [], 'settings allow rules/hooks cannot pre-approve');
+  assert.deepEqual(sdkOptions.extraArgs, { 'strict-mcp-config': null });
+  assert.deepEqual(Object.keys(sdkOptions.mcpServers), ['cloudcli-tool-gateway']);
+  const env = sdkOptions.mcpServers['cloudcli-tool-gateway'].env;
+  assert.equal(env.CLOUDCLI_BOT_GATEWAY_BINDING_SECRET, 'shh-123');
+  assert.equal(env.CLOUDCLI_LEAD_SESSION_ID, 'app-gw-1');
+  assert.equal(env.KEEP, '1');
+  assert.equal('builtinToolGate' in sdkOptions, false, 'the gate never reaches the SDK options');
+});
+
+test('gateway run without a secret or gate keeps today\'s behaviour and stamps no secret', async () => {
+  const sdkOptions = await prepareGateway(gatewayRunOptions());
+  assert.equal(sdkOptions.permissionMode, 'bypassPermissions');
+  assert.equal(sdkOptions.mcpServers['cloudcli-tool-gateway'].env.CLOUDCLI_BOT_GATEWAY_BINDING_SECRET, undefined);
+});
+
+test('the secret is stamped only when the run carries one, and never on other servers', async () => {
+  const withSecret = await prepareGateway(gatewayRunOptions({
+    mcpServers: ['cloudcli-tool-gateway', 'third-party'],
+    botGatewaySecret: 'abc',
+  }));
+  assert.equal(withSecret.mcpServers['cloudcli-tool-gateway'].env.CLOUDCLI_BOT_GATEWAY_BINDING_SECRET, 'abc');
+  assert.equal(withSecret.mcpServers['third-party'].env.CLOUDCLI_BOT_GATEWAY_BINDING_SECRET, undefined);
+  assert.equal(withSecret.mcpServers['third-party'].env.CLOUDCLI_LEAD_SESSION_ID, 'app-gw-1');
+});
+
+test('handleCanUseTool routes built-ins through the gate: allow, deny, throw all resolve; interactive tools keep the old path', async () => {
+  const seen = [];
+  const gate = async (toolName, input) => {
+    seen.push(toolName);
+    if (toolName === 'Boom') throw new Error('gate exploded');
+    return toolName === 'Read' ? { behavior: 'allow' } : { behavior: 'deny', message: `no ${toolName}` };
+  };
+  const sdkOptions = await prepareGateway(gatewayRunOptions({ builtinToolGate: gate }));
+  const sent = [];
+  const ctx = {
+    sdkOptions,
+    ws: { send: (message) => sent.push(message) },
+    capturedSessionIdRef: () => 'sess',
+    sessionId: 'sess',
+    sessionSummary: 's',
+    emitNotification: () => {},
+    unattended: true,
+    approvalTimeoutMs: 20,
+    cwd: '/tmp',
+  };
+  const allow = await handleCanUseTool('Read', { file_path: '/tmp/x' }, {}, ctx);
+  assert.equal(allow.behavior, 'allow');
+  assert.deepEqual(allow.updatedInput, { file_path: '/tmp/x' });
+  const deny = await handleCanUseTool('Bash', { command: 'printenv' }, {}, ctx);
+  assert.deepEqual(deny, { behavior: 'deny', message: 'no Bash' });
+  const boom = await handleCanUseTool('Boom', {}, {}, ctx);
+  assert.equal(boom.behavior, 'deny');
+  assert.match(boom.message, /gate exploded/);
+  assert.deepEqual(seen, ['Read', 'Bash', 'Boom']);
+  assert.equal(sent.length, 0, 'no permission_request is sent to a human for gated built-ins');
+
+  // AskUserQuestion is disallowed by settings -> denied before the gate is consulted.
+  const ask = await handleCanUseTool('AskUserQuestion', {}, {}, ctx);
+  assert.equal(ask.behavior, 'deny');
+  assert.equal(seen.length, 3);
+});
+
+test('handleCanUseTool without a built-in gate is unchanged (bypass still allows)', async () => {
+  const sdkOptions = await prepareGateway(gatewayRunOptions());
+  const result = await handleCanUseTool('Bash', { command: 'ls' }, {}, {
+    sdkOptions, ws: { send: () => {} }, capturedSessionIdRef: () => 's', sessionId: 's', sessionSummary: '',
+    emitNotification: () => {}, unattended: true, approvalTimeoutMs: 20, cwd: '/tmp',
+  });
+  assert.equal(result.behavior, 'allow');
 });
