@@ -25,3 +25,15 @@ export { botThreadDb } from '@/modules/bots/channels/bot-thread.repository.js';
 export { botOutboundLogDb } from '@/modules/bots/channels/bot-outbound-log.repository.js';
 export { botTeamsDb } from '@/modules/bots/collab/bot-teams.repository.js';
 export { botSpacesDb } from '@/modules/bots/collab/bot-spaces.repository.js';
+
+export * from '@/modules/bots/gate/index.js';
+export * from '@/modules/bots/gateway/index.js';
+export * from '@/modules/bots/signals/index.js';
+export {
+  bootBotsRuntime,
+  isBotsRuntimeRunning,
+  registerBotsRuntimeHook,
+  setBotsRuntimeWakeHandler,
+  startBotsRuntime,
+  stopBotsRuntime,
+} from '@/modules/bots/bots-runtime.boot.js';

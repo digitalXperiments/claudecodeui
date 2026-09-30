@@ -20,6 +20,12 @@ type McItemResolver = (itemId: string, decision: 'approve' | 'deny') => void | P
 let resolveMcItem: McItemResolver | null = null;
 type RetryRunResolver = (runId: string) => void | Promise<void>;
 let resolveRetryRun: RetryRunResolver | null = null;
+type BotGateResolver = (
+  decisionId: string,
+  decision: 'approved' | 'rejected',
+  options: { alwaysAllow: boolean },
+) => void | Promise<void>;
+let resolveBotGate: BotGateResolver | null = null;
 
 function emitInterrupt(kind: 'interrupt_created' | 'interrupt_updated', interrupt: Interrupt): void {
   broadcastSystemEvent({ kind, interrupt });
@@ -69,6 +75,9 @@ export const interruptsService = {
   },
   configureRetryRunResolver(resolver: RetryRunResolver | null): void {
     resolveRetryRun = resolver;
+  },
+  configureBotGateResolver(resolver: BotGateResolver | null): void {
+    resolveBotGate = resolver;
   },
   list(filter: InterruptListFilter = {}): Interrupt[] {
     return interruptsDb.list(filter);
@@ -204,6 +213,25 @@ export const interruptsService = {
               : null;
         if (itemId && resolveMcItem) {
           void resolveMcItem(itemId, input.key === 'approve_mc_item' ? 'approve' : 'deny');
+        }
+        resolved = interruptsDb.resolve(id, 'resolved', input.actor ?? null, input.key)!;
+        break;
+      }
+      case 'approve_once':
+      case 'always_allow':
+      case 'deny': {
+        const decisionId = typeof interrupt.meta.decisionId === 'string' ? interrupt.meta.decisionId : null;
+        if (!decisionId) {
+          throw new CloudError('INTERRUPT_NOT_FOUND', 'The bot gate request is no longer active');
+        }
+        if (resolveBotGate) {
+          void Promise.resolve(
+            resolveBotGate(decisionId, input.key === 'deny' ? 'rejected' : 'approved', {
+              alwaysAllow: input.key === 'always_allow',
+            }),
+          ).catch(() => {
+            // The decision row is still polled by the waiter; the interrupt closes regardless.
+          });
         }
         resolved = interruptsDb.resolve(id, 'resolved', input.actor ?? null, input.key)!;
         break;

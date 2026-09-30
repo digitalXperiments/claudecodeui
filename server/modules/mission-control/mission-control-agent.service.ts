@@ -2,6 +2,9 @@ import os from 'node:os';
 
 import { jsonrepair } from 'jsonrepair';
 
+import { isBotsRuntimeV2Enabled } from '@/modules/app-features/index.js';
+import { readBotRuntimeConfig } from '@/modules/bots/index.js';
+import { gatewaySessions } from '@/shared/bot-gateway-sessions.js';
 import { projectsDb } from '@/modules/database/index.js';
 import { recordNormalizedRunEvent, runService } from '@/modules/runs/index.js';
 import { sessionsService } from '@/modules/providers/index.js';
@@ -418,8 +421,21 @@ export function buildToolPolicyAdvisoryPrompt(section: McSection, tools: string[
   ].filter(Boolean).join('\n');
 }
 
+export const BOT_GATEWAY_SERVER_NAME = 'cloudcli-tool-gateway';
+
+/** Bot runtime v2 routes a section's MCP tools through the Tool Gateway unless the bot opted out. */
+export function shouldUseToolGateway(section: McSection): boolean {
+  if (!isBotsRuntimeV2Enabled()) return false;
+  try {
+    return readBotRuntimeConfig(section.section_id)?.gateway !== false;
+  } catch {
+    return false;
+  }
+}
+
 export function buildRuntimeOptions(section: McSection, tools: string[]): AnyRecord {
   const provider = section.provider;
+  const useGateway = shouldUseToolGateway(section);
   const permissionMode = section.permission_mode || 'bypassPermissions';
   // Mission Control sections always run detached (no websocket/human on the
   // other end) — see startProviderRun's DETACHED_CONNECTION below. Providers
@@ -432,19 +448,26 @@ export function buildRuntimeOptions(section: McSection, tools: string[]): AnyRec
   if (section.effort) {
     options.effort = section.effort;
   }
-  if (tools.length > 0) {
+  if (useGateway) {
+    // The gateway is the only MCP server the run may use; the real servers sit behind it.
+    options.mcpServers = [BOT_GATEWAY_SERVER_NAME];
+    options.strictMcpSelection = true;
+    options.botGatewayStrict = true;
+  } else if (tools.length > 0) {
     options.mcpServers = tools;
   }
 
-  const expandedTools = expandMcpSelectionsToTools(tools, provider);
+  const expandedTools = expandMcpSelectionsToTools(useGateway ? [BOT_GATEWAY_SERVER_NAME] : tools, provider);
   const entries = policyEntries(section, tools);
   const policyServers = new Set(
     tools.filter((server) => Object.keys(section.tool_policy?.[server] ?? {}).length > 0),
   );
-  const fallbackTools = expandMcpSelectionsToTools(
-    tools.filter((server) => !policyServers.has(server)),
-    provider,
-  );
+  const fallbackTools = useGateway
+    ? ['mcp__cloudcli-tool-gateway__*']
+    : expandMcpSelectionsToTools(
+      tools.filter((server) => !policyServers.has(server)),
+      provider,
+    );
   const allowedPolicyTools = entries
     .filter((entry) => entry.decision === 'allow')
     .map((entry) => entry.pattern);
@@ -464,7 +487,7 @@ export function buildRuntimeOptions(section: McSection, tools: string[]): AnyRec
         // Ask tools are intentionally omitted from allowedTools. Restricted
         // policies also downgrade bypassPermissions above, so Claude's
         // unattended default mode cannot auto-allow omitted tools.
-        allowedTools: [...new Set([...fallbackTools, ...allowedPolicyTools])],
+        allowedTools: [...new Set(useGateway ? fallbackTools : [...fallbackTools, ...allowedPolicyTools])],
         // Mission Control runs are always headless (no human on the other
         // end to answer). AskUserQuestion/ExitPlanMode must never be reached:
         // deny them outright instead of stalling on an approval nobody can
@@ -527,6 +550,8 @@ export async function runMissionControlAgent(params: {
   sourceRef?: string;
   trigger?: string;
   phase?: 'produce' | 'resolve' | 'retry' | 'architect';
+  /** Bot runtime v2 episode this run belongs to (bound to the gateway session for taint tracking). */
+  episodeId?: string;
 }): Promise<McAgentRunResult> {
   const { prompt, tools } = params;
   const section = sectionForPhase(params.section, params.phase);
@@ -566,50 +591,66 @@ export async function runMissionControlAgent(params: {
     },
   });
 
-  let result: Awaited<ReturnType<typeof startProviderRun>>;
-  try {
-    runService.updateStatus(canonicalRun.run_id, 'starting');
-    result = await startProviderRun({
-      appSessionId,
+  // Bot runtime v2: bind this app session to its bot so the Tool Gateway (spawned by the
+  // provider as a stdio child) knows which servers and gate context apply. Unbound in finally.
+  const gatewayBound = shouldUseToolGateway(section);
+  if (gatewayBound) {
+    gatewaySessions.bind(appSessionId, {
+      botId: section.section_id,
+      episodeId: params.episodeId,
+      runId: canonicalRun.run_id,
+      servers: tools,
       provider,
-      providerSessionId: null,
-      projectPath,
-      spawnFn,
-      content: ['codex', 'grok', 'opencode', 'kimi', 'cursor'].includes(provider)
-        ? [prompt, buildToolPolicyAdvisoryPrompt(section, tools)].filter(Boolean).join('\n\n')
-        : prompt,
-      options: buildRuntimeOptions(section, tools),
-      connection: DETACHED_CONNECTION,
-      userId: null,
-      onEvent: (message) => recordNormalizedRunEvent(canonicalRun.run_id, message, 'mission_control'),
-    });
-  } catch (error) {
-    runService.markTerminal(canonicalRun.run_id, {
-      status: 'failed',
-      errorSummary: error instanceof Error ? error.message : String(error),
-    });
-    throw error;
-  }
-
-  if (!result.ok) {
-    runService.markTerminal(canonicalRun.run_id, {
-      status: 'failed',
-      errorSummary: 'A run is already in progress for this session',
-    });
-    throw new AppError('A run is already in progress for this session', {
-      code: 'MC_RUN_IN_PROGRESS',
-      statusCode: 409,
     });
   }
+  try {
+    let result: Awaited<ReturnType<typeof startProviderRun>>;
+    try {
+      runService.updateStatus(canonicalRun.run_id, 'starting');
+      result = await startProviderRun({
+        appSessionId,
+        provider,
+        providerSessionId: null,
+        projectPath,
+        spawnFn,
+        content: ['codex', 'grok', 'opencode', 'kimi', 'cursor'].includes(provider)
+          ? [prompt, buildToolPolicyAdvisoryPrompt(section, tools)].filter(Boolean).join('\n\n')
+          : prompt,
+        options: buildRuntimeOptions(section, tools),
+        connection: DETACHED_CONNECTION,
+        userId: null,
+        onEvent: (message) => recordNormalizedRunEvent(canonicalRun.run_id, message, 'mission_control'),
+      });
+    } catch (error) {
+      runService.markTerminal(canonicalRun.run_id, {
+        status: 'failed',
+        errorSummary: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
 
-  runService.linkSession(canonicalRun.run_id, appSessionId);
-  if (runService.get(canonicalRun.run_id)?.status === 'starting') {
-    runService.updateStatus(canonicalRun.run_id, 'running');
+    if (!result.ok) {
+      runService.markTerminal(canonicalRun.run_id, {
+        status: 'failed',
+        errorSummary: 'A run is already in progress for this session',
+      });
+      throw new AppError('A run is already in progress for this session', {
+        code: 'MC_RUN_IN_PROGRESS',
+        statusCode: 409,
+      });
+    }
+
+    runService.linkSession(canonicalRun.run_id, appSessionId);
+    if (runService.get(canonicalRun.run_id)?.status === 'starting') {
+      runService.updateStatus(canonicalRun.run_id, 'running');
+    }
+
+    await result.completion;
+    const { text, failed, errorMessage } = extractRunOutcome(appSessionId);
+    return { appSessionId, runId: canonicalRun.run_id, text, success: !failed, errorMessage };
+  } finally {
+    if (gatewayBound) gatewaySessions.unbind(appSessionId);
   }
-
-  await result.completion;
-  const { text, failed, errorMessage } = extractRunOutcome(appSessionId);
-  return { appSessionId, runId: canonicalRun.run_id, text, success: !failed, errorMessage };
 }
 
 export function buildProducePrompt(section: McSection): string {

@@ -23,7 +23,7 @@ import type { LLMProvider } from '@/shared/types.js';
 import { secretsService } from '@/modules/secrets/index.js';
 import { CloudError } from '@/shared/run-events.js';
 
-type FireInput = {
+export type FireInput = {
   type: AutomationTrigger['type'];
   event?: string;
   projectId?: string | null;
@@ -36,6 +36,19 @@ export type AutomationFireResult = {
   automationRun: AutomationRun;
   actionResults: Array<Record<string, unknown>>;
 };
+
+export type AutomationEventSink = (input: FireInput) => void;
+
+let automationEventSink: AutomationEventSink | null = null;
+
+/**
+ * Observe every event passed to `automationService.fire`. Used by the Bot
+ * Runtime to map the same events onto bot triggers. The sink is invoked
+ * best-effort: a throwing sink can never affect recipe execution.
+ */
+export function configureAutomationEventSink(sink: AutomationEventSink | null): void {
+  automationEventSink = sink;
+}
 
 let runtimeSpawnFns: Partial<Record<LLMProvider, ProviderSpawnFn>> = {};
 
@@ -702,6 +715,16 @@ export const automationService = {
     return deleted;
   },
   async fire(input: FireInput): Promise<AutomationFireResult[]> {
+    if (automationEventSink) {
+      try {
+        automationEventSink(input);
+      } catch (error) {
+        console.error('[Automation] event sink failed', {
+          type: input.type,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
     const recipes = input.recipeId
       ? [automationDb.get(input.recipeId)].filter((recipe): recipe is AutomationRecipe =>
           Boolean(recipe),

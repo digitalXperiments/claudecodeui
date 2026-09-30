@@ -8,6 +8,7 @@
  * same session.
  */
 
+import { gatewaySessions } from '@/shared/bot-gateway-sessions.js';
 import { recordNormalizedRunEvent, runService } from '@/modules/runs/index.js';
 import { getConnection, projectsDb, sessionsDb } from '@/modules/database/index.js';
 import { getMemoryPreamble, mcpCatalogService, providerModelsService, sessionsService } from '@/modules/providers/index.js';
@@ -15,7 +16,7 @@ import { DETACHED_CONNECTION, startProviderRun } from '@/modules/websocket/index
 import type { LLMProvider } from '@/shared/types.js';
 import { AppError } from '@/shared/utils.js';
 
-import { getMissionControlRuntime, buildRuntimeOptions } from './mission-control-agent.service.js';
+import { getMissionControlRuntime, buildRuntimeOptions, shouldUseToolGateway } from './mission-control-agent.service.js';
 import { missionControlDb } from './mission-control.repository.js';
 import { buildWorkThisPrompt } from './mission-control-work.service.js';
 import { routeWorkItem } from './mission-control-work-profile.js';
@@ -111,6 +112,16 @@ async function runWorkTurn(params: {
     // Profile tools/effort only apply while the session's agent is still the profile's agent.
     const sameAgent = work.provider === profile.provider;
     let failure: string | null = null;
+    // With the tool gateway on, the work session reaches its MCP servers only through the
+    // gateway, so it must be bound to this bot for the turn (unbound when the turn settles).
+    if (shouldUseToolGateway(section)) {
+      gatewaySessions.bind(work.sessionId, {
+        botId: section.section_id,
+        runId: runId ?? undefined,
+        servers: sameAgent ? profile.mcp_servers : [],
+        provider: work.provider,
+      });
+    }
     const started = await startProviderRun({
       appSessionId: work.sessionId, provider: work.provider, providerSessionId: params.providerSessionId,
       projectPath: params.projectPath, spawnFn: getMissionControlRuntime(work.provider), content: params.content,
@@ -129,10 +140,14 @@ async function runWorkTurn(params: {
     if (!started.ok) throw new Error('Work session is already running. Wait for it to finish, then try again.');
     const completion = started.completion.then(() => finish(failure))
       .catch((error: unknown) => finish(error instanceof Error ? error.message : String(error)))
-      .finally(() => active.delete(work.sessionId));
+      .finally(() => {
+        active.delete(work.sessionId);
+        gatewaySessions.unbind(work.sessionId);
+      });
     active.set(work.sessionId, completion);
     return completion;
   } catch (error) {
+    gatewaySessions.unbind(work.sessionId);
     finish(error instanceof Error ? error.message : String(error));
     throw error;
   }

@@ -1,5 +1,6 @@
 export { default as webhooksRoutes } from '@/modules/webhooks/webhooks.routes.js';
 export { default as webhooksIngestRoutes } from '@/modules/webhooks/webhooks-ingest.routes.js';
+export { firstHeader, verifyWebhookSignature } from '@/modules/webhooks/webhooks-ingest.util.js';
 export { webhooksDb } from '@/modules/webhooks/webhooks.repository.js';
 export {
   configureWebhookRuntimes,

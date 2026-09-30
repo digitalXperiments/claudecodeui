@@ -119,6 +119,8 @@ export interface BotRuleMatch {
   tool?: string;
   risk?: string[];
   args?: { path: string; op: 'eq' | 'contains' | 'regex' | 'in'; value: unknown }[];
+  /** An allow rule that may also approve floor-risk calls made after the run read untrusted content. */
+  allow_when_tainted?: boolean;
 }
 
 export interface BotRule {

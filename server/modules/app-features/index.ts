@@ -4,6 +4,7 @@ export {
   updateAppFeatures,
   isKanbanEnabled,
   isBotsRuntimeV2Enabled,
+  onAppFeaturesChanged,
   DEFAULT_HARD_COST_USD,
   DEFAULT_SOFT_COST_USD,
 } from '@/modules/app-features/app-features.service.js';

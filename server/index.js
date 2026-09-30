@@ -146,6 +146,13 @@ import {
     stopKanbanScheduler,
 } from './modules/kanban/index.js';
 import missionControlRoutes from './modules/mission-control/mission-control.routes.js';
+import {
+    bootBotsRuntime,
+    botGatewayMcpRoutes,
+    botHooksPublicRouter,
+    botTriggersRouter,
+    stopBotsRuntime,
+} from './modules/bots/index.js';
 import { appFeaturesRoutes } from './modules/app-features/index.js';
 import {
     applyItemAction,
@@ -570,6 +577,13 @@ app.use('/api/auth', authRoutes);
 // with a 403 before this router's own token guard ever runs.
 app.use('/api/browser-use-mcp', browserUseMcpRoutes);
 app.use('/api/session-mailbox-mcp', sessionMailboxMcpRoutes);
+// Bot runtime tool gateway (stdio MCP proxy → gate). Token-checked in the router, like the mailbox.
+app.use('/api/bot-gateway-mcp', botGatewayMcpRoutes);
+// Webhook ingest routes carry their own auth (HMAC / API key, no JWT), so they must be
+// mounted before the `app.use('/api', authenticateToken, ...)` routers below for the same
+// reason as the MCP bridges. Per-bot hooks precede /api/hooks, which would swallow them.
+app.use('/api/hooks/bots', botHooksPublicRouter);
+app.use('/api/hooks', webhooksIngestRoutes);
 // Public OAuth callback: the browser landing here may have no CloudCLI session.
 // Security lives in the single-use `state` row. Mounted before authenticateToken
 // for the same reason as the MCP routers above.
@@ -638,8 +652,6 @@ app.use('/api/project-memory', authenticateToken, projectMemoryRoutes);
 // Agent API Routes (uses API key authentication)
 app.use('/api/agent', agentRoutes);
 
-// Webhook ingest (API key auth — headers, body, or query; no JWT)
-app.use('/api/hooks', webhooksIngestRoutes);
 
 // Webhook config CRUD (JWT)
 app.use('/api/webhooks', authenticateToken, webhooksRoutes);
@@ -653,6 +665,7 @@ app.use('/api/browser-capture', authenticateToken, browserCaptureRoutes);
 
 // Mission Control — global + project produce/resolve queues
 app.use('/api/mission-control', authenticateToken, missionControlRoutes);
+app.use('/api/bots', authenticateToken, botTriggersRouter);
 
 // Product flags (Kanban visibility, live spend caps)
 app.use('/api/features', authenticateToken, appFeaturesRoutes);
@@ -2278,6 +2291,13 @@ async function runDeferredBootTasks() {
     } catch (error) {
         console.error('[MissionControl] scheduler start failed:', error.message);
     }
+
+    try {
+        // Inert unless feature.bots_runtime_v2 is on; follows later flag flips.
+        await bootBotsRuntime();
+    } catch (error) {
+        console.error('[Bots] runtime start failed:', error.message);
+    }
 }
 
 // Initialize database and start server
@@ -2422,6 +2442,11 @@ async function startServer() {
                 stopRunMaintenance();
             } catch (err) {
                 console.error('[Kanban] Error stopping scheduler during shutdown:', err?.message || err);
+            }
+            try {
+                await stopBotsRuntime();
+            } catch (err) {
+                console.error('[Bots] Error stopping runtime during shutdown:', err?.message || err);
             }
             try {
                 stopMissionControlScheduler();

@@ -1,6 +1,10 @@
 export { default as missionControlRoutes } from '@/modules/mission-control/mission-control.routes.js';
 export { missionControlDb } from '@/modules/mission-control/mission-control.repository.js';
+export { MC_PROVIDERS } from '@/modules/mission-control/mission-control.types.js';
+export { listBotMemories, proposeBotMemory } from '@/modules/mission-control/mission-control-memory.service.js';
+export type { BotMemory } from '@/modules/mission-control/mission-control-memory.service.js';
 export {
+  buildRuntimeOptions,
   configureMissionControlRuntimes,
   extractRunOutcome,
   parseJsonFromAgentText,

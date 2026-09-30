@@ -42,6 +42,7 @@ import {
 import { createCompleteMessage, createNormalizedMessage } from './shared/utils.js';
 import { TOOLS_REQUIRING_INTERACTION } from './shared/interactive-tools.js';
 import { claudeSdkSandboxSettings, workerGitGuardEnv } from './shared/worker-sandbox.js';
+import { filterMcpServersForRun } from './shared/mcp-server-filter.js';
 import { buildClaudeTokenBudgetFromUsage } from './modules/providers/list/claude/claude-token-usage.js';
 
 const activeSessions = new Map();
@@ -1781,18 +1782,11 @@ async function prepareClaudeSdkOptions(options = {}) {
   // access token so the session shell authenticates like the Terminal TUI.
   await applyAuth(sdkOptions);
 
-  let mcpServers = loadedMcpServers;
-  if (options.relayWorker && mcpServers) {
-    const allowed = Array.isArray(options.mcpServers)
-      ? new Set(options.mcpServers.filter((name) => typeof name === 'string' && name.trim()))
-      : new Set();
-    const filtered = {};
-    for (const [name, entry] of Object.entries(mcpServers)) {
-      if (name === 'cloudcli-agent-relay') continue;
-      if (!allowed.has(name)) continue;
-      filtered[name] = entry;
-    }
-    mcpServers = Object.keys(filtered).length > 0 ? filtered : null;
+  let mcpServers = filterMcpServersForRun(loadedMcpServers, options);
+  if (options.botGatewayStrict) {
+    // Bot runtime gateway: the CLI must not merge in
+    // user/project MCP config or account connectors on top of the filtered set.
+    sdkOptions.extraArgs = { ...(sdkOptions.extraArgs || {}), 'strict-mcp-config': null };
   }
   if (mcpServers) {
     sdkOptions.mcpServers = stampLeadSessionOnMcpServers(mcpServers, options.appSessionId);

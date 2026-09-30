@@ -63,7 +63,17 @@ export type AppFeaturesPatch = {
   spendHardCostUsd?: number | null;
 };
 
+type AppFeaturesListener = (features: AppFeatures, previous: AppFeatures) => void;
+const featureListeners = new Set<AppFeaturesListener>();
+
+/** Subscribe to feature changes (e.g. the bot runtime starts/stops when its flag flips). */
+export function onAppFeaturesChanged(listener: AppFeaturesListener): () => void {
+  featureListeners.add(listener);
+  return () => featureListeners.delete(listener);
+}
+
 export function updateAppFeatures(patch: AppFeaturesPatch): AppFeatures {
+  const previous = getAppFeatures();
   if (patch.kanbanEnabled !== undefined) {
     appConfigDb.set(KANBAN_ENABLED_KEY, patch.kanbanEnabled ? 'true' : 'false');
   }
@@ -82,5 +92,13 @@ export function updateAppFeatures(patch: AppFeaturesPatch): AppFeatures {
       patch.spendHardCostUsd == null ? 'off' : String(patch.spendHardCostUsd),
     );
   }
-  return getAppFeatures();
+  const next = getAppFeatures();
+  for (const listener of featureListeners) {
+    try {
+      listener(next, previous);
+    } catch (error) {
+      console.error('[app-features] listener failed:', error);
+    }
+  }
+  return next;
 }
