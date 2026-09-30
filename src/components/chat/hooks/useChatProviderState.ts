@@ -1,7 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { authenticatedFetch } from '../../../utils/api';
-import { findProviderModelOption, OMP_FALLBACK_DEFAULT_MODEL } from '../../../utils/providerModels';
+import { sharedJsonGet, sharedRequest } from '../../../utils/requestCache';
+import { fetchSessionMeta } from '../../../utils/sessionRequests';
+import { runAfterSessionPaint } from '../../../utils/sessionPaintGate';
+import {
+  filterValidModelOptions,
+  findProviderModelOption,
+  OMP_FALLBACK_DEFAULT_MODEL,
+} from '../../../utils/providerModels';
 import { useAgentVisibility } from '../../../hooks/useAgentVisibility';
 import type { PendingPermissionRequest, PermissionMode } from '../types/types';
 import {
@@ -9,9 +16,26 @@ import {
   type PermissionModeChangedDetail,
 } from '../../../constants/permissionModeEvents';
 import {
+  CODEX_FAST_MODE_CHANGED_EVENT,
+  CODEX_FAST_MODE_STORAGE_KEY,
+  type CodexFastModeChangedDetail,
+} from '../../../constants/codexFastModeEvents';
+import {
+  CODEX_RUNTIME_STATE_CHANGED_EVENT,
+  type CodexRuntimeStateChangedDetail,
+} from '../../../constants/codexRuntimeEvents';
+import {
   PROVIDER_DEFAULT_EFFORT_CHANGED_EVENT,
   type ProviderDefaultEffortChangedDetail,
 } from '../../../constants/providerEffortEvents';
+import {
+  PROVIDER_MODEL_CHANGED_EVENT,
+  type ProviderModelChangedDetail,
+} from '../../../constants/providerModelEvents';
+import {
+  PROVIDER_RUNTIME_STATE_EVENT,
+  type ProviderRuntimeStateDetail,
+} from '../../../constants/providerRuntimeEvents';
 import {
   PROVIDER_PERMISSION_PREFERENCE_CHANGED_EVENT,
   type ProviderPermissionPreferenceChangedDetail,
@@ -51,8 +75,11 @@ export const FALLBACK_DEFAULT_MODEL: Record<LLMProvider, string> = {
   antigravity: '',
 };
 
+// Provider catalogs are cached server-side too; this only stops a ChatInterface
+// remount (SPA navigation) from refetching what it loaded moments ago.
+const PROVIDER_MODELS_SHARED_TTL_MS = 60_000;
+
 const PROVIDERS: LLMProvider[] = ['claude', 'cursor', 'codex', 'opencode', 'kilo', 'cline', 'grok', 'kimi', 'qwencode', 'pi', 'omp', 'antigravity'];
-const CODEX_FAST_MODE_STORAGE_KEY = 'codex-fast-mode';
 
 const readStoredProvider = (): LLMProvider => {
   const storedProvider = localStorage.getItem('selected-provider');
@@ -72,6 +99,39 @@ const getSessionModelStorageKey = (targetProvider: LLMProvider, sessionId: strin
 
 const getSessionEffortStorageKey = (targetProvider: LLMProvider, sessionId: string): string =>
   `${targetProvider}-effort-${sessionId}`;
+
+/** Model id without a trailing context tag (`claude-opus-5[1m]` → `claude-opus-5`). */
+const stripModelContextTag = (model: string): string => model.replace(/\[[^\]]*\]$/, '');
+
+/**
+ * Map a model id an Agent CLI recorded (often the resolved id, e.g.
+ * `claude-opus-5-5`) onto the picker's value. Returns null when the
+ * currently selected option already refers to that model — the CLI resolved
+ * the alias Chatbar launched it with, which is not a change.
+ */
+export const resolveRuntimeModelForPicker = (
+  catalog: ProviderModelsDefinition | undefined,
+  currentModel: string | null | undefined,
+  runtimeModel: string,
+): string | null => {
+  const options = filterValidModelOptions(catalog?.OPTIONS);
+  const matches = (option: ProviderModelOption, loose: boolean) => {
+    const values = [option.value, option.resolvedModel].filter((value): value is string => Boolean(value));
+    return values.some((value) => (loose
+      ? stripModelContextTag(value) === stripModelContextTag(runtimeModel)
+      : value === runtimeModel));
+  };
+  if (currentModel) {
+    if (currentModel === runtimeModel) return null;
+    const currentOption = options.find((option) => option.value === currentModel);
+    if (currentOption && matches(currentOption, true)) return null;
+  }
+  // Prefer a concrete alias over `default`, which can resolve to the same id.
+  const concrete = options.filter((option) => option.value !== 'default');
+  const match = concrete.find((option) => matches(option, false))
+    ?? concrete.find((option) => matches(option, true));
+  return match?.value ?? runtimeModel;
+};
 
 /**
  * Fallback permission-mode matrix used only until the backend capability
@@ -181,6 +241,7 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
   const { enabledProviders, isAgentEnabled } = useAgentVisibility();
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('default');
   const permissionModeChangeVersionRef = useRef(0);
+  const metaReadVersionsRef = useRef<Map<string, number>>(new Map());
   const [pendingPermissionRequests, setPendingPermissionRequests] = useState<PendingPermissionRequest[]>([]);
   const [provider, setProvider] = useState<LLMProvider>(() => {
     const storedProvider = readStoredProvider();
@@ -270,71 +331,122 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
   >({});
 
   const providerModelsRequestIdRef = useRef(0);
+  const providerModelRequestIdsRef = useRef<Partial<Record<LLMProvider, number>>>({});
 
   const setStoredProviderModel = useCallback((targetProvider: LLMProvider, model: string) => {
+    const notifyModelChanged = () => window.dispatchEvent(new CustomEvent<ProviderModelChangedDetail>(
+      PROVIDER_MODEL_CHANGED_EVENT,
+      { detail: { provider: targetProvider, model } },
+    ));
     if (targetProvider === 'claude') {
       setClaudeModel(model);
       localStorage.setItem('claude-model', model);
+      notifyModelChanged();
       return;
     }
 
     if (targetProvider === 'cursor') {
       setCursorModel(model);
       localStorage.setItem('cursor-model', model);
+      notifyModelChanged();
       return;
     }
 
     if (targetProvider === 'codex') {
       setCodexModel(model);
       localStorage.setItem('codex-model', model);
+      notifyModelChanged();
       return;
     }
 
     if (targetProvider === 'grok') {
       setGrokModel(model);
       localStorage.setItem('grok-model', model);
+      notifyModelChanged();
       return;
     }
 
     if (targetProvider === 'kilo') {
       setKiloModel(model);
       localStorage.setItem('kilo-model', model);
+      notifyModelChanged();
       return;
     }
 
     if (targetProvider === 'kimi') {
       setKimiModel(model);
       localStorage.setItem('kimi-model', model);
+      notifyModelChanged();
       return;
     }
 
     if (targetProvider === 'qwencode') {
       setQwenCodeModel(model);
       localStorage.setItem('qwencode-model', model);
+      notifyModelChanged();
       return;
     }
 
     if (targetProvider === 'antigravity') {
       setAntigravityModel(model);
       localStorage.setItem('antigravity-model', model);
+      notifyModelChanged();
       return;
     }
 
     if (targetProvider === 'pi') {
       setPiModel(model);
       localStorage.setItem('pi-model', model);
+      notifyModelChanged();
       return;
     }
 
     if (targetProvider === 'omp') {
       setOmpModel(model);
       localStorage.setItem('omp-model', model);
+      notifyModelChanged();
       return;
     }
 
     setOpenCodeModel(model);
     localStorage.setItem('opencode-model', model);
+    notifyModelChanged();
   }, []);
+
+  /** Update one provider's in-memory default model without notifying anyone. */
+  const setProviderModelState = useCallback((targetProvider: LLMProvider, model: string) => {
+    if (targetProvider === 'claude') setClaudeModel(model);
+    else if (targetProvider === 'cursor') setCursorModel(model);
+    else if (targetProvider === 'codex') setCodexModel(model);
+    else if (targetProvider === 'grok') setGrokModel(model);
+    else if (targetProvider === 'kilo') setKiloModel(model);
+    else if (targetProvider === 'kimi') setKimiModel(model);
+    else if (targetProvider === 'qwencode') setQwenCodeModel(model);
+    else if (targetProvider === 'antigravity') setAntigravityModel(model);
+    else if (targetProvider === 'pi') setPiModel(model);
+    else if (targetProvider === 'omp') setOmpModel(model);
+    else if (targetProvider === 'opencode' || targetProvider === 'cline') setOpenCodeModel(model);
+  }, []);
+
+  useEffect(() => {
+    const handleModelChanged = (event: Event) => {
+      const detail = (event as CustomEvent<ProviderModelChangedDetail>).detail;
+      if (!detail || !PROVIDERS.includes(detail.provider as LLMProvider) || typeof detail.model !== 'string') {
+        return;
+      }
+      const targetProvider = detail.provider as LLMProvider;
+      if (detail.sessionId && detail.sessionId === selectedSession?.id && targetProvider === provider) {
+        setSessionModelOverride(detail.model);
+        return;
+      }
+      if (!detail.sessionId) {
+        setProviderModelState(targetProvider, detail.model);
+      }
+    };
+
+    window.addEventListener(PROVIDER_MODEL_CHANGED_EVENT, handleModelChanged);
+    return () => window.removeEventListener(PROVIDER_MODEL_CHANGED_EVENT, handleModelChanged);
+  }, [provider, selectedSession?.id, setProviderModelState]);
 
   const setStoredProviderEffort = useCallback((targetProvider: LLMProvider, effort: string) => {
     setProviderEfforts((previous) => (
@@ -343,18 +455,122 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
         : { ...previous, [targetProvider]: effort }
     ));
     localStorage.setItem(`${targetProvider}-effort`, effort);
+    window.dispatchEvent(new CustomEvent<ProviderDefaultEffortChangedDetail>(
+      PROVIDER_DEFAULT_EFFORT_CHANGED_EVENT,
+      { detail: { provider: targetProvider, effort } },
+    ));
   }, []);
 
   const selectCodexFastMode = useCallback((enabled: boolean) => {
     const nextEnabled = Boolean(enabled);
     setCodexFastMode(nextEnabled);
     localStorage.setItem(CODEX_FAST_MODE_STORAGE_KEY, String(nextEnabled));
+    window.dispatchEvent(new CustomEvent<CodexFastModeChangedDetail>(
+      CODEX_FAST_MODE_CHANGED_EVENT,
+      { detail: { enabled: nextEnabled } },
+    ));
   }, []);
 
-  const loadProviderModels = useCallback(async (options: { bypassCache?: boolean } = {}) => {
+  // The Agent CLI can change Codex runtime settings from its own TUI. Mirror
+  // those observations into Chatbar state without dispatching the outbound
+  // Fast event again (which would relaunch the CLI in a loop).
+  useEffect(() => {
+    if (provider !== 'codex') return;
+    const handleCodexRuntimeStateChanged = (event: Event) => {
+      const detail = (event as CustomEvent<CodexRuntimeStateChangedDetail>).detail;
+      if (!detail) return;
+      if (detail.sessionId && detail.sessionId !== selectedSession?.id) return;
+      if (typeof detail.fastMode === 'boolean') {
+        setCodexFastMode(detail.fastMode);
+        localStorage.setItem(CODEX_FAST_MODE_STORAGE_KEY, String(detail.fastMode));
+      }
+      if (typeof detail.model === 'string' && detail.model.trim()) {
+        const model = detail.model.trim();
+        setCodexModel(model);
+        localStorage.setItem('codex-model', model);
+        if (selectedSession?.id) {
+          localStorage.setItem(getSessionModelStorageKey('codex', selectedSession.id), model);
+          setSessionModelOverride(model);
+        }
+      }
+      if (typeof detail.effort === 'string' && detail.effort.trim()) {
+        const effort = detail.effort.trim();
+        setProviderEfforts((previous) => ({ ...previous, codex: effort }));
+        localStorage.setItem('codex-effort', effort);
+        if (selectedSession?.id) {
+          localStorage.setItem(getSessionEffortStorageKey('codex', selectedSession.id), effort);
+          setSessionEffortOverride(effort);
+        }
+      }
+      if (typeof detail.permissionMode === 'string' && detail.permissionMode.trim()) {
+        if (detail.sessionId && detail.sessionId !== selectedSession?.id) {
+          return;
+        }
+        const mode = detail.permissionMode.trim() as PermissionMode;
+        if (!['default', 'auto', 'bypassPermissions'].includes(mode)) {
+          return;
+        }
+        permissionModeChangeVersionRef.current += 1;
+        setPermissionMode(mode);
+        localStorage.setItem('permissionMode-last-codex', mode);
+        if (selectedSession?.id) {
+          localStorage.setItem(`permissionMode-${selectedSession.id}`, mode);
+          void authenticatedFetch(
+            `/api/providers/sessions/${encodeURIComponent(selectedSession.id)}/runtime-preferences`,
+            {
+              method: 'PUT',
+              body: JSON.stringify({ permissionMode: mode }),
+            },
+          ).catch(() => undefined);
+        }
+      }
+    };
+    window.addEventListener(CODEX_RUNTIME_STATE_CHANGED_EVENT, handleCodexRuntimeStateChanged);
+    return () => window.removeEventListener(CODEX_RUNTIME_STATE_CHANGED_EVENT, handleCodexRuntimeStateChanged);
+  }, [provider, selectedSession?.id]);
+
+  // The Agent CLI can change Grok's model and effort from its own TUI, and
+  // the ACP session reports the same when set_config_option lands. Write the
+  // composer state directly so we do not relaunch the TUI in a loop.
+  useEffect(() => {
+    const handleGrokRuntimeStateChanged = (event: Event) => {
+      const detail = (event as CustomEvent<{ sessionId?: string; model?: string; effort?: string }>).detail;
+      if (!detail) return;
+      if (detail.sessionId && selectedSession?.id && detail.sessionId !== selectedSession.id) return;
+      if (typeof detail.model === 'string' && detail.model.trim()) {
+        const model = detail.model.trim();
+        setGrokModel(model);
+        localStorage.setItem('grok-model', model);
+        if (selectedSession?.id) {
+          localStorage.setItem(getSessionModelStorageKey('grok', selectedSession.id), model);
+        }
+        if (provider === 'grok') setSessionModelOverride(model);
+      }
+      if (typeof detail.effort === 'string' && detail.effort.trim()) {
+        const effort = detail.effort.trim();
+        setProviderEfforts((previous) => ({ ...previous, grok: effort }));
+        localStorage.setItem('grok-effort', effort);
+        if (selectedSession?.id) {
+          localStorage.setItem(getSessionEffortStorageKey('grok', selectedSession.id), effort);
+        }
+        if (provider === 'grok') setSessionEffortOverride(effort);
+      }
+    };
+    window.addEventListener('cloudcli:grok-runtime-state', handleGrokRuntimeStateChanged);
+    return () => window.removeEventListener('cloudcli:grok-runtime-state', handleGrokRuntimeStateChanged);
+  }, [provider, selectedSession?.id]);
+
+  const loadProviderModels = useCallback(async (options: { bypassCache?: boolean; providers?: LLMProvider[] } = {}) => {
+    // `providers` narrows the load (session open only needs the active
+    // provider); per-provider request ids keep a narrow load and a full one
+    // from discarding each other's results.
+    const targets = options.providers
+      ? enabledProviders.filter((p) => options.providers!.includes(p))
+      : enabledProviders;
     const requestId = providerModelsRequestIdRef.current + 1;
     providerModelsRequestIdRef.current = requestId;
     const isHardRefresh = options.bypassCache === true;
+    for (const p of targets) providerModelRequestIdsRef.current[p] = requestId;
 
     if (isHardRefresh) {
       setProviderModelsRefreshing(true);
@@ -364,17 +580,16 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
 
     try {
       const results = await Promise.all(
-        enabledProviders.map(async (p) => {
-          const params = new URLSearchParams();
-          if (options.bypassCache) {
-            params.set('bypassCache', 'true');
-          }
-
-          const queryString = params.toString();
+        targets.map(async (p) => {
           try {
-            const response = await authenticatedFetch(`/api/providers/${p}/models${queryString ? `?${queryString}` : ''}`);
-            const body = (await response.json()) as ProviderModelsApiResponse;
-            if (!body.success || !body.data?.models || !body.data?.cache) {
+            // Shared across ChatInterface mounts (SPA navigation remounts it);
+            // a hard refresh bypasses and replaces the shared entry.
+            const response = await sharedJsonGet<ProviderModelsApiResponse>(
+              `/api/providers/${p}/models${options.bypassCache ? '?bypassCache=true' : ''}`,
+              { key: `provider-models:${p}`, ttlMs: PROVIDER_MODELS_SHARED_TTL_MS, force: options.bypassCache === true },
+            );
+            const body = response.data;
+            if (!body || !body.success || !body.data?.models || !body.data?.cache) {
               return { provider: p, data: null, error: 'Unable to load models for this agent.' };
             }
 
@@ -387,15 +602,13 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
         }),
       );
 
-      if (providerModelsRequestIdRef.current !== requestId) {
-        return;
-      }
-
       const nextCatalog: Partial<Record<LLMProvider, ProviderModelsDefinition>> = {};
       const nextCacheCatalog: Partial<Record<LLMProvider, ProviderModelsCacheInfo>> = {};
       const nextErrors: Partial<Record<LLMProvider, string | null>> = {};
 
       results.forEach((entry) => {
+        // A newer load for this provider owns its result.
+        if (providerModelRequestIdsRef.current[entry.provider] !== requestId) return;
         nextErrors[entry.provider] = entry.error;
         if (!entry.data) {
           // Keep whatever catalog entry this provider already had (stale
@@ -420,17 +633,73 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     }
   }, [enabledProviders]);
 
+  // Which providers' catalogs this loader has requested. Reset whenever the
+  // loader changes (enabled providers changed), matching the old
+  // reload-everything-on-change behavior.
+  const providerModelsRequestedRef = useRef<{
+    loader: typeof loadProviderModels | null;
+    all: boolean;
+    providers: Set<LLMProvider>;
+  }>({ loader: null, all: false, providers: new Set() });
+
+  const ensureProviderModels = useCallback((scope: 'all' | LLMProvider) => {
+    const requested = providerModelsRequestedRef.current;
+    if (requested.loader !== loadProviderModels) {
+      requested.loader = loadProviderModels;
+      requested.all = false;
+      requested.providers = new Set();
+    }
+    if (requested.all) return;
+    if (scope === 'all') {
+      requested.all = true;
+      const missing = enabledProviders.filter((p) => !requested.providers.has(p));
+      enabledProviders.forEach((p) => requested.providers.add(p));
+      if (missing.length > 0) void loadProviderModels({ providers: missing });
+      return;
+    }
+    if (requested.providers.has(scope)) return;
+    requested.providers.add(scope);
+    if (!enabledProviders.includes(scope)) {
+      // Nothing to load (disabled agent); don't leave the picker spinning.
+      setProviderModelsLoading(false);
+      return;
+    }
+    void loadProviderModels({ providers: [scope] });
+  }, [enabledProviders, loadProviderModels]);
+
+  const hardRefreshProviderModels = useCallback(() => {
+    const requested = providerModelsRequestedRef.current;
+    requested.loader = loadProviderModels;
+    requested.all = true;
+    enabledProviders.forEach((p) => requested.providers.add(p));
+    return loadProviderModels({ bypassCache: true });
+  }, [enabledProviders, loadProviderModels]);
+
+  /** Load every enabled provider's catalog (model/provider picker opened). */
+  const ensureAllProviderModels = useCallback(() => ensureProviderModels('all'), [ensureProviderModels]);
+
+  // An existing session only renders the active provider's catalog (composer
+  // model label, session model resolution); the other providers load when the
+  // model picker opens. Fetching all ~11 on session open spawned CLI probes
+  // (claude/models: 350–500 ms server-side) that competed with the history
+  // request. The new-chat screen shows every provider, so it loads them all.
+  const hasSelectedSession = Boolean(selectedSession?.id);
   useEffect(() => {
-    void loadProviderModels();
-  }, [loadProviderModels]);
+    ensureProviderModels(hasSelectedSession ? provider : 'all');
+  }, [ensureProviderModels, hasSelectedSession, provider]);
 
   useEffect(() => {
     let cancelled = false;
 
     const loadCapabilities = async () => {
       try {
-        const response = await authenticatedFetch('/api/providers/capabilities');
-        const body = (await response.json()) as ProviderCapabilitiesApiResponse;
+        // Static per server build: shared across mounts, and not needed for
+        // first paint (FALLBACK_PERMISSION_MODES covers the gap).
+        const body = await sharedRequest<ProviderCapabilitiesApiResponse>(
+          'provider-capabilities',
+          async () => (await authenticatedFetch('/api/providers/capabilities')).json(),
+          { ttlMs: 5 * 60_000 },
+        );
         if (cancelled || !body.success || !Array.isArray(body.data?.providers)) {
           return;
         }
@@ -445,9 +714,10 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
       }
     };
 
-    void loadCapabilities();
+    const cancelDeferred = runAfterSessionPaint(() => { void loadCapabilities(); });
     return () => {
       cancelled = true;
+      cancelDeferred();
     };
   }, []);
 
@@ -467,6 +737,65 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     }
     return modes[0] ?? 'default';
   }, [getPermissionModesForProvider, providerCapabilities]);
+
+  // Provider-agnostic mirror of Agent CLI runtime changes (Claude, OpenCode,
+  // …) that the server read from the provider's own session files. Writes
+  // composer state directly — dispatching the outbound change events here
+  // would relaunch the CLI in a loop. Codex and Grok use their own events.
+  useEffect(() => {
+    const handleProviderRuntimeState = (event: Event) => {
+      const detail = (event as CustomEvent<ProviderRuntimeStateDetail>).detail;
+      if (!detail || !PROVIDERS.includes(detail.provider as LLMProvider)) return;
+      const targetProvider = detail.provider as LLMProvider;
+      const sessionId = selectedSession?.id ?? null;
+      if (detail.sessionId && sessionId && detail.sessionId !== sessionId) return;
+      const isActiveProvider = targetProvider === provider;
+
+      const runtimeModel = typeof detail.model === 'string' ? detail.model.trim() : '';
+      if (runtimeModel) {
+        const currentModel = (sessionId && localStorage.getItem(getSessionModelStorageKey(targetProvider, sessionId)))
+          || localStorage.getItem(`${targetProvider}-model`);
+        const model = resolveRuntimeModelForPicker(
+          providerModelCatalog[targetProvider],
+          currentModel,
+          runtimeModel,
+        );
+        if (model) {
+          setProviderModelState(targetProvider, model);
+          localStorage.setItem(`${targetProvider}-model`, model);
+          if (sessionId) {
+            localStorage.setItem(getSessionModelStorageKey(targetProvider, sessionId), model);
+          }
+          if (isActiveProvider) setSessionModelOverride(model);
+        }
+      }
+
+      const effort = typeof detail.effort === 'string' ? detail.effort.trim() : '';
+      if (effort) {
+        setProviderEfforts((previous) => ({ ...previous, [targetProvider]: effort }));
+        localStorage.setItem(`${targetProvider}-effort`, effort);
+        if (sessionId) {
+          localStorage.setItem(getSessionEffortStorageKey(targetProvider, sessionId), effort);
+        }
+        if (isActiveProvider) setSessionEffortOverride(effort);
+      }
+
+      const mode = typeof detail.permissionMode === 'string' ? detail.permissionMode.trim() : '';
+      if (mode && getPermissionModesForProvider(targetProvider).includes(mode as PermissionMode)) {
+        // The server already persisted the mode on the app session.
+        localStorage.setItem(`permissionMode-last-${targetProvider}`, mode);
+        if (sessionId) {
+          localStorage.setItem(`permissionMode-${sessionId}`, mode);
+        }
+        if (isActiveProvider) {
+          permissionModeChangeVersionRef.current += 1;
+          setPermissionMode(mode as PermissionMode);
+        }
+      }
+    };
+    window.addEventListener(PROVIDER_RUNTIME_STATE_EVENT, handleProviderRuntimeState);
+    return () => window.removeEventListener(PROVIDER_RUNTIME_STATE_EVENT, handleProviderRuntimeState);
+  }, [getPermissionModesForProvider, provider, providerModelCatalog, selectedSession?.id, setProviderModelState]);
 
   const getSupportsEffortForProvider = useCallback((targetProvider: LLMProvider): boolean => {
     const capabilitySupport = providerCapabilities?.[targetProvider]?.supportsEffort;
@@ -782,7 +1111,11 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     setSessionModelOverride(
       storedModel
         ? catalog
-          ? findProviderModelOption(catalog, storedModel)?.value ?? null
+          ? findProviderModelOption(catalog, storedModel)?.value
+            // Codex can report a newly introduced runtime slug before the
+            // model cache/catalog has caught up. Keep the session's actual
+            // choice; the picker label has a raw-slug fallback in that case.
+            ?? (provider === 'codex' ? storedModel : null)
           : storedModel
         : null,
     );
@@ -808,8 +1141,15 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
 
     let cancelled = false;
     const changeVersion = permissionModeChangeVersionRef.current;
-    void authenticatedFetch(`/api/providers/sessions/${encodeURIComponent(sessionId)}/meta`)
-      .then(async (response) => (response.ok ? response.json() : null))
+    // Shared with useProjectsState's meta read and cached briefly, so this
+    // effect re-running when capabilities load doesn't refetch. A local mode
+    // change since the last read for this session forces a fresh read.
+    const lastVersion = metaReadVersionsRef.current.get(sessionId);
+    metaReadVersionsRef.current.set(sessionId, changeVersion);
+    void fetchSessionMeta<{ data?: { session?: { permissionMode?: unknown } } }>(sessionId, {
+      force: lastVersion !== undefined && lastVersion !== changeVersion,
+    })
+      .then((response) => (response.ok ? response.data : null))
       .then((payload) => {
         if (cancelled || changeVersion !== permissionModeChangeVersionRef.current) return;
         const serverMode = payload?.data?.session?.permissionMode;
@@ -818,6 +1158,13 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
           : getDefaultPermissionModeForProvider(provider);
         setPermissionMode(resolvedMode);
         localStorage.setItem(`permissionMode-${sessionId}`, resolvedMode);
+        if (sessionSavedMode !== resolvedMode) {
+          window.dispatchEvent(
+            new CustomEvent<PermissionModeChangedDetail>(PERMISSION_MODE_CHANGED_EVENT, {
+              detail: { provider, mode: resolvedMode, sessionId },
+            }),
+          );
+        }
       })
       .catch(() => undefined);
     return () => {
@@ -852,6 +1199,15 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
 
       setPermissionMode(detail.mode as PermissionMode);
       permissionModeChangeVersionRef.current += 1;
+      window.dispatchEvent(
+        new CustomEvent<PermissionModeChangedDetail>(PERMISSION_MODE_CHANGED_EVENT, {
+          detail: {
+            provider,
+            mode: detail.mode,
+            sessionId: selectedSession?.id ?? null,
+          },
+        }),
+      );
     };
 
     window.addEventListener(PROVIDER_PERMISSION_PREFERENCE_CHANGED_EVENT, handlePreferenceChanged);
@@ -987,6 +1343,9 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     if (targetProvider === provider && selectedSession?.id === normalizedSessionId) {
       setSessionModelOverride(appliedModel);
     }
+    window.dispatchEvent(new CustomEvent<ProviderModelChangedDetail>(PROVIDER_MODEL_CHANGED_EVENT, {
+      detail: { provider: targetProvider, model: appliedModel, sessionId: normalizedSessionId },
+    }));
 
     return {
       scope: 'session' as const,
@@ -1011,6 +1370,10 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     if (targetProvider === provider && selectedSession?.id === normalizedSessionId) {
       setSessionEffortOverride(effort);
     }
+    window.dispatchEvent(new CustomEvent<ProviderDefaultEffortChangedDetail>(
+      PROVIDER_DEFAULT_EFFORT_CHANGED_EVENT,
+      { detail: { provider: targetProvider, effort, sessionId: normalizedSessionId } },
+    ));
   }, [provider, selectedSession?.id, setStoredProviderEffort]);
 
   /**
@@ -1089,7 +1452,8 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     providerModelsLoading,
     providerModelsRefreshing,
     providerModelErrors,
-    hardRefreshProviderModels: () => loadProviderModels({ bypassCache: true }),
+    hardRefreshProviderModels,
+    ensureAllProviderModels,
     currentProviderModel,
     selectProviderModel,
     selectProviderEffort,

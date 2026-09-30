@@ -19,6 +19,9 @@
   },
   "tabs": {
     "chat": "Chat",
+    "terminal": "Terminal",
+    "projectTerminal": "Project Terminal",
+    "agentCli": "Agent CLI",
     "shell": "Shell",
     "files": "Files",
     "git": "Source Control",

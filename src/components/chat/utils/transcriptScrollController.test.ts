@@ -95,3 +95,101 @@ test('hidden panes do not alter scroll position during layout notifications', ()
   assert.equal(f.container.scrollTop, 1000);
   f.controller.dispose();
 });
+
+test('a remounted anchor row is re-found by key so prepends still preserve the view', () => {
+  const target = new EventTarget();
+  let above = 0;
+  let generation = 0;
+  const container = Object.assign(target, {
+    scrollTop: 1000, scrollHeight: 1500, clientHeight: 500,
+    getBoundingClientRect: () => ({ top: 0 }),
+    querySelectorAll: () => rows,
+    querySelector: (selector: string) => rows.find((row) => selector.includes(`"${row.key}"`)) ?? null,
+  });
+  const makeRows = () => Array.from({ length: 15 }, (_, i) => {
+    const born = generation;
+    return {
+      key: `row-${i}`,
+      get isConnected() { return born === generation; },
+      getAttribute: (name: string) => (name === 'data-row-key' ? `row-${i}` : null),
+      getBoundingClientRect: () => ({ top: i * 100 + above - container.scrollTop, bottom: (i + 1) * 100 + above - container.scrollTop }),
+    };
+  });
+  let rows = makeRows();
+  const controller = createTranscriptScrollController(container as unknown as HTMLDivElement, () => {});
+  container.dispatchEvent(Object.assign(new Event('wheel'), { deltaY: -100 }));
+  container.scrollTop = 900;
+  container.dispatchEvent(new Event('scroll'));
+  // Older page prepended and every row element replaced (re-keyed remount).
+  generation++;
+  rows = makeRows();
+  above += 400;
+  container.scrollHeight += 400;
+  controller.reconcile();
+  assert.equal(container.scrollTop, 1300);
+  controller.dispose();
+});
+
+test('controller write scrolls are reported as programmatic, user scrolls are not', () => {
+  const target = new EventTarget();
+  const container = Object.assign(target, {
+    scrollTop: 1000, scrollHeight: 1500, clientHeight: 500,
+    getBoundingClientRect: () => ({ top: 0 }),
+    querySelectorAll: () => [],
+  });
+  const seen: boolean[] = [];
+  const controller = createTranscriptScrollController(
+    container as unknown as HTMLDivElement, () => {}, () => false, () => {}, (programmatic) => seen.push(programmatic),
+  );
+  container.scrollHeight = 1800;
+  controller.reconcile();
+  container.dispatchEvent(new Event('scroll'));
+  container.scrollTop = 40;
+  container.dispatchEvent(new Event('scroll'));
+  assert.deepEqual(seen, [true, false]);
+  controller.dispose();
+});
+
+test('downward intent at the bottom keeps following so streamed output stays visible', () => {
+  const f = fixture();
+  f.wheel(40);
+  // Dispatch sets `target` to the container; give it the element lookup keyDown uses.
+  Object.assign(f.container, { closest: () => null });
+  const key = (k: string) => f.container.dispatchEvent(Object.assign(new Event('keydown'), { key: k, shiftKey: false }));
+  key('ArrowDown');
+  key('PageDown');
+  key(' ');
+  f.container.dispatchEvent(Object.assign(new Event('pointerdown'), {}));
+  assert.equal(f.controller.following, true);
+  f.container.scrollHeight += 400;
+  f.controller.reconcile();
+  assert.equal(f.container.scrollTop, 1900); // pinned (mock does not clamp)
+  assert.deepEqual(f.changes, []);
+  f.controller.dispose();
+});
+
+test('End jumps to the bottom and resumes following', () => {
+  const f = fixture();
+  Object.assign(f.container, { closest: () => null });
+  f.wheel(-100);
+  f.container.scrollTop = 900;
+  f.container.dispatchEvent(new Event('scroll'));
+  assert.equal(f.controller.following, false);
+  f.container.dispatchEvent(Object.assign(new Event('keydown'), { key: 'End' }));
+  assert.equal(f.controller.following, true);
+  assert.equal(f.container.scrollTop, 1500);
+  f.controller.dispose();
+});
+
+test('upward keys and touch drags still enter reading mode', () => {
+  const f = fixture();
+  Object.assign(f.container, { closest: () => null });
+  f.container.dispatchEvent(Object.assign(new Event('keydown'), { key: 'PageUp' }));
+  assert.equal(f.controller.following, false);
+  f.controller.jumpToBottom();
+  f.container.dispatchEvent(Object.assign(new Event('touchstart'), { touches: [{ clientY: 100 }] }));
+  assert.equal(f.controller.following, true);
+  f.container.dispatchEvent(Object.assign(new Event('touchmove'), { touches: [{ clientY: 140 }] }));
+  assert.equal(f.controller.following, false);
+  f.controller.dispose();
+});

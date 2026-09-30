@@ -79,6 +79,14 @@ CollapsibleTrigger.displayName = 'CollapsibleTrigger';
 const CollapsibleContent = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement>>(
   ({ className, children, ...props }, ref) => {
     const { open } = useCollapsible();
+    // Children mount on first open and then stay mounted, so the close
+    // animation still has content to collapse and re-opening keeps state.
+    // Previously every collapsed section (tool output, diffs, reasoning,
+    // subagent logs) rendered its full subtree hidden behind a 0fr row.
+    const [hasOpened, setHasOpened] = React.useState(open);
+    if (open && !hasOpened) {
+      setHasOpened(true);
+    }
 
     return (
       <div
@@ -92,7 +100,7 @@ const CollapsibleContent = React.forwardRef<HTMLDivElement, React.HTMLAttributes
         {...props}
       >
         <div className="overflow-hidden">
-          {children}
+          {open || hasOpened ? children : null}
         </div>
       </div>
     );

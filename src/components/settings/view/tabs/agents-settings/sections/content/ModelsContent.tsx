@@ -378,7 +378,13 @@ export default function ModelsContent({ agent }: ModelsContentProps) {
                         onChange={() => toggleModelVisibility(option.value)}
                         className="h-4 w-4 shrink-0 accent-primary"
                       />
-                      <span className="min-w-0 flex-1 truncate text-foreground">{option.label}</span>
+                      <span className="shrink-0 text-foreground">{option.label}</span>
+                      <span
+                        className="min-w-0 flex-1 truncate text-xs text-muted-foreground"
+                        title={option.description}
+                      >
+                        {option.description}
+                      </span>
                       {isDefault ? (
                         <span className="shrink-0 rounded bg-primary/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-primary">
                           {t('agents.models.defaultBadge', { defaultValue: 'Default' })}

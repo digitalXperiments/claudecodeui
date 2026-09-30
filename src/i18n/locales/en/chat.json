@@ -179,7 +179,10 @@
     },
     "loading": {
       "olderMessages": "Loading older messages...",
-      "sessionMessages": "Loading session messages..."
+      "sessionMessages": "Loading session messages...",
+      "historyFailed": "Couldn't load conversation history.",
+      "historyUnavailable": "This conversation's history isn't available yet.",
+      "retry": "Retry"
     },
     "messages": {
       "showingOf": "Showing {{shown}} of {{total}} messages",

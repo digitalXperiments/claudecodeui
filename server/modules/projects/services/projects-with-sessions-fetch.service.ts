@@ -1,10 +1,8 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
-import { projectsDb, sessionsDb } from '@/modules/database/index.js';
+import { projectsDb, scanStateDb, sessionsDb } from '@/modules/database/index.js';
 import { sessionSynchronizerService } from '@/modules/providers/index.js';
-import { WS_OPEN_STATE, connectedClients } from '@/modules/websocket/index.js';
-import type { RealtimeClientConnection } from '@/shared/types.js';
 import { AppError } from '@/shared/utils.js';
 
 type SessionSummary = {
@@ -47,14 +45,15 @@ export type ArchivedProjectListItem = ProjectListItem & {
   isArchived: true;
 };
 
-type ProgressUpdate = {
-  phase: 'loading' | 'complete';
-  current: number;
-  total: number;
-  currentProject?: string;
-};
-
 type GetProjectsWithSessionsOptions = {
+  /**
+   * Run a full provider rescan before reading the DB. Off by default: the
+   * boot sync plus the filesystem watchers keep the index current, so the
+   * list is served straight from SQLite. Only an explicit user refresh (or a
+   * never-synced database) pays for the full scan.
+   */
+  synchronize?: boolean;
+  /** Legacy flag; `true` always wins over `synchronize`. */
   skipSynchronization?: boolean;
   sessionsLimit?: number;
   sessionsOffset?: number;
@@ -83,6 +82,61 @@ export type ProjectSessionsPageApiView = {
 const DEFAULT_PROJECT_SESSIONS_PAGE_SIZE = 20;
 const MAX_PROJECT_SESSIONS_PAGE_SIZE = 200;
 
+/** Bounded fan-out for per-project filesystem work (package.json stat/read). */
+const PROJECT_FS_CONCURRENCY = 8;
+const DISPLAY_NAME_CACHE_MAX_ENTRIES = 2000;
+
+type DisplayNameCacheEntry = {
+  /** package.json mtime (ms) the name was read from; null when it was missing/unreadable. */
+  packageJsonMtimeMs: number | null;
+  packageName: string | null;
+};
+
+/**
+ * package.json-derived names keyed by project path. Validated with one `stat`
+ * per lookup (the mtime is part of the key), so an edited package.json is
+ * picked up on the next request while unchanged projects skip the read+parse.
+ */
+const displayNameCache = new Map<string, DisplayNameCacheEntry>();
+
+/** Test-only: drop cached package.json names. */
+export function clearDisplayNameCache(): void {
+  displayNameCache.clear();
+}
+
+async function readPackageJsonName(projectPath: string): Promise<string | null> {
+  const packageJsonPath = path.join(projectPath, 'package.json');
+  let mtimeMs: number | null = null;
+  try {
+    const stat = await fs.stat(packageJsonPath);
+    mtimeMs = stat.isFile() ? stat.mtimeMs : null;
+  } catch {
+    mtimeMs = null;
+  }
+
+  const cached = displayNameCache.get(projectPath);
+  if (cached && cached.packageJsonMtimeMs === mtimeMs) {
+    return cached.packageName;
+  }
+
+  let packageName: string | null = null;
+  if (mtimeMs !== null) {
+    try {
+      const packageJson = JSON.parse(await fs.readFile(packageJsonPath, 'utf8')) as { name?: unknown };
+      packageName = typeof packageJson.name === 'string' && packageJson.name ? packageJson.name : null;
+    } catch {
+      packageName = null;
+    }
+  }
+
+  if (displayNameCache.size >= DISPLAY_NAME_CACHE_MAX_ENTRIES && !displayNameCache.has(projectPath)) {
+    const oldestKey = displayNameCache.keys().next().value;
+    if (oldestKey !== undefined) displayNameCache.delete(oldestKey);
+  }
+  displayNameCache.set(projectPath, { packageJsonMtimeMs: mtimeMs, packageName });
+  return packageName;
+}
+
 /**
  * Generate better display name from path.
  */
@@ -90,18 +144,10 @@ export async function generateDisplayName(projectName: string, actualProjectDir:
   // Use actual project directory if provided, otherwise decode from project name.
   const projectPath = actualProjectDir || projectName.replace(/-/g, '/');
 
-  // Try to read package.json from the project path.
-  try {
-    const packageJsonPath = path.join(projectPath, 'package.json');
-    const packageData = await fs.readFile(packageJsonPath, 'utf8');
-    const packageJson = JSON.parse(packageData) as { name?: string };
-
-    // Return the name from package.json if it exists.
-    if (packageJson.name) {
-      return packageJson.name;
-    }
-  } catch {
-    // Fall back to path-based naming if package.json doesn't exist or can't be read.
+  // Prefer the package.json name (cached per path + package.json mtime).
+  const packageName = await readPackageJsonName(projectPath);
+  if (packageName) {
+    return packageName;
   }
 
   // If it starts with /, it's an absolute path.
@@ -179,19 +225,56 @@ function readProjectSessionsPageByPath(
   };
 }
 
-// Broadcast progress to all connected WebSocket clients.
-// Uses the unified `kind` envelope like every other websocket frame.
-function broadcastProgress(progress: ProgressUpdate) {
-  const message = JSON.stringify({
-    kind: 'loading_progress',
-    ...progress,
-  });
-
-  connectedClients.forEach((client: RealtimeClientConnection) => {
-    if (client.readyState === WS_OPEN_STATE) {
-      client.send(message);
+/**
+ * Maps `items` through `worker` with at most `limit` promises in flight,
+ * preserving input order in the result.
+ */
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  limit: number,
+  worker: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+  const runners = Array.from({ length: Math.min(Math.max(1, limit), items.length) }, async () => {
+    while (nextIndex < items.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await worker(items[index], index);
     }
   });
+  await Promise.all(runners);
+  return results;
+}
+
+type ProjectRow = {
+  project_id: string;
+  project_path: string;
+  custom_project_name?: string | null;
+  isStarred?: number;
+  category_id?: string | null;
+};
+
+function resolveProjectDisplayName(row: ProjectRow): Promise<string> {
+  return row.custom_project_name && row.custom_project_name.trim().length > 0
+    ? Promise.resolve(row.custom_project_name)
+    : generateDisplayName(path.basename(row.project_path) || row.project_path, row.project_path);
+}
+
+/**
+ * Full provider rescans are expensive (every provider's artifact tree), so the
+ * project list only runs one when explicitly asked to, or when the index has
+ * never been populated (first boot before the watcher's initial sync landed).
+ * Concurrent callers share the synchronizer's single in-flight scan.
+ */
+async function synchronizeIfRequested(options: Pick<GetProjectsWithSessionsOptions, 'synchronize' | 'skipSynchronization'>): Promise<void> {
+  if (options.skipSynchronization) {
+    return;
+  }
+  const neverScanned = !scanStateDb.getLastScannedAt();
+  if (options.synchronize || neverScanned) {
+    await sessionSynchronizerService.synchronizeSessions();
+  }
 }
 
 /**
@@ -200,50 +283,24 @@ function broadcastProgress(progress: ProgressUpdate) {
 export async function getProjectsWithSessions(
   options: GetProjectsWithSessionsOptions = {}
 ): Promise<ProjectListItem[]> {
-  sessionsDb.rehomeAgentWorkspaceSessions();
+  // Legacy workspace/temp rows are rehomed by every full sync (boot + explicit
+  // refresh), so the hot read path no longer pays for that scan.
+  await synchronizeIfRequested(options);
 
-  if (!options.skipSynchronization) {
-    await sessionSynchronizerService.synchronizeSessions();
-  }
+  const projectRows = projectsDb.getProjectPaths() as ProjectRow[];
+  const displayNames = await mapWithConcurrency(projectRows, PROJECT_FS_CONCURRENCY, resolveProjectDisplayName);
 
-  const projectRows = projectsDb.getProjectPaths() as Array<{
-    project_id: string;
-    project_path: string;
-    custom_project_name?: string | null;
-    isStarred?: number;
-    category_id?: string | null;
-  }>;
-  const totalProjects = projectRows.length;
-  const projects: ProjectListItem[] = [];
-  let processedProjects = 0;
-
-  for (const row of projectRows) {
-    processedProjects += 1;
-
-    const projectId = row.project_id;
+  return projectRows.map((row, index) => {
     const projectPath = row.project_path;
-
-    broadcastProgress({
-      phase: 'loading',
-      current: processedProjects,
-      total: totalProjects,
-      currentProject: projectPath,
-    });
-
-    const displayName =
-      row.custom_project_name && row.custom_project_name.trim().length > 0
-        ? row.custom_project_name
-        : await generateDisplayName(path.basename(projectPath) || projectPath, projectPath);
-
     const sessionsPage = readProjectSessionsPageByPath(projectPath, {
       limit: options.sessionsLimit,
       offset: options.sessionsOffset,
     });
 
-    projects.push({
-      projectId,
+    return {
+      projectId: row.project_id,
       path: projectPath,
-      displayName,
+      displayName: displayNames[index],
       fullPath: projectPath,
       isStarred: Boolean(row.isStarred),
       categoryId: row.category_id ?? null,
@@ -252,16 +309,8 @@ export async function getProjectsWithSessions(
         hasMore: sessionsPage.hasMore,
         total: sessionsPage.total,
       },
-    });
-  }
-
-  broadcastProgress({
-    phase: 'complete',
-    current: totalProjects,
-    total: totalProjects,
+    };
   });
-
-  return projects;
 }
 
 /**
@@ -270,49 +319,30 @@ export async function getProjectsWithSessions(
  * conversation history in the archive view regardless of each session's flag.
  */
 export async function getArchivedProjectsWithSessions(
-  options: Pick<GetProjectsWithSessionsOptions, 'skipSynchronization'> = {},
+  options: Pick<GetProjectsWithSessionsOptions, 'synchronize' | 'skipSynchronization'> = {},
 ): Promise<ArchivedProjectListItem[]> {
-  sessionsDb.rehomeAgentWorkspaceSessions();
+  await synchronizeIfRequested(options);
 
-  if (!options.skipSynchronization) {
-    await sessionSynchronizerService.synchronizeSessions();
-  }
+  const projectRows = projectsDb.getArchivedProjectPaths() as ProjectRow[];
+  const displayNames = await mapWithConcurrency(projectRows, PROJECT_FS_CONCURRENCY, resolveProjectDisplayName);
 
-  const projectRows = projectsDb.getArchivedProjectPaths() as Array<{
-    project_id: string;
-    project_path: string;
-    custom_project_name?: string | null;
-    isStarred?: number;
-    category_id?: string | null;
-  }>;
-
-  const archivedProjects: ArchivedProjectListItem[] = [];
-
-  for (const row of projectRows) {
-    const displayName =
-      row.custom_project_name && row.custom_project_name.trim().length > 0
-        ? row.custom_project_name
-        : await generateDisplayName(path.basename(row.project_path) || row.project_path, row.project_path);
-
+  return projectRows.map((row, index) => {
     const sessionsPage = readProjectSessionsIncludingArchived(row.project_path);
-
-    archivedProjects.push({
+    return {
       projectId: row.project_id,
       path: row.project_path,
-      displayName,
+      displayName: displayNames[index],
       fullPath: row.project_path,
       isStarred: Boolean(row.isStarred),
       categoryId: row.category_id ?? null,
-      isArchived: true,
+      isArchived: true as const,
       sessions: sessionsPage.sessions,
       sessionMeta: {
         hasMore: sessionsPage.hasMore,
         total: sessionsPage.total,
       },
-    });
-  }
-
-  return archivedProjects;
+    };
+  });
 }
 
 /**

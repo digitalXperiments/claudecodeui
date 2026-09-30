@@ -2,11 +2,64 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Dispatch, KeyboardEvent, RefObject, SetStateAction } from 'react';
 
 import { authenticatedFetch } from '../../../utils/api';
+import { sharedRequest } from '../../../utils/requestCache';
+import { runAfterSessionPaint } from '../../../utils/sessionPaintGate';
 import { safeLocalStorage } from '../utils/chatStorage';
 import type { LLMProvider, Project } from '../../../types/app';
 import { mapEnabledHooksToSlashCommands, type HookCatalogItem } from '../utils/hookSlash';
 
 const COMMAND_QUERY_DEBOUNCE_MS = 150;
+// Lets a ChatInterface remount (SPA navigation) reuse the lists it just
+// loaded; a project/provider change still loads its own.
+const COMMAND_SOURCES_TTL_MS = 10_000;
+
+type CommandsListResponse = { builtIn?: SlashCommand[]; custom?: SlashCommand[] };
+
+const fetchCommandsList = (workspacePath: string) => sharedRequest<CommandsListResponse>(
+  `commands-list:${workspacePath}`,
+  async () => {
+    const response = await authenticatedFetch('/api/commands/list', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ projectPath: workspacePath }),
+    });
+    if (!response.ok) {
+      throw new Error('Failed to fetch commands');
+    }
+    return (await response.json()) as CommandsListResponse;
+  },
+  { ttlMs: COMMAND_SOURCES_TTL_MS },
+);
+
+const fetchProviderSkills = (provider: LLMProvider, workspacePath: string) => sharedRequest<ProviderSkillsResponse | null>(
+  `provider-skills:${provider}:${workspacePath}`,
+  async () => {
+    const skillsParams = new URLSearchParams();
+    if (workspacePath) {
+      skillsParams.set('workspacePath', workspacePath);
+    }
+    const skillsResponse = await authenticatedFetch(
+      `/api/providers/${encodeURIComponent(provider)}/skills${skillsParams.toString() ? `?${skillsParams.toString()}` : ''}`,
+    );
+    return skillsResponse.ok ? ((await skillsResponse.json()) as ProviderSkillsResponse) : null;
+  },
+  { ttlMs: COMMAND_SOURCES_TTL_MS },
+);
+
+const fetchHookCatalog = () => sharedRequest<HookCatalogItem[] | null>(
+  'hooks-catalog',
+  async () => {
+    const hooksResponse = await authenticatedFetch('/api/hooks-catalog');
+    if (!hooksResponse.ok) return null;
+    const hooksPayload = (await hooksResponse.json()) as {
+      data?: { hooks?: HookCatalogItem[] };
+    };
+    return hooksPayload.data?.hooks ?? [];
+  },
+  { ttlMs: COMMAND_SOURCES_TTL_MS },
+);
 
 export interface SlashCommand {
   name: string;
@@ -168,59 +221,63 @@ export function useSlashCommands({
     clearCommandQueryTimer();
   }, [clearCommandQueryTimer]);
 
+  // Commands feed the "/" menu and the composer's command-count badge, not
+  // the transcript: load them once the transcript has painted, or right away
+  // when the user opens the menu or types "/" first. Keyed by project id +
+  // workspace path + provider rather than the project object, which is rebuilt
+  // on every projects refresh (that used to refetch all three lists).
+  const commandsProjectId = selectedProject?.projectId ?? null;
+  const commandsWorkspacePath = selectedProject
+    ? (selectedProject.fullPath || selectedProject.path || '')
+    : '';
+  const commandsKey = commandsProjectId
+    ? `${commandsProjectId}\u0000${commandsWorkspacePath}\u0000${provider}`
+    : null;
+  const [requestedCommandsKey, setRequestedCommandsKey] = useState<string | null>(null);
+  const commandsKeyRef = useRef(commandsKey);
+  commandsKeyRef.current = commandsKey;
+  const requestCommandsNow = useCallback(() => {
+    const key = commandsKeyRef.current;
+    if (key) setRequestedCommandsKey((current) => (current === key ? current : key));
+  }, []);
+
+  useEffect(() => {
+    if (!commandsKey) return undefined;
+    return runAfterSessionPaint(() => {
+      setRequestedCommandsKey((current) => (current === commandsKey ? current : commandsKey));
+    });
+  }, [commandsKey]);
+
+  const commandsProjectRef = useRef(selectedProject);
+  commandsProjectRef.current = selectedProject;
+
   useEffect(() => {
     let cancelled = false;
 
     const fetchCommands = async () => {
-      if (!selectedProject) {
+      const project = commandsProjectRef.current;
+      if (!commandsKey || !project) {
         setSlashCommands([]);
         setFilteredCommands([]);
         return;
       }
+      if (requestedCommandsKey !== commandsKey) {
+        return;
+      }
 
       try {
-        const workspacePath = selectedProject.fullPath || selectedProject.path || '';
-        const response = await authenticatedFetch('/api/commands/list', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            projectPath: workspacePath || selectedProject.path,
-          }),
-        });
-
-        if (!response.ok) {
-          throw new Error('Failed to fetch commands');
-        }
-
-        const data = await response.json();
-        const skillsParams = new URLSearchParams();
-        if (workspacePath) {
-          skillsParams.set('workspacePath', workspacePath);
-        }
-
-        const skillsResponse = await authenticatedFetch(
-          `/api/providers/${encodeURIComponent(provider)}/skills${skillsParams.toString() ? `?${skillsParams.toString()}` : ''}`,
-        );
-        const skillsData = skillsResponse.ok
-          ? ((await skillsResponse.json()) as ProviderSkillsResponse)
-          : null;
+        const workspacePath = commandsWorkspacePath || project.path || '';
+        const [data, skillsData, hookItems] = await Promise.all([
+          fetchCommandsList(workspacePath),
+          fetchProviderSkills(provider, commandsWorkspacePath),
+          fetchHookCatalog().catch(() => null),
+        ]);
         const skillCommands = dedupeProviderSkills(skillsData?.data?.skills || [])
           .map(mapSkillToSlashCommand);
 
         let hookCommands: SlashCommand[] = [];
         try {
-          const hooksResponse = await authenticatedFetch('/api/hooks-catalog');
-          if (hooksResponse.ok) {
-            const hooksPayload = (await hooksResponse.json()) as {
-              data?: { hooks?: HookCatalogItem[] };
-            };
-            hookCommands = mapEnabledHooksToSlashCommands(
-              hooksPayload.data?.hooks ?? [],
-              provider,
-            );
-          }
+          hookCommands = hookItems ? mapEnabledHooksToSlashCommands(hookItems, provider) : [];
         } catch {
           hookCommands = [];
         }
@@ -244,7 +301,7 @@ export function useSlashCommands({
           ...hookCommands,
         ];
 
-        const parsedHistory = readCommandHistory(selectedProject.projectId);
+        const parsedHistory = readCommandHistory(project.projectId);
         const sortedCommands = [...allCommands].sort((commandA, commandB) => {
           const commandAUsage = parsedHistory[commandA.name] || 0;
           const commandBUsage = parsedHistory[commandB.name] || 0;
@@ -266,7 +323,7 @@ export function useSlashCommands({
     return () => {
       cancelled = true;
     };
-  }, [selectedProject, provider]);
+  }, [commandsKey, commandsWorkspacePath, provider, requestedCommandsKey]);
 
   useEffect(() => {
     if (!showCommandMenu) {
@@ -391,6 +448,7 @@ export function useSlashCommands({
 
   const handleToggleCommandMenu = useCallback(() => {
     const isOpening = !showCommandMenu;
+    if (isOpening) requestCommandsNow();
     setShowCommandMenu(isOpening);
     setCommandQuery('');
     setSelectedCommandIndex(-1);
@@ -400,7 +458,7 @@ export function useSlashCommands({
     }
 
     textareaRef.current?.focus();
-  }, [showCommandMenu, slashCommands, textareaRef]);
+  }, [requestCommandsNow, showCommandMenu, slashCommands, textareaRef]);
 
   const handleCommandInputChange = useCallback(
     (newValue: string, cursorPos: number) => {
@@ -427,6 +485,9 @@ export function useSlashCommands({
         return;
       }
 
+      // First "/" before the deferred load ran: load now.
+      requestCommandsNow();
+
       // Compute actual position of / in the full input string.
       const slashPos = match.index! + (match[0].length - match[1].length);
       const query = match[1].slice(1); // strip leading /
@@ -440,7 +501,7 @@ export function useSlashCommands({
         setCommandQuery(query);
       }, COMMAND_QUERY_DEBOUNCE_MS);
     },
-    [resetCommandMenuState, clearCommandQueryTimer],
+    [resetCommandMenuState, clearCommandQueryTimer, requestCommandsNow],
   );
 
   const handleCommandMenuKeyDown = useCallback(

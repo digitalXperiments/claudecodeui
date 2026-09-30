@@ -19,8 +19,38 @@ const validateApiKey = (req, res, next) => {
   next();
 };
 
+// Short-lived cache for the per-request "user still exists" lookup. Users are
+// never renamed and only created at setup, so a 30s window is safe; misses are
+// not cached so a newly created user authenticates immediately.
+const USER_CACHE_TTL_MS = 30_000;
+const userCache = new Map();
+
+const getActiveUserById = (userId) => {
+  const now = Date.now();
+  const cached = userCache.get(userId);
+  if (cached && cached.expiresAt > now) {
+    return { ...cached.user };
+  }
+  const user = userDb.getUserById(userId);
+  if (user) {
+    userCache.set(userId, { user, expiresAt: now + USER_CACHE_TTL_MS });
+  } else {
+    userCache.delete(userId);
+  }
+  return user;
+};
+
+// authenticateToken is mounted on many overlapping `/api` prefixes; a request
+// that falls through several routers must only be verified once. A private
+// symbol (not req.user, which other middleware sets) marks a completed pass.
+const AUTHENTICATED = Symbol('cloudcli.authenticated');
+
 // JWT authentication middleware
 const authenticateToken = async (req, res, next) => {
+  if (req[AUTHENTICATED] && req.user) {
+    return next();
+  }
+
   // Platform mode:  use single database user
   if (IS_PLATFORM) {
     try {
@@ -29,6 +59,7 @@ const authenticateToken = async (req, res, next) => {
         return res.status(500).json({ error: 'Platform mode: No user found in database' });
       }
       req.user = user;
+      req[AUTHENTICATED] = true;
       return next();
     } catch (error) {
       console.error('Platform mode error:', error);
@@ -53,7 +84,7 @@ const authenticateToken = async (req, res, next) => {
     const decoded = jwt.verify(token, JWT_SECRET);
 
     // Verify user still exists and is active
-    const user = userDb.getUserById(decoded.userId);
+    const user = getActiveUserById(decoded.userId);
     if (!user) {
       return res.status(401).json({ error: 'Invalid token. User not found.' });
     }
@@ -69,6 +100,7 @@ const authenticateToken = async (req, res, next) => {
     }
 
     req.user = user;
+    req[AUTHENTICATED] = true;
     next();
   } catch (error) {
     console.error('Token verification error:', error);
@@ -112,7 +144,7 @@ const authenticateWebSocket = (token) => {
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
     // Verify user actually exists in database (matches REST authenticateToken behavior)
-    const user = userDb.getUserById(decoded.userId);
+    const user = getActiveUserById(decoded.userId);
     if (!user) {
       return null;
     }

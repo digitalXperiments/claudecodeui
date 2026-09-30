@@ -6,6 +6,9 @@
  * inside a transaction so `seq` stays monotonic per run_id.
  */
 
+import fsSync from 'node:fs';
+
+import { readClaudeSessionTokenUsage } from '@/modules/providers/index.js';
 import { getConnection } from '@/modules/database/index.js';
 import { newEventId, newRunId } from '@/shared/ids.js';
 import {
@@ -528,21 +531,111 @@ export const runsDb = {
     return result.changes;
   },
 
-  usageForSession(sessionId: string): { tokens: number; costUsd: number; runCount: number } {
+  usageForSession(sessionId: string): {
+    tokens: number;
+    costUsd: number;
+    runCount: number;
+    lastRunCostUsd?: number;
+    burnRateUsdPerMin?: number;
+    context?: {
+      usedTokens: number;
+      contextWindow: number;
+      percent: number | null;
+      inputTokens?: number;
+      outputTokens?: number;
+      model?: string | null;
+    };
+  } {
     const db = getConnection();
     const row = db.prepare(
       `SELECT
          COUNT(*) AS run_count,
          COALESCE(SUM(COALESCE(token_total, token_input + token_output, 0)), 0) AS tokens,
-         COALESCE(SUM(cost_usd_estimate), 0) AS cost
+         COALESCE(SUM(cost_usd_estimate), 0) AS cost,
+         MIN(created_at) AS first_created_at
        FROM agent_runs
        WHERE app_session_id = ?
          AND source != 'history'`,
-    ).get(sessionId) as { run_count: number; tokens: number; cost: number } | undefined;
+    ).get(sessionId) as { run_count: number; tokens: number; cost: number; first_created_at: string | null } | undefined;
+
+    const lastRunRow = db.prepare(
+      `SELECT cost_usd_estimate
+       FROM agent_runs
+       WHERE app_session_id = ?
+         AND source != 'history'
+       ORDER BY created_at DESC, run_id DESC
+       LIMIT 1`,
+    ).get(sessionId) as { cost_usd_estimate: number | null } | undefined;
+
+    const recentCostRow = db.prepare(
+      `SELECT COALESCE(SUM(cost_usd_estimate), 0) AS recent_cost
+       FROM agent_runs
+       WHERE app_session_id = ?
+         AND source != 'history'
+         AND created_at >= datetime('now', '-15 minutes')`,
+    ).get(sessionId) as { recent_cost: number } | undefined;
+
+    const costUsd = Number(row?.cost ?? 0);
+    const tokens = Number(row?.tokens ?? 0);
+    const runCount = Number(row?.run_count ?? 0);
+    const lastRunCostUsd = Number(lastRunRow?.cost_usd_estimate ?? 0);
+
+    let burnRateUsdPerMin = 0;
+    if (costUsd > 0 && row?.first_created_at) {
+      const firstRunMs = new Date(row.first_created_at).getTime();
+      const elapsedMins = Math.max(0.5, (Date.now() - firstRunMs) / 60000);
+      const recentCost = Number(recentCostRow?.recent_cost ?? 0);
+      if (recentCost > 0) {
+        const windowMins = Math.min(15, elapsedMins);
+        burnRateUsdPerMin = Number((recentCost / windowMins).toFixed(4));
+      } else {
+        burnRateUsdPerMin = Number((costUsd / elapsedMins).toFixed(4));
+      }
+    }
+
+    let contextTelemetry: {
+      usedTokens: number;
+      contextWindow: number;
+      percent: number | null;
+      inputTokens?: number;
+      outputTokens?: number;
+      model?: string | null;
+    } | undefined = undefined;
+
+    // Context occupancy is the latest API call's input (incl. cache), read from
+    // the transcript. Run rows hold billed totals summed over every call in the
+    // run, which routinely exceed the window and must not be shown as fill.
+    try {
+      const sessionRow = db.prepare(
+        `SELECT provider, jsonl_path
+         FROM sessions
+         WHERE session_id = ?`
+      ).get(sessionId) as { provider: string | null; jsonl_path: string | null } | undefined;
+
+      if (sessionRow?.jsonl_path && fsSync.existsSync(sessionRow.jsonl_path)) {
+        const claudeUsage = readClaudeSessionTokenUsage(sessionRow.jsonl_path);
+        if (claudeUsage.contextUsed > 0) {
+          contextTelemetry = {
+            usedTokens: claudeUsage.contextUsed,
+            contextWindow: claudeUsage.contextWindow,
+            percent: claudeUsage.contextPercent,
+            inputTokens: claudeUsage.lastTurnInputTokens,
+            outputTokens: claudeUsage.lastTurnOutputTokens,
+            model: claudeUsage.model,
+          };
+        }
+      }
+    } catch {
+      // best-effort
+    }
+
     return {
-      tokens: Number(row?.tokens ?? 0),
-      costUsd: Number(row?.cost ?? 0),
-      runCount: Number(row?.run_count ?? 0),
+      tokens,
+      costUsd,
+      runCount,
+      lastRunCostUsd,
+      burnRateUsdPerMin,
+      context: contextTelemetry,
     };
   },
 

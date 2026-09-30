@@ -320,6 +320,22 @@ export type FetchHistoryResult = {
   offset: number;
   limit: number | null;
   tokenUsage?: unknown;
+  /**
+   * Set (only) when the provider could not produce authoritative history yet,
+   * e.g. Antigravity's conversation store has not been written or its replay
+   * failed/timed out. `messages` is then empty and NOT a real empty transcript;
+   * clients should retry after a short delay rather than render "no messages".
+   */
+  historyPending?: true;
+  /** Companion to `historyPending`: a later request may succeed. */
+  retryable?: true;
+  /** Why history is pending: `not-persisted` (no store yet) or `replay-failed`. */
+  historyPendingReason?: 'not-persisted' | 'replay-failed';
+  /**
+   * The messages are the last good replay and a background refresh is running;
+   * refetching in a few seconds returns the newer transcript.
+   */
+  historyRefreshing?: true;
 };
 
 // ---------------------------

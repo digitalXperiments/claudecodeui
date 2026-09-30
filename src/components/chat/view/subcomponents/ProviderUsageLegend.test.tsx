@@ -110,6 +110,45 @@ test('empty signed-in membership hides the legend', () => {
   assert.equal(html, '');
 });
 
+test('embedded usage stays visible when the old floating-widget preference is collapsed', () => {
+  const html = renderLegend({ collapsed: true, embedded: true });
+  assert.match(html, /data-testid="provider-usage-legend"/);
+  assert.doesNotMatch(html, /fixed bottom-4 right-4/);
+});
+
+test('embedded usage renders four full-width provider columns with implicit session and weekly rows', () => {
+  const html = renderLegend({
+    embedded: true,
+    data: response([
+      provider({ providerId: 'codex', displayName: 'Codex' }),
+      provider({ providerId: 'grok', displayName: 'Grok' }),
+      provider({ providerId: 'antigravity', displayName: 'Antigravity' }),
+      provider({ providerId: 'kimi', displayName: 'Kimi' }),
+    ]),
+  });
+  assert.match(html, /repeat\(4, minmax\(0, 1fr\)\)/);
+  assert.doesNotMatch(html, />Limit</);
+  assert.doesNotMatch(html, />Codex</);
+  assert.match(html, /aria-label="Codex usage details"/);
+  assert.match(html, /provider-logos\/antigravity-icon-full-color\.png/);
+  assert.match(html, /provider-logos\/grok-icon\.svg/);
+  assert.match(html, />96%</);
+  assert.match(html, />42%</);
+  assert.match(html, /data-usage-window="session"/);
+  assert.match(html, /data-usage-window="weekly"/);
+  assert.doesNotMatch(html, />Session</);
+  assert.doesNotMatch(html, />Weekly</);
+  assert.match(html, />4h 0m</);
+  assert.match(html, />3d 10h</);
+  assert.doesNotMatch(html, /96% remaining/);
+});
+
+test('embedded usage shows compact skeletons during its initial request', () => {
+  const html = renderLegend({ embedded: true, data: null, loading: true });
+  assert.match(html, /Loading provider usage/);
+  assert.equal((html.match(/animate-pulse/g) ?? []).length, 4);
+});
+
 test('single provider renders real remaining percentage and reset countdown', () => {
   const html = renderLegend();
   assert.match(html, /96% remaining/);

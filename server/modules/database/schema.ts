@@ -373,11 +373,16 @@ CREATE TABLE IF NOT EXISTS mc_sections (
     enabled             INTEGER DEFAULT 1,
     scope               TEXT DEFAULT 'global',  -- global | project
     project_id          TEXT,                  -- required when scope=project
+    work_profile_json   TEXT,
     work_project_id     TEXT,                  -- project used by the Work this handoff
     mode                TEXT DEFAULT 'review', -- review | fire_and_forget
     schedule_cron       TEXT DEFAULT '',
     provider            TEXT DEFAULT 'claude',
     model               TEXT DEFAULT '',
+    effort              TEXT,
+    resolve_provider    TEXT,
+    resolve_model       TEXT,
+    resolve_effort      TEXT,
     permission_mode     TEXT DEFAULT 'bypassPermissions',
     dry_run             INTEGER DEFAULT 0,
     auto_approve        INTEGER DEFAULT 0,
@@ -406,7 +411,7 @@ export const MC_ITEMS_TABLE_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS mc_items (
     item_id       TEXT PRIMARY KEY NOT NULL,
     section_id    TEXT NOT NULL,
-    status        TEXT DEFAULT 'pending', -- pending|resolving|resolved|dismissed|failed|expired
+    status        TEXT DEFAULT 'pending', -- pending|resolving|awaiting_work|working|in_qa|resolved|dismissed|failed|expired
     title         TEXT NOT NULL,
     summary       TEXT DEFAULT '',
     body_json     TEXT DEFAULT '{}',
@@ -418,6 +423,7 @@ CREATE TABLE IF NOT EXISTS mc_items (
     dedupe_key    TEXT NOT NULL,
     result_json   TEXT,
     error         TEXT,
+    work_ready_at TEXT,
     created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
     resolved_at   DATETIME,
@@ -649,6 +655,26 @@ CREATE TABLE IF NOT EXISTS agent_relay_approvals (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_relay_approvals_request ON agent_relay_approvals(request_id);
 CREATE INDEX IF NOT EXISTS idx_agent_relay_approvals_relay ON agent_relay_approvals(relay_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_agent_relay_approvals_status ON agent_relay_approvals(status, created_at);
+`;
+
+/** Immutable verification and delivery evidence used to guard explicit land operations. */
+export const AGENT_RELAY_DELIVERY_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS agent_relay_delivery_records (
+    delivery_id TEXT PRIMARY KEY NOT NULL,
+    project_id TEXT NOT NULL,
+    source_session_id TEXT,
+    kind TEXT NOT NULL CHECK (kind IN ('verify', 'rehearse', 'land', 'recover')),
+    workspace_ids_json TEXT NOT NULL DEFAULT '[]',
+    tips_json TEXT NOT NULL DEFAULT '{}',
+    base_sha TEXT,
+    result_json TEXT NOT NULL,
+    passed INTEGER NOT NULL DEFAULT 0,
+    landed_sha TEXT,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (project_id) REFERENCES projects(project_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_agent_relay_delivery_project ON agent_relay_delivery_records(project_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_agent_relay_delivery_kind ON agent_relay_delivery_records(kind, project_id, created_at DESC);
 `;
 
 /**

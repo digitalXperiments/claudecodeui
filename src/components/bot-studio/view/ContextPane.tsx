@@ -1,11 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ChevronRight, Eye, FileJson, ExternalLink, Loader2, MessageSquare, X } from 'lucide-react';
+import { Check, CornerUpLeft, Eye, FileJson, ExternalLink, Loader2, MessageSquare, Play, RefreshCw, SquareArrowOutUpRight, X } from 'lucide-react';
 
-import type { BotRun } from '../api/botStudioApi';
-import { actionIsSendLike, formatAge, itemHasDraft } from '../types';
+import { formatAge, isInboxActionLocked, itemAcceptsActions, itemFailedInWork, itemHasDraft, itemWorkSession, routeWorkProject } from '../types';
 import StatusPill from '../ui/StatusPill';
 import BotIcon from '../ui/BotIcon';
-import { formatDuration } from '../ui/runFormatting';
 import { Button } from '../../../shared/view/ui';
 import { getActionSemantics } from '../../mission-control/utils/actionSemantics';
 import { isXArticleBody } from '../../mission-control/utils/xArticle';
@@ -13,6 +11,7 @@ import ArticleDraftCard from '../../mission-control/view/subcomponents/ArticleDr
 
 import type { ContextPaneProps } from './contracts';
 import { getItemContentPreview } from './inbox/itemContent';
+import RunTimeline from './RunTimeline';
 
 type ExtendedContextPaneProps = ContextPaneProps & {
   onAction?: (item: NonNullable<ContextPaneProps['item']>, action: NonNullable<ContextPaneProps['item']>['actions'][number], body?: Record<string, unknown>) => void;
@@ -42,17 +41,15 @@ function runIdForItem(item: NonNullable<ContextPaneProps['item']>): string | nul
   return stringValue(item.body.run_id) ?? stringValue(item.body.runId) ?? stringValue(item.body.produced_by_run_id);
 }
 
-function runDetail(run: BotRun, onSelectRun?: (run: BotRun) => void) {
-  return <div className="space-y-4 p-4">
-    <div><p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">Tick detail</p><div className="mt-2 flex items-center gap-2"><StatusPill status={run.status} /><span className="text-xs text-muted-foreground">{run.kind || 'produce'} · {run.trigger || 'manual'}</span></div></div>
-    <dl className="grid grid-cols-2 gap-x-3 gap-y-3 text-xs"><div><dt className="text-[10px] text-muted-foreground">Started</dt><dd className="mt-0.5">{run.started_at ? formatAge(run.started_at) : '—'}</dd></div><div><dt className="text-[10px] text-muted-foreground">Duration</dt><dd className="mt-0.5">{formatDuration(run.duration_ms)}</dd></div><div><dt className="text-[10px] text-muted-foreground">Tokens</dt><dd className="mt-0.5">{run.tokens?.toLocaleString() ?? '—'}</dd></div><div><dt className="text-[10px] text-muted-foreground">Cost</dt><dd className="mt-0.5">{run.cost_usd != null ? `$${run.cost_usd.toFixed(2)}` : '—'}</dd></div></dl>
-    {run.error_summary ? <p className="rounded-lg bg-destructive/10 px-3 py-2 text-xs text-destructive" role="alert">{run.error_summary}</p> : null}
-    {run.item_id ? <p className="rounded-lg border border-border/70 bg-card px-3 py-2 text-xs">Produced inbox item <span className="font-mono text-[10px]">{run.item_id}</span></p> : null}
-    {onSelectRun ? <Button size="sm" variant="ghost" onClick={() => onSelectRun(run)}>Open run <ChevronRight className="h-3 w-3" /></Button> : null}
-  </div>;
+function resultUrl(result: Record<string, unknown>): string | null {
+  for (const key of ['url', 'link', 'permalink']) {
+    const url = stringValue(result[key]);
+    if (url && /^https?:\/\//i.test(url)) return url;
+  }
+  return null;
 }
 
-export default function ContextPane({ item, bot, preview, operatorContext, onOperatorContextChange, onBodyChange, onGenerateAssets, onClose, selectedRun, onSelectRun, onAction, workCandidates, workLoading = false, workError, onWork }: ExtendedContextPaneProps) {
+export default function ContextPane({ item, bot, preview, operatorContext, onOperatorContextChange, onBodyChange, onGenerateAssets, onClose, selectedRun, onSelectRun, onAction, workCandidates, workLoading = false, workError, onWork, workProjects = [], onStartWork, onAcceptWork, onSendBack, onRetryWork }: ExtendedContextPaneProps) {
   const [bodyDraft, setBodyDraft] = useState('');
   const [draftText, setDraftText] = useState('');
   const [bodyError, setBodyError] = useState<string | null>(null);
@@ -72,10 +69,23 @@ export default function ContextPane({ item, bot, preview, operatorContext, onOpe
   const contentPreview = item ? getItemContentPreview(item) : null;
   const workable = item?.status === 'pending' || item?.status === 'failed';
   const [selectedWorkProjectId, setSelectedWorkProjectId] = useState('');
+  const workSession = item ? itemWorkSession(item) : null;
+  const failedInWork = item ? itemFailedInWork(item) : false;
+  const inWorkStage = item?.status === 'awaiting_work' || item?.status === 'working' || item?.status === 'in_qa' || failedInWork;
+  // Bots with a work profile use the Work stage; bots without one keep the legacy work chat.
+  const usesWork = Boolean(bot?.work_profile) || inWorkStage;
+  const canStartWork = item?.status === 'awaiting_work' || (failedInWork && !workSession);
+  const [startProjectId, setStartProjectId] = useState('');
+  const [feedback, setFeedback] = useState('');
 
   useEffect(() => {
     setSelectedWorkProjectId(workCandidates?.[0]?.projectId ?? '');
   }, [item?.item_id, workCandidates]);
+
+  useEffect(() => {
+    setStartProjectId(item ? routeWorkProject(item, bot?.work_profile) ?? '' : '');
+    setFeedback('');
+  }, [item?.item_id, bot?.work_profile]); // eslint-disable-line react-hooks/exhaustive-deps -- reset per item, not on every item refresh
 
   const bodyFromEditor = (): Record<string, unknown> | null => {
     try {
@@ -123,17 +133,29 @@ export default function ContextPane({ item, bot, preview, operatorContext, onOpe
     return next;
   }, [bodyDraft, operatorContext]);
 
-  if (selectedRun) return <aside className="flex min-h-0 flex-col border-t border-border/70 bg-card/30 xl:border-t-0"><div className="flex items-center justify-between border-b border-border/70 px-4 py-3"><p className="text-sm font-semibold">Run {selectedRun.run_id}</p>{onClose ? <Button size="sm" variant="ghost" onClick={onClose} aria-label="Close context pane"><X className="h-3.5 w-3.5" /></Button> : null}</div><div className="min-h-0 flex-1 overflow-y-auto">{runDetail(selectedRun, onSelectRun)}</div></aside>;
+  if (selectedRun) return <aside className="flex min-h-0 flex-col border-t border-border/70 bg-card/30 xl:border-t-0"><div className="flex items-start justify-between gap-2 border-b border-border/70 px-4 py-3"><div className="min-w-0"><p className="truncate text-sm font-semibold">{selectedRun.bot_title || 'Run detail'}</p><p className="mt-0.5 truncate font-mono text-[9px] text-muted-foreground" title={selectedRun.run_id}>{selectedRun.run_id}</p></div>{onClose ? <Button size="sm" variant="ghost" onClick={onClose} aria-label="Close context pane"><X className="h-3.5 w-3.5" /></Button> : null}</div><div className="min-h-0 flex-1 overflow-y-auto"><RunTimeline run={selectedRun} /></div></aside>;
   if (!item) return <aside className="flex min-h-0 flex-col border-t border-border/70 bg-card/30 xl:border-t-0"><div className="flex flex-1 flex-col items-center justify-center p-8 text-center"><div className="flex h-10 w-10 items-center justify-center overflow-hidden rounded-xl bg-primary/10 text-primary"><BotIcon size={18} /></div><p className="mt-3 text-sm font-medium">Context pane</p><p className="mt-1 max-w-xs text-xs leading-5 text-muted-foreground">Select an inbox item to inspect its evidence, draft, and next action.</p></div></aside>;
 
-  return <aside className="flex min-h-0 flex-col border-t border-border/70 bg-card/30 xl:border-t-0">
+  return <aside className="bot-studio-controls flex min-h-0 flex-col border-t border-border/70 bg-card/30 xl:border-t-0">
     <div className="flex shrink-0 items-start gap-2 border-b border-border/70 px-4 py-3"><div className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-primary/10 text-primary"><BotIcon icon={bot?.icon} size={18} /></div><div className="min-w-0 flex-1"><p className="truncate text-sm font-semibold">{item.title}</p><div className="mt-1 flex flex-wrap items-center gap-2"><StatusPill status={item.status} /><span className="text-[10px] text-muted-foreground">{formatAge(item.created_at)} · {Math.round((item.confidence ?? 0) * 100)}% confidence</span></div><p className="mt-1 truncate font-mono text-[10px] text-muted-foreground" title={item.dedupe_key}>Dedupe · {item.dedupe_key || 'none'}</p></div>{onClose ? <Button size="sm" variant="ghost" onClick={onClose} aria-label="Close context pane"><X className="h-3.5 w-3.5" /></Button> : null}</div>
     <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
       <section><p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">Why the bot thinks so</p><p className="mt-1 text-xs leading-5 text-muted-foreground">{item.summary || 'The bot produced this item during a tick.'}</p>{memory ? <p className="mt-2 rounded-lg bg-muted/50 px-3 py-2 text-xs leading-5 text-muted-foreground"><span className="font-medium text-foreground">Memory · </span>{memory}</p> : null}{operatorContext ? <p className="mt-2 rounded-lg border border-primary/20 bg-primary/5 px-3 py-2 text-xs leading-5"><span className="font-medium text-primary">Operator context · </span>{operatorContext}</p> : null}</section>
 
       {contentPreview ? <section className="rounded-xl border border-border/70 bg-muted/20 p-3"><p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">{contentPreview.label}</p>{contentPreview.text ? <p className="mt-1 whitespace-pre-wrap break-words text-xs leading-5">{contentPreview.text}</p> : null}{contentPreview.actionItems ? <ul className="mt-2 list-disc space-y-1 pl-4 text-xs leading-5 text-muted-foreground">{contentPreview.actionItems.map((actionItem) => <li key={actionItem}>{actionItem}</li>)}</ul> : null}</section> : null}
 
-      {onWork ? <section className="rounded-xl border border-primary/25 bg-primary/5 p-3"><div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-primary"><MessageSquare className="h-3 w-3" />Work in a project</div><p className="mt-1 text-xs leading-5 text-muted-foreground">Choose the project whose repo and agent session should receive this item’s prefilled brief.</p>{!workable ? <p className="mt-3 text-xs text-muted-foreground">Work chat is available for pending or failed items.</p> : workLoading ? <p className="mt-3 flex items-center gap-2 text-xs text-muted-foreground"><Loader2 className="h-3.5 w-3.5 animate-spin" />Finding matching projects…</p> : workError ? <p className="mt-3 rounded-lg bg-destructive/10 px-3 py-2 text-xs text-destructive" role="alert">{workError}</p> : workCandidates?.length ? <><label htmlFor="work-project" className="mt-3 block text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Project</label><select id="work-project" value={selectedWorkProjectId} onChange={(event) => setSelectedWorkProjectId(event.target.value)} className="field mt-2 h-9 w-full"><option value="" disabled>Select a project</option>{workCandidates.map((candidate) => <option key={candidate.projectId} value={candidate.projectId}>{candidate.name}{candidate.reason !== 'manual selection' ? ` · ${candidate.reason}` : ''}</option>)}</select><Button size="sm" className="mt-3" disabled={!selectedWorkProjectId} onClick={() => onWork(item, selectedWorkProjectId)}><MessageSquare className="h-3 w-3" />Open work chat</Button></> : <Button size="sm" variant="outline" className="mt-3" onClick={() => onWork(item)}><MessageSquare className="h-3 w-3" />Find project</Button>}</section> : null}
+      {usesWork ? <section className="rounded-xl border border-primary/25 bg-primary/5 p-3"><div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-primary"><Play className="h-3 w-3" />Work session</div>
+        {item.status === 'pending' || item.status === 'resolving' || (item.status === 'failed' && !failedInWork) ? <p className="mt-1 text-xs leading-5 text-muted-foreground">Work starts after this item is resolved.</p> : null}
+        {item.status === 'working' ? <p className="mt-1 flex items-center gap-2 text-xs leading-5 text-muted-foreground"><Loader2 className="h-3.5 w-3.5 animate-spin" />The work session is running. It moves to QA when it finishes.</p> : null}
+        {failedInWork ? <p className="mt-1 text-xs leading-5 text-destructive">The work stage failed{item.error ? `: ${item.error}` : '.'}</p> : null}
+        {canStartWork && onStartWork ? <><label htmlFor="start-work-project" className="mt-3 block text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Project</label><select id="start-work-project" value={startProjectId} onChange={(event) => setStartProjectId(event.target.value)} className="field mt-2 h-9 w-full"><option value="" disabled>Select a project</option>{startProjectId && !workProjects.some((project) => project.projectId === startProjectId) ? <option value={startProjectId}>Missing project</option> : null}{workProjects.map((project) => <option key={project.projectId} value={project.projectId}>{project.displayName}</option>)}</select><p className="mt-1 text-[10px] text-muted-foreground">Preselected from the bot’s client mappings and default project.</p><Button size="sm" className="mt-3" disabled={!startProjectId} onClick={() => onStartWork(item, startProjectId)}><Play className="h-3 w-3" />Start work</Button></> : null}
+        {item.status === 'in_qa' ? <><p className="mt-1 text-xs leading-5 text-muted-foreground">The work session finished. Review it, then accept the result or send it back with feedback.</p>{onAcceptWork ? <Button size="sm" className="mt-3" onClick={() => onAcceptWork(item)}><Check className="h-3 w-3" />Accept</Button> : null}{onSendBack ? <><label htmlFor="work-feedback" className="mt-3 block text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Feedback for the session</label><textarea id="work-feedback" value={feedback} onChange={(event) => setFeedback(event.target.value)} placeholder="What should the session change or fix?" className="mt-2 min-h-20 w-full resize-y rounded-xl border border-border bg-background px-3 py-2 text-xs leading-5 outline-none focus:border-primary focus:ring-2 focus:ring-primary/10" /><Button size="sm" variant="outline" className="mt-2" disabled={!feedback.trim()} onClick={() => { onSendBack(item, feedback.trim()); setFeedback(''); }}><CornerUpLeft className="h-3 w-3" />Send back</Button></> : null}</> : null}
+        {failedInWork && workSession && onRetryWork ? <Button size="sm" variant="outline" className="mt-3" onClick={() => onRetryWork(item)}><RefreshCw className="h-3 w-3" />Retry work</Button> : null}
+        {workSession && onWork ? <div className="mt-3"><Button size="sm" variant="ghost" onClick={() => onWork(item)}><SquareArrowOutUpRight className="h-3 w-3" />Open session</Button></div> : null}
+      </section> : null}
+
+      {onWork && !usesWork ? <section className="rounded-xl border border-primary/25 bg-primary/5 p-3"><div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-primary"><MessageSquare className="h-3 w-3" />Work in a project</div><p className="mt-1 text-xs leading-5 text-muted-foreground">Choose the project whose repo and agent session should receive this item’s prefilled brief.</p>{item.body.workSession ? <Button size="sm" className="mt-3" onClick={() => onWork(item)}>Open existing work session</Button> : !workable ? <p className="mt-3 text-xs text-muted-foreground">Work chat is available for pending or failed items.</p> : workLoading ? <p className="mt-3 flex items-center gap-2 text-xs text-muted-foreground"><Loader2 className="h-3.5 w-3.5 animate-spin" />Finding matching projects…</p> : workError ? <p className="mt-3 rounded-lg bg-destructive/10 px-3 py-2 text-xs text-destructive" role="alert">{workError}</p> : workCandidates?.length ? <><label htmlFor="work-project" className="mt-3 block text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Project</label><select id="work-project" value={selectedWorkProjectId} onChange={(event) => setSelectedWorkProjectId(event.target.value)} className="field mt-2 h-9 w-full"><option value="" disabled>Select a project</option>{workCandidates.map((candidate) => <option key={candidate.projectId} value={candidate.projectId}>{candidate.name}{candidate.reason !== 'manual selection' ? ` · ${candidate.reason}` : ''}</option>)}</select><Button size="sm" className="mt-3" disabled={!selectedWorkProjectId} onClick={() => onWork(item, selectedWorkProjectId)}><MessageSquare className="h-3 w-3" />Open work chat</Button></> : <Button size="sm" variant="outline" className="mt-3" onClick={() => onWork(item)}><MessageSquare className="h-3 w-3" />Find project</Button>}</section> : null}
+
+      {item.result && Object.keys(item.result).length ? <section className="rounded-xl border border-emerald-500/25 bg-emerald-500/5 p-3"><div className="flex items-center justify-between gap-2"><p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-emerald-700 dark:text-emerald-300">Resolve result</p>{resultUrl(item.result) ? <a href={resultUrl(item.result) ?? undefined} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-[10px] font-medium text-emerald-700 underline-offset-2 hover:underline dark:text-emerald-300">Open <ExternalLink className="h-3 w-3" /></a> : null}</div><pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words text-[10px] leading-4 text-muted-foreground">{JSON.stringify(item.result, null, 2)}</pre></section> : null}
 
       <section className="rounded-xl border border-dashed border-amber-500/40 bg-amber-500/5 p-3"><div className="flex items-center justify-between gap-2"><p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-amber-700 dark:text-amber-300">Source · untrusted content</p>{sourceUrl(item) ? <a href={sourceUrl(item) ?? undefined} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-[10px] font-medium text-amber-700 underline-offset-2 hover:underline dark:text-amber-300">Open original <ExternalLink className="h-3 w-3" /></a> : null}</div><p className="mt-1 max-h-24 overflow-auto whitespace-pre-wrap break-words text-xs leading-5 text-muted-foreground">{sourceExcerpt(item)}</p></section>
 
@@ -145,7 +167,7 @@ export default function ContextPane({ item, bot, preview, operatorContext, onOpe
 
       <section className="rounded-xl border border-primary/25 bg-primary/5 p-3"><div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-primary"><Eye className="h-3 w-3" />Preview result</div><p className="mt-1 text-[10px] text-muted-foreground">Nothing is executed yet.</p>{preview ? <pre className="mt-2 max-h-52 overflow-auto whitespace-pre-wrap break-words text-[10px] leading-4 text-muted-foreground">{JSON.stringify(preview, null, 2)}</pre> : <p className="mt-2 text-xs text-muted-foreground">Preview an action from the inbox card to see its result here.</p>}</section>
 
-      {onAction ? <section><p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">Actions</p><div className="flex flex-wrap gap-1.5">{item.actions.filter((action) => action.kind !== 'work').map((action) => { const locked = bot?.autonomy === 'propose' && actionIsSendLike(action); const semantics = getActionSemantics(action, item.title, { hasDraft: itemHasDraft(item) }); return <Button key={action.id} size="sm" variant={action.kind === 'approve' ? 'default' : action.kind === 'dismiss' ? 'ghost' : 'outline'} disabled={item.status === 'resolving' || locked} title={locked ? 'Held in Propose mode: review before sending' : semantics.detail} onClick={() => onAction(item, action, actionBody)}>{locked ? '🔒 ' : ''}{semantics.label}</Button>; })}</div></section> : null}
+      {onAction && (itemAcceptsActions(item) || item.status === 'resolving') ? <section><p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">Actions</p><div className="flex flex-wrap gap-1.5">{item.actions.filter((action) => action.kind !== 'work').map((action) => { const semantics = getActionSemantics(action, item.title, { hasDraft: itemHasDraft(item) }); return <Button key={action.id} size="sm" variant={action.kind === 'approve' ? 'default' : action.kind === 'dismiss' ? 'ghost' : 'outline'} disabled={isInboxActionLocked(item)} title={semantics.detail} onClick={() => onAction(item, action, actionBody)}>{semantics.label}</Button>; })}</div></section> : null}
 
       <section><p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">Timeline</p><ol className="mt-2 space-y-2 border-l border-border pl-3 text-xs text-muted-foreground"><li><span className="font-medium text-foreground">Produced</span> · {formatAge(item.created_at)}{itemRunId ? <> · run <button type="button" className="font-mono text-primary hover:underline" onClick={() => onSelectRun?.({ run_id: itemRunId, status: 'completed', item_id: item.item_id })}>{itemRunId}</button></> : null}</li>{item.resolved_at ? <li><span className="font-medium text-foreground">{item.status === 'dismissed' ? 'Dismissed' : 'Resolved'}</span> · {formatAge(item.resolved_at)} by you</li> : null}</ol></section>
     </div>

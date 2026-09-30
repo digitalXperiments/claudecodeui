@@ -40,12 +40,31 @@ function truncatePreview(value: string, maxLength: number): string {
   return `${value.slice(0, Math.max(1, maxLength - 1)).trimEnd()}…`;
 }
 
-function stringValue(value: unknown): string {
+function scalarValue(value: unknown): string {
   if (typeof value === 'string') return value;
-  if (Array.isArray(value)) return value.map((item) => String(item)).join(' ');
-  if (value === null || value === undefined) return '';
   if (typeof value === 'number' || typeof value === 'boolean') return String(value);
   return '';
+}
+
+/**
+ * Object-safe string coercion: scalars pass through, array items are joined
+ * (objects contribute their path/file_path/name, otherwise they are skipped),
+ * and plain objects never become "[object Object]".
+ */
+function stringValue(value: unknown): string {
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => {
+        if (item && typeof item === 'object' && !Array.isArray(item)) {
+          const record = item as Record<string, unknown>;
+          return scalarValue(record.path) || scalarValue(record.file_path) || scalarValue(record.name);
+        }
+        return scalarValue(item);
+      })
+      .filter(Boolean)
+      .join(' ');
+  }
+  return scalarValue(value);
 }
 
 export function isShellToolName(toolName: string): boolean {
@@ -98,7 +117,12 @@ export function getSafeToolPreview(
   }
 
   const text = normalizeWhitespace(stringValue(parsed));
-  if (!text) return 'No parameters';
+  if (!text) {
+    if (Array.isArray(parsed) && parsed.length > 0) {
+      return `${parsed.length} ${parsed.length === 1 ? 'item' : 'items'}`;
+    }
+    return 'No parameters';
+  }
 
   // Codex orchestration calls are JavaScript snippets. A tool-name summary is
   // more useful than showing the code, and matching identifiers is safe because

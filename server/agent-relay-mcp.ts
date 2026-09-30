@@ -62,7 +62,8 @@ async function handleMessage(message: JsonRpcRequest): Promise<unknown> {
       ...args,
       projectPath: args.projectPath || process.cwd(),
     });
-    return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
+    // Compact JSON: indentation alone was ~30% of every lead poll's tokens.
+    return { content: [{ type: 'text', text: JSON.stringify(data) }] };
   }
   if (message.method.startsWith('notifications/')) return undefined;
   throw new Error(`Unsupported method: ${message.method}`);

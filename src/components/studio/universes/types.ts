@@ -12,6 +12,7 @@ export type UniverseVariantStatus =
   | 'completed'
   | 'failed'
   | 'cancelled'
+  | 'blocked'
   | 'timed_out'
   | 'unknown';
 

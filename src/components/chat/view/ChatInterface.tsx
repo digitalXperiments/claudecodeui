@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ArrowDownIcon } from 'lucide-react';
 
@@ -15,12 +15,15 @@ import type { ChatInterfaceProps, PermissionMode, Provider } from '../types/type
 import type { StudioPrototype } from '../../studio/types';
 import { studioApi } from '../../studio/api/studioApi';
 import { useChatProviderState } from '../hooks/useChatProviderState';
+import { PROVIDER_MODEL_CHANGED_EVENT, type ProviderModelChangedDetail } from '../../../constants/providerModelEvents';
 import { normalizedToChatMessages } from '../hooks/useChatMessages';
 import { useChatSessionState } from '../hooks/useChatSessionState';
 import { useChatRealtimeHandlers } from '../hooks/useChatRealtimeHandlers';
-import { useChatComposerState } from '../hooks/useChatComposerState';
+import { useChatPermissionHandlers } from '../hooks/useChatPermissionHandlers';
 import { useWorkerSessionReadOnly } from '../hooks/useWorkerSessionReadOnly';
 import { useSessionStore } from '../../../stores/useSessionStore';
+import { registerSessionPrefetcher } from '../../../stores/sessionPrefetch';
+import { SESSION_MESSAGES_PAGE_SIZE } from '../../../stores/sessionMessagePagination';
 import { useProviderAuthStatus } from '../../provider-auth/hooks/useProviderAuthStatus';
 import { authenticatedFetch, createSessionHandoff } from '../../../utils/api';
 import { resolveProviderModelLabel } from '../../../utils/providerModels';
@@ -29,15 +32,15 @@ import { DEFAULT_EFFORT_VALUE } from '../constants/providerEffort';
 import { guardWhenReadOnly } from '../utils/workerSessionAccess';
 import { providerMessageTypeLabel } from '../utils/providerLabels';
 import { flattenTranscript } from '../../skills/lib/skillWizardPrompt';
-import SkillWizardDialog from '../../skills/view/SkillWizardDialog';
+import { runAfterSessionPaint } from '../../../utils/sessionPaintGate';
 
 import ChatMessagesPane from './subcomponents/ChatMessagesPane';
-import ChatComposer from './subcomponents/ChatComposer';
-import ContinuityControl from './subcomponents/ContinuityControl';
-import CommandResultModal, { type SessionSwitchRequest } from './subcomponents/CommandResultModal';
-import LiveSpendMeter from './subcomponents/LiveSpendMeter';
-import ProviderUsageLegend from './subcomponents/ProviderUsageLegend';
-import AgentRelayActivityControl from './subcomponents/AgentRelayActivityControl';
+import ChatComposerHost, { type ChatComposerHandle } from './subcomponents/ChatComposerHost';
+import type { SessionSwitchRequest } from './subcomponents/CommandResultModal';
+
+// Only opened from "Save as skill"; keep it (and its dependencies) out of the
+// chat view's initial chunk.
+const SkillWizardDialog = lazy(() => import('../../skills/view/SkillWizardDialog'));
 
 /** Labels for the post-switch notice (mirrors CommandResultModal's map). */
 const SWITCH_PROVIDER_LABELS: Record<string, string> = {
@@ -66,6 +69,7 @@ type PendingHandoffSend = {
 };
 
 function ChatInterface({
+  isActive = true,
   selectedProject,
   selectedSession,
   studioMode = false,
@@ -91,7 +95,10 @@ function ChatInterface({
   const { t } = useTranslation('chat');
   const [linkedPrototypes, setLinkedPrototypes] = useState<StudioPrototype[]>([]);
 
-  const sessionStore = useSessionStore();
+  // Non-reactive: ChatInterface must not re-render on every store change (a
+  // stream flush lands every 100ms). The transcript pane subscribes to the
+  // rows; this view and its hooks subscribe only to counts/flags they render.
+  const sessionStore = useSessionStore({ reactive: false });
   // Per-session streaming accumulators. This view subscribes to every
   // in-progress session at once, so each session's buffered stream/thinking
   // text and its debounce timer live under that session's own id — sharing a
@@ -149,6 +156,7 @@ function ChatInterface({
     providerModelsRefreshing,
     providerModelErrors,
     hardRefreshProviderModels,
+    ensureAllProviderModels,
     currentProviderModel,
     selectProviderModel,
     selectProviderEffort,
@@ -164,10 +172,24 @@ function ChatInterface({
   // Drives the model picker's per-provider auth/install gating (e.g. OMP
   // serves an unusable fallback catalog when not authenticated — the picker
   // needs to know that to keep the user from picking one of those entries).
+  //
+  // Fetched lazily, the first time the model picker opens — NOT on mount.
+  // Each provider's auth check shells out to its CLI (1–3 s each), and firing
+  // all twelve when a session opened held most of the browser's six
+  // per-origin HTTP/1.1 connections for ~3 s, queueing the transcript's own
+  // history request behind them (measured: rows appeared ~2.9 s after the
+  // SPA navigation although the messages endpoint answers in ~10 ms). The
+  // picker already treats unknown status as loading (see isOmpAuthLoading).
   const { providerAuthStatus, refreshProviderAuthStatuses } = useProviderAuthStatus();
-  useEffect(() => {
+  const providerAuthRequestedRef = useRef(false);
+  const ensureProviderAuthStatuses = useCallback(() => {
+    // Other providers' model catalogs are also loaded on first picker open
+    // (a session open only fetches the active provider's).
+    ensureAllProviderModels();
+    if (providerAuthRequestedRef.current) return;
+    providerAuthRequestedRef.current = true;
     void refreshProviderAuthStatuses();
-  }, [refreshProviderAuthStatuses]);
+  }, [ensureAllProviderModels, refreshProviderAuthStatuses]);
 
   // Studio iterations are trusted, focused edits to the prototype checkout.
   // Keep the normal chat's permission preference untouched everywhere else.
@@ -202,7 +224,12 @@ function ChatInterface({
   }, [provider, sessionStore]);
 
   const {
-    chatMessages,
+    transcriptSessionId,
+    pendingUserMessage,
+    viewHiddenCount,
+    chatMessageCount,
+    getChatMessagesSnapshot,
+    reconcileScroll,
     addMessage,
     sessionActivity,
     isProcessing,
@@ -210,6 +237,9 @@ function ChatInterface({
     currentSessionId,
     setCurrentSessionId,
     isLoadingSessionMessages,
+    historyLoadError,
+    retryHistoryLoad,
+    loadedHistoryCount,
     isLoadingMoreMessages,
     hasMoreMessages,
     totalMessages,
@@ -217,9 +247,6 @@ function ChatInterface({
     setIsUserScrolledUp,
     tokenBudget,
     setTokenBudget,
-    visibleMessageCount,
-    visibleMessages,
-    loadEarlierMessages,
     loadAllMessages,
     allMessagesLoaded,
     isLoadingAllMessages,
@@ -229,7 +256,9 @@ function ChatInterface({
     scrollContainerRef,
     scrollToBottom,
     scrollToBottomAndReset,
+    refreshAfterRunComplete,
   } = useChatSessionState({
+    isActive,
     selectedProject,
     selectedSession,
     ws,
@@ -244,6 +273,15 @@ function ChatInterface({
     sessionStore,
   });
 
+  // Sidebar hover/focus prefetch: warm the first history page of a session
+  // this store has not loaded yet. Opening it then renders rows from cache
+  // (the initial load still refreshes the tail in the background).
+  useEffect(() => registerSessionPrefetcher((sessionId) => {
+    const slot = sessionStore.getSessionSlot(sessionId);
+    if (slot && (slot.serverMessages.length > 0 || slot.status === 'loading')) return;
+    void sessionStore.fetchFromServer(sessionId, { limit: SESSION_MESSAGES_PAGE_SIZE, offset: 0 });
+  }), [sessionStore]);
+
   const linkedSessionId = selectedSession?.id || currentSessionId;
   useEffect(() => {
     if (!linkedSessionId) {
@@ -251,15 +289,19 @@ function ChatInterface({
       return;
     }
     let cancelled = false;
-    void studioApi.listForSession(linkedSessionId)
-      .then((prototypes) => {
-        if (!cancelled) setLinkedPrototypes(prototypes);
-      })
-      .catch(() => {
-        if (!cancelled) setLinkedPrototypes([]);
-      });
+    // Linked prototypes are a side affordance; fetch after the transcript paints.
+    const cancelDeferred = runAfterSessionPaint(() => {
+      void studioApi.listForSession(linkedSessionId)
+        .then((prototypes) => {
+          if (!cancelled) setLinkedPrototypes(prototypes);
+        })
+        .catch(() => {
+          if (!cancelled) setLinkedPrototypes([]);
+        });
+    });
     return () => {
       cancelled = true;
+      cancelDeferred();
     };
   }, [linkedSessionId]);
 
@@ -270,10 +312,10 @@ function ChatInterface({
     const activeSessionId = selectedSession?.id || currentSessionId;
     return activeSessionId
       ? normalizedToChatMessages(sessionStore.getMessages(activeSessionId))
-      : chatMessages;
+      : getChatMessagesSnapshot();
   }, [
     allMessagesLoaded,
-    chatMessages,
+    getChatMessagesSnapshot,
     currentSessionId,
     loadAllMessages,
     selectedSession?.id,
@@ -287,9 +329,6 @@ function ChatInterface({
 
   const [skillWizardOpen, setSkillWizardOpen] = useState(false);
   const [skillWizardTranscript, setSkillWizardTranscript] = useState<string | undefined>(undefined);
-  // Mobile-only composer overflow — collapses the relay/collab chips and the
-  // tool icon row into a single "More" toggle so the default row stays compact.
-  const [mobileToolsOpen, setMobileToolsOpen] = useState(false);
 
   // Brand-new conversation: the composer allocated a stable session id via
   // the session gateway before the first send. Record it locally and put it
@@ -299,6 +338,35 @@ function ChatInterface({
     onSessionEstablished?.(sessionId, context);
     onNavigateToSession?.(sessionId);
   }, [setCurrentSessionId, onSessionEstablished, onNavigateToSession]);
+
+  // Post-switch notice. The app has no global toast util, so this is a
+  // transient inline banner (same pattern as SkillWizardDialog's toast).
+  const [handoffNotice, setHandoffNotice] = useState<string | null>(null);
+  const handoffNoticeTimerRef = useRef<number | null>(null);
+  const showHandoffNotice = useCallback((message: string) => {
+    if (handoffNoticeTimerRef.current !== null) {
+      window.clearTimeout(handoffNoticeTimerRef.current);
+    }
+    setHandoffNotice(message);
+    handoffNoticeTimerRef.current = window.setTimeout(() => setHandoffNotice(null), 7000);
+  }, []);
+  useEffect(() => () => {
+    if (handoffNoticeTimerRef.current !== null) {
+      window.clearTimeout(handoffNoticeTimerRef.current);
+    }
+  }, []);
+
+  useEffect(() => subscribe((event) => {
+    if (event.kind !== 'chat_session_preferences_updated'
+      || event.sessionId !== (currentSessionId || selectedSession?.id)) return;
+    if (event.error) {
+      showHandoffNotice(`Permission mode saved for the next turn. Live update failed: ${event.error}`);
+    } else if (event.deferred) {
+      showHandoffNotice('Permission mode saved. This provider applies the change on the next turn.');
+    } else if (event.appliedToRunningSession) {
+      showHandoffNotice('Permission mode applied to the running session.');
+    }
+  }), [subscribe, currentSessionId, selectedSession?.id, showHandoffNotice]);
 
   const handleCyclePermissionMode = useCallback(() => {
     const nextMode = cyclePermissionMode();
@@ -317,11 +385,18 @@ function ChatInterface({
       void authenticatedFetch(`/api/providers/sessions/${encodeURIComponent(sessionId)}/runtime-preferences`, {
         method: 'PUT',
         body: JSON.stringify({ permissionMode: nextMode }),
+      }).then(async (response) => {
+        if (!response.ok) throw new Error('Could not save permission mode');
+        const result = await response.json();
+        const live = result.data?.session;
+        showHandoffNotice(live?.appliedToRunningSession
+          ? 'Permission mode applied to the running session.'
+          : 'Permission mode saved for the next turn.');
       }).catch((error) => {
-        console.error('Failed to persist session permission mode:', error);
+        showHandoffNotice(`Permission mode could not be saved: ${error.message}`);
       });
     }
-  }, [cyclePermissionMode, currentSessionId, selectedSession?.id, sendMessage]);
+  }, [cyclePermissionMode, provider, currentSessionId, selectedSession?.id, sendMessage, showHandoffNotice]);
 
   const handleSelectPermissionMode = useCallback((targetMode: PermissionMode, targetSessionId?: string | null) => {
     const validModes = getPermissionModesForProvider(provider);
@@ -344,8 +419,14 @@ function ChatInterface({
         void authenticatedFetch(`/api/providers/sessions/${encodeURIComponent(sessionId)}/runtime-preferences`, {
           method: 'PUT',
           body: JSON.stringify({ permissionMode: targetMode }),
+        }).then(async (response) => {
+          if (!response.ok) throw new Error('Could not save permission mode');
+          const result = await response.json();
+          showHandoffNotice(result.data?.session?.appliedToRunningSession
+            ? 'Permission mode applied to the running session.'
+            : 'Permission mode saved for the next turn.');
         }).catch((error) => {
-          console.error('Failed to persist session permission mode:', error);
+          showHandoffNotice(`Permission mode could not be saved: ${error.message}`);
         });
       }
     }
@@ -357,7 +438,7 @@ function ChatInterface({
         }),
       );
     }
-  }, [getPermissionModesForProvider, provider, setPermissionMode, currentSessionId, selectedSession?.id, sendMessage]);
+  }, [getPermissionModesForProvider, provider, setPermissionMode, currentSessionId, selectedSession?.id, sendMessage, showHandoffNotice]);
 
   const handleSaveAsSkill = useCallback(() => {
     if (isReadOnlyWorkerSession) {
@@ -374,23 +455,6 @@ function ChatInterface({
     setSkillWizardTranscript(transcript);
     setSkillWizardOpen(true);
   }, [currentSessionId, isReadOnlyWorkerSession, selectedSession?.id, sessionStore]);
-
-  // Post-switch notice. The app has no global toast util, so this is a
-  // transient inline banner (same pattern as SkillWizardDialog's toast).
-  const [handoffNotice, setHandoffNotice] = useState<string | null>(null);
-  const handoffNoticeTimerRef = useRef<number | null>(null);
-  const showHandoffNotice = useCallback((message: string) => {
-    if (handoffNoticeTimerRef.current !== null) {
-      window.clearTimeout(handoffNoticeTimerRef.current);
-    }
-    setHandoffNotice(message);
-    handoffNoticeTimerRef.current = window.setTimeout(() => setHandoffNotice(null), 7000);
-  }, []);
-  useEffect(() => () => {
-    if (handoffNoticeTimerRef.current !== null) {
-      window.clearTimeout(handoffNoticeTimerRef.current);
-    }
-  }, []);
 
   // Handoff prompt parked while the view navigates to the new session —
   // sending before that would stamp the message onto the old session.
@@ -523,6 +587,9 @@ function ChatInterface({
     if (targetModel) {
       localStorage.setItem(`${targetProvider}-model`, targetModel);
       localStorage.setItem(`${targetProvider}-model-${newSessionId}`, targetModel);
+      window.dispatchEvent(new CustomEvent<ProviderModelChangedDetail>(PROVIDER_MODEL_CHANGED_EVENT, {
+        detail: { provider: targetProvider, model: targetModel, sessionId: newSessionId },
+      }));
     }
 
     setPermissionMode(chosenPermissionMode);
@@ -667,88 +734,24 @@ function ChatInterface({
     showHandoffNotice,
   ]);
 
-  const {
-    input,
-    setInput,
-    textareaRef,
-    inputHighlightRef,
-    isTextareaExpanded,
-    slashCommandsCount,
-    filteredCommands,
-    frequentCommands,
-    commandQuery,
-    showCommandMenu,
-    selectedCommandIndex,
-    resetCommandMenuState,
-    handleCommandSelect,
-    handleToggleCommandMenu,
-    showFileDropdown,
-    filteredFiles,
-    selectedFileIndex,
-    renderInputWithMentions,
-    selectFile,
-    attachedImages,
-    setAttachedImages,
-    uploadingImages,
-    imageErrors,
-    getRootProps,
-    getInputProps,
-    isDragActive,
-    openImagePicker,
-    handleSubmit,
-    queuedDraft,
-    editQueuedDraft,
-    deleteQueuedDraft,
-    handleVoiceTranscript,
-    handleInputChange,
-    handleKeyDown,
-    handlePaste,
-    handleTextareaClick,
-    handleTextareaInput,
-    syncInputOverlayScroll,
-    handleClearInput,
-    handleAbortSession,
-    handlePermissionDecision,
-    handleGrantToolPermission,
-    handleInputFocusChange,
-    isInputFocused,
-    commandModalPayload,
-    closeCommandModal,
-    openModelSelector,
-    showCostModal,
-    onSaveAsSkill,
-    saveAsSkillDisabled,
-  } = useChatComposerState({
-    selectedProject,
-    selectedSession,
-    currentSessionId,
+  // Composer state (draft text, menus, attachments) lives in ChatComposerHost
+  // so keystrokes re-render only the composer. The pieces the rest of the view
+  // needs are reached through these stable refs/callbacks.
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const composerRef = useRef<ChatComposerHandle>(null);
+  const setComposerInput = useCallback<React.Dispatch<React.SetStateAction<string>>>((value) => {
+    composerRef.current?.setInput(value);
+  }, []);
+
+  const { handlePermissionDecision, handleGrantToolPermission } = useChatPermissionHandlers({
     provider,
-    permissionMode: composerPermissionMode,
-    cyclePermissionMode: handleCyclePermissionMode,
-    currentProviderModel,
-    currentProviderEffort,
-    fastMode,
-    persistSessionModelEffort,
-    isLoading: isProcessing,
-    canAbortSession,
-    tokenBudget,
     sendMessage,
-    sendByCtrlEnter,
-    onSessionProcessing,
-    onSessionEstablished: handleSessionEstablished,
-    onInputFocusChange,
-    onFileOpen,
-    onShowSettings,
-    scrollToBottom,
-    addMessage,
-    setIsUserScrolledUp,
     setPendingPermissionRequests,
-    resolvePermissionModeForProvider,
-    supportsImages,
-    supportsFiles,
-    onSaveAsSkill: handleSaveAsSkill,
-    sessionStore,
   });
+
+  const handleSetProvider = useCallback((nextProvider: string) => {
+    setProvider(nextProvider as Provider);
+  }, [setProvider]);
 
   // On WebSocket reconnect, re-fetch the current session's messages from the
   // server so missed streaming events are shown, then re-subscribe — the
@@ -794,28 +797,10 @@ function ChatInterface({
     onSessionProcessing,
     onSessionIdle,
     onWebSocketReconnect: handleWebSocketReconnect,
+    // Coordinated latest refresh with retry (syncs hasMore/total/offset).
+    onRunComplete: refreshAfterRunComplete,
     sessionStore,
   });
-
-  useEffect(() => {
-    if (!canAbortSession || isReadOnlyWorkerSession) {
-      return;
-    }
-
-    const handleGlobalEscape = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape' || event.repeat || event.defaultPrevented) {
-        return;
-      }
-
-      event.preventDefault();
-      handleAbortSession();
-    };
-
-    document.addEventListener('keydown', handleGlobalEscape, { capture: true });
-    return () => {
-      document.removeEventListener('keydown', handleGlobalEscape, { capture: true });
-    };
-  }, [canAbortSession, handleAbortSession, isReadOnlyWorkerSession]);
 
   useEffect(() => {
     return () => {
@@ -874,13 +859,19 @@ function ChatInterface({
           readOnly={isReadOnlyWorkerSession}
           scrollContainerRef={scrollContainerRef}
           isLoadingSessionMessages={isLoadingSessionMessages}
+          historyLoadError={historyLoadError}
+          onRetryHistoryLoad={retryHistoryLoad}
           isProcessing={isProcessing}
           hasActivityIndicator={hasActivityIndicator}
-          chatMessages={chatMessages}
+          sessionStore={sessionStore}
+          transcriptSessionId={transcriptSessionId}
+          pendingUserMessage={pendingUserMessage}
+          viewHiddenCount={viewHiddenCount}
+          onTranscriptCommit={reconcileScroll}
           selectedSession={selectedSession}
           currentSessionId={currentSessionId}
           provider={provider}
-          setProvider={(nextProvider) => setProvider(nextProvider as Provider)}
+          setProvider={handleSetProvider}
           textareaRef={textareaRef}
           claudeModel={claudeModel}
           setClaudeModel={setClaudeModel}
@@ -911,14 +902,11 @@ function ChatInterface({
           tasksEnabled={tasksEnabled}
           isTaskMasterInstalled={isTaskMasterInstalled}
           onShowAllTasks={onShowAllTasks}
-          setInput={setInput}
+          setInput={setComposerInput}
           isLoadingMoreMessages={isLoadingMoreMessages}
           hasMoreMessages={hasMoreMessages}
           totalMessages={totalMessages}
-          sessionMessagesCount={chatMessages.length}
-          visibleMessageCount={visibleMessageCount}
-          visibleMessages={visibleMessages}
-          loadEarlierMessages={loadEarlierMessages}
+          sessionMessagesCount={loadedHistoryCount}
           loadAllMessages={loadAllMessages}
           allMessagesLoaded={allMessagesLoaded}
           isLoadingAllMessages={isLoadingAllMessages}
@@ -936,25 +924,7 @@ function ChatInterface({
         />
 
         <div className="relative flex-shrink-0">
-          {/* On phones this row is normally revealed by the composer's More
-              tools toggle — which a read-only worker transcript hides. Keep it
-              pinned open there so the relay chip (the lead's control plane for
-              this worker) stays reachable without re-enabling the composer. */}
-          <div
-            className={`items-center justify-between gap-2 px-3 pb-1 ${
-              mobileToolsOpen || isReadOnlyWorkerSession ? 'flex' : 'hidden sm:flex'
-            }`}
-          >
-            {!studioMode ? (
-              <AgentRelayActivityControl
-                projectId={selectedProject?.projectId ?? null}
-                sessionId={selectedSession?.id || currentSessionId || null}
-                newSessionTrigger={newSessionTrigger}
-              />
-            ) : null}
-            {!studioMode ? <LiveSpendMeter sessionId={selectedSession?.id || currentSessionId || null} /> : null}
-          </div>
-          {isUserScrolledUp && chatMessages.length > 0 && (
+          {isUserScrolledUp && chatMessageCount > 0 && (
             <div className="pointer-events-none absolute -top-11 left-0 right-0 z-20 flex justify-center">
               <button
                 type="button"
@@ -968,123 +938,69 @@ function ChatInterface({
             </div>
           )}
 
-          <ChatComposer
-          readOnly={isReadOnlyWorkerSession}
-          pendingPermissionRequests={pendingPermissionRequests}
-          handlePermissionDecision={guardWhenReadOnly(isReadOnlyWorkerSession, handlePermissionDecision)}
-          handleGrantToolPermission={handleGrantToolPermission}
-          activity={sessionActivity}
-          isLoading={isProcessing}
-          onAbortSession={guardWhenReadOnly(isReadOnlyWorkerSession, handleAbortSession)}
-          provider={provider}
-          permissionMode={composerPermissionMode}
-          onModeSwitch={studioMode || isReadOnlyWorkerSession ? () => undefined : handleCyclePermissionMode}
-          effort={currentProviderEffort}
-          availableEffortOptions={currentProviderEffortOptions}
-          onSelectEffort={guardWhenReadOnly(isReadOnlyWorkerSession, (nextEffort: string) =>
-            selectProviderEffort(provider, nextEffort, currentSessionId || selectedSession?.id || null)
-          )}
-          fastMode={fastMode}
-          supportsFastMode={supportsFastMode}
-          onToggleFastMode={guardWhenReadOnly(isReadOnlyWorkerSession, () => selectCodexFastMode(!fastMode))}
-          modelLabel={currentModelLabel}
-          onOpenModelSelector={guardWhenReadOnly(isReadOnlyWorkerSession, openModelSelector)}
-          tokenBudget={tokenBudget}
-          onShowTokenUsage={showCostModal}
-          slashCommandsCount={slashCommandsCount}
-          onToggleCommandMenu={guardWhenReadOnly(isReadOnlyWorkerSession, handleToggleCommandMenu)}
-          onSaveAsSkill={guardWhenReadOnly(isReadOnlyWorkerSession, onSaveAsSkill)}
-          saveAsSkillDisabled={saveAsSkillDisabled}
-          continuityControl={isReadOnlyWorkerSession ? null : (
-            <ContinuityControl
-              sessionId={selectedSession?.id || currentSessionId || null}
-              currentProvider={provider}
-              onNavigateToSession={onNavigateToSession}
-            />
-          )}
-          studioMode={studioMode}
-          hasInput={!isReadOnlyWorkerSession && Boolean(input.trim())}
-          onClearInput={guardWhenReadOnly(isReadOnlyWorkerSession, handleClearInput)}
-          onSubmit={guardWhenReadOnly(isReadOnlyWorkerSession, handleSubmit)}
-          isDragActive={!isReadOnlyWorkerSession && isDragActive}
-          queuedDraft={isReadOnlyWorkerSession ? null : queuedDraft}
-          onEditQueuedDraft={guardWhenReadOnly(isReadOnlyWorkerSession, editQueuedDraft)}
-          onDeleteQueuedDraft={guardWhenReadOnly(isReadOnlyWorkerSession, deleteQueuedDraft)}
-          attachedImages={attachedImages}
-          onRemoveImage={guardWhenReadOnly(isReadOnlyWorkerSession, (index: number) =>
-            setAttachedImages((previous) =>
-              previous.filter((_, currentIndex) => currentIndex !== index),
-            )
-          )}
-          uploadingImages={uploadingImages}
-          imageErrors={imageErrors}
-          showFileDropdown={!isReadOnlyWorkerSession && showFileDropdown}
-          filteredFiles={filteredFiles}
-          selectedFileIndex={selectedFileIndex}
-          onSelectFile={guardWhenReadOnly(isReadOnlyWorkerSession, selectFile)}
-          filteredCommands={filteredCommands}
-          selectedCommandIndex={selectedCommandIndex}
-          onCommandSelect={guardWhenReadOnly(isReadOnlyWorkerSession, handleCommandSelect)}
-          onCloseCommandMenu={resetCommandMenuState}
-          isCommandMenuOpen={!isReadOnlyWorkerSession && showCommandMenu}
-          frequentCommands={commandQuery ? [] : frequentCommands}
-          getRootProps={
-            isReadOnlyWorkerSession
-              ? (() => ({})) as (...args: unknown[]) => Record<string, unknown>
-              : (getRootProps as (...args: unknown[]) => Record<string, unknown>)
-          }
-          getInputProps={
-            isReadOnlyWorkerSession
-              ? (() => ({})) as (...args: unknown[]) => Record<string, unknown>
-              : (getInputProps as (...args: unknown[]) => Record<string, unknown>)
-          }
-          openImagePicker={guardWhenReadOnly(isReadOnlyWorkerSession, openImagePicker)}
-          inputHighlightRef={inputHighlightRef}
-          renderInputWithMentions={renderInputWithMentions}
-          textareaRef={textareaRef}
-          input={isReadOnlyWorkerSession ? '' : input}
-          onVoiceTranscript={isReadOnlyWorkerSession ? undefined : handleVoiceTranscript}
-          onInputChange={guardWhenReadOnly(isReadOnlyWorkerSession, handleInputChange)}
-          onTextareaClick={guardWhenReadOnly(isReadOnlyWorkerSession, handleTextareaClick)}
-          onTextareaKeyDown={guardWhenReadOnly(isReadOnlyWorkerSession, handleKeyDown)}
-          onTextareaPaste={guardWhenReadOnly(isReadOnlyWorkerSession, handlePaste)}
-          onTextareaScrollSync={syncInputOverlayScroll}
-          onTextareaInput={guardWhenReadOnly(isReadOnlyWorkerSession, handleTextareaInput)}
-          isInputFocused={isInputFocused}
-          onInputFocusChange={handleInputFocusChange}
-          mobileToolsOpen={mobileToolsOpen}
-          onToggleMobileTools={() => setMobileToolsOpen((current) => !current)}
-          placeholder={studioMode ? 'Describe a change to this prototype…' : t('input.placeholder', {
-            provider: providerMessageTypeLabel(t, provider),
-          })}
-          isTextareaExpanded={isTextareaExpanded}
-          sendByCtrlEnter={sendByCtrlEnter}
-        />
+          <ChatComposerHost
+            composerRef={composerRef}
+            textareaRef={textareaRef}
+            readOnly={isReadOnlyWorkerSession}
+            studioMode={studioMode}
+            selectedProject={selectedProject}
+            selectedSession={selectedSession}
+            currentSessionId={currentSessionId}
+            provider={provider}
+            permissionMode={composerPermissionMode}
+            onCyclePermissionMode={handleCyclePermissionMode}
+            currentProviderModel={currentProviderModel}
+            currentProviderEffort={currentProviderEffort}
+            currentProviderEffortOptions={currentProviderEffortOptions}
+            selectProviderEffort={selectProviderEffort}
+            fastMode={fastMode}
+            supportsFastMode={supportsFastMode}
+            selectCodexFastMode={selectCodexFastMode}
+            modelLabel={currentModelLabel}
+            persistSessionModelEffort={persistSessionModelEffort}
+            activity={sessionActivity}
+            isProcessing={isProcessing}
+            canAbortSession={canAbortSession}
+            tokenBudget={tokenBudget}
+            sendMessage={sendMessage}
+            sendByCtrlEnter={sendByCtrlEnter}
+            onSessionProcessing={onSessionProcessing}
+            onSessionEstablished={handleSessionEstablished}
+            onInputFocusChange={onInputFocusChange}
+            onFileOpen={onFileOpen}
+            onShowSettings={onShowSettings}
+            onNavigateToSession={onNavigateToSession}
+            scrollToBottom={scrollToBottom}
+            addMessage={addMessage}
+            setIsUserScrolledUp={setIsUserScrolledUp}
+            pendingPermissionRequests={pendingPermissionRequests}
+            handlePermissionDecision={handlePermissionDecision}
+            handleGrantToolPermission={handleGrantToolPermission}
+            resolvePermissionModeForProvider={resolvePermissionModeForProvider}
+            supportsImages={supportsImages}
+            supportsFiles={supportsFiles}
+            onSaveAsSkill={handleSaveAsSkill}
+            sessionStore={sessionStore}
+            providerModelCatalog={providerModelCatalog}
+            providerModelCacheCatalog={providerModelCacheCatalog}
+            providerModelsRefreshing={providerModelsRefreshing}
+            providerModelErrors={providerModelErrors}
+            providerAuthStatus={providerAuthStatus}
+            onModelPickerOpen={ensureProviderAuthStatuses}
+            onHardRefreshProviderModels={hardRefreshProviderModels}
+            modalPermissionMode={permissionMode}
+            getPermissionModesForProvider={getPermissionModesForProvider}
+            getDefaultPermissionModeForProvider={getDefaultPermissionModeForProvider}
+            onSelectPermissionMode={handleSelectPermissionMode}
+            onSelectProviderModel={selectProviderModel}
+            onSwitchSessionTarget={handleSwitchSessionTarget}
+          />
         </div>
           </div>
-          {!studioMode ? <ProviderUsageLegend /> : null}
         </div>
       </div>
 
       <QuickSettingsPanel />
-
-      <CommandResultModal
-        payload={commandModalPayload}
-        onClose={closeCommandModal}
-        providerModelCatalog={providerModelCatalog}
-        providerModelCacheCatalog={providerModelCacheCatalog}
-        providerModelsRefreshing={providerModelsRefreshing}
-        providerModelErrors={providerModelErrors}
-        providerAuthStatus={providerAuthStatus}
-        onHardRefreshProviderModels={hardRefreshProviderModels}
-        currentSessionId={currentSessionId || selectedSession?.id || null}
-        currentPermissionMode={permissionMode}
-        getPermissionModesForProvider={getPermissionModesForProvider}
-        getDefaultPermissionModeForProvider={getDefaultPermissionModeForProvider}
-        onSelectPermissionMode={handleSelectPermissionMode}
-        onSelectProviderModel={selectProviderModel}
-        onSwitchSessionTarget={handleSwitchSessionTarget}
-      />
 
       {handoffNotice && (
         <div
@@ -1096,14 +1012,16 @@ function ChatInterface({
       )}
 
       {skillWizardOpen && (
-        <SkillWizardDialog
-          open={skillWizardOpen}
-          onOpenChange={setSkillWizardOpen}
-          seedTranscript={skillWizardTranscript}
-          defaultProvider={provider}
-          projectPath={selectedProject.fullPath || selectedProject.path}
-          defaultSaveTarget="project"
-        />
+        <Suspense fallback={null}>
+          <SkillWizardDialog
+            open={skillWizardOpen}
+            onOpenChange={setSkillWizardOpen}
+            seedTranscript={skillWizardTranscript}
+            defaultProvider={provider}
+            projectPath={selectedProject.fullPath || selectedProject.path}
+            defaultSaveTarget="project"
+          />
+        </Suspense>
       )}
     </PermissionContext.Provider>
   );

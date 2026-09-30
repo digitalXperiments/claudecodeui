@@ -47,7 +47,14 @@ router.get(
 router.put(
   '/disabled-providers',
   asyncHandler(async (req, res) => {
+    const previous = getDisabledProviders();
     const disabled = setDisabledProviders(req.body?.disabled);
+    // The client re-syncs on every page load; only an actual change needs the
+    // dismiss pass and a watcher re-arm (which reopens every provider root).
+    if (disabled.length === previous.size && disabled.every((provider) => previous.has(provider))) {
+      res.json({ success: true, disabled });
+      return;
+    }
     // Empty report: the planner only acts on the disabled set (dismiss pass).
     await applyAuthHealthOutcomes({ checkedAt: new Date().toISOString(), providers: [] });
     try {

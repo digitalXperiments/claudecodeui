@@ -47,6 +47,7 @@ function fakeItem(body: Record<string, unknown>, title = 'Draft'): McItem {
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
     resolved_at: null,
+    work_ready_at: null,
   };
 }
 

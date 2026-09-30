@@ -17,17 +17,49 @@ const taskSchema = {
     model: { type: 'string', description: 'Optional provider model id from relay_capabilities (Settings may allowlist a subset). Omit to use the allowlisted default, or the provider default when unrestricted.' },
     effort: { type: 'string', description: 'Optional model-supported effort/reasoning level from relay_capabilities.' },
     mode: { type: 'string', enum: ['read_only', 'isolated_write'], description: 'read_only inspects the project; isolated_write gets a separate worktree.' },
-    approvalPolicy: { type: 'string', enum: ['auto', 'manual'], description: 'auto (default) never parks the lead: in-envelope actions run, everything else is denied and the worker reports the blocker. manual is the only policy that asks the lead before isolated-worktree writes or risky actions. Prefer auto.' },
+    approvalPolicy: { type: 'string', enum: ['auto', 'manual'], description: 'Leave unset. auto (default) never parks the lead: workers run inside an OS sandbox, in-sandbox actions are approved, boundary crossings are denied and reported as deniedActions. manual is honored only when the operator enabled lead-selectable manual approval; otherwise it is replaced by the operator default with a warning.' },
     timeoutMs: { type: 'number', description: 'Optional per-worker timeout in milliseconds.' },
     mcpServers: { type: 'array', items: { type: 'string' }, description: 'Optional CloudCLI MCP catalog server names for the worker. Only providers reporting honorsMcpGrants in relay_capabilities apply these.' },
     outputSchema: { type: 'object', description: 'Optional JSON Schema (subset: type/properties/required/items/enum/anyOf) the worker\'s structured "data" output must satisfy. Validated server-side; one automatic repair turn is sent on violation, and the verdict is reported as result.outputValidation.' },
-    dependsOn: { type: 'array', items: { type: 'number' }, description: 'Zero-based indices of earlier tasks in this same batch. The task stays queued until they complete, and their summaries plus structured outputs are injected into its prompt — a one-call pipeline. If a dependency fails, this task fails fast.' },
-    retries: { type: 'number', description: 'Automatic re-dispatches (0-2, default 0) after an infrastructure failure that produced no output. A fresh worker session is used per retry.' },
+    dependsOn: { type: 'array', items: { type: 'number' }, description: 'Zero-based indices of earlier tasks in this same batch. The task stays queued until they complete, and their summaries plus structured outputs are injected into its prompt — a one-call pipeline. An isolated_write task that depends on writers starts from their combined branch (stacked pipeline); a read_only task that depends on a writer inspects that writer\'s worktree. If a dependency fails or is blocked, this task fails fast.' },
+    retries: { type: 'number', description: 'Automatic re-dispatches (0-2, default 0) after an infrastructure failure that produced no output. Quota/auth/launch failures additionally fail over to another authenticated provider automatically.' },
+    requires: {
+      type: 'object',
+      description: 'Declare what the worker needs; checked before dispatch (the task is rejected with a clear reason instead of the worker discovering it mid-run). MCP servers listed here are granted automatically and force a provider that honors grants.',
+      properties: {
+        mcpServers: { type: 'array', items: { type: 'string' } },
+        network: { type: 'boolean', description: 'Needs network egress (package installs, APIs).' },
+        commands: { type: 'array', items: { type: 'string' }, description: 'Command-line tools that must be installed, e.g. ["swift", "docker"].' },
+      },
+    },
   },
   required: ['task'],
 };
 
 export const AGENT_RELAY_MCP_TOOLS: ToolDefinition[] = [
+  {
+    name: 'relay_templates',
+    description: 'List built-in versioned investigation, implementation-review, and adversarial-review workflow templates.',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'relay_run_template',
+    description: 'Instantiate and dispatch a validated built-in workflow template as one dependency-aware Relay batch.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        templateId: { type: 'string', enum: ['investigate', 'implement-test-review', 'adversarial-review'] },
+        projectPath: { type: 'string' },
+        inputs: { type: 'object', description: 'Template inputs. objective is required; templates metadata lists optional fields.' },
+      },
+      required: ['templateId', 'inputs'],
+    },
+  },
+  {
+    name: 'relay_scorecard',
+    description: 'Aggregate durable relay outcomes, validation failures, retries, duration, and reported cost for this lead session. Worker evidence is not treated as host-verified.',
+    inputSchema: { type: 'object', properties: {} },
+  },
   {
     name: 'relay_delegate',
     description: 'Lead orchestrator only: launch up to 20 worker tasks (optional dependsOn pipelines) instead of doing the work yourself. Returns immediately with durable relay ids. Do not grep, edit, test, or implement in the lead session — dispatch a worker. Delegated workers must not call this tool.',
@@ -112,6 +144,31 @@ export const AGENT_RELAY_MCP_TOOLS: ToolDefinition[] = [
     },
   },
   {
+    name: 'relay_verify',
+    description: 'Run host-side checks in one completed Relay writer worktree at its committed tip. Usually unnecessary: the server verifies every writer automatically when it finishes and records the result in the job\'s delivery state. Projects with no configured check report unavailable (not a failure).',
+    inputSchema: { type: 'object', properties: { relayId: { type: 'string' }, commands: { type: 'array', items: { type: 'string' } }, timeoutMs: { type: 'number' } }, required: ['relayId'] },
+  },
+  {
+    name: 'relay_rehearse',
+    description: 'Apply the selected writers\' own changes onto a throwaway copy of the primary checkout exactly as it is now (including uncommitted work) and run the project checks there. Usually automatic: when a batch settles the server rehearses its verified final-stage writers and reports the rehearsalId in the wake-up.',
+    inputSchema: { type: 'object', properties: { projectId: { type: 'string', description: 'Optional; defaults to the first relay\'s project.' }, relayIds: { type: 'array', minItems: 1, maxItems: 20, items: { type: 'string' } } }, required: ['relayIds'] },
+  },
+  {
+    name: 'relay_unlanded',
+    description: 'List this lead\'s writer workspaces that are not landed yet, with their changed-file counts and delivery stage.',
+    inputSchema: { type: 'object', properties: { projectId: { type: 'string' } }, required: ['projectId'] },
+  },
+  {
+    name: 'relay_land',
+    description: 'Land a passing rehearsal onto the primary checkout: every rehearsed writer, or just relayId. Works on a dirty checkout: each file is applied (three-way merged where the operator also edited it); paths that were clean are committed, paths carrying the operator\'s own edits are written but left uncommitted, and anything that cannot be placed is reported as a conflict. Landed worktrees and branches are cleaned up.',
+    inputSchema: { type: 'object', properties: { rehearsalId: { type: 'string' }, relayId: { type: 'string', description: 'Optional: land only this writer from the rehearsal.' }, commit: { type: 'boolean', description: 'Default true.' } }, required: ['rehearsalId'] },
+  },
+  {
+    name: 'relay_discard',
+    description: 'Throw away a writer\'s worktree and branch without landing it.',
+    inputSchema: { type: 'object', properties: { relayId: { type: 'string' } }, required: ['relayId'] },
+  },
+  {
     name: 'relay_pending_approvals',
     description: 'List worker permission requests that fell outside the task\'s declared envelope and are waiting on your decision. A blocked worker stays parked until you answer or the approval budget expires.',
     inputSchema: {
@@ -121,7 +178,7 @@ export const AGENT_RELAY_MCP_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'relay_approve',
-    description: 'Approve one pending worker permission request. Only jobs dispatched with approvalPolicy "manual" park; auto jobs never wait on you. Approve only what the assignment genuinely needs.',
+    description: 'Approve one pending worker permission request. Only manual-policy jobs (an operator setting) park; auto jobs run in an OS sandbox and never wait on you. Approve only what the assignment genuinely needs.',
     inputSchema: {
       type: 'object',
       properties: {

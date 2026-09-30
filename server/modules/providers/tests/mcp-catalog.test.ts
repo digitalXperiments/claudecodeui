@@ -282,3 +282,37 @@ test('mcpCatalogService create with no providers stays catalog-only', {
     await fs.rm(tempRoot, { recursive: true, force: true });
   }
 });
+
+test('shared replica creation preserves originals and rejects name collisions', { concurrency: false }, async () => {
+  const scratch = path.resolve('tmp/cloudcli/mcp-replica-tests');
+  await fs.mkdir(scratch, { recursive: true });
+  const tempRoot = await fs.mkdtemp(path.join(scratch, 'home-'));
+  const originalHome = os.homedir;
+  (os as { homedir: () => string }).homedir = () => tempRoot;
+  try {
+    await fs.writeFile(path.join(tempRoot, '.claude.json'), JSON.stringify({
+      mcpServers: { 'leong-original': { type: 'http', url: 'https://example.com/mcp' } },
+    }));
+    const before = await fs.readFile(path.join(tempRoot, '.claude.json'), 'utf8');
+    await assert.rejects(mcpCatalogService.create({
+      name: 'leong-original', transport: 'http', scope: 'user', url: 'https://other.example/mcp', providers: [],
+    }), /already exists/);
+    await assert.rejects(mcpCatalogService.create({
+      name: 'grok_com_leong', transport: 'http', scope: 'user', url: 'https://example.com/mcp', providers: [],
+    }), /distinct local name/);
+    const input = { name: 'leong-shared', transport: 'http' as const, scope: 'user' as const,
+      url: 'https://example.com/mcp', providers: ['cursor' as const] };
+    await assert.rejects(mcpCatalogService.create({ ...input, transport: 'sse' }), /does not support sse/);
+    const results = await Promise.allSettled([mcpCatalogService.create(input), mcpCatalogService.create(input)]);
+    assert.equal(results.filter((result) => result.status === 'fulfilled').length, 1);
+    assert.equal(results.filter((result) => result.status === 'rejected').length, 1);
+    await assert.rejects(mcpCatalogService.create({ ...input, name: 'Leong Shared' }), /already exists/);
+    assert.equal(await fs.readFile(path.join(tempRoot, '.claude.json'), 'utf8'), before);
+    assert.equal((await mcpCatalogService.getRaw('leong-shared'))?.url, input.url);
+    const cursor = JSON.parse(await fs.readFile(path.join(tempRoot, '.cursor', 'mcp.json'), 'utf8'));
+    assert.equal(cursor.mcpServers['leong-shared'].url, input.url);
+  } finally {
+    (os as { homedir: () => string }).homedir = originalHome;
+    await fs.rm(tempRoot, { recursive: true, force: true });
+  }
+});

@@ -95,6 +95,27 @@ function migrateLegacyDatabase(targetPath: string): void {
 let instance: Database.Database | null = null;
 
 /**
+ * Performance pragmas applied to every connection opened here.
+ * WAL lets readers run alongside the single writer (and other processes such
+ * as the MCP stdio servers); NORMAL sync is durable across app crashes in WAL
+ * mode; busy_timeout absorbs short cross-process write contention instead of
+ * throwing SQLITE_BUSY. cache_size is in KiB when negative (64 MiB).
+ */
+function applyConnectionPragmas(db: Database.Database): void {
+  try {
+    db.pragma('journal_mode = WAL');
+  } catch (err: any) {
+    // e.g. read-only or network filesystems; keep the default journal mode.
+    console.warn('Could not enable SQLite WAL mode', { error: err.message });
+  }
+  db.pragma('synchronous = NORMAL');
+  db.pragma('busy_timeout = 5000');
+  db.pragma('cache_size = -65536');
+  db.pragma('mmap_size = 268435456');
+  db.pragma('temp_store = MEMORY');
+}
+
+/**
  * Returns the shared database connection, creating it on first call.
  *
  * The first invocation:
@@ -114,6 +135,7 @@ export function getConnection(): Database.Database {
   migrateLegacyDatabase(dbPath);
 
   instance = new Database(dbPath);
+  applyConnectionPragmas(instance);
 
   // app_config must exist immediately — the auth middleware reads
   // the JWT secret at module-load time, before initializeDatabase() runs.

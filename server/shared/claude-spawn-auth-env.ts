@@ -55,7 +55,40 @@ let ioOverride: Partial<ClaudeSpawnAuthEnvIo> | null = null;
 
 export function setClaudeSpawnAuthEnvIoForTests(next: Partial<ClaudeSpawnAuthEnvIo> | null): void {
   ioOverride = next;
+  authEnvCache = null;
 }
+
+/**
+ * How long a resolved spawn-auth decision is reused. Every Claude turn used to
+ * spawn `security find-generic-password` (Keychain) and re-read settings files
+ * before the CLI could even start; one lookup per minute is plenty since the
+ * CLI refreshes its own OAuth token once running.
+ */
+const AUTH_ENV_CACHE_TTL_MS = 60_000;
+
+type AuthEnvDecision = {
+  nativeAuth: boolean;
+  token: string | null;
+};
+
+let authEnvCache: { key: string; expiresAt: number; decision: AuthEnvDecision } | null = null;
+
+/**
+ * Drops the cached spawn-auth decision. Call after a Claude run fails so the
+ * next spawn re-reads Keychain/credentials instead of reusing a stale answer.
+ */
+export function invalidateClaudeSpawnAuthEnvCache(): void {
+  authEnvCache = null;
+}
+
+// Only the inputs that change the decision participate in the key, so an
+// explicit API key / token in the caller env never reuses a Keychain answer.
+const authEnvCacheKey = (env: NodeJS.ProcessEnv): string => JSON.stringify([
+  env.USER ?? null,
+  readOptionalString(env.CLAUDE_CODE_OAUTH_TOKEN),
+  readOptionalString(env.ANTHROPIC_API_KEY),
+  readOptionalString(env.ANTHROPIC_AUTH_TOKEN),
+]);
 
 const io = (): ClaudeSpawnAuthEnvIo => ({ ...defaultIo(), ...ioOverride });
 
@@ -277,12 +310,24 @@ export async function applyClaudeSpawnAuthEnv(sdkOptions: { env?: NodeJS.Process
     env.USER = username;
   }
 
-  const nativeAuth = await hasNativeClaudeAuth(env);
-  if (!nativeAuth) {
-    const token = await resolveClaudeSpawnOAuthToken(env);
-    if (token) {
-      env.CLAUDE_CODE_OAUTH_TOKEN = token;
-    }
+  const key = authEnvCacheKey(env);
+  const now = io().now();
+  let decision: AuthEnvDecision;
+  if (authEnvCache && authEnvCache.key === key && authEnvCache.expiresAt > now) {
+    decision = authEnvCache.decision;
+  } else {
+    const nativeAuth = await hasNativeClaudeAuth(env);
+    const token = nativeAuth ? null : await resolveClaudeSpawnOAuthToken(env);
+    decision = { nativeAuth, token };
+    // A miss (no native auth and no fallback token) is the error case: never
+    // cache it, so fixing auth takes effect on the very next turn.
+    authEnvCache = nativeAuth || token
+      ? { key, expiresAt: now + AUTH_ENV_CACHE_TTL_MS, decision }
+      : null;
+  }
+
+  if (!decision.nativeAuth && decision.token) {
+    env.CLAUDE_CODE_OAUTH_TOKEN = decision.token;
   }
 
   sdkOptions.env = env;

@@ -107,7 +107,17 @@ type UseSidebarControllerArgs = {
   setCurrentProject: (project: Project) => void;
   setSidebarVisible: (visible: boolean) => void;
   sidebarVisible: boolean;
+  /** Settings modal visibility; the sort order is re-read when it closes. */
+  showSettings?: boolean;
 };
+
+/**
+ * Same-tab signal for a changed project sort order (the `storage` event only
+ * fires in other tabs). Writers of `claude-settings.projectSortOrder` may
+ * dispatch it; the sidebar also re-reads when the settings modal closes and
+ * when the window regains focus.
+ */
+export const PROJECT_SORT_ORDER_CHANGED_EVENT = 'cloudcli:project-sort-order-changed';
 
 export function useSidebarController({
   projects,
@@ -126,6 +136,7 @@ export function useSidebarController({
   setCurrentProject,
   setSidebarVisible,
   sidebarVisible,
+  showSettings = false,
 }: UseSidebarControllerArgs) {
   const paletteOps = usePaletteOps();
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(new Set());
@@ -133,7 +144,8 @@ export function useSidebarController({
   const [showNewProject, setShowNewProject] = useState(false);
   const [editingName, setEditingName] = useState('');
   const [initialSessionsLoaded, setInitialSessionsLoaded] = useState<Set<string>>(new Set());
-  const [currentTime, setCurrentTime] = useState(new Date());
+  // Frozen at mount (see the minute-clock note below).
+  const [currentTime] = useState(() => new Date());
   const [projectSortOrder, setProjectSortOrder] = useState<ProjectSortOrder>('name');
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [editingSession, setEditingSession] = useState<string | null>(null);
@@ -173,13 +185,10 @@ export function useSidebarController({
   const isSidebarCollapsed = !isMobile && !sidebarVisible;
   const runningSessionsCount = activeSessions.size;
 
-  useEffect(() => {
-    const timer = setInterval(() => {
-      setCurrentTime(new Date());
-    }, 60000);
-
-    return () => clearInterval(timer);
-  }, []);
+  // `currentTime` no longer ticks: a 60s setState here re-rendered the whole
+  // sidebar tree and broke every session row's memo. Rows render their
+  // relative age through the shared minute clock (utils/minuteClock) instead,
+  // re-rendering only when their own label changes.
 
   useEffect(() => {
     // Auto-expand only when the selected project identity changes.
@@ -247,18 +256,26 @@ export function useSidebarController({
     };
 
     window.addEventListener('storage', handleStorageChange);
-
-    const interval = setInterval(() => {
-      if (document.hasFocus()) {
-        loadSortOrder();
-      }
-    }, 1000);
+    // Replaces a 1s localStorage poll (JSON.parse every second while focused).
+    window.addEventListener(PROJECT_SORT_ORDER_CHANGED_EVENT, loadSortOrder);
+    window.addEventListener('focus', loadSortOrder);
 
     return () => {
       window.removeEventListener('storage', handleStorageChange);
-      clearInterval(interval);
+      window.removeEventListener(PROJECT_SORT_ORDER_CHANGED_EVENT, loadSortOrder);
+      window.removeEventListener('focus', loadSortOrder);
     };
   }, []);
+
+  // Settings are saved from the settings modal in this tab; pick up a changed
+  // sort order as soon as it closes.
+  const previousShowSettingsRef = useRef(showSettings);
+  useEffect(() => {
+    if (previousShowSettingsRef.current && !showSettings) {
+      setProjectSortOrder(readProjectSortOrder());
+    }
+    previousShowSettingsRef.current = showSettings;
+  }, [showSettings]);
 
   useEffect(() => {
     onRefreshRef.current = onRefresh;

@@ -65,7 +65,17 @@ export default defineConfig(({ mode }) => {
           // split circular dependencies across chunks and trigger a TDZ error
           // before React mounts ("Cannot access ... before initialization").
           manualChunks: {
-            'vendor-react': ['react', 'react-dom', 'react-router-dom'],
+            'vendor-react': [
+              'react',
+              'react-dom',
+              'react-router-dom',
+              // Tiny Babel helpers shared by @uiw/react-codemirror and
+              // react-syntax-highlighter. Left alone, the object form drags them
+              // into vendor-codemirror, so loading the highlighter would pull
+              // all of CodeMirror. vendor-react is always eager anyway.
+              '@babel/runtime/helpers/extends',
+              '@babel/runtime/helpers/objectWithoutPropertiesLoose'
+            ],
             'vendor-i18n': ['i18next', 'i18next-browser-languagedetector', 'react-i18next'],
             'vendor-ui': [
               'lucide-react',
@@ -76,7 +86,10 @@ export default defineConfig(({ mode }) => {
               '@dnd-kit/sortable',
               '@dnd-kit/utilities'
             ],
-            'vendor-utils': ['dompurify', 'fuse.js', 'jszip', 'jsonrepair', 'yaml'],
+            // jszip and yaml are only used by lazy views; leaving them out lets
+            // Rollup split them into their consumers' chunks instead of the
+            // eager vendor-utils preload. dompurify stays (PluginIcon is eager).
+            'vendor-utils': ['dompurify', 'fuse.js', 'jsonrepair'],
             'vendor-codemirror': [
               '@uiw/react-codemirror',
               '@codemirror/lang-css',
@@ -92,7 +105,9 @@ export default defineConfig(({ mode }) => {
             // Leaf libraries with no back-references into the app or the remark
             // graph, so they split cleanly: math rendering and code highlighting.
             'vendor-katex': ['katex'],
-            'vendor-highlight': ['refractor', 'react-syntax-highlighter']
+            // Only the PrismLight entry: the package index also pulls ~500
+            // async-language modules (and Vite's preload helper) into the chunk.
+            'vendor-highlight': ['refractor', 'react-syntax-highlighter/dist/esm/prism-light']
           }
         }
       }

@@ -1,3 +1,5 @@
+import type { McProvider, McWorkProfile } from '../../mission-control/api/missionControlApi';
+
 export type McAction = {
   id: string;
   label: string;
@@ -18,10 +20,16 @@ export type McSection = {
   scope: 'global' | 'project';
   project_id: string | null;
   work_project_id?: string | null;
-  mode: 'review' | 'fire_and_forget';
+  work_profile?: McWorkProfile | null;
+  /** Deprecated: the server always returns 'review'. */
+  mode?: 'review' | 'fire_and_forget';
   schedule_cron: string | null;
   provider: string;
   model: string | null;
+  effort?: string | null;
+  resolve_provider?: McProvider | null;
+  resolve_model?: string | null;
+  resolve_effort?: string | null;
   permission_mode: string;
   dry_run: boolean;
   auto_approve: boolean;
@@ -30,10 +38,6 @@ export type McSection = {
   resolve_prompt: string;
   resolve_tools: string[];
   actions: McAction[];
-  create_kanban_task: boolean;
-  kanban_assignee_provider: string | null;
-  kanban_review_provider: string | null;
-  kanban_mcp_tools: string[];
   tool_policy?: ToolPolicy;
   last_run_at: string | null;
   last_run_error: string | null;
@@ -49,10 +53,14 @@ export type CreateMcSectionInput = {
   scope?: 'global' | 'project';
   project_id?: string | null;
   work_project_id?: string | null;
-  mode?: 'review' | 'fire_and_forget';
+  work_profile?: McWorkProfile | null;
   schedule_cron?: string | null;
   provider?: string;
   model?: string | null;
+  effort?: string | null;
+  resolve_provider?: McProvider | null;
+  resolve_model?: string | null;
+  resolve_effort?: string | null;
   permission_mode?: string;
   dry_run?: boolean;
   auto_approve?: boolean;
@@ -61,10 +69,6 @@ export type CreateMcSectionInput = {
   resolve_prompt?: string;
   resolve_tools?: string[];
   actions?: McAction[];
-  create_kanban_task?: boolean;
-  kanban_assignee_provider?: string | null;
-  kanban_review_provider?: string | null;
-  kanban_mcp_tools?: string[];
   tool_policy?: ToolPolicy;
   /** Wizard-only local state; stripped before sending the section payload. */
   read_only_preset?: boolean;
@@ -75,32 +79,11 @@ export type CreateMcSectionInput = {
 export type McSectionWorkshopDraft = {
   title: string;
   scope: 'global' | 'project';
-  mode: 'review' | 'fire_and_forget';
   scheduleCron: string | null;
   producePrompt: string;
   resolvePrompt: string;
-  createKanbanTask: boolean;
   recommendedMcpServers: string[];
 };
-
-export type Autonomy = 'dry_run' | 'propose' | 'act';
-
-export const AUTONOMY_OPTIONS: Array<{ value: Autonomy; label: string; description: string }> = [
-  { value: 'dry_run', label: 'Dry run', description: 'Observe and preview; no changes are made.' },
-  { value: 'propose', label: 'Propose', description: 'Create inbox items for approval.' },
-  { value: 'act', label: 'Act', description: 'Resolve approved work automatically.' },
-];
-
-export function autonomyFromSection(section: Pick<McSection, 'mode' | 'dry_run'>): Autonomy {
-  if (section.dry_run) return 'dry_run';
-  return section.mode === 'fire_and_forget' ? 'act' : 'propose';
-}
-
-export function sectionFieldsForAutonomy(autonomy: Autonomy): Pick<CreateMcSectionInput, 'mode' | 'dry_run'> {
-  if (autonomy === 'dry_run') return { mode: 'review', dry_run: true };
-  if (autonomy === 'act') return { mode: 'fire_and_forget', dry_run: false };
-  return { mode: 'review', dry_run: false };
-}
 
 export function applyWorkshopDraft(
   current: CreateMcSectionInput,
@@ -110,19 +93,15 @@ export function applyWorkshopDraft(
   const recommended = !availableMcpServers || availableMcpServers.length === 0
     ? draft.recommendedMcpServers
     : draft.recommendedMcpServers.filter((name) => availableMcpServers.includes(name));
-  const toolsForResolve = draft.mode === 'review' ? recommended : [];
   return {
     ...current,
     title: draft.title,
     scope: draft.scope,
-    mode: draft.mode,
     schedule_cron: draft.scheduleCron,
     produce_prompt: draft.producePrompt,
     resolve_prompt: draft.resolvePrompt,
-    create_kanban_task: draft.createKanbanTask,
     produce_tools: recommended,
-    resolve_tools: toolsForResolve,
-    kanban_mcp_tools: draft.createKanbanTask ? recommended : current.kanban_mcp_tools ?? [],
+    resolve_tools: draft.resolvePrompt.trim() ? recommended : [],
   };
 }
 

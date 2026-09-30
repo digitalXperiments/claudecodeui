@@ -17,6 +17,11 @@ export type ShellInitMessage = {
   forceRestart?: boolean;
   /** Chatbar permission mode the interactive CLI should launch with. */
   permissionMode?: string;
+  /** Shared Chatbar/Agent CLI Codex Fast preference. */
+  fastMode?: boolean;
+  /** Chatbar's effective model/effort for this session (claude/codex/grok/opencode). */
+  model?: string;
+  effort?: string;
 };
 
 export type ShellResizeMessage = {
@@ -30,10 +35,28 @@ export type ShellInputMessage = {
   data: string;
 };
 
-export type ShellOutgoingMessage = ShellInitMessage | ShellResizeMessage | ShellInputMessage;
+/**
+ * Echo of the chat-normalized launch preferences after Chatbar adopted a
+ * shell-reported runtime change; the server uses it as the parked PTY's
+ * staleness baseline.
+ */
+export type ShellRuntimeStateMessage = {
+  type: 'runtime_state';
+  permissionMode?: string;
+  model?: string;
+  effort?: string;
+  fastMode?: boolean;
+};
+
+export type ShellOutgoingMessage =
+  | ShellInitMessage
+  | ShellResizeMessage
+  | ShellInputMessage
+  | ShellRuntimeStateMessage;
 
 export type ShellIncomingMessage =
   | { type: 'output'; data: string }
+  | { type: 'replay_complete' }
   | { type: 'auth_url'; url?: string }
   | { type: 'url_open'; url?: string }
   | { type: string; [key: string]: unknown };
@@ -44,6 +67,7 @@ export type UseShellRuntimeOptions = {
   initialCommand: string | null | undefined;
   isPlainShell: boolean;
   minimal: boolean;
+  minimumContrastRatio?: number;
   autoConnect: boolean;
   waitForChat: boolean;
   isRestarting: boolean;

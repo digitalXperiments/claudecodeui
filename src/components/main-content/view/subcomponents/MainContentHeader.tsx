@@ -1,6 +1,6 @@
 import { useCallback, useRef, useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ChevronDown, Clock, Plus } from 'lucide-react';
+import { ChevronDown, Clock, PanelRightClose, PanelRightOpen, Plus } from 'lucide-react';
 
 import { usePlugins } from '../../../../contexts/PluginsContext';
 import { Button } from '../../../../shared/view/ui';
@@ -28,6 +28,7 @@ export default function MainContentHeader({
   onLoadMoreSessions,
   isLoadingMoreSessions = false,
   processingSessions,
+  onToggleWorkbench,
 }: MainContentHeaderProps) {
   const { t } = useTranslation();
   const { plugins } = usePlugins();
@@ -36,7 +37,9 @@ export default function MainContentHeader({
   const [canScrollLeft, setCanScrollLeft] = useState(false);
   const [canScrollRight, setCanScrollRight] = useState(false);
 
-  const isChatTab = activeTab === 'chat';
+  // On desktop Chat is the persistent primary surface; tool tabs control the
+  // adjacent workbench instead of replacing the session header.
+  const isChatTab = !isMobile || activeTab === 'chat';
 
   const updateScrollState = useCallback(() => {
     const el = scrollRef.current;
@@ -137,6 +140,7 @@ export default function MainContentHeader({
           setActiveTab={setActiveTab}
           shouldShowTasksTab={shouldShowTasksTab}
           shouldShowBrowserTab={shouldShowBrowserTab}
+          isMobile={isMobile}
         />
       </div>
       {canScrollRight && (
@@ -166,7 +170,16 @@ export default function MainContentHeader({
         <div className="flex min-w-0 flex-1 items-center gap-2">{titleBlock}</div>
 
         <div className="flex min-w-0 flex-shrink items-center gap-2 sm:flex-shrink-0">
-          {tabScroller}
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-8 w-8 flex-shrink-0 p-0"
+            onClick={onToggleWorkbench}
+            title={activeTab === 'chat' ? 'Open workbench' : 'Close workbench'}
+            aria-label={activeTab === 'chat' ? 'Open workbench' : 'Close workbench'}
+          >
+            {activeTab === 'chat' ? <PanelRightOpen className="h-4 w-4" /> : <PanelRightClose className="h-4 w-4" />}
+          </Button>
           {newSessionButton}
         </div>
       </div>

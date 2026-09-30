@@ -97,8 +97,7 @@ test('Trello Tasks seed creates once and is idempotent when configured', async (
       const input = buildTrelloTasksSectionInput(FAKE_BOARD);
       assert.equal(input.title, TRELLO_TASKS_SECTION_TITLE);
       assert.equal(input.provider, 'grok');
-      assert.equal(input.create_kanban_task, true);
-      assert.equal(input.auto_approve, true);
+      assert.equal(input.auto_approve, false);
       assert.ok(input.produce_tools?.includes('Composio'));
       assert.ok(input.produce_prompt?.includes(FAKE_BOARD.boardShortLink));
       assert.ok(input.produce_prompt?.includes('trello:card:'));
@@ -110,7 +109,6 @@ test('Trello Tasks seed creates once and is idempotent when configured', async (
       assert.ok(first.section);
       assert.equal(first.section!.title, TRELLO_TASKS_SECTION_TITLE);
       assert.equal(first.section!.provider, 'grok');
-      assert.equal(first.section!.create_kanban_task, true);
       assert.ok(first.section!.produce_prompt.includes('Prompt version:'));
 
       const second = ensureTrelloTasksSection();

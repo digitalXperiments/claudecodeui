@@ -2,8 +2,13 @@ import { authenticatedFetch } from '../../../utils/api';
 import type {
   AgentRelayApproval,
   AgentRelayJob,
+  AgentRelayDeliveryState,
+  AgentRelayLandResult,
+  AgentRelayRehearsalResult,
   AgentRelayRuntimeStatus,
   AgentRelaySettings,
+  AgentRelayUnlandedWorkspace,
+  AgentRelayVerification,
 } from '../types';
 
 async function readData<T>(response: Response): Promise<T> {
@@ -69,8 +74,9 @@ export const agentRelayApi = {
     return data.jobs;
   },
 
-  async listPendingApprovals(input: { sessionId?: string } = {}): Promise<AgentRelayApproval[]> {
+  async listPendingApprovals(input: { projectId?: string; sessionId?: string } = {}): Promise<AgentRelayApproval[]> {
     const query = new URLSearchParams({ status: 'pending', limit: '50' });
+    if (input.projectId) query.set('projectId', input.projectId);
     if (input.sessionId) query.set('sessionId', input.sessionId);
     const data = await readData<{ approvals: AgentRelayApproval[] }>(
       await authenticatedFetch(`/api/agent-relay/approvals?${query}`),
@@ -118,21 +124,72 @@ export const agentRelayApi = {
     return data.peek;
   },
 
-  async diff(relayId: string): Promise<{
+  async diff(relayId: string, includePatch = false): Promise<{
     relayId: string;
     workspace: { feature_branch?: string; root_path?: string } | null;
-    files: Array<{ path: string; status: string }>;
+    files: Array<{ path: string; status: string; additions?: number; deletions?: number; patch?: string }>;
     summary: { additions: number; deletions: number };
   }> {
     const data = await readData<{ diff: {
       relayId: string;
       workspace: { feature_branch?: string; root_path?: string } | null;
-      files: Array<{ path: string; status: string }>;
+      files: Array<{ path: string; status: string; additions?: number; deletions?: number; patch?: string }>;
       summary: { additions: number; deletions: number };
     } }>(
-      await authenticatedFetch(`/api/agent-relay/jobs/${encodeURIComponent(relayId)}/diff`),
+      await authenticatedFetch(`/api/agent-relay/jobs/${encodeURIComponent(relayId)}/diff${includePatch ? '?includePatch=true' : ''}`),
     );
     return data.diff;
+  },
+
+  async verify(relayId: string, input: { commands?: string[]; timeoutMs?: number } = {}): Promise<{
+    verification: AgentRelayVerification;
+    deliveryId: string;
+    passed: boolean;
+  }> {
+    return readData(await authenticatedFetch(`/api/agent-relay/jobs/${encodeURIComponent(relayId)}/verify`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }));
+  },
+
+  async delivery(relayId: string): Promise<AgentRelayDeliveryState | null> {
+    const data = await readData<{ delivery: AgentRelayDeliveryState | null }>(
+      await authenticatedFetch(`/api/agent-relay/jobs/${encodeURIComponent(relayId)}/delivery`),
+    );
+    return data.delivery;
+  },
+
+  async listUnlanded(projectId: string): Promise<AgentRelayUnlandedWorkspace[]> {
+    const data = await readData<{ jobs: AgentRelayUnlandedWorkspace[] }>(
+      await authenticatedFetch(`/api/agent-relay/projects/${encodeURIComponent(projectId)}/unlanded`),
+    );
+    return data.jobs;
+  },
+
+  async rehearse(projectId: string, relayIds: string[]): Promise<AgentRelayRehearsalResult> {
+    return readData(await authenticatedFetch(`/api/agent-relay/projects/${encodeURIComponent(projectId)}/rehearse`, {
+      method: 'POST',
+      body: JSON.stringify({ relayIds }),
+    }));
+  },
+
+  /** Land every writer of a passing rehearsal onto the primary checkout. */
+  async landRehearsal(rehearsalId: string, input: { commit?: boolean } = {}): Promise<AgentRelayLandResult> {
+    return readData(await authenticatedFetch(`/api/agent-relay/deliveries/${encodeURIComponent(rehearsalId)}/land`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }));
+  },
+
+  async land(relayId: string, input: { rehearsalId: string; commit?: boolean }): Promise<AgentRelayLandResult> {
+    return readData(await authenticatedFetch(`/api/agent-relay/jobs/${encodeURIComponent(relayId)}/land`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }));
+  },
+
+  async discard(relayId: string): Promise<{ discarded: boolean; workspaceId: string }> {
+    return readData(await authenticatedFetch(`/api/agent-relay/jobs/${encodeURIComponent(relayId)}/discard`, { method: 'POST' }));
   },
 
   async decideApproval(approvalId: string, allow: boolean, reason?: string): Promise<AgentRelayApproval> {

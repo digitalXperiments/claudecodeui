@@ -572,3 +572,44 @@ test('OpenCode synchronizer keeps the stored title for indexed sessions', { conc
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
+
+test('OpenCode watcher pass reports every session it indexed, not just the newest', { concurrency: false }, async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'opencode-session-sync-multi-'));
+  const workspacePath = path.join(tempRoot, 'workspace');
+  await mkdir(workspacePath, { recursive: true });
+  const restoreHomeDir = patchHomeDir(tempRoot);
+  const databaseFile = path.join(tempRoot, '.local', 'share', 'opencode', 'opencode.db');
+
+  try {
+    await createOpenCodeDatabase(tempRoot, workspacePath);
+    await withIsolatedDatabase(async () => {
+      const synchronizer = new OpenCodeSessionSynchronizer();
+      // First pass after boot has no watermark.
+      assert.deepEqual(await synchronizer.synchronizeFileSessions(databaseFile), ['open-session-1']);
+
+      // A Shell TUI and a Chat run write two sessions between two polls.
+      const db = new Database(databaseFile);
+      try {
+        const insert = db.prepare(`
+          INSERT INTO session (
+            id, project_id, slug, directory, title, version, time_created, time_updated, time_archived,
+            tokens_input, tokens_output, tokens_reasoning, tokens_cache_read, tokens_cache_write
+          )
+          VALUES (?, 'project-1', ?, ?, ?, '0.0.0', ?, ?, NULL, 0, 0, 0, 0, 0)
+        `);
+        const now = Date.now();
+        insert.run('open-session-a', 'open-session-a', workspacePath, 'A', now, now);
+        insert.run('open-session-b', 'open-session-b', workspacePath, 'B', now, now + 1);
+      } finally {
+        db.close();
+      }
+
+      const sessionIds = await synchronizer.synchronizeFileSessions(databaseFile);
+      assert.deepEqual([...sessionIds].sort(), ['open-session-a', 'open-session-b']);
+      assert.equal(await synchronizer.synchronizeFile(path.join(tempRoot, 'unrelated.db')), null);
+    });
+  } finally {
+    restoreHomeDir();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});

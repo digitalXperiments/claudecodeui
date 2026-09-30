@@ -7,13 +7,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content" />
     <title>CloudCLI UI</title>
 
-    <!-- Fonts: Encode Sans (UI) + Merriweather (chat) -->
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Encode+Sans:wght@400;500;600;700&family=Merriweather:ital,wght@0,400;0,700;1,400;1,700&display=swap"
-      rel="stylesheet"
-    />
+    <!-- Fonts are self-hosted via @fontsource (imported in src/main.jsx) with
+         font-display: swap, so there is no render-blocking cross-origin CSS. -->
 
     <!-- PWA Manifest -->
     <link rel="manifest" href="/manifest.json" crossorigin="use-credentials"  />
@@ -58,24 +53,27 @@
     
     <!-- Prevent zoom on iOS -->
     <meta name="format-detection" content="telephone=no" />
+
+    <!-- Static app shell styles: mirrors AuthLoadingScreen so the first paint
+         happens before any JS runs. Scoped to #app-shell; React replaces it. -->
+    <style>
+      #app-shell{position:relative;display:flex;min-height:100vh;min-height:100dvh;align-items:center;justify-content:center;overflow:hidden;font-family:ui-sans-serif,system-ui,sans-serif;color:#0d0b08;background:#f7f6f3}
+      html.dark #app-shell{color:#efeeec;background:#141414}
+      #app-shell .glow{position:absolute;top:-10rem;left:50%;width:36rem;height:36rem;transform:translateX(-50%);border-radius:9999px;background:rgba(37,99,235,.1);filter:blur(64px)}
+      #app-shell .mark{display:flex;width:4rem;height:4rem;margin:0 auto 1.25rem;align-items:center;justify-content:center;border-radius:1rem;background:linear-gradient(to bottom right,#2563eb,rgba(37,99,235,.8));box-shadow:0 10px 15px -3px rgba(37,99,235,.25)}
+      html.dark #app-shell .mark{background:linear-gradient(to bottom right,#3b82f6,rgba(59,130,246,.8))}
+      #app-shell h1{margin:0 0 1rem;font-size:1.5rem;line-height:2rem;font-weight:700;letter-spacing:-.025em}
+      #app-shell .dots{display:flex;gap:.5rem;justify-content:center}
+      #app-shell .dots i{width:.5rem;height:.5rem;border-radius:9999px;background:#2563eb;animation:shell-bounce 1s infinite}
+      html.dark #app-shell .dots i{background:#3b82f6}
+      #app-shell .dots i:nth-child(2){animation-delay:.15s}
+      #app-shell .dots i:nth-child(3){animation-delay:.3s}
+      @keyframes shell-bounce{0%,100%{transform:translateY(-25%);animation-timing-function:cubic-bezier(.8,0,1,1)}50%{transform:none;animation-timing-function:cubic-bezier(0,0,.2,1)}}
+    </style>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root"><div id="app-shell" role="status" aria-live="polite"><div class="glow" aria-hidden="true"></div><div style="position:relative;text-align:center"><div class="mark"><img src="/logo.svg" alt="CloudCLI" width="36" height="36" /></div><h1>CloudCLI</h1><div class="dots" aria-hidden="true"><i></i><i></i><i></i></div></div></div></div>
     <script type="module" src="/src/main.jsx"></script>
-    
-    <!-- Service Worker Registration -->
-    <script>
-      if ('serviceWorker' in navigator) {
-        window.addEventListener('load', () => {
-          navigator.serviceWorker.register('/sw.js')
-            .then(registration => {
-              console.log('SW registered: ', registration);
-            })
-            .catch(registrationError => {
-              console.log('SW registration failed: ', registrationError);
-            });
-        });
-      }
-    </script>
+    <!-- Service worker registration lives in src/main.jsx (once, at idle). -->
   </body>
 </html>

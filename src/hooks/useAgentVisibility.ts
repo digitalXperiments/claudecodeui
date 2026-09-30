@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { api } from '../utils/api';
 import type { LLMProvider } from '../types/app';
+import { runAfterSessionPaint } from '../utils/sessionPaintGate';
 
 /**
  * Tracks which CLI agents (providers) are enabled for chat. Disabled agents
@@ -78,11 +79,17 @@ export function useAgentVisibility() {
     // Best-effort server sync so the auth-health watchdog skips disabled
     // agents. Runs on mount too, so a stale server list self-heals. Silently
     // ignored when the endpoint is unavailable (older server build).
+    // Deferred past a session open's transcript paint: this PUT is only for
+    // the watchdog and must not queue in front of the history request.
     const json = JSON.stringify(disabledAgents);
     if (json !== lastSyncedJson) {
       lastSyncedJson = json;
-      api.updateDisabledAgents(disabledAgents).catch(() => {
-        lastSyncedJson = null;
+      const syncedAgents = disabledAgents;
+      runAfterSessionPaint(() => {
+        if (lastSyncedJson !== json) return;
+        api.updateDisabledAgents(syncedAgents).catch(() => {
+          if (lastSyncedJson === json) lastSyncedJson = null;
+        });
       });
     }
 

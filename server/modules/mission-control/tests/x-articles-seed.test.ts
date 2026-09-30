@@ -239,7 +239,6 @@ test('drafting section runs in the studio and never auto-approves', () => {
   assert.equal(input.scope, 'project');
   assert.equal(input.project_id, 'project-123');
   assert.equal(input.auto_approve, false, 'prose must always be human-reviewed');
-  assert.equal(input.create_kanban_task, false);
   assert.equal(input.mode, 'review');
 
   const polish = input.actions?.find((a) => a.id === 'polish');
@@ -267,7 +266,8 @@ test('the produce prompt loads the writing system before writing', () => {
 
 test('swipe digest reads Clippings and refuses to invent patterns', () => {
   const input = buildSwipeDigestSectionInput('p1');
-  assert.equal(input.mode, 'fire_and_forget');
+  assert.equal(input.auto_approve, true);
+  assert.equal(input.resolve_prompt, '');
   assert.equal(input.scope, 'project');
   assert.deepEqual(input.produce_tools, ['obsidian']);
 

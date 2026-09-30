@@ -136,6 +136,7 @@ function McpRow({
   onRemove,
   onEdit,
   onDuplicate,
+  onReplica,
   visibleProviders,
 }: {
   item: McpInventoryItem;
@@ -148,6 +149,7 @@ function McpRow({
   onRemove: () => void;
   onEdit: () => void;
   onDuplicate: () => void;
+  onReplica: () => void;
   visibleProviders: LLMProvider[];
 }) {
   const isCloudcli = item.source === 'cloudcli';
@@ -201,6 +203,11 @@ function McpRow({
             </div>
           </div>
 
+          {item.source === 'provider_cloud' && (
+            <Button variant="outline" size="sm" disabled={busy} onClick={onReplica}>
+              <Copy className="mr-1.5 h-3.5 w-3.5" /> Create shared replica
+            </Button>
+          )}
           {isCloudcli && item.kind !== 'memory' && item.kind !== 'agent-relay' && (
             <div className="relative shrink-0">
               <Button
@@ -332,7 +339,7 @@ function McpRow({
                 <p>Managed Agent Relay broker. Enable and bind lead agents from the Agent Relay rail panel.</p>
               )}
               {item.source === 'provider_cloud' && (
-                <p>Hosted by {item.cloudLabel || 'the provider account'}. It is only available with that agent.</p>
+                <p>Managed by {item.cloudLabel || 'the provider account'}. Create a shared replica using the server’s direct URL and separate authentication to use it with other agents.</p>
               )}
             </div>
             <div className="min-w-0 space-y-1">
@@ -392,6 +399,7 @@ export default function McpCatalogPanel({ currentProjects }: McpCatalogPanelProp
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [formProviders, setFormProviders] = useState<LLMProvider[]>(['claude']);
   const [formSeed, setFormSeed] = useState<ProviderMcpServer | null>(null);
+  const [isReplica, setIsReplica] = useState(false);
   const [formTitle, setFormTitle] = useState('Add local MCP Server');
   const [formSubmitLabel, setFormSubmitLabel] = useState('Save to catalog');
   const [actionError, setActionError] = useState<string | null>(null);
@@ -438,12 +446,14 @@ export default function McpCatalogPanel({ currentProjects }: McpCatalogPanelProp
   );
 
   const openCreateForm = useCallback((seed?: {
+    replica?: boolean;
     form?: Partial<McpFormState>;
     providers?: LLMProvider[];
     editing?: ProviderMcpServer | null;
     title?: string;
     submitLabel?: string;
   }) => {
+    setIsReplica(seed?.replica === true);
     setFormProviders(seed?.providers ?? ['claude']);
     setFormSeed(seed?.editing ?? (seed?.form
       ? {
@@ -488,14 +498,14 @@ export default function McpCatalogPanel({ currentProjects }: McpCatalogPanelProp
   const handleCreate = useCallback(async (formData: McpFormState) => {
     setActionError(null);
     try {
-      await upsertFromForm(formData, formProviders);
+      await upsertFromForm(formData, formProviders, isReplica);
       setIsFormOpen(false);
       setFormSeed(null);
     } catch (error) {
       setActionError(error instanceof Error ? error.message : 'Failed to save');
       throw error;
     }
-  }, [formProviders, upsertFromForm]);
+  }, [formProviders, upsertFromForm, isReplica]);
 
   const applyBindings = useCallback(async (item: McpInventoryItem, providers: LLMProvider[]) => {
     setBusyName(item.name);
@@ -788,6 +798,32 @@ export default function McpCatalogPanel({ currentProjects }: McpCatalogPanelProp
                   title: `Edit ${item.name}`,
                   submitLabel: 'Update catalog',
                 })}
+                onReplica={() => {
+                  const form = itemToFormState(item);
+                  const base = item.name.replace(/^(?:claude\.ai|grok\.com|grok_com)[\s._-]*/i, '')
+                    .toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'mcp';
+                  form.name = `${base}-shared`;
+                  let suffix = 2;
+                  while (items.some((entry) => entry.name.toLowerCase() === form.name)) {
+                    form.name = `${base}-shared-${suffix++}`;
+                  }
+                  form.scope = 'user';
+                  form.workspacePath = '';
+                  form.transport = item.transport === 'sse' ? 'sse' : 'http';
+                  form.url = /^https?:\/\//i.test(item.url || '') ? item.url! : '';
+                  form.command = '';
+                  form.args = [];
+                  form.env = {};
+                  form.headers = {};
+                  openCreateForm({
+                    replica: true,
+                    form,
+                    providers: FANOUT_PROVIDERS.filter((provider) => !item.providers.includes(provider)
+                      && MCP_SUPPORTED_TRANSPORTS[provider].includes(form.transport)),
+                    title: `Create shared replica of ${item.name}`,
+                    submitLabel: 'Create shared replica',
+                  });
+                }}
                 onDuplicate={() => {
                   const form = itemToFormState(item);
                   form.name = `${item.name}-copy`;
@@ -818,10 +854,12 @@ export default function McpCatalogPanel({ currentProjects }: McpCatalogPanelProp
         editingServer={formSeed}
         currentProjects={currentProjects}
         title={formTitle}
-        description="Saved once in the CloudCLI catalog, then projected into each checked provider’s native config. Unchecked providers never receive this server."
+        description={isReplica
+          ? 'Create an independent connection to the same MCP server. Review the direct URL and add authentication headers if required; provider account logins are not copied. Other compatible agents are selected by default. The original agent keeps its managed connection; selecting it here may expose duplicate tools.'
+          : 'Saved once in the CloudCLI catalog, then projected into each checked provider’s native config. Unchecked providers never receive this server.'}
         submitLabel={formSubmitLabel}
         supportedScopes={MCP_GLOBAL_SUPPORTED_SCOPES}
-        supportedTransports={MCP_GLOBAL_SUPPORTED_TRANSPORTS}
+        supportedTransports={isReplica ? MCP_SUPPORTED_TRANSPORTS.claude : MCP_GLOBAL_SUPPORTED_TRANSPORTS}
         extraFields={(
           <ProviderBindingMatrix
             selected={formProviders}

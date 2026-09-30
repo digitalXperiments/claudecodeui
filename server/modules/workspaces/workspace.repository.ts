@@ -131,6 +131,12 @@ export const workspaceDb = {
     ).run(status, lastError ?? null, workspaceId);
   },
 
+  setDeliveryRefs(workspaceId: string, refs: { snapshotSha: string | null; startSha: string | null }): void {
+    getConnection().prepare(
+      `UPDATE agent_workspaces SET snapshot_sha = ?, start_sha = ?, updated_at = CURRENT_TIMESTAMP WHERE workspace_id = ?`,
+    ).run(refs.snapshotSha, refs.startSha, workspaceId);
+  },
+
   setHeadSha(workspaceId: string, headSha: string | null): void {
     const db = getConnection();
     db.prepare(

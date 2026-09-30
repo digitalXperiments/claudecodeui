@@ -3,7 +3,8 @@
  *
  * Configures i18next for internationalization support.
  * Features:
- * - Lazy-loading of translation namespaces
+ * - English bundled statically; every other locale is loaded on demand
+ *   (one small chunk per language/namespace) through a dynamic-import backend
  * - Language detection from localStorage
  * - Fallback to English for missing translations
  * - Development mode warnings for missing keys
@@ -22,68 +23,28 @@ import enChat from './locales/en/chat.json';
 import enCodeEditor from './locales/en/codeEditor.json';
 import enTasks from './locales/en/tasks.json';
 import enSkills from './locales/en/skills.json';
-import koCommon from './locales/ko/common.json';
-import koSettings from './locales/ko/settings.json';
-import koAuth from './locales/ko/auth.json';
-import koSidebar from './locales/ko/sidebar.json';
-import koChat from './locales/ko/chat.json';
-import koCodeEditor from './locales/ko/codeEditor.json';
-import koSkills from './locales/ko/skills.json';
-import zhCommon from './locales/zh-CN/common.json';
-import zhSettings from './locales/zh-CN/settings.json';
-import zhAuth from './locales/zh-CN/auth.json';
-import zhSidebar from './locales/zh-CN/sidebar.json';
-import zhChat from './locales/zh-CN/chat.json';
-import zhCodeEditor from './locales/zh-CN/codeEditor.json';
-import zhSkills from './locales/zh-CN/skills.json';
-import jaCommon from './locales/ja/common.json';
-import jaSettings from './locales/ja/settings.json';
-import jaAuth from './locales/ja/auth.json';
-import jaSidebar from './locales/ja/sidebar.json';
-import jaChat from './locales/ja/chat.json';
-import jaCodeEditor from './locales/ja/codeEditor.json';
-import jaTasks from './locales/ja/tasks.json';
-import jaSkills from './locales/ja/skills.json';
-import ruCommon from './locales/ru/common.json';
-import ruSettings from './locales/ru/settings.json';
-import ruAuth from './locales/ru/auth.json';
-import ruSidebar from './locales/ru/sidebar.json';
-import ruChat from './locales/ru/chat.json';
-import ruCodeEditor from './locales/ru/codeEditor.json';
-import ruTasks from './locales/ru/tasks.json';
-import ruSkills from './locales/ru/skills.json';
-import deCommon from './locales/de/common.json';
-import deSettings from './locales/de/settings.json';
-import deAuth from './locales/de/auth.json';
-import deSidebar from './locales/de/sidebar.json';
-import deChat from './locales/de/chat.json';
-import deCodeEditor from './locales/de/codeEditor.json';
-import deTasks from './locales/de/tasks.json';
-import deSkills from './locales/de/skills.json';
-import trCommon from './locales/tr/common.json';
-import trSettings from './locales/tr/settings.json';
-import trAuth from './locales/tr/auth.json';
-import trSidebar from './locales/tr/sidebar.json';
-import trChat from './locales/tr/chat.json';
-import trCodeEditor from './locales/tr/codeEditor.json';
-import trTasks from './locales/tr/tasks.json';
-import trSkills from './locales/tr/skills.json';
-import itCommon from './locales/it/common.json';
-import itSettings from './locales/it/settings.json';
-import itAuth from './locales/it/auth.json';
-import itSidebar from './locales/it/sidebar.json';
-import itChat from './locales/it/chat.json';
-import itCodeEditor from './locales/it/codeEditor.json';
-import itTasks from './locales/it/tasks.json';
-import itSkills from './locales/it/skills.json';
-import zhTWCommon from './locales/zh-TW/common.json';
-import zhTWSettings from './locales/zh-TW/settings.json';
-import zhTWAuth from './locales/zh-TW/auth.json';
-import zhTWSidebar from './locales/zh-TW/sidebar.json';
-import zhTWChat from './locales/zh-TW/chat.json';
-import zhTWCodeEditor from './locales/zh-TW/codeEditor.json';
-import zhTWTasks from './locales/zh-TW/tasks.json';
-import zhTWSkills from './locales/zh-TW/skills.json';
+// Non-English locale files become separate lazy chunks. English stays in the
+// entry bundle so the default path never waits on a network round trip.
+const localeLoaders = import.meta.glob(['./locales/*/*.json', '!./locales/en/*.json']);
+
+const lazyLocaleBackend = {
+  type: 'backend',
+  init() {},
+  read(language, namespace, callback) {
+    const loader = localeLoaders[`./locales/${language}/${namespace}.json`];
+    if (!loader) {
+      // Namespace not translated for this language (or a region fallback like
+      // "zh"): resolve empty so i18next falls back to English.
+      callback(null, {});
+      return;
+    }
+    loader().then(
+      (module) => callback(null, module.default ?? module),
+      (error) => callback(error, false),
+    );
+  },
+};
+
 // Import supported languages configuration
 import { languages } from './languages.js';
 
@@ -102,11 +63,13 @@ const getSavedLanguage = () => {
 };
 
 // Initialize i18next
-i18n
+export const i18nReady = i18n
+  .use(lazyLocaleBackend)
   .use(LanguageDetector) // Detect user language
   .use(initReactI18next) // Pass i18n instance to react-i18next
   .init({
     // Resources containing all translations
+    // Only English is bundled; the backend fills in other languages lazily.
     resources: {
       en: {
         common: enCommon,
@@ -118,85 +81,8 @@ i18n
         tasks: enTasks,
         skills: enSkills,
       },
-      ko: {
-        common: koCommon,
-        settings: koSettings,
-        auth: koAuth,
-        sidebar: koSidebar,
-        chat: koChat,
-        codeEditor: koCodeEditor,
-        skills: koSkills,
-      },
-      'zh-CN': {
-        common: zhCommon,
-        settings: zhSettings,
-        auth: zhAuth,
-        sidebar: zhSidebar,
-        chat: zhChat,
-        codeEditor: zhCodeEditor,
-        skills: zhSkills,
-      },
-      ja: {
-        common: jaCommon,
-        settings: jaSettings,
-        auth: jaAuth,
-        sidebar: jaSidebar,
-        chat: jaChat,
-        codeEditor: jaCodeEditor,
-        tasks: jaTasks,
-        skills: jaSkills,
-      },
-      ru: {
-        common: ruCommon,
-        settings: ruSettings,
-        auth: ruAuth,
-        sidebar: ruSidebar,
-        chat: ruChat,
-        codeEditor: ruCodeEditor,
-        tasks: ruTasks,
-        skills: ruSkills,
-      },
-      de: {
-        common: deCommon,
-        settings: deSettings,
-        auth: deAuth,
-        sidebar: deSidebar,
-        chat: deChat,
-        codeEditor: deCodeEditor,
-        tasks: deTasks,
-        skills: deSkills,
-      },
-      tr: {
-        common: trCommon,
-        settings: trSettings,
-        auth: trAuth,
-        sidebar: trSidebar,
-        chat: trChat,
-        codeEditor: trCodeEditor,
-        tasks: trTasks,
-        skills: trSkills,
-      },
-      it: {
-        common: itCommon,
-        settings: itSettings,
-        auth: itAuth,
-        sidebar: itSidebar,
-        chat: itChat,
-        codeEditor: itCodeEditor,
-        tasks: itTasks,
-        skills: itSkills,
-      },
-      'zh-TW': {
-        common: zhTWCommon,
-        settings: zhTWSettings,
-        auth: zhTWAuth,
-        sidebar: zhTWSidebar,
-        chat: zhTWChat,
-        codeEditor: zhTWCodeEditor,
-        tasks: zhTWTasks,
-        skills: zhTWSkills,
-      },
     },
+    partialBundledLanguages: true,
 
     // Default language
     lng: getSavedLanguage(),

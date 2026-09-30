@@ -6,7 +6,7 @@ import crossSpawn from 'cross-spawn';
 import Database from 'better-sqlite3';
 
 import { buildAcpPromptBlocks } from './shared/image-attachments.js';
-import { createRequestId, extractPermissionPaths, resolveApprovalTimeoutMs, waitForToolApproval } from './claude-sdk.js';
+import { createRequestId, extractPermissionPaths, resolveApprovalTimeoutMs, resolveToolApproval, waitForToolApproval } from './claude-sdk.js';
 import { sessionsService } from './modules/providers/services/sessions.service.js';
 import { providerAuthService } from './modules/providers/services/provider-auth.service.js';
 import { providerModelsService } from './modules/providers/services/provider-models.service.js';
@@ -21,6 +21,7 @@ import {
 } from './shared/utils.js';
 import { resolveAcpCliCommand } from './shared/acp-cli-path.js';
 import { leadSessionEnv } from './shared/lead-session-env.js';
+import { workerGitGuardEnv, wrapCommandForSandbox } from './shared/worker-sandbox.js';
 import { ANTIGRAVITY_SETUP_TIMEOUT_MS } from './modules/providers/list/antigravity/antigravity-acp.js';
 import { buildAntigravityLaunchEnv } from './modules/providers/list/antigravity/antigravity-auth-support.js';
 import {
@@ -32,6 +33,10 @@ import {
   resolveAntigravityBinary,
 } from './modules/providers/list/antigravity/antigravity-runtime.js';
 import { readAntigravitySessionTokenUsage } from './modules/providers/list/antigravity/antigravity-token-usage.js';
+import {
+  scheduleAntigravityHistoryRefresh,
+  setAntigravityHistoryBusyCheck,
+} from './modules/providers/list/antigravity/antigravity-history.js';
 
 // cross-spawn resolves .cmd shims/PATHEXT on Windows and delegates to
 // child_process.spawn everywhere else.
@@ -111,7 +116,7 @@ async function resolveOpenCodeAcpMcpServers(runtime, options = {}) {
   // tools. Kilo/Cline/Qwen share this runtime; only attach the OpenCode
   // catalog to OpenCode chats so those other providers keep their own
   // native-config path.
-  if (!options.relayWorker && (runtime.provider === 'opencode' || runtime.provider === 'antigravity')) {
+  if (!options.relayWorker && !options.strictMcpSelection && (runtime.provider === 'opencode' || runtime.provider === 'antigravity')) {
     try {
       const enabled = await mcpCatalogService.listEnabledNames(runtime.provider);
       for (const name of enabled) names.add(name);
@@ -122,8 +127,13 @@ async function resolveOpenCodeAcpMcpServers(runtime, options = {}) {
   if (options.relayWorker) names.delete(RELAY_MCP_NAME);
   if (names.size === 0) return [];
   try {
-    return await mcpCatalogService.resolveForProvider(runtime.provider, [...names]);
-  } catch {
+    const resolved = await mcpCatalogService.resolveForProvider(runtime.provider, [...names]);
+    if (options.strictMcpSelection && [...names].some((name) => !resolved.some((server) => server.name === name))) {
+      throw new Error('A required work-session MCP server is unavailable.');
+    }
+    return resolved;
+  } catch (error) {
+    if (options.strictMcpSelection) throw error;
     return [];
   }
 }
@@ -153,6 +163,18 @@ async function resolveOpenCodeAcpMcpServers(runtime, options = {}) {
 // to anything gated and CloudCLI's permission broker never got a say. ACP is
 // the only opencode entry point that relays the ask to its client.
 const acpSessions = new Map();
+
+// History replays run in a separate ACP child; background refreshes must not
+// replay a session while a live turn here is still writing it. The run's
+// completion (below) schedules the refresh instead.
+setAntigravityHistoryBusyCheck((providerSessionId) => {
+  for (const handle of acpSessions.values()) {
+    if (handle?.provider === 'antigravity' && handle.providerSessionId === providerSessionId && handle.promptInFlight) {
+      return true;
+    }
+  }
+  return false;
+});
 
 const RELAYED_KILO_PERMISSIONS = {
   edit: 'ask',
@@ -486,7 +508,7 @@ function killChild(child) {
   }
 }
 
-async function createAcpSession(workingDir, resumeSessionId, permissionEnv, runtime, extraEnv = {}, mcpServers = []) {
+async function createAcpSession(workingDir, resumeSessionId, permissionEnv, runtime, extraEnv = {}, mcpServers = [], relaySandbox = null) {
   // Resolve the bare command (`opencode`, `kilo`) through PATH plus the
   // installer's `~/.<name>/bin` — a GUI-launched server never sources the
   // shell profile that would put it on PATH. A runtime with its own
@@ -502,7 +524,10 @@ async function createAcpSession(workingDir, resumeSessionId, permissionEnv, runt
     : runtime.acpArgs || ['acp', '--cwd', workingDir];
   // Slow-starting runtimes raise the setup bound; everything else keeps 30s.
   const setupTimeoutMs = runtime.setupTimeoutMs ?? SETUP_TIMEOUT_MS;
-  const child = spawnFunction(resolvedCommand, resolvedArgs, {
+  // Relay workers run the whole ACP CLI under the OS sandbox; every tool
+  // process it spawns inherits the profile.
+  const launch = wrapCommandForSandbox(resolvedCommand, resolvedArgs, relaySandbox);
+  const child = spawnFunction(launch.command, launch.args, {
     cwd: workingDir,
     detached: process.platform !== 'win32',
     stdio: ['pipe', 'pipe', 'pipe'],
@@ -666,6 +691,35 @@ function retiredModelMessage(model, error, label = 'OpenCode') {
   const detail = error?.message || String(error ?? '');
   if (!/\b410\b|lifecycle end|\bGone\b/i.test(detail)) return null;
   return `${label} model "${model}" was retired by the upstream provider (HTTP 410 — lifecycle end). Pick a current model from the catalog. Upstream detail: ${detail}`;
+}
+
+/** Update ACP controls and the local permission broker without starting another turn. */
+export async function updateAcpPermissionMode(provider, sessionId, mode, appSessionId) {
+  const handle = acpSessions.get(sessionMapKey(provider, sessionId))
+    || [...acpSessions.values()].find((entry) => entry.provider === provider && appSessionId && entry.appSessionId === appSessionId);
+  if (!handle?.livePermissionPolicy || handle.child.killed || handle.child.exitCode !== null) return false;
+  const policy = handle.runtime.resolvePermissionPolicy(mode);
+  // Environment-backed restrictions cannot be tightened on a running process.
+  // Bypass can approve the existing asks locally; stricter modes need a restart.
+  if (handle.permissionEnvKey !== JSON.stringify(policy.env ?? {}) && !policy.autoApprove) return false;
+  const desiredMode = policy.mode ? resolveSessionMode(handle, policy.mode) : null;
+  if (desiredMode && desiredMode !== handle.currentMode) {
+    await setConfigOption(handle, 'mode', desiredMode, { required: true });
+    handle.currentMode = desiredMode;
+  }
+  Object.assign(handle.livePermissionPolicy, policy);
+  handle.permissionMode = mode;
+  if (policy.autoApprove) {
+    for (const [requestId, writer] of handle.pendingPermissionRequests ?? []) {
+      resolveToolApproval(requestId, { allow: true });
+      writer.send(createNormalizedMessage({
+        kind: 'permission_cancelled', requestId, reason: 'permission_mode_changed',
+        sessionId: handle.providerSessionId, provider,
+      }));
+    }
+    handle.pendingPermissionRequests?.clear();
+  }
+  return true;
 }
 
 /** Apply a session config option, optionally treating rejection as fatal. */
@@ -840,10 +894,14 @@ async function spawnAcpProvider(runtime, command, options = {}, ws) {
   const processKey = sessionId ? sessionMapKey(runtime.provider, sessionId) : `${runtime.provider}:new:${Date.now()}`;
   let handle = acpSessions.get(processKey);
   let capturedSessionId = sessionId;
-  const extraEnv = leadSessionEnv(options.appSessionId);
+  const extraEnv = {
+    ...leadSessionEnv(options.appSessionId),
+    ...(options.relayWorker ? workerGitGuardEnv() : {}),
+  };
   const resolvedMcp = await resolveOpenCodeAcpMcpServers(runtime, options);
   const acpMcpServers = toOpenCodeAcpMcpServers(resolvedMcp, extraEnv);
-  const mcpKey = JSON.stringify(acpMcpServers);
+  const relaySandbox = options.relayWorker ? options.relaySandbox ?? null : null;
+  const mcpKey = `${JSON.stringify(acpMcpServers)}|sandbox:${relaySandbox ? JSON.stringify(relaySandbox) : ''}`;
 
   // OPENCODE_PERMISSION is read once at process start, so a permission-mode
   // change cannot be applied to a live child — retire it and resume the same
@@ -860,7 +918,8 @@ async function spawnAcpProvider(runtime, command, options = {}, ws) {
   }
 
   if (!handle || handle.child.exitCode !== null || handle.child.killed) {
-    handle = await createAcpSession(workingDir, sessionId, { ...policy.env, ...identityEnv }, runtime, extraEnv, acpMcpServers);
+    handle = await createAcpSession(workingDir, sessionId, { ...policy.env, ...identityEnv }, runtime, extraEnv, acpMcpServers, relaySandbox);
+    handle.permissionEnvKey = JSON.stringify(policy.env ?? {});
     acpSessions.set(processKey, handle);
 
     if (!capturedSessionId) {
@@ -934,6 +993,10 @@ async function spawnAcpProvider(runtime, command, options = {}, ws) {
     throw error;
   }
 
+  handle.appSessionId = appSessionId;
+  handle.livePermissionPolicy = policy;
+  handle.permissionMode = permissionMode;
+  handle.pendingPermissionRequests = new Map();
   const finalSessionId = capturedSessionId || handle.providerSessionId;
 
   // toolCallId -> the tool's real name, captured from the initial `tool_call`
@@ -954,7 +1017,7 @@ async function spawnAcpProvider(runtime, command, options = {}, ws) {
   // so reassigning `handle` retargets respond()/session filtering too.
   const onAcpMessage = async (message, isRequest) => {
     if (isRequest && ACP_FS_METHODS.has(message.method)) {
-      await handleAcpFsRequest(handle.rpc, message, workingDir, { permissionMode, policy });
+      await handleAcpFsRequest(handle.rpc, message, workingDir, { permissionMode: handle.permissionMode, policy });
       return;
     }
 
@@ -997,6 +1060,7 @@ async function spawnAcpProvider(runtime, command, options = {}, ws) {
       // (swarm) runs wait a bounded window for the permission broker and then
       // fall through to reject, so a headless run can never hang here.
       const approvalWaitMs = resolveApprovalTimeoutMs({ unattended, approvalTimeoutMs });
+      handle.pendingPermissionRequests.set(requestId, ws);
       const decision = await waitForToolApproval(requestId, {
         timeoutMs: approvalWaitMs,
         metadata: {
@@ -1010,6 +1074,7 @@ async function spawnAcpProvider(runtime, command, options = {}, ws) {
         },
       });
 
+      handle.pendingPermissionRequests.delete(requestId);
       if (unattended && !decision) {
         console.warn(`[opencode-cli] session=${finalSessionId} unattended approval for "${toolName}" timed out after ${approvalWaitMs}ms — denying`);
       }
@@ -1141,7 +1206,8 @@ async function spawnAcpProvider(runtime, command, options = {}, ws) {
         acpSessions.delete(key);
       }
       disposeSession(handle);
-      const fresh = await createAcpSession(workingDir, resumeId, { ...policy.env, ...identityEnv }, runtime, extraEnv, acpMcpServers);
+      const fresh = await createAcpSession(workingDir, resumeId, { ...policy.env, ...identityEnv }, runtime, extraEnv, acpMcpServers, relaySandbox);
+      fresh.permissionEnvKey = JSON.stringify(policy.env ?? {});
       acpSessions.set(key, fresh);
       fresh.child.on('exit', () => {
         if (acpSessions.get(key) === fresh) {
@@ -1153,6 +1219,10 @@ async function spawnAcpProvider(runtime, command, options = {}, ws) {
       });
       // Assign before restoring required configuration so any rejection flows
       // through the outer catch/finally and disposes this replacement child.
+      fresh.appSessionId = appSessionId;
+      fresh.livePermissionPolicy = policy;
+      fresh.permissionMode = handle.permissionMode;
+      fresh.pendingPermissionRequests = handle.pendingPermissionRequests;
       handle = fresh;
       if (runtime.supportsModelConfig !== false && resolvedModel && (await setConfigOption(fresh, 'model', resolvedModel, { required: true }))) {
         fresh.currentModel = resolvedModel;
@@ -1187,8 +1257,9 @@ async function spawnAcpProvider(runtime, command, options = {}, ws) {
     }
     handle.promptInFlight = false;
 
-    ws.send(createCompleteMessage({ provider: runtime.provider, sessionId: finalSessionId, exitCode: 0 }));
-
+    // Token telemetry goes out BEFORE the terminal `complete`: the run
+    // registry stops sequencing once a run completes, and a late status frame
+    // would otherwise leave the client with a stale replay cursor.
     try {
       let tokenBudget = null;
       if (runtime.databasePath) {
@@ -1209,6 +1280,8 @@ async function spawnAcpProvider(runtime, command, options = {}, ws) {
     } catch (tokenError) {
       console.warn(`${runtime.provider || 'ACP'} token budget refresh failed (non-fatal):`, tokenError?.message || tokenError);
     }
+
+    ws.send(createCompleteMessage({ provider: runtime.provider, sessionId: finalSessionId, exitCode: 0 }));
 
     // Isolated from the main try/catch: a notification-plumbing failure must
     // never retroactively turn an already-sent successful `complete` into a
@@ -1266,6 +1339,18 @@ async function spawnAcpProvider(runtime, command, options = {}, ws) {
     throw error;
   } finally {
     unsubscribe();
+    if (runtime.provider === 'antigravity') {
+      // Warm the history cache now that the turn is on disk, so reopening the
+      // session (or a reload) is served without a blocking replay.
+      const historySessionId = handle?.providerSessionId || capturedSessionId;
+      if (historySessionId) {
+        try {
+          scheduleAntigravityHistoryRefresh(historySessionId, { fallbackCwd: workingDir, delayMs: 1_000 });
+        } catch {
+          // Cache warming is best-effort.
+        }
+      }
+    }
     // Headless runs (swarm, Mission Control, Kanban) are one prompt per run,
     // and each idle ACP child holds ~500MB. A retry cascade used to stack
     // several of those for the 30-minute idle window, and the resulting memory

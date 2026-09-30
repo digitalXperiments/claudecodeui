@@ -77,12 +77,19 @@ function resolveRouteErrorMessage(error: unknown): string {
 router.get(
   '/',
   asyncHandler(async (req, res) => {
+    // DB-only by default (boot sync + watchers keep the index fresh). An
+    // explicit user refresh passes `?sync=1` (alias `refresh=1`) to force a
+    // full provider rescan; `skipSynchronization`/`skipSync` still win.
     const skipSynchronization =
       readQueryStringValue(req.query.skipSynchronization).trim() === '1' ||
       readQueryStringValue(req.query.skipSync).trim() === '1';
+    const synchronize =
+      readQueryStringValue(req.query.sync).trim() === '1' ||
+      readQueryStringValue(req.query.refresh).trim() === '1';
     const sessionsLimit = readOptionalNumericQueryValue(req.query.sessionsLimit) ?? undefined;
     const sessionsOffset = readOptionalNumericQueryValue(req.query.sessionsOffset) ?? undefined;
     const projects = await getProjectsWithSessions({
+      synchronize,
       skipSynchronization,
       sessionsLimit,
       sessionsOffset,

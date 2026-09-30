@@ -153,8 +153,8 @@ test('no bridge is planned when the pages already overlap', () => {
 test('first bridge chunk requests exactly the missing rows plus one anchor', () => {
   const cached = [msg(), msg()];
   const latest = Array.from({ length: SESSION_MESSAGES_PAGE_SIZE }, () => msg());
-  // 30 rows were added; the latest page covered 20, so 10 are missing.
-  const plan = planLatestPageBridge(cached, latest, 50, 80);
+  // A page plus 10 rows were added; the latest page covered one page, so 10 are missing.
+  const plan = planLatestPageBridge(cached, latest, 50, 50 + SESSION_MESSAGES_PAGE_SIZE + 10);
   assert.deepEqual(plan, { offset: SESSION_MESSAGES_PAGE_SIZE, limit: 11 });
 });
 

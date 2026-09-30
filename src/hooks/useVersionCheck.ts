@@ -23,6 +23,28 @@ const compareVersions = (v1: string, v2: string) => {
 
 export type InstallMode = 'git' | 'npm';
 
+// The GitHub release check is a cross-origin request that nothing on the
+// launch path needs; start it well after boot, when the browser is idle.
+const INITIAL_VERSION_CHECK_DELAY_MS = 10_000;
+
+/** Run `callback` once the main thread is idle (after at least `minDelayMs`). Returns a cancel fn. */
+const runWhenIdle = (callback: () => void, minDelayMs = 0): (() => void) => {
+  let idleHandle: number | null = null;
+  const timeoutHandle = window.setTimeout(() => {
+    if (typeof window.requestIdleCallback === 'function') {
+      idleHandle = window.requestIdleCallback(callback, { timeout: 5000 });
+    } else {
+      callback();
+    }
+  }, minDelayMs);
+  return () => {
+    window.clearTimeout(timeoutHandle);
+    if (idleHandle !== null && typeof window.cancelIdleCallback === 'function') {
+      window.cancelIdleCallback(idleHandle);
+    }
+  };
+};
+
 export const useVersionCheck = (owner: string, repo: string) => {
   const [updateAvailable, setUpdateAvailable] = useState(false);
   const [latestVersion, setLatestVersion] = useState<string | null>(null);
@@ -52,7 +74,10 @@ export const useVersionCheck = (owner: string, repo: string) => {
         // Default to git / no restart hint on error
       }
     };
-    fetchHealth();
+    // Local and cheap, but still not needed for first paint.
+    return runWhenIdle(() => {
+      void fetchHealth();
+    });
   }, []);
 
   useEffect(() => {
@@ -90,9 +115,14 @@ export const useVersionCheck = (owner: string, repo: string) => {
       }
     };
 
-    checkVersion();
+    const cancelInitialCheck = runWhenIdle(() => {
+      void checkVersion();
+    }, INITIAL_VERSION_CHECK_DELAY_MS);
     const interval = setInterval(checkVersion, 5 * 60 * 1000); // Check every 5 minutes
-    return () => clearInterval(interval);
+    return () => {
+      cancelInitialCheck();
+      clearInterval(interval);
+    };
   }, [owner, repo]);
 
   return { updateAvailable, latestVersion, currentVersion: version, releaseInfo, installMode, runningVersion, restartRequired };

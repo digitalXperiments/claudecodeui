@@ -141,6 +141,7 @@ export function useMcpCatalog() {
   const upsertFromForm = useCallback(async (
     formData: McpFormState,
     providers: LLMProvider[],
+    createOnly = false,
   ): Promise<McpCatalogEntry> => {
     // Use claude as a transport-capability reference for the payload builder.
     const payload = createMcpPayloadFromForm('claude', formData, {
@@ -150,15 +151,19 @@ export function useMcpCatalog() {
     const response = await authenticatedFetch('/api/providers/mcp/catalog', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...payload, providers }),
+      body: JSON.stringify({ ...payload, providers, createOnly }),
     });
     const data = await toResponseJson<ApiResponse<{ server: McpCatalogEntry }>>(response);
     if (!response.ok || !data.success) {
       throw new Error(getApiErrorMessage(data, 'Failed to save MCP server'));
     }
-    setSaveStatus('success');
+    const failed = (data.data.server.syncResults ?? []).filter((result) => !result.ok);
+    setSaveStatus(failed.length ? 'error' : 'success');
     // Mutations only need the fast path — bindings are catalog-owned.
     await refresh({ full: false });
+    if (failed.length) {
+      setLoadError(`Saved, but some agents could not be configured: ${failed.map((result) => `${result.provider}: ${result.error || 'failed'}`).join('; ')}`);
+    }
     return data.data.server;
   }, [refresh]);
 

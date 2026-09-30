@@ -26,6 +26,7 @@ export {
   readClaudeSessionTokenUsage,
 } from './list/claude/claude-token-usage.js';
 export { CLAUDE_MODEL_ALIASES } from './list/claude/claude-models.provider.js';
+export { recordRunError } from './services/session-run-errors.service.js';
 export {
   ClaudeProviderAuth,
   setClaudeAuthIoForTests,
@@ -72,3 +73,5 @@ export type {
   AntigravityRunSnapshot,
   AntigravityGenerationRecord,
 } from './list/antigravity/antigravity-token-usage.js';
+
+export { configureLivePermissionModes, updateLivePermissionMode, waitForPermissionModeUpdate } from './services/live-permission-mode.service.js';

@@ -1,4 +1,4 @@
-import { memo, useEffect, useId, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useId, useRef, useState } from 'react';
 import { Check, Copy, Edit2, Link2, Loader2, MoreHorizontal, Trash2, X } from 'lucide-react';
 import type { TFunction } from 'i18next';
 
@@ -7,7 +7,9 @@ import { cn } from '../../../../lib/utils';
 import { copyTextToClipboard } from '../../../../utils/clipboard';
 import type { Project, ProjectSession, LLMProvider } from '../../../../types/app';
 import type { SessionWithProvider } from '../../types/types';
-import { createSessionViewModel } from '../../utils/utils';
+import { getSessionDate, getSessionName, getSessionTime } from '../../utils/utils';
+import { useMinuteClockValue } from '../../utils/minuteClock';
+import { scheduleSessionPrefetch } from '../../../../stores/sessionPrefetch';
 import SessionProviderLogo from '../../../llm-logo-provider/SessionProviderLogo';
 
 type SidebarSessionItemProps = {
@@ -16,7 +18,11 @@ type SidebarSessionItemProps = {
   selectedSession: ProjectSession | null;
   isProcessing: boolean;
   needsAttention: boolean;
-  currentTime: Date;
+  /**
+   * Unused: relative time now comes from the shared minute clock so a tick
+   * re-renders only rows whose label changes. Kept optional for callers.
+   */
+  currentTime?: Date;
   editingSession: string | null;
   editingSessionName: string;
   onEditingSessionNameChange: (value: string) => void;
@@ -190,13 +196,13 @@ function SessionIdOverflowMenu({ session, t }: SessionIdOverflowMenuProps) {
  * Compact relative time for sidebar rows:
  * <1m, Xm, Xhr, Xd.
  */
-const formatCompactSessionAge = (dateString: string, currentTime: Date): string => {
+const formatCompactSessionAge = (dateString: string, nowMs: number): string => {
   const date = new Date(dateString);
   if (Number.isNaN(date.getTime())) {
     return '';
   }
 
-  const diffInMinutes = Math.floor(Math.max(0, currentTime.getTime() - date.getTime()) / (1000 * 60));
+  const diffInMinutes = Math.floor(Math.max(0, nowMs - date.getTime()) / (1000 * 60));
   if (diffInMinutes < 1) {
     return '<1m';
   }
@@ -220,7 +226,6 @@ function SidebarSessionItem({
   selectedSession,
   isProcessing,
   needsAttention,
-  currentTime,
   editingSession,
   editingSessionName,
   onEditingSessionNameChange,
@@ -232,10 +237,37 @@ function SidebarSessionItem({
   onDeleteSession,
   t,
 }: SidebarSessionItemProps) {
-  const sessionView = createSessionViewModel(session, currentTime, t);
+  const sessionTime = getSessionTime(session);
+  const sessionDateMs = getSessionDate(session).getTime();
+  // Derived clock values: this row re-renders only when its own label or
+  // "recent" flag changes, not on every minute tick.
+  const isRecentlyActive = useMinuteClockValue(
+    (nowMs) => Math.floor((nowMs - sessionDateMs) / (1000 * 60)) < 10,
+  );
+  const compactSessionAge = useMinuteClockValue((nowMs) => formatCompactSessionAge(sessionTime, nowMs));
+  const sessionView = {
+    isActive: isRecentlyActive,
+    sessionName: getSessionName(session, t),
+    sessionTime,
+    messageCount: Number(session.messageCount || 0),
+  };
   const isSelected = selectedSession?.id === session.id;
   const isEditing = editingSession === session.id;
-  const compactSessionAge = formatCompactSessionAge(sessionView.sessionTime, currentTime);
+
+  // Hover/focus intent warms the first history page (debounced; the chat
+  // view's store skips sessions it already has), so opening it renders rows
+  // from cache instead of waiting on the request.
+  const cancelPrefetchRef = useRef<(() => void) | null>(null);
+  const cancelPrefetch = useCallback(() => {
+    cancelPrefetchRef.current?.();
+    cancelPrefetchRef.current = null;
+  }, []);
+  const requestPrefetch = useCallback(() => {
+    if (isSelected) return;
+    cancelPrefetch();
+    cancelPrefetchRef.current = scheduleSessionPrefetch(session.id);
+  }, [cancelPrefetch, isSelected, session.id]);
+  useEffect(() => cancelPrefetch, [cancelPrefetch]);
   const editingContainerRef = useRef<HTMLDivElement>(null);
   const showAttentionIndicator = needsAttention && !isSelected;
   const showRecentIndicator = !showAttentionIndicator && !isProcessing && sessionView.isActive;
@@ -275,7 +307,13 @@ function SidebarSessionItem({
   };
 
   return (
-    <div className="group relative">
+    <div
+      className="group relative"
+      onMouseEnter={requestPrefetch}
+      onMouseLeave={cancelPrefetch}
+      onFocus={requestPrefetch}
+      onBlur={cancelPrefetch}
+    >
       {(showAttentionIndicator || showRecentIndicator) && (
         <div className="absolute left-0 top-1/2 -translate-x-1 -translate-y-1/2 transform">
           <Tooltip

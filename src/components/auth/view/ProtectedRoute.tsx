@@ -1,10 +1,12 @@
-import type { ReactNode } from 'react';
+import { lazy, Suspense, type ReactNode } from 'react';
 import { IS_PLATFORM } from '../../../constants/config';
 import { useAuth } from '../context/AuthContext';
-import Onboarding from '../../onboarding/view/Onboarding';
 import AuthLoadingScreen from './AuthLoadingScreen';
 import LoginForm from './LoginForm';
 import SetupForm from './SetupForm';
+
+// Onboarding pulls provider login (xterm shell) — only needed for new users.
+const Onboarding = lazy(() => import('../../onboarding/view/Onboarding'));
 
 type ProtectedRouteProps = {
   children: ReactNode;
@@ -19,7 +21,11 @@ export default function ProtectedRoute({ children }: ProtectedRouteProps) {
 
   if (IS_PLATFORM) {
     if (!hasCompletedOnboarding) {
-      return <Onboarding onComplete={refreshOnboardingStatus} />;
+      return (
+        <Suspense fallback={<AuthLoadingScreen />}>
+          <Onboarding onComplete={refreshOnboardingStatus} />
+        </Suspense>
+      );
     }
 
     return <>{children}</>;
@@ -34,7 +40,11 @@ export default function ProtectedRoute({ children }: ProtectedRouteProps) {
   }
 
   if (!hasCompletedOnboarding) {
-    return <Onboarding onComplete={refreshOnboardingStatus} />;
+    return (
+      <Suspense fallback={<AuthLoadingScreen />}>
+        <Onboarding onComplete={refreshOnboardingStatus} />
+      </Suspense>
+    );
   }
 
   return <>{children}</>;

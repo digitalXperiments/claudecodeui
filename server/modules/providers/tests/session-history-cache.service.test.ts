@@ -173,3 +173,32 @@ test('the entry count cap evicts the least recently used entry', async () => {
     await rm(tempDirectory, { recursive: true, force: true });
   }
 });
+
+test('a request after the file changed does not join the in-flight load of the older revision', async () => {
+  await withTranscriptFile(async (transcriptPath) => {
+    const cache = createSessionHistoryCache();
+    let loads = 0;
+    let releaseFirst: () => void = () => {};
+    const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    const loadFull = async () => {
+      loads += 1;
+      const marker = `load-${loads}`;
+      if (loads === 1) await firstGate;
+      return historyResult(marker);
+    };
+
+    const stale = cache.getFullHistory({ sessionId: 's1', transcriptPath, loadFull });
+    // Let the first request stat the file and start its (slow) parse.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await appendFile(transcriptPath, '{"type":"assistant"}\n', 'utf8');
+    const fresh = await cache.getFullHistory({ sessionId: 's1', transcriptPath, loadFull });
+    releaseFirst();
+
+    assert.equal(fresh?.messages[0]?.id, 'load-2');
+    assert.equal((await stale)?.messages[0]?.id, 'load-1');
+    // The older parse finishing last must not replace the newer entry.
+    const cached = await cache.getFullHistory({ sessionId: 's1', transcriptPath, loadFull });
+    assert.equal(cached?.messages[0]?.id, 'load-2');
+    assert.equal(loads, 2);
+  });
+});

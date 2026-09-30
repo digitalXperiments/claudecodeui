@@ -194,4 +194,11 @@ export interface IProviderSessionSynchronizer {
    * Parses and upserts one provider artifact file without running a full scan.
    */
   synchronizeFile(filePath: string): Promise<string | null>;
+
+  /**
+   * Optional multi-session variant for artifacts shared by many sessions
+   * (OpenCode's single SQLite store): returns every canonical session id the
+   * pass indexed, so each one gets its own `session_upserted`.
+   */
+  synchronizeFileSessions?(filePath: string): Promise<string[]>;
 }

@@ -3,6 +3,8 @@ import { Coins } from 'lucide-react';
 
 import { authenticatedFetch } from '../../../../utils/api';
 import { cn } from '../../../../lib/utils';
+import { fetchSessionLiveUsage } from '../../../../utils/sessionRequests';
+import { runAfterSessionPaint } from '../../../../utils/sessionPaintGate';
 
 type SpendVerdict = {
   spentUsd: number;
@@ -57,10 +59,9 @@ export default function LiveSpendMeter({ sessionId, spentUsd, className }: LiveS
         return;
       }
       try {
-        const res = await authenticatedFetch(
-          `/api/runs/live-usage?sessionId=${encodeURIComponent(sessionId)}`,
-        );
-        const data = await res.json();
+        // Shared with the status bar's live-usage poll.
+        const res = await fetchSessionLiveUsage<{ verdict?: SpendVerdict }>(sessionId);
+        const data = res.data;
         if (!cancelled && data?.verdict) {
           setVerdict(data.verdict as SpendVerdict);
         }
@@ -68,11 +69,16 @@ export default function LiveSpendMeter({ sessionId, spentUsd, className }: LiveS
         // Meter is best-effort.
       }
     };
-    void load();
-    const timer = window.setInterval(() => void load(), 15_000);
+    // Best-effort meter: start (and poll) only after the transcript paints.
+    let timer: number | null = null;
+    const cancelDeferred = runAfterSessionPaint(() => {
+      void load();
+      timer = window.setInterval(() => void load(), 15_000);
+    });
     return () => {
       cancelled = true;
-      window.clearInterval(timer);
+      cancelDeferred();
+      if (timer !== null) window.clearInterval(timer);
     };
   }, [sessionId, spentUsd]);
 

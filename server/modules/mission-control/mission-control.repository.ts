@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import { getConnection } from '@/modules/database/index.js';
+import { recordSectionVersion } from '@/modules/mission-control/mission-control-versions.service.js';
 import { broadcastSystemEvent } from '@/modules/websocket/index.js';
 import {
   DEFAULT_MC_ACTIONS,
@@ -14,6 +15,7 @@ import {
   type McSectionScope,
   type UpdateMcSectionInput,
   type McProvider,
+  type McWorkProfile,
   type McDraftItem,
 } from '@/modules/mission-control/mission-control.types.js';
 
@@ -26,10 +28,15 @@ type SectionRow = {
   scope: string;
   project_id: string | null;
   work_project_id: string | null;
+  work_profile_json: string | null;
   mode: string;
   schedule_cron: string | null;
   provider: string;
   model: string | null;
+  effort: string | null;
+  resolve_provider: string | null;
+  resolve_model: string | null;
+  resolve_effort: string | null;
   permission_mode: string;
   dry_run: number;
   auto_approve: number;
@@ -39,10 +46,6 @@ type SectionRow = {
   resolve_tools_json: string;
   tool_policy_json: string | null;
   actions_json: string;
-  create_kanban_task: number | null;
-  kanban_assignee_provider: string | null;
-  kanban_review_provider: string | null;
-  kanban_mcp_tools_json: string | null;
   last_run_at: string | null;
   last_run_error: string | null;
   created_at: string;
@@ -64,6 +67,7 @@ type ItemRow = {
   dedupe_key: string;
   result_json: string | null;
   error: string | null;
+  work_ready_at: string | null;
   created_at: string;
   updated_at: string;
   resolved_at: string | null;
@@ -145,6 +149,13 @@ function parseToolPolicy(raw: string | null | undefined): McSection['tool_policy
   return policy;
 }
 
+/** Profiles saved before effort/default project existed read as null. */
+function parseWorkProfileJson(raw: string | null): McWorkProfile | null {
+  if (!raw) return null;
+  const parsed = JSON.parse(raw) as McWorkProfile;
+  return { ...parsed, effort: parsed.effort ?? null, default_project_id: parsed.default_project_id ?? null, routes: parsed.routes ?? [] };
+}
+
 function mapSection(row: SectionRow): McSection {
   return {
     section_id: row.section_id,
@@ -155,10 +166,15 @@ function mapSection(row: SectionRow): McSection {
     scope: (row.scope === 'project' ? 'project' : 'global') as McSectionScope,
     project_id: row.project_id,
     work_project_id: row.work_project_id ?? null,
-    mode: (row.mode === 'fire_and_forget' ? 'fire_and_forget' : 'review') as McSectionMode,
+    work_profile: parseWorkProfileJson(row.work_profile_json),
+    mode: 'review' as McSectionMode,
     schedule_cron: row.schedule_cron || null,
     provider: (row.provider || 'claude') as McProvider,
     model: row.model || null,
+    effort: row.effort || null,
+    resolve_provider: (row.resolve_provider || null) as McProvider | null,
+    resolve_model: row.resolve_provider ? row.resolve_model || null : null,
+    resolve_effort: row.resolve_provider ? row.resolve_effort || null : null,
     permission_mode: row.permission_mode || 'bypassPermissions',
     dry_run: Boolean(row.dry_run),
     auto_approve: Boolean(row.auto_approve),
@@ -168,10 +184,6 @@ function mapSection(row: SectionRow): McSection {
     resolve_tools: parseTools(row.resolve_tools_json),
     tool_policy: parseToolPolicy(row.tool_policy_json),
     actions: parseActions(row.actions_json),
-    create_kanban_task: Boolean(row.create_kanban_task),
-    kanban_assignee_provider: (row.kanban_assignee_provider || null) as McProvider | null,
-    kanban_review_provider: (row.kanban_review_provider || null) as McProvider | null,
-    kanban_mcp_tools: parseTools(row.kanban_mcp_tools_json),
     last_run_at: row.last_run_at,
     last_run_error: row.last_run_error,
     created_at: row.created_at,
@@ -195,6 +207,7 @@ function mapItem(row: ItemRow): McItem {
     dedupe_key: row.dedupe_key,
     result: row.result_json ? parseJsonObject(row.result_json) : null,
     error: row.error,
+    work_ready_at: row.work_ready_at ?? null,
     created_at: row.created_at,
     updated_at: row.updated_at,
     resolved_at: row.resolved_at,
@@ -213,7 +226,7 @@ function recoverStaleResolvingItems(): void {
   const cutoff = new Date(Date.now() - STALE_RESOLVING_AFTER_MS).toISOString();
   const rows = db
     .prepare(
-      `SELECT item_id FROM mc_items WHERE status = 'resolving' AND updated_at < ?`,
+      `SELECT item_id FROM mc_items WHERE status = 'resolving' AND updated_at < ? AND NOT EXISTS (SELECT 1 FROM mc_work_dispatches w WHERE w.item_id = mc_items.item_id AND w.status IN ('starting', 'running'))`,
     )
     .all(cutoff) as Array<{ item_id: string }>;
   if (rows.length === 0) return;
@@ -306,17 +319,17 @@ export const missionControlDb = {
     const actions = input.actions?.length ? input.actions : DEFAULT_MC_ACTIONS;
     db.prepare(
       `INSERT INTO mc_sections (
-        section_id, title, icon, sort_order, enabled, scope, project_id, work_project_id, mode,
-        schedule_cron, provider, model, permission_mode, dry_run, auto_approve,
+        section_id, title, icon, sort_order, enabled, scope, project_id, work_project_id, work_profile_json, mode,
+        schedule_cron, provider, model, effort, resolve_provider, resolve_model, resolve_effort,
+        permission_mode, dry_run, auto_approve,
         produce_prompt, produce_tools_json, resolve_prompt, resolve_tools_json,
-        tool_policy_json, actions_json, create_kanban_task, kanban_assignee_provider, kanban_review_provider,
-        kanban_mcp_tools_json, created_at, updated_at
+        tool_policy_json, actions_json, created_at, updated_at
       ) VALUES (
-        ?, ?, ?, ?, ?, ?, ?, ?, ?,
-        ?, ?, ?, ?, ?, ?,
+        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+        ?, ?, ?, ?, ?, ?, ?,
+        ?, ?, ?,
         ?, ?, ?, ?,
-        ?, ?, ?, ?, ?,
-        ?, ?, ?
+        ?, ?, ?, ?
       )`,
     ).run(
       sectionId,
@@ -327,10 +340,15 @@ export const missionControlDb = {
       input.scope === 'project' ? 'project' : 'global',
       input.project_id ?? null,
       input.work_project_id ?? null,
-      input.mode === 'fire_and_forget' ? 'fire_and_forget' : 'review',
+      input.work_profile ? JSON.stringify(input.work_profile) : null,
+      'review',
       input.schedule_cron?.trim() || null,
       input.provider ?? 'claude',
       input.model ?? null,
+      input.effort ?? null,
+      input.resolve_provider ?? null,
+      input.resolve_provider ? input.resolve_model ?? null : null,
+      input.resolve_provider ? input.resolve_effort ?? null : null,
       input.permission_mode ?? 'bypassPermissions',
       input.dry_run ? 1 : 0,
       input.auto_approve ? 1 : 0,
@@ -340,19 +358,18 @@ export const missionControlDb = {
       JSON.stringify(input.resolve_tools ?? []),
       JSON.stringify(input.tool_policy ?? {}),
       JSON.stringify(actions),
-      input.create_kanban_task ? 1 : 0,
-      input.kanban_assignee_provider ?? null,
-      input.kanban_review_provider ?? null,
-      JSON.stringify(input.kanban_mcp_tools ?? []),
       ts,
       ts,
     );
-    return this.getSection(sectionId)!;
+    const created = this.getSection(sectionId)!;
+    recordSectionVersion(created, 'created');
+    return created;
   },
 
   updateSection(sectionId: string, input: UpdateMcSectionInput): McSection | null {
     const existing = this.getSection(sectionId);
     if (!existing) return null;
+    recordSectionVersion(existing, 'baseline');
 
     const next: McSection = {
       ...existing,
@@ -365,13 +382,18 @@ export const missionControlDb = {
         input.project_id !== undefined ? input.project_id : existing.project_id,
       work_project_id:
         input.work_project_id !== undefined ? input.work_project_id : existing.work_project_id,
-      mode: input.mode !== undefined ? input.mode : existing.mode,
+      work_profile: input.work_profile !== undefined ? input.work_profile : existing.work_profile,
+      mode: 'review',
       schedule_cron:
         input.schedule_cron !== undefined
           ? input.schedule_cron?.trim() || null
           : existing.schedule_cron,
       provider: input.provider !== undefined ? input.provider : existing.provider,
       model: input.model !== undefined ? input.model : existing.model,
+      effort: input.effort !== undefined ? input.effort : existing.effort,
+      resolve_provider: input.resolve_provider !== undefined ? input.resolve_provider : existing.resolve_provider,
+      resolve_model: input.resolve_model !== undefined ? input.resolve_model : existing.resolve_model,
+      resolve_effort: input.resolve_effort !== undefined ? input.resolve_effort : existing.resolve_effort,
       permission_mode:
         input.permission_mode !== undefined
           ? input.permission_mode
@@ -393,33 +415,16 @@ export const missionControlDb = {
         input.resolve_tools !== undefined ? input.resolve_tools : existing.resolve_tools,
       tool_policy: input.tool_policy !== undefined ? input.tool_policy : existing.tool_policy,
       actions: input.actions !== undefined ? input.actions : existing.actions,
-      create_kanban_task:
-        input.create_kanban_task !== undefined
-          ? input.create_kanban_task
-          : existing.create_kanban_task,
-      kanban_assignee_provider:
-        input.kanban_assignee_provider !== undefined
-          ? input.kanban_assignee_provider
-          : existing.kanban_assignee_provider,
-      kanban_review_provider:
-        input.kanban_review_provider !== undefined
-          ? input.kanban_review_provider
-          : existing.kanban_review_provider,
-      kanban_mcp_tools:
-        input.kanban_mcp_tools !== undefined
-          ? input.kanban_mcp_tools
-          : existing.kanban_mcp_tools,
     };
 
     const db = getConnection();
     db.prepare(
       `UPDATE mc_sections SET
-        title = ?, icon = ?, sort_order = ?, enabled = ?, scope = ?, project_id = ?, work_project_id = ?,
-        mode = ?, schedule_cron = ?, provider = ?, model = ?, permission_mode = ?,
+        title = ?, icon = ?, sort_order = ?, enabled = ?, scope = ?, project_id = ?, work_project_id = ?, work_profile_json = ?,
+        mode = ?, schedule_cron = ?, provider = ?, model = ?, effort = ?,
+        resolve_provider = ?, resolve_model = ?, resolve_effort = ?, permission_mode = ?,
         dry_run = ?, auto_approve = ?, produce_prompt = ?, produce_tools_json = ?,
         resolve_prompt = ?, resolve_tools_json = ?, tool_policy_json = ?, actions_json = ?,
-        create_kanban_task = ?, kanban_assignee_provider = ?, kanban_review_provider = ?,
-        kanban_mcp_tools_json = ?,
         updated_at = ?
        WHERE section_id = ?`,
     ).run(
@@ -430,10 +435,15 @@ export const missionControlDb = {
       next.scope,
       next.project_id,
       next.work_project_id ?? null,
+      next.work_profile ? JSON.stringify(next.work_profile) : null,
       next.mode,
       next.schedule_cron,
       next.provider,
       next.model,
+      next.effort ?? null,
+      next.resolve_provider ?? null,
+      next.resolve_provider ? next.resolve_model ?? null : null,
+      next.resolve_provider ? next.resolve_effort ?? null : null,
       next.permission_mode,
       next.dry_run ? 1 : 0,
       next.auto_approve ? 1 : 0,
@@ -443,15 +453,12 @@ export const missionControlDb = {
       JSON.stringify(next.resolve_tools),
       JSON.stringify(next.tool_policy),
       JSON.stringify(next.actions),
-      next.create_kanban_task ? 1 : 0,
-      next.kanban_assignee_provider ?? null,
-      next.kanban_review_provider ?? null,
-      JSON.stringify(next.kanban_mcp_tools ?? []),
       nowIso(),
       sectionId,
     );
     const updated = this.getSection(sectionId);
     if (updated) {
+      recordSectionVersion(updated, 'edited');
       broadcastMissionControlSectionUpdated({
         sectionId: updated.section_id,
         lastRunAt: updated.last_run_at,
@@ -539,7 +546,7 @@ export const missionControlDb = {
     const db = getConnection();
     const row = db
       .prepare(
-        `SELECT COUNT(*) AS c FROM mc_items WHERE status IN ('pending', 'failed')`,
+        `SELECT COUNT(*) AS c FROM mc_items WHERE status IN ('pending', 'failed', 'awaiting_work', 'in_qa')`,
       )
       .get() as { c: number };
     return row?.c ?? 0;
@@ -561,7 +568,9 @@ export const missionControlDb = {
     recoverStaleResolvingItems();
     const rows = db.prepare(
       `SELECT s.section_id,
-          COALESCE(SUM(CASE WHEN i.status = 'pending' THEN 1 ELSE 0 END), 0) AS pending,
+          -- Waiting on a human: a decision, a manual Start work, or QA.
+          COALESCE(SUM(CASE WHEN i.status IN ('pending', 'in_qa')
+            OR (i.status = 'awaiting_work' AND json_extract(i.body_json, '$.workQueuedAt') IS NULL) THEN 1 ELSE 0 END), 0) AS pending,
           COALESCE(SUM(CASE WHEN i.status = 'failed' THEN 1 ELSE 0 END), 0) AS failed,
           COALESCE(SUM(CASE WHEN i.status = 'resolved' AND date(i.resolved_at) = date('now') THEN 1 ELSE 0 END), 0) AS resolved_today,
           s.last_run_at,
@@ -754,6 +763,7 @@ export const missionControlDb = {
       result?: Record<string, unknown> | null;
       error?: string | null;
       resolvedAt?: string | null;
+      workReadyAt?: string | null;
     },
   ): McItem {
     const existing = this.getItem(itemId);
@@ -773,11 +783,14 @@ export const missionControlDb = {
           ? ts
           : existing.resolved_at;
 
+    const workReadyAt =
+      patch && 'workReadyAt' in patch ? patch.workReadyAt : existing.work_ready_at;
+
     const db = getConnection();
     db.prepare(
       `UPDATE mc_items SET
         status = ?, body_json = ?, result_json = ?, error = ?,
-        resolved_at = ?, updated_at = ?
+        resolved_at = ?, work_ready_at = ?, updated_at = ?
        WHERE item_id = ?`,
     ).run(
       status,
@@ -785,6 +798,7 @@ export const missionControlDb = {
       result == null ? null : JSON.stringify(result),
       error ?? null,
       resolvedAt,
+      workReadyAt ?? null,
       ts,
       itemId,
     );

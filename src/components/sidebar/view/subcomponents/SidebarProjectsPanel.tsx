@@ -1,4 +1,5 @@
-import { ChevronLeft, ChevronRight, FolderPlus, Plus, RefreshCw, Search, X } from 'lucide-react';
+import { ChevronDown, ChevronLeft, ChevronRight, FolderPlus, Plus, RefreshCw, Search, X } from 'lucide-react';
+import { useState } from 'react';
 import type { TFunction } from 'i18next';
 
 import { Button, Input, ScrollArea, Tooltip } from '../../../../shared/view/ui';
@@ -27,6 +28,7 @@ type SidebarProjectsPanelProps = {
   selectedProjectName?: string | null;
   /** User-resizable desktop width; when omitted, the legacy fixed width applies. */
   panelWidth?: number;
+  bottomSections?: React.ReactNode;
   children: React.ReactNode;
   t: TFunction;
 };
@@ -84,10 +86,12 @@ export default function SidebarProjectsPanel({
   onToggleCollapse,
   selectedProjectName = null,
   panelWidth,
+  bottomSections,
   children,
   t,
 }: SidebarProjectsPanelProps) {
   const { isScrolling, onScroll } = useScrollPointerLock();
+  const [projectsExpanded, setProjectsExpanded] = useState(true);
   const showSearch =
     (projectsCount > 0 || runningSessionsCount > 0 || archivedSessionsCount > 0 || isArchivedSessionsLoading) &&
     !isLoading;
@@ -141,22 +145,18 @@ export default function SidebarProjectsPanel({
       className={cn('flex h-full flex-col border-r border-border/50 bg-card/40', !panelWidth && 'w-64 md:w-72')}
       style={panelWidth ? { width: `${panelWidth}px`, flexShrink: 0 } : undefined}
     >
-      <div className="flex flex-shrink-0 items-center justify-between gap-1 px-2 pb-2 pt-2.5 md:px-2.5">
+      <div className="flex flex-shrink-0 items-center justify-between gap-1 border-b border-border/60 px-2 py-1.5 md:px-2.5">
         {onToggleCollapse ? (
-          <button
-            type="button"
-            onClick={onToggleCollapse}
-            className="group flex min-w-0 flex-1 items-center gap-1.5 rounded-lg px-1.5 py-1.5 text-left transition-colors hover:bg-accent/70"
-            title={t('tooltips.collapseProjectsPanel', { defaultValue: 'Collapse projects' })}
-            aria-label={t('tooltips.collapseProjectsPanel', { defaultValue: 'Collapse projects' })}
-            aria-expanded={true}
-          >
-            <ChevronLeft className="hidden h-3.5 w-3.5 flex-shrink-0 text-muted-foreground transition-transform group-hover:-translate-x-0.5 md:block" />
-            <h2 className="truncate text-sm font-semibold text-foreground">{title}</h2>
+          <button type="button" onClick={onToggleCollapse} className="hidden h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground md:flex" title={t('tooltips.collapseProjectsPanel', { defaultValue: 'Collapse sidebar' })} aria-label={t('tooltips.collapseProjectsPanel', { defaultValue: 'Collapse sidebar' })}>
+            <ChevronLeft className="h-3.5 w-3.5" />
           </button>
         ) : (
-          <h2 className="truncate px-1.5 text-sm font-semibold text-foreground">{title}</h2>
+          null
         )}
+        <button type="button" onClick={() => setProjectsExpanded((value) => !value)} className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-1.5 py-1.5 text-left hover:bg-accent/70" aria-expanded={projectsExpanded}>
+          <ChevronDown className={cn('h-3.5 w-3.5 flex-shrink-0 text-muted-foreground transition-transform', !projectsExpanded && '-rotate-90')} />
+          <h2 className="truncate text-xs font-semibold uppercase tracking-wide text-foreground">{title}</h2>
+        </button>
         <div className="flex flex-shrink-0 items-center gap-0.5">
           <Button
             variant="ghost"
@@ -189,7 +189,7 @@ export default function SidebarProjectsPanel({
         </div>
       </div>
 
-      {showSearch && (
+      {projectsExpanded && showSearch && (
         <div className="px-3 pb-2">
           <div className="relative">
             <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground/50" />
@@ -222,14 +222,15 @@ export default function SidebarProjectsPanel({
         </div>
       )}
 
-      <ScrollArea
-        className="flex-1 overflow-y-auto overscroll-contain px-1.5 py-1"
+      {projectsExpanded ? <ScrollArea
+        className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-1.5 py-1"
         onScroll={onScroll}
       >
         <div className={cn(isScrolling && 'pointer-events-none')}>
           {children}
         </div>
-      </ScrollArea>
+      </ScrollArea> : null}
+      {bottomSections}
     </div>
   );
 }

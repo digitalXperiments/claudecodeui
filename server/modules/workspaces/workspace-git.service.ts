@@ -8,6 +8,7 @@
  */
 
 import { spawnSync } from 'node:child_process';
+import { realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { realpath, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
@@ -153,13 +154,35 @@ export async function isGitRepo(projectPath: string): Promise<boolean> {
   return (await repositoryRoot(projectPath)) !== null;
 }
 
-/** Resolve the repository root containing a path, including nested projects. */
+/**
+ * Git-style (forward-slash) path of `projectPath` below `toplevel`, or null
+ * when it is not strictly below it.
+ */
+function nestedTreePath(toplevel: string, projectPath: string): string | null {
+  const relative = path.relative(toplevel, projectPath);
+  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) return null;
+  return relative.split(path.sep).join('/');
+}
+
+/**
+ * Resolve the repository root containing a path, including nested projects.
+ * A nested project only counts when its directory is committed in HEAD: a
+ * worktree checks out HEAD, so an ignored or never-committed directory (e.g.
+ * scratch space under `tmp/`) would be missing from its own worktree. Those
+ * are treated as plain projects instead.
+ */
 export async function repositoryRoot(projectPath: string): Promise<string | null> {
   const result = await runGit(projectPath, ['rev-parse', '--show-toplevel']);
   if (result.code !== 0) {
     return null;
   }
-  return canonicalPath(result.stdout.trim());
+  const toplevel = await canonicalPath(result.stdout.trim());
+  const treePath = nestedTreePath(toplevel, await canonicalPath(projectPath));
+  if (treePath === null) {
+    return toplevel;
+  }
+  const tree = await runGit(toplevel, ['cat-file', '-t', `HEAD:${treePath}`]);
+  return tree.code === 0 && tree.stdout.trim() === 'tree' ? toplevel : null;
 }
 
 /** Synchronous counterpart used by the resolveCwd API, whose contract is sync. */
@@ -172,7 +195,15 @@ export function repositoryRootSync(projectPath: string): string | null {
     });
     if (result.status !== 0) return null;
     const root = String(result.stdout ?? '').trim();
-    return root ? path.resolve(root) : null;
+    if (!root) return null;
+    const treePath = nestedTreePath(realpathSync(root), realpathSync(projectPath));
+    if (treePath === null) return path.resolve(root);
+    const tree = spawnSync('git', ['cat-file', '-t', `HEAD:${treePath}`], {
+      cwd: root,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    return tree.status === 0 && String(tree.stdout ?? '').trim() === 'tree' ? path.resolve(root) : null;
   } catch {
     return null;
   }
@@ -271,9 +302,9 @@ export async function resolveGitPath(cwd: string, gitPath: string): Promise<stri
   const result = await runGit(cwd, ['rev-parse', '--git-path', gitPath]);
   if (result.code !== 0 || !result.stdout.trim()) return null;
   const resolved = result.stdout.trim();
-  if (path.isAbsolute(resolved)) return resolved;
-  const root = (await repositoryRoot(cwd)) ?? cwd;
-  return path.resolve(root, resolved);
+  // git prints relative --git-path results relative to the cwd (for a nested
+  // project that is `../../.git/...`), not to the repository root.
+  return path.isAbsolute(resolved) ? resolved : path.resolve(cwd, resolved);
 }
 
 /** `git worktree add -b <branch> <rootPath> <base>` — creates branch + worktree. */
@@ -588,4 +619,67 @@ export async function mergeBranch(
 
 export async function mergeAbort(primaryPath: string): Promise<GitResult> {
   return runGit(primaryPath, ['merge', '--abort']);
+}
+
+/**
+ * Files changed between two commits (no working tree), renames split into
+ * delete + add so every path can be applied independently.
+ */
+export async function committedChanges(
+  cwd: string,
+  fromRef: string,
+  toRef: string,
+  pathspec?: string,
+): Promise<{ path: string; status: 'added' | 'modified' | 'deleted' }[]> {
+  const result = await runGit(cwd, [
+    'diff', '--name-status', '--no-renames', '-z', fromRef, toRef, ...(pathspec ? ['--', pathspec] : []),
+  ], { maxOutputBytes: 32 * 1024 * 1024 });
+  if (result.code !== 0) {
+    throw new Error(`git diff ${fromRef}..${toRef} failed: ${result.stderr.trim().slice(0, 300)}`);
+  }
+  const tokens = result.stdout.split('\0').filter((token) => token.length > 0);
+  const files: { path: string; status: 'added' | 'modified' | 'deleted' }[] = [];
+  for (let index = 0; index + 1 < tokens.length; index += 2) {
+    const code = tokens[index].charAt(0);
+    files.push({ path: tokens[index + 1], status: code === 'A' ? 'added' : code === 'D' ? 'deleted' : 'modified' });
+  }
+  return files;
+}
+
+/** Binary-safe blob read (`<rev>:<path>`), or null when it does not exist there. */
+export function readBlob(cwd: string, rev: string, repoPath: string): Buffer | null {
+  const result = spawnSync('git', ['cat-file', 'blob', `${rev}:${repoPath}`], {
+    cwd,
+    maxBuffer: 256 * 1024 * 1024,
+    stdio: ['ignore', 'pipe', 'ignore'],
+  });
+  return result.status === 0 && Buffer.isBuffer(result.stdout) ? result.stdout : null;
+}
+
+/**
+ * Three-way text merge of `ours` with the change `base → theirs`. Returns the
+ * merged bytes, or null on conflict or binary input (no conflict markers are
+ * ever written into a user's checkout).
+ */
+export function mergeFileContents(
+  scratchDir: string,
+  ours: Buffer,
+  base: Buffer,
+  theirs: Buffer,
+): Buffer | null {
+  if ([ours, base, theirs].some((buffer) => buffer.includes(0))) return null;
+  const stamp = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const files = ['ours', 'base', 'theirs'].map((name) => path.join(scratchDir, `merge-${stamp}.${name}`));
+  try {
+    writeFileSync(files[0], ours);
+    writeFileSync(files[1], base);
+    writeFileSync(files[2], theirs);
+    const result = spawnSync('git', ['merge-file', '-p', '-q', files[0], files[1], files[2]], {
+      maxBuffer: 256 * 1024 * 1024,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    return result.status === 0 && Buffer.isBuffer(result.stdout) ? result.stdout : null;
+  } finally {
+    for (const file of files) rmSync(file, { force: true });
+  }
 }

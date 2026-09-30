@@ -8,8 +8,22 @@ import type { AnyRecord, FetchHistoryOptions, FetchHistoryResult, NormalizedMess
 import { parseImagesInputTag } from '@/shared/image-attachments.js';
 import { createNormalizedMessage, generateMessageId, readObjectRecord, sliceTailPage } from '@/shared/utils.js';
 import { sessionsDb } from '@/modules/database/index.js';
+import { createIncrementalJsonlReader } from '@/modules/providers/shared/jsonl/incremental-jsonl.js';
 
 const PROVIDER = 'claude';
+
+/**
+ * Parsed transcript lines per JSONL path. A live session's transcript only
+ * grows, so after the first read each history request parses just the bytes
+ * appended since the previous one (truncation/rewrite falls back to a full
+ * parse — see incremental-jsonl.ts).
+ */
+const transcriptReader = createIncrementalJsonlReader({ maxEntries: 6, maxTotalBytes: 128 * 1024 * 1024 });
+
+/** Test-only: forget cached transcript parses. */
+export function clearClaudeTranscriptCache(): void {
+  transcriptReader.clear();
+}
 
 type ClaudeToolResult = {
   content: unknown;
@@ -118,30 +132,14 @@ async function getSessionMessages(
     }
 
     const projectDir = path.dirname(jsonLPath);
-    const files = await fsp.readdir(projectDir);
-    const agentFiles = files.filter((file) => file.endsWith('.jsonl') && file.startsWith('agent-'));
 
     const messages: AnyRecord[] = [];
     const agentToolsCache = new Map<string, AnyRecord[]>();
 
-    const fileStream = fs.createReadStream(jsonLPath);
-    const rl = readline.createInterface({
-      input: fileStream,
-      crlfDelay: Infinity,
-    });
-
-    for await (const line of rl) {
-      if (!line.trim()) {
-        continue;
-      }
-
-      try {
-        const entry = JSON.parse(line) as AnyRecord;
-        if (entry.sessionId === providerSessionId) {
-          messages.push(entry);
-        }
-      } catch {
-        // Skip malformed JSONL lines that can happen during concurrent writes.
+    const { entries } = await transcriptReader.read(jsonLPath);
+    for (const entry of entries) {
+      if (entry && typeof entry === 'object' && (entry as AnyRecord).sessionId === providerSessionId) {
+        messages.push(entry as AnyRecord);
       }
     }
 
@@ -153,18 +151,26 @@ async function getSessionMessages(
       }
     }
 
-    for (const agentId of agentIds) {
-      const agentFileName = `agent-${agentId}.jsonl`;
-      if (!agentFiles.includes(agentFileName)) {
-        continue;
-      }
+    if (agentIds.size > 0) {
+      // Only list the project directory when the transcript references
+      // subagents — it can hold thousands of sibling transcripts.
+      const files = await fsp.readdir(projectDir);
+      const agentFiles = new Set(files.filter((file) => file.endsWith('.jsonl') && file.startsWith('agent-')));
 
-      const agentFilePath = path.join(projectDir, agentFileName);
-      const tools = await parseAgentTools(agentFilePath);
-      agentToolsCache.set(agentId, tools);
+      for (const agentId of agentIds) {
+        const agentFileName = `agent-${agentId}.jsonl`;
+        if (!agentFiles.has(agentFileName)) {
+          continue;
+        }
+
+        const agentFilePath = path.join(projectDir, agentFileName);
+        const tools = await parseAgentTools(agentFilePath);
+        agentToolsCache.set(agentId, tools);
+      }
     }
 
-    for (const message of messages) {
+    for (let index = 0; index < messages.length; index += 1) {
+      const message = messages[index];
       const agentId = message.toolUseResult?.agentId;
       if (!agentId) {
         continue;
@@ -172,13 +178,17 @@ async function getSessionMessages(
 
       const agentTools = agentToolsCache.get(String(agentId));
       if (agentTools && agentTools.length > 0) {
-        message.subagentTools = agentTools;
+        // Copy instead of mutating: entries are shared with the parse cache.
+        messages[index] = { ...message, subagentTools: agentTools };
       }
     }
 
-    const sortedMessages = messages.sort(
-      (a, b) => new Date(a.timestamp || 0).getTime() - new Date(b.timestamp || 0).getTime(),
-    );
+    // Parse each timestamp once (not twice per comparison). Same key and
+    // comparator as before, so the stable sort order is unchanged.
+    const sortedMessages = messages
+      .map((message) => ({ message, time: new Date(message.timestamp || 0).getTime() }))
+      .sort((a, b) => a.time - b.time)
+      .map(({ message }) => message);
     const total = sortedMessages.length;
 
     if (limit === null) {
@@ -648,12 +658,10 @@ export class ClaudeSessionsProvider implements IProviderSessions {
       }
     }
 
-    let total = 0;
-    for (const msg of normalized) {
-      if (msg.kind !== 'tool_result') {
-        total += 1;
-      }
-    }
+    // `total` counts exactly the rows `offset`/`limit` slice over. Excluding
+    // tool_result rows here made clients' offset (which includes them) run
+    // ahead of total, skewing "N of M", hasMore, and tail-bridge planning.
+    const total = normalized.length;
     const normalizedOffset = Math.max(0, offset);
     const normalizedLimit = limit === null ? null : Math.max(0, limit);
     const { page, hasMore } = sliceTailPage(normalized, normalizedLimit, normalizedOffset);

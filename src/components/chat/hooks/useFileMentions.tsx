@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Dispatch, KeyboardEvent, RefObject, SetStateAction } from 'react';
 
 import { api } from '../../../utils/api';
+import { runAfterSessionPaint } from '../../../utils/sessionPaintGate';
 import { escapeRegExp } from '../utils/chatFormatting';
 import type { Project } from '../../../types/app';
 
@@ -56,16 +57,47 @@ export function useFileMentions({ selectedProject, input, setInput, textareaRef 
   const [cursorPosition, setCursorPosition] = useState(0);
   const [atSymbolPosition, setAtSymbolPosition] = useState(-1);
 
+  // The file list only feeds the "@" dropdown, and building it walks the
+  // project tree server-side (~1 s on big repos). Load it when the composer
+  // gains focus (after the transcript has painted) or immediately on the
+  // first "@", instead of on every session open.
+  const mentionProjectId = selectedProject?.projectId ?? null;
+  const [requestedFilesProjectId, setRequestedFilesProjectId] = useState<string | null>(null);
+  const mentionProjectIdRef = useRef(mentionProjectId);
+  mentionProjectIdRef.current = mentionProjectId;
+  const requestFilesNow = useCallback(() => {
+    const projectId = mentionProjectIdRef.current;
+    if (projectId) setRequestedFilesProjectId((current) => (current === projectId ? current : projectId));
+  }, []);
+
+  useEffect(() => {
+    if (!mentionProjectId || typeof document === 'undefined') return undefined;
+    let cancelDeferred: (() => void) | null = null;
+    const prefetchOnFocus = () => {
+      cancelDeferred?.();
+      cancelDeferred = runAfterSessionPaint(requestFilesNow);
+    };
+    const handleFocusIn = (event: FocusEvent) => {
+      if (textareaRef.current && event.target === textareaRef.current) prefetchOnFocus();
+    };
+    if (textareaRef.current && document.activeElement === textareaRef.current) prefetchOnFocus();
+    document.addEventListener('focusin', handleFocusIn);
+    return () => {
+      document.removeEventListener('focusin', handleFocusIn);
+      cancelDeferred?.();
+    };
+  }, [mentionProjectId, requestFilesNow, textareaRef]);
+
   useEffect(() => {
     const abortController = new AbortController();
 
     const fetchProjectFiles = async () => {
       // File list is keyed by DB projectId now; the backend resolves it to
       // the project's path before reading.
-      const projectId = selectedProject?.projectId;
+      const projectId = mentionProjectId;
       setFileList([]);
       setFilteredFiles([]);
-      if (!projectId) {
+      if (!projectId || requestedFilesProjectId !== projectId) {
         return;
       }
 
@@ -91,7 +123,7 @@ export function useFileMentions({ selectedProject, input, setInput, textareaRef 
     return () => {
       abortController.abort();
     };
-  }, [selectedProject?.projectId]);
+  }, [mentionProjectId, requestedFilesProjectId]);
 
   useEffect(() => {
     const textBeforeCursor = input.slice(0, cursorPosition);
@@ -102,6 +134,9 @@ export function useFileMentions({ selectedProject, input, setInput, textareaRef 
       setAtSymbolPosition(-1);
       return;
     }
+
+    // First "@" typed before the focus prefetch ran: load now.
+    requestFilesNow();
 
     const textAfterAt = textBeforeCursor.slice(lastAtIndex + 1);
     if (textAfterAt.includes(' ')) {
@@ -123,7 +158,7 @@ export function useFileMentions({ selectedProject, input, setInput, textareaRef 
       .slice(0, 10);
 
     setFilteredFiles(matchingFiles);
-  }, [input, cursorPosition, fileList]);
+  }, [input, cursorPosition, fileList, requestFilesNow]);
 
   const activeFileMentions = useMemo(() => {
     if (!input || fileMentions.length === 0) {

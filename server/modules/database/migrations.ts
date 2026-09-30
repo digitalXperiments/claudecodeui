@@ -2,6 +2,7 @@ import { Database } from 'better-sqlite3';
 
 import {
   AGENT_RUN_PROFILES_TABLE_SCHEMA_SQL,
+  AGENT_RELAY_DELIVERY_SCHEMA_SQL,
   APP_CONFIG_TABLE_SCHEMA_SQL,
   CATEGORIES_TABLE_SCHEMA_SQL,
   CONTEXT_PACKS_TABLE_SCHEMA_SQL,
@@ -718,6 +719,65 @@ const ensureMissionControlWorkProjectSchema = (db: Database): void => {
   const columns = getTableInfo(db, 'mc_sections').map((column) => column.name);
   addColumnToTableIfNotExists(db, 'mc_sections', columns, 'work_project_id', 'TEXT');
   db.exec('CREATE INDEX IF NOT EXISTS idx_mc_sections_work_project ON mc_sections(work_project_id)');
+  addColumnToTableIfNotExists(db, 'mc_sections', columns, 'work_profile_json', 'TEXT');
+  // Per-stage agents: Propose effort, and an optional separate Resolve agent.
+  for (const column of ['effort', 'resolve_provider', 'resolve_model', 'resolve_effort']) {
+    addColumnToTableIfNotExists(db, 'mc_sections', getTableInfo(db, 'mc_sections').map((entry) => entry.name), column, 'TEXT');
+  }
+  // Bot edits and produce prompts already depend on these operator tables.
+  db.exec(`CREATE TABLE IF NOT EXISTS mc_section_versions (
+    section_id TEXT NOT NULL REFERENCES mc_sections(section_id) ON DELETE CASCADE,
+    version INTEGER NOT NULL, snapshot_json TEXT NOT NULL, origin TEXT NOT NULL,
+    created_at TEXT NOT NULL, PRIMARY KEY (section_id, version)
+  );
+  CREATE TABLE IF NOT EXISTS mc_bot_memories (
+    memory_id TEXT PRIMARY KEY, section_id TEXT NOT NULL REFERENCES mc_sections(section_id) ON DELETE CASCADE,
+    content TEXT NOT NULL, status TEXT NOT NULL, source_item_id TEXT,
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+  )`);
+
+  // Keep dispatch identities even if an inbox item is deleted and re-ingested.
+  db.exec(`CREATE TABLE IF NOT EXISTS mc_work_dispatches (
+    section_id TEXT NOT NULL REFERENCES mc_sections(section_id) ON DELETE CASCADE,
+    source_key TEXT NOT NULL,
+    item_id TEXT NOT NULL,
+    session_id TEXT,
+    project_id TEXT NOT NULL,
+    model TEXT NOT NULL,
+    status TEXT NOT NULL,
+    error TEXT,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (section_id, source_key)
+  )`);
+
+  ensureMissionControlPipelineSchema(db);
+};
+
+/**
+ * Bots run one pipeline (propose → resolve → work) instead of review /
+ * fire_and_forget modes. One-time conversion, keyed on adding
+ * `mc_items.work_ready_at`:
+ * - fire_and_forget sections without a work profile only logged output, so
+ *   they become record-only (auto-approve, no resolve prompt effect).
+ * - items of work-profile sections without a resolve prompt that are still
+ *   pending were waiting for work, so they move to awaiting_work.
+ */
+const ensureMissionControlPipelineSchema = (db: Database): void => {
+  if (!tableExists(db, 'mc_items') || !tableExists(db, 'mc_sections')) return;
+  const itemColumns = getTableInfo(db, 'mc_items').map((column) => column.name);
+  if (itemColumns.includes('work_ready_at')) return;
+  console.log('Running migration: converting Mission Control sections to the single pipeline');
+  db.transaction(() => {
+    db.exec('ALTER TABLE mc_items ADD COLUMN work_ready_at TEXT');
+    db.exec(`UPDATE mc_sections SET auto_approve = 1
+      WHERE mode = 'fire_and_forget' AND (work_profile_json IS NULL OR work_profile_json = '')`);
+    db.exec(`UPDATE mc_items SET status = 'awaiting_work', work_ready_at = COALESCE(updated_at, created_at)
+      WHERE status = 'pending' AND section_id IN (
+        SELECT section_id FROM mc_sections
+        WHERE work_profile_json IS NOT NULL AND work_profile_json <> '' AND TRIM(COALESCE(resolve_prompt, '')) = ''
+      )`);
+    db.exec(`UPDATE mc_sections SET mode = 'review' WHERE mode = 'fire_and_forget'`);
+  })();
 };
 
 /** Remove tables from the never-shipped standalone Bot Studio prototype. */
@@ -886,6 +946,14 @@ const ensureAutomationGraphSchema = (db: Database): void => {
 
 /** Additive Relay execution metadata introduced after the initial table ship. */
 const ensureAgentRelaySchema = (db: Database): void => {
+  if (tableExists(db, 'agent_workspaces')) {
+    // Relay workspaces commit the primary's uncommitted state as a snapshot
+    // (landing applies only what comes after it) and may start from a
+    // predecessor's tip (stacked pipelines; diffs show only this stage).
+    const workspaceColumns = getTableInfo(db, 'agent_workspaces').map((column) => column.name);
+    addColumnToTableIfNotExists(db, 'agent_workspaces', workspaceColumns, 'snapshot_sha', 'TEXT');
+    addColumnToTableIfNotExists(db, 'agent_workspaces', workspaceColumns, 'start_sha', 'TEXT');
+  }
   if (!tableExists(db, 'agent_relay_jobs')) return;
   const columnNames = getTableInfo(db, 'agent_relay_jobs').map((column) => column.name);
   addColumnToTableIfNotExists(db, 'agent_relay_jobs', columnNames, 'effort', 'TEXT');
@@ -914,6 +982,11 @@ const ensureAgentRelaySchema = (db: Database): void => {
   // A lead follow-up sent while the job was non-terminal that could not be
   // injected into a live provider turn; delivered on the job's next attempt.
   addColumnToTableIfNotExists(db, 'agent_relay_jobs', columnNames, 'pending_follow_up', 'TEXT');
+
+  // Worker actions the envelope refused, returned to the lead as deniedActions.
+  addColumnToTableIfNotExists(db, 'agent_relay_jobs', columnNames, 'denied_actions_json', 'TEXT');
+  // Provider failovers taken after quota/auth/launch failures (bounded ledger).
+  addColumnToTableIfNotExists(db, 'agent_relay_jobs', columnNames, 'failover_json', 'TEXT');
 
   // Relays are scoped to the lead session that dispatched them, so the panel
   // and the MCP surface can stop showing every session's workers everywhere.
@@ -1099,6 +1172,7 @@ export const runMigrations = (db: Database) => {
     db.exec(RUN_SPINE_SCHEMA_SQL);
     backfillSessionRuntimePreferences(db);
     ensureAgentRelaySchema(db);
+    db.exec(AGENT_RELAY_DELIVERY_SCHEMA_SQL);
     db.exec(CONTEXT_PACKS_TABLE_SCHEMA_SQL);
     db.exec(AUTOMATION_TABLE_SCHEMA_SQL);
     db.exec(FAILOVER_PLAYBOOKS_TABLE_SCHEMA_SQL);

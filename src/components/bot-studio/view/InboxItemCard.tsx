@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
-import { Eye, ExternalLink, Lock, MessageSquare, RefreshCw, Send } from 'lucide-react';
+import { Check, CornerUpLeft, Eye, ExternalLink, MessageSquare, Play, RefreshCw, Send, SquareArrowOutUpRight } from 'lucide-react';
 
 import type { McItem } from '../../mission-control/api/missionControlApi';
 import ArticleDraftCard from '../../mission-control/view/subcomponents/ArticleDraftCard';
 import { getActionSemantics } from '../../mission-control/utils/actionSemantics';
 import { isXArticleBody } from '../../mission-control/utils/xArticle';
-import { formatAge, isInboxActionLocked, itemHasDraft } from '../types';
+import { formatAge, isInboxActionLocked, itemAcceptsActions, itemFailedInWork, itemHasDraft, itemWorkSession } from '../types';
 import StatusPill from '../ui/StatusPill';
 import BotIcon from '../ui/BotIcon';
 import { Button } from '../../../shared/view/ui';
@@ -33,17 +33,25 @@ function draftText(item: McItem): string | null {
   return typeof draft === 'string' && draft.trim() ? draft.trim() : null;
 }
 
-export default function InboxItemCard({ item, bot, selected, checked, onSelect, onCheck, onAction, onPreview, onRetry, onWork, onGenerateAssets }: InboxItemCardProps) {
+const WORK_STATUSES: ReadonlyArray<InboxItemCardProps['item']['status']> = ['awaiting_work', 'working', 'in_qa'];
+
+export default function InboxItemCard({ item, bot, selected, checked, onSelect, onCheck, onAction, onPreview, onRetry, onWork, onStartWork, onAcceptWork, onRetryWork, onSendBack, onGenerateAssets }: InboxItemCardProps) {
   const cardRef = useRef<HTMLElement>(null);
   const [leaving, setLeaving] = useState(false);
-  const actionable = item.status === 'pending' || item.status === 'failed';
+  const actionable = itemAcceptsActions(item);
+  const failedInWork = itemFailedInWork(item);
+  const workSession = itemWorkSession(item);
+  const inWorkStage = WORK_STATUSES.includes(item.status) || failedInWork;
+  // Bots with a work profile use the Work stage; the legacy work chat stays for the rest.
+  const usesWork = Boolean(bot?.work_profile) || inWorkStage;
+  const dismissAction = item.actions.find((action) => action.kind === 'dismiss');
   const draft = draftText(item);
   const originalUrl = sourceUrl(item);
   const contentPreview = getItemContentPreview(item);
   const previewAction = item.actions.find((action) => action.kind === 'approve' && action.terminal !== false)
     ?? item.actions.find((action) => action.kind !== 'work')
     ?? item.actions[0];
-  const previewable = item.status !== 'resolving' && item.status !== 'expired';
+  const previewable = item.status !== 'resolving' && item.status !== 'expired' && !inWorkStage;
 
   useEffect(() => {
     if (!selected || !cardRef.current) return;
@@ -102,13 +110,19 @@ export default function InboxItemCard({ item, bot, selected, checked, onSelect, 
       <div className="mt-3 flex flex-wrap items-center gap-1.5" onClick={(event) => event.stopPropagation()}>
         {actionable ? item.actions.filter((action) => action.kind !== 'work').map((action) => {
           const semantics = getActionSemantics(action, item.title, { hasDraft: itemHasDraft(item) });
-          const locked = isInboxActionLocked(item, bot, action);
+          const locked = isInboxActionLocked(item);
           const variant = action.kind === 'approve' ? 'default' : action.kind === 'dismiss' ? 'ghost' : 'outline';
-          return <Button key={action.id} size="sm" variant={variant} disabled={item.status === 'resolving' || locked} onClick={() => runAction(action)} title={locked ? 'Held in Propose mode: review before sending' : semantics.detail}>{locked ? <Lock className="h-3 w-3" /> : action.kind === 'approve' ? <Send className="h-3 w-3" /> : null}{semantics.label}</Button>;
+          return <Button key={action.id} size="sm" variant={variant} disabled={locked} onClick={() => runAction(action)} title={semantics.detail}>{action.kind === 'approve' ? <Send className="h-3 w-3" /> : null}{semantics.label}</Button>;
         }) : null}
-        <Button size="sm" variant="ghost" disabled={!previewable || !previewAction} onClick={() => previewAction && onPreview(item, previewAction)} title={previewable ? 'Preview the selected action without executing it' : 'Preview is unavailable while this item is resolving'}><Eye className="h-3 w-3" />Preview</Button>
-        {item.status === 'failed' ? <Button size="sm" variant="ghost" onClick={() => onRetry(item)}><RefreshCw className="h-3 w-3" />Retry</Button> : null}
-        <Button size="sm" variant="ghost" disabled={!actionable} onClick={() => onWork(item)} title={actionable ? "Open a project-scoped work chat with this item's brief" : 'Work chat is available for pending or failed items'}><MessageSquare className="h-3 w-3" />Open work chat</Button>
+        {item.status === 'awaiting_work' || (failedInWork && !workSession) ? <Button size="sm" onClick={() => onStartWork(item)} title="Start a work session for this item"><Play className="h-3 w-3" />Start work</Button> : null}
+        {item.status === 'in_qa' ? <Button size="sm" onClick={() => { setLeaving(true); onAcceptWork(item); }} title="Accept the work session's result and mark the item done"><Check className="h-3 w-3" />Accept</Button> : null}
+        {item.status === 'in_qa' ? <Button size="sm" variant="outline" onClick={() => onSendBack(item)} title="Write feedback for the same work session"><CornerUpLeft className="h-3 w-3" />Send back</Button> : null}
+        {failedInWork && workSession ? <Button size="sm" variant="outline" onClick={() => onRetryWork(item)} title="Ask the same work session to diagnose the failure and continue"><RefreshCw className="h-3 w-3" />Retry work</Button> : null}
+        {inWorkStage && item.status !== 'working' && dismissAction ? <Button size="sm" variant="ghost" onClick={() => runAction(dismissAction)} title="Close this item without accepting the work">Dismiss</Button> : null}
+        {usesWork && workSession ? <Button size="sm" variant="ghost" onClick={() => onWork(item)} title="Open the work session"><SquareArrowOutUpRight className="h-3 w-3" />Open session</Button> : null}
+        {inWorkStage ? null : <Button size="sm" variant="ghost" disabled={!previewable || !previewAction} onClick={() => previewAction && onPreview(item, previewAction)} title={previewable ? 'Preview the selected action without executing it' : 'Preview is unavailable while this item is resolving'}><Eye className="h-3 w-3" />Preview</Button>}
+        {item.status === 'failed' && !failedInWork ? <Button size="sm" variant="ghost" onClick={() => onRetry(item)}><RefreshCw className="h-3 w-3" />Retry</Button> : null}
+        {usesWork ? null : <Button size="sm" variant="ghost" disabled={!actionable && !item.body.workSession} onClick={() => onWork(item)} title={actionable ? "Open a project-scoped work chat with this item's brief" : 'Work chat is available for pending or failed items'}><MessageSquare className="h-3 w-3" />Open work chat</Button>}
       </div>
     </article>
   );

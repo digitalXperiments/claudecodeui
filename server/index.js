@@ -5,25 +5,27 @@ import fs, { promises as fsPromises } from 'fs';
 import path from 'path';
 import os from 'os';
 import http from 'http';
+import zlib from 'zlib';
 
 // cross-spawn is a drop-in for child_process.spawn that resolves .cmd
 // shims/PATHEXT on Windows and delegates to the native spawn elsewhere.
 import spawn from 'cross-spawn';
 import express from 'express';
 import helmet from 'helmet';
+import compression from 'compression';
 import cors from 'cors';
 import mime from 'mime-types';
 import Database from 'better-sqlite3';
 
 import { AppError, FORBIDDEN_WORKSPACE_PATHS, WORKSPACES_ROOT, getOpenCodeDatabasePath, normalizeProjectPath, validateWorkspacePath } from '@/shared/utils.js';
 import {
-    closeSessionsWatcher,
     initializeSessionsWatcher,
+    configureLivePermissionModes,
     configureSkillTestRuntimes,
     configureMemoryCurationRuntimes,
     mcpCatalogService,
 } from '@/modules/providers/index.js';
-import { createWebSocketServer, shellSessionRegistry, configureProviderAbortFns } from '@/modules/websocket/index.js';
+import { createWebSocketServer, shellSessionRegistry, releaseAgentShellSession, configureProviderAbortFns } from '@/modules/websocket/index.js';
 
 import {
     interruptsRoutes,
@@ -38,10 +40,14 @@ import { findAppRoot, getModuleDir } from './utils/runtime-paths.js';
 import { createGitignoreEntryFilter } from './utils/gitignore.js';
 import {
     queryClaudeSDK,
+    updateClaudePermissionMode,
     injectClaudeMessage,
     abortClaudeSDKSession,
     resolveToolApproval,
     getPendingApprovalsForSession,
+    closeAllWarmClaudeSessions,
+    releaseWarmClaudeSession,
+    prewarmClaudeSession,
 } from './claude-sdk.js';
 import {
     spawnCursor,
@@ -50,6 +56,7 @@ import {
 import {
     spawnGrok,
     abortGrokSession,
+    updateGrokPermissionMode,
 } from './grok-cli.js';
 import {
     spawnKimi,
@@ -69,6 +76,9 @@ import {
 import {
     queryCodex,
     abortCodexSession,
+    injectCodexMessage,
+    closeAllWarmCodexSessions,
+    releaseWarmCodexSession,
 } from './openai-codex.js';
 import { buildCodexTokenUsage } from './modules/providers/list/codex/codex-token-usage.js';
 import {
@@ -83,6 +93,7 @@ import {
 import { findOmpSessionFile } from './modules/providers/list/omp/omp-sessions.provider.js';
 import {
     spawnOpenCode,
+    updateAcpPermissionMode,
     spawnKilo,
     spawnCline,
     spawnQwenCode,
@@ -201,8 +212,8 @@ import {
 import { browserUseService } from './modules/browser-use/browser-use.service.js';
 import { configureBackupRuntime, stopBackupScheduler } from './modules/backups/index.js';
 import { startEnabledPluginServers, stopAllPlugins, getPluginPort } from './utils/plugin-process-manager.js';
-import { initializeDatabase, projectsDb, sessionsDb } from './modules/database/index.js';
-import { syncGrokShellSession } from './modules/providers/list/grok/grok-shell-sync.js';
+import { getConnection, initializeDatabase, projectsDb, sessionsDb } from './modules/database/index.js';
+import { syncShellSessionForProvider } from './modules/providers/services/shell-session-sync.service.js';
 import {
     broadcastCanonicalSessionUpsert,
     chatRunRegistry,
@@ -255,6 +266,14 @@ const server = http.createServer(app);
 
 // Provider runtimes, shared between the chat websocket server and the kanban
 // task runner so both dispatch through one provider-keyed map.
+configureLivePermissionModes({
+    claude: updateClaudePermissionMode,
+    grok: updateGrokPermissionMode,
+    ...Object.fromEntries(['opencode', 'kilo', 'cline', 'qwencode', 'antigravity'].map((provider) => [
+        provider, (sessionId, mode, appSessionId) => updateAcpPermissionMode(provider, sessionId, mode, appSessionId),
+    ])),
+});
+
 const providerSpawnFns = {
     claude: queryClaudeSDK,
     cursor: spawnCursor,
@@ -348,32 +367,38 @@ void mcpCatalogService.upsert({
 });
 
 // Shell must not resume a provider-native session while Chatbar is still
-// using it. Register before checking isProcessing again so an already-finished
-// run cannot leave the Shell wait unresolved.
+// using it — including an accepted chat.send that has not registered its run
+// yet. Register before checking again so an already-finished run (or a
+// reservation released without a run) cannot leave the Shell wait unresolved.
 function waitForChatbarRunIdle(appSessionId) {
     return new Promise((resolve) => {
         let settled = false;
-        let unsubscribe = () => {};
-        const settle = () => {
-            if (settled) {
+        let unsubscribeComplete = () => {};
+        let unsubscribePending = () => {};
+        const settleIfIdle = () => {
+            if (settled || chatRunRegistry.isRunningOrPending(appSessionId)) {
                 return;
             }
             settled = true;
-            unsubscribe();
+            unsubscribeComplete();
+            unsubscribePending();
             resolve();
         };
 
-        unsubscribe = chatRunRegistry.onRunComplete((event) => {
+        unsubscribeComplete = chatRunRegistry.onRunComplete((event) => {
             if (event.appSessionId === appSessionId) {
-                settle();
+                settleIfIdle();
+            }
+        });
+        unsubscribePending = chatRunRegistry.onPendingSendSettled((settledSessionId) => {
+            if (settledSessionId === appSessionId) {
+                settleIfIdle();
             }
         });
 
-        // Covers the race where the run completed before this listener was
+        // Covers the race where the run completed before these listeners were
         // attached, as well as the already-idle case.
-        if (!chatRunRegistry.isProcessing(appSessionId)) {
-            settle();
-        }
+        settleIfIdle();
     });
 }
 
@@ -394,10 +419,12 @@ const abortFns = {
     opencode: abortOpenCodeSession,
     kilo: abortKiloSession,
     cline: abortClineSession,
+    qwencode: abortQwenCodeSession,
     grok: abortGrokSession,
     kimi: abortKimiSession,
     pi: abortPiSession,
     omp: abortOmpSession,
+    antigravity: abortAntigravitySession,
 };
 configureProviderAbortFns(abortFns);
 
@@ -408,15 +435,23 @@ const wss = createWebSocketServer(server, {
     },
     chat: {
         spawnFns: providerSpawnFns,
-        // Mid-run inject for Claude chat only (queryClaudeSDK uses open stdin
-        // when appSessionId is present). Headless/git keep one-shot prompts.
+        // Mid-run inject for chat: Claude pushes onto the open stdin channel
+        // (queryClaudeSDK when appSessionId is present), Codex steers the
+        // active app-server turn. Headless/git keep one-shot prompts.
         injectFns: {
             claude: injectClaudeMessage,
+            codex: injectCodexMessage,
         },
         abortFns,
+        // chat.prewarm: boot the Claude process (no model call) while the
+        // user reads/types, so the first turn skips process + MCP startup.
+        prewarmFns: {
+            claude: prewarmClaudeSession,
+        },
         resolveToolApproval,
         getPendingApprovalsForSession,
         isShellSessionActive: (appSessionId) => shellSessionRegistry.isActive(appSessionId),
+        releaseShellSession: releaseAgentShellSession,
         cancelRelayJobsForSession: async (appSessionId) => {
             const relayJobs = agentRelayService.activeForSession(appSessionId)
                 .filter((job) => job.source_session_id === appSessionId);
@@ -432,24 +467,29 @@ const wss = createWebSocketServer(server, {
 
             return null;
         },
-        isChatbarRunActive: (appSessionId) => chatRunRegistry.isProcessing(appSessionId),
+        isChatbarRunActive: (appSessionId) => chatRunRegistry.isRunningOrPending(appSessionId),
         waitForChatbarRunIdle,
-        // Adopt sessions the interactive TUI created (Grok forks a fresh id
-        // when it can't resume) so Chat ↔ Shell stay on one transcript, then
-        // broadcast the canonical upsert so open chat views refetch.
-        syncShellSession: ({ provider, projectPath, appSessionId, startedAt }) => {
-            if (provider !== 'grok') {
-                return;
-            }
-            void syncGrokShellSession({ appSessionId, projectPath, startedAt })
-                .then((result) => {
-                    if (!result) {
+        releaseWarmProviderSession: async (provider, providerSessionId) => {
+            if (provider === 'claude') await releaseWarmClaudeSession(providerSessionId);
+            else if (provider === 'codex') await releaseWarmCodexSession(providerSessionId);
+        },
+        // Adopt sessions the interactive TUI created (a fresh TUI, or one
+        // that forked when it couldn't resume) so Chat ↔ Shell stay on one
+        // transcript, then broadcast the canonical upsert so open chat views
+        // refetch. Runs on PTY exit/detach and whenever a shell turn settles.
+        // Returns the promise so Chatbar handoff / shell restart can await the
+        // adoption before resuming from the session mapping.
+        syncShellSession: (info) => {
+            const { provider } = info;
+            return syncShellSessionForProvider(info)
+                .then((canonicalSessionId) => {
+                    if (!canonicalSessionId) {
                         return;
                     }
-                    return broadcastCanonicalSessionUpsert(result.appSessionId);
+                    return broadcastCanonicalSessionUpsert(canonicalSessionId);
                 })
                 .catch((error) => {
-                    console.error('[Shell] Grok session sync failed:', error?.message || error);
+                    console.error(`[Shell] ${provider} session sync failed:`, error?.message || error);
                 });
         },
         stripAnsiSequences,
@@ -464,6 +504,26 @@ const wss = createWebSocketServer(server, {
 app.locals.wss = wss;
 
 app.use(cors({ exposedHeaders: ['X-Refreshed-Token'] }));
+
+// gzip/deflate/br for JS/CSS/HTML and JSON API responses (direct LAN/Tailscale
+// clients; the tunnel's nginx also compresses). Streaming responses are left
+// alone because compression buffers until a flush, and bodies that are
+// already encoded (sendJsonMaybeGzipped) are never compressed twice.
+app.use(compression({
+    filter: (req, res) => {
+        // Loopback peers are the local browser or nginx (which gzips for the
+        // tunnel itself); compressing multi-MB history pages there only adds
+        // 20-35ms of CPU per request.
+        const peer = req.socket?.remoteAddress || '';
+        if (peer === '127.0.0.1' || peer === '::1' || peer === '::ffff:127.0.0.1') return false;
+        const contentType = String(res.getHeader('Content-Type') || '');
+        if (contentType.includes('text/event-stream')) return false;
+        if (String(res.getHeader('X-Accel-Buffering') || '').toLowerCase() === 'no') return false;
+        const encoding = String(res.getHeader('Content-Encoding') || 'identity');
+        if (encoding !== 'identity') return false;
+        return compression.filter(req, res);
+    },
+}));
 
 app.use(express.json({
     limit: '50mb',
@@ -606,8 +666,15 @@ app.use('/api/agent-profiles', authenticateToken, agentProfilesRoutes);
 // Provider auth health (watchdog report + on-demand checks)
 app.use('/api/auth-health', authenticateToken, authHealthRoutes);
 
-// Serve public files (like api-docs.html)
-app.use(express.static(path.join(APP_ROOT, 'public')));
+// Serve public files (like api-docs.html). public/ has no assets/ folder, so
+// hashed /assets/* bundle requests skip it and go straight to dist instead of
+// paying a failed stat against public/ first. public/ still wins for every
+// other path, so un-hashed files (sw.js, icons, mweb) keep their default
+// revalidating cache headers rather than dist's immutable ones.
+const servePublicStatic = express.static(path.join(APP_ROOT, 'public'));
+app.use((req, res, next) => (
+    req.path.startsWith('/assets/') ? next() : servePublicStatic(req, res, next)
+));
 
 // Static files served after API routes
 // Add cache control: HTML files should not be cached, but assets can be cached
@@ -1039,12 +1106,32 @@ app.get('/api/projects/:projectId/files', authenticateToken, async (req, res) =>
         }
 
         const files = await getFileTree(actualPath, 10, 0, true, undefined, includeEntry);
-        res.json(files);
+        sendJsonMaybeGzipped(req, res, files);
     } catch (error) {
         console.error('[ERROR] File tree error:', error.message);
         sendProjectFileError(res, error, 'Failed to list files');
     }
 });
+
+// Large project trees serialize to several MB of JSON. Uncompressed payloads of
+// that size stall on some remote links (Tailscale/LAN clients) until the fetch
+// times out, so gzip them when the client accepts it (~15x smaller).
+function sendJsonMaybeGzipped(req, res, payload) {
+    const body = JSON.stringify(payload);
+    const acceptsGzip = /\bgzip\b/.test(String(req.headers['accept-encoding'] || ''));
+    if (!acceptsGzip || body.length < 16 * 1024) {
+        res.type('application/json').send(body);
+        return;
+    }
+    zlib.gzip(body, (error, compressed) => {
+        if (error) {
+            res.type('application/json').send(body);
+            return;
+        }
+        res.set({ 'Content-Type': 'application/json; charset=utf-8', 'Content-Encoding': 'gzip', Vary: 'Accept-Encoding' });
+        res.send(compressed);
+    });
+}
 
 // ============================================================================
 // FILE OPERATIONS API ENDPOINTS
@@ -1488,9 +1575,10 @@ app.post('/api/projects/:projectId/files/upload', authenticateToken, uploadFiles
 
 // Get token usage for a specific session. `projectId` is the DB primary key;
 // the Claude branch below resolves it to an absolute path via the DB.
-app.get('/api/projects/:projectId/sessions/:sessionId/token-usage', authenticateToken, async (req, res) => {
+async function handleSessionTokenUsage(req, res) {
     try {
-        const { projectId, sessionId } = req.params;
+        const sessionId = req.params.sessionId;
+        const projectId = req.params.projectId || req.query.projectId;
         const homeDir = os.homedir();
 
         // Allow only safe characters in sessionId
@@ -1740,12 +1828,66 @@ app.get('/api/projects/:projectId/sessions/:sessionId/token-usage', authenticate
             return res.json(readGrokSessionTokenUsage(grokSessionDir));
         }
 
+        // Handle Antigravity sessions
+        if (provider === 'antigravity') {
+            try {
+                const { readAntigravitySessionTokenUsage } = await import(
+                    './modules/providers/list/antigravity/antigravity-token-usage.js'
+                );
+                const usage = readAntigravitySessionTokenUsage(providerNativeSessionId || safeSessionId);
+                if (usage) {
+                    return res.json(usage);
+                }
+            } catch (err) {
+                // fall through to agent_runs check
+            }
+
+            const db = getConnection();
+            const lastRunRow = db.prepare(`
+                SELECT token_input, token_output, token_total, model
+                FROM agent_runs
+                WHERE app_session_id = ?
+                  AND source != 'history'
+                ORDER BY created_at DESC, run_id DESC
+                LIMIT 1
+            `).get(safeSessionId);
+
+            if (lastRunRow) {
+                const input = Number(lastRunRow.token_input || 0);
+                const output = Number(lastRunRow.token_output || 0);
+                const used = Number(lastRunRow.token_total || (input + output));
+                const isPro = String(lastRunRow.model || '').toLowerCase().includes('pro');
+                const contextWindow = isPro ? 2_000_000 : 1_000_000;
+                return res.json({
+                    used,
+                    total: contextWindow,
+                    contextUsed: used,
+                    contextWindow,
+                    contextFree: Math.max(0, contextWindow - used),
+                    contextPercent: contextWindow > 0 ? Math.min(100, Math.round((used / contextWindow) * 100)) : null,
+                    inputTokens: input,
+                    outputTokens: output,
+                    billedInputTokens: input,
+                    billedOutputTokens: output,
+                    cumulativeUsed: used,
+                    model: lastRunRow.model,
+                    provider: 'antigravity',
+                    breakdown: { input, output }
+                });
+            }
+
+            return res.status(404).json({ error: 'Antigravity session usage not found', sessionId: safeSessionId });
+        }
+
         // Handle Claude sessions (default)
         // Resolve the project path through the DB using the caller-supplied
         // `projectId`. Legacy code here called extractProjectDirectory with a
         // folder-encoded project name; the migration centralizes that lookup
         // in the projects table.
-        const projectPath = await projectsDb.getProjectPathById(projectId);
+        let projectPath = projectId ? await projectsDb.getProjectPathById(projectId) : null;
+        if (!projectPath && sessionRow?.project_path) {
+            projectPath = sessionRow.project_path;
+        }
         if (!projectPath) {
             return res.status(404).json({ error: 'Project not found' });
         }
@@ -1783,7 +1925,10 @@ app.get('/api/projects/:projectId/sessions/:sessionId/token-usage', authenticate
         console.error('Error reading session token usage:', error);
         res.status(500).json({ error: 'Failed to read session token usage' });
     }
-});
+}
+
+app.get('/api/projects/:projectId/sessions/:sessionId/token-usage', authenticateToken, handleSessionTokenUsage);
+app.get('/api/sessions/:sessionId/token-usage', authenticateToken, handleSessionTokenUsage);
 
 // Lightweight ES5 UI for old iOS Safari
 app.get(['/mweb', '/mweb/'], (req, res) => {
@@ -1856,6 +2001,9 @@ const IGNORED_DIRS = new Set([
     'node_modules', 'dist', 'build', '.next', '.nuxt', '.cache', '.parcel-cache',
     // VCS
     '.git', '.svn', '.hg',
+    // Git worktrees are full checkouts of the repo — tens of thousands of
+    // duplicate entries that would swamp the tree.
+    '.worktrees',
     // Python
     '__pycache__', '.pytest_cache', '.mypy_cache', '.tox', 'venv', '.venv',
     // Rust / Go / Java / Ruby
@@ -2093,6 +2241,45 @@ async function removeLocalServerMarker() {
     }
 }
 
+// Boot work that nothing on the request path depends on. Runs after listen so
+// the UI is reachable immediately; each step logs and continues on failure.
+async function runDeferredBootTasks() {
+    try {
+        // Runs the enable-time fan-out when Relay is on, and tears down
+        // stale managed MCP/skill artifacts when it was disabled before
+        // this restart. No-op for installs that never enabled Relay.
+        await agentRelayService.syncIntegrationsOnBoot();
+    } catch (error) {
+        console.error('[Agent Relay] MCP/skill synchronization failed:', error.message);
+    }
+
+    // Seed → article studio → scheduler keeps the original order so the
+    // scheduler's first drain and schedule sync see every seeded section.
+    try {
+        const seeded = ensureMissionControlSeedSections();
+        if (seeded.length) {
+            console.log(`${c.info('[INFO]')} Mission Control seed sections ready (${seeded.map((s) => s.title).join(', ')})`);
+        }
+    } catch (error) {
+        console.error('[MissionControl] seed sections failed:', error.message);
+    }
+
+    // Article studio scaffolds a working directory on disk, so it is async
+    // and seeded separately from the synchronous sections above.
+    try {
+        const studio = await ensureArticleStudioSections();
+        console.log(`${c.info('[INFO]')} Article studio ready at ${studio.workspacePath} (${studio.sections.map((s) => s.title).join(', ')})`);
+    } catch (error) {
+        console.error('[MissionControl] article studio setup failed:', error.message);
+    }
+
+    try {
+        startMissionControlScheduler();
+    } catch (error) {
+        console.error('[MissionControl] scheduler start failed:', error.message);
+    }
+}
+
 // Initialize database and start server
 async function startServer() {
     try {
@@ -2105,15 +2292,6 @@ async function startServer() {
         if (interruptedRelayJobs > 0) {
             console.log(`[Agent Relay] marked ${interruptedRelayJobs} interrupted job(s) as failed on boot`);
         }
-        try {
-            // Runs the enable-time fan-out when Relay is on, and tears down
-            // stale managed MCP/skill artifacts when it was disabled before
-            // this restart. No-op for installs that never enabled Relay.
-            await agentRelayService.syncIntegrationsOnBoot();
-        } catch (error) {
-            console.error('[Agent Relay] MCP/skill synchronization failed:', error.message);
-        }
-
         try {
             const reconciledRuns = runService.reconcileOrphans();
             const orphanedWorkspaces = await workspaceService.reconcileOrphanedWorkspaces();
@@ -2137,30 +2315,6 @@ async function startServer() {
             startRunMaintenance();
         } catch (error) {
             console.error('[Kanban] boot reconcile failed:', error.message);
-        }
-
-        try {
-            const seeded = ensureMissionControlSeedSections();
-            if (seeded.length) {
-                console.log(`${c.info('[INFO]')} Mission Control seed sections ready (${seeded.map((s) => s.title).join(', ')})`);
-            }
-        } catch (error) {
-            console.error('[MissionControl] seed sections failed:', error.message);
-        }
-
-        // Article studio scaffolds a working directory on disk, so it is async
-        // and seeded separately from the synchronous sections above.
-        try {
-            const studio = await ensureArticleStudioSections();
-            console.log(`${c.info('[INFO]')} Article studio ready at ${studio.workspacePath} (${studio.sections.map((s) => s.title).join(', ')})`);
-        } catch (error) {
-            console.error('[MissionControl] article studio setup failed:', error.message);
-        }
-
-        try {
-            startMissionControlScheduler();
-        } catch (error) {
-            console.error('[MissionControl] scheduler start failed:', error.message);
         }
 
         try {
@@ -2213,6 +2367,9 @@ async function startServer() {
         console.log(`${c.info('[INFO]')} To run in development mode with hot-module replacement, go to http://${DISPLAY_HOST}:${VITE_PORT}`);
    
         server.listen(SERVER_PORT, HOST, async () => {
+            // Non-critical boot work runs once the port is accepting requests.
+            setImmediate(() => void runDeferredBootTasks());
+
             const appInstallPath = APP_ROOT;
             await writeLocalServerMarker().catch((error) => {
                 console.warn('[WARN] Could not write local server marker:', error.message);
@@ -2237,9 +2394,28 @@ async function startServer() {
             });
         });
 
-        await closeSessionsWatcher();
         // Clean up plugin processes on shutdown
+        let shutdownInProgress = false;
         const shutdownRuntimeServices = async () => {
+            if (shutdownInProgress) {
+                // A second signal is an explicit forced stop.
+                process.exit(1);
+            }
+            shutdownInProgress = true;
+            chatRunRegistry.beginShutdown();
+            // Claude SDK and Codex app-server runs are children of this
+            // process. Exiting now closes their stdio pipes mid-turn. Leave
+            // services (including MCPs and approvals) alive until accepted
+            // chat runs and sends have finished.
+            await chatRunRegistry.waitForIdle();
+            try {
+                // Idle warm Claude processes hold no accepted turn; close them
+                // so they don't outlive the server.
+                await closeAllWarmClaudeSessions();
+            } catch (err) {
+                console.error('[Claude] Error closing warm sessions during shutdown:', err?.message || err);
+            }
+            await closeAllWarmCodexSessions().catch((err) => console.error('[Codex] Error closing warm sessions during shutdown:', err?.message || err));
             try {
                 stopKanbanScheduler();
                 stopAutomationKernel();

@@ -14,7 +14,6 @@ import {
   isMcProvider,
   type McProvider,
   type McSection,
-  type McSectionMode,
   type McSectionScope,
 } from '@/modules/mission-control/mission-control.types.js';
 import { AppError } from '@/shared/utils.js';
@@ -27,11 +26,9 @@ export type SectionWorkshopMessage = {
 export type SectionWorkshopDraft = {
   title: string;
   scope: McSectionScope;
-  mode: McSectionMode;
   scheduleCron: string | null;
   producePrompt: string;
   resolvePrompt: string;
-  createKanbanTask: boolean;
   recommendedMcpServers: string[];
 };
 
@@ -85,11 +82,9 @@ export function parseSectionWorkshopDraft(text: string): SectionWorkshopDraft | 
   return {
     title,
     scope: row.scope === 'project' ? 'project' : 'global',
-    mode: row.mode === 'fire_and_forget' ? 'fire_and_forget' : 'review',
     scheduleCron: cleanString(row.scheduleCron ?? row.schedule_cron) || null,
     producePrompt,
     resolvePrompt: cleanString(row.resolvePrompt ?? row.resolve_prompt),
-    createKanbanTask: row.createKanbanTask === true || row.create_kanban_task === true,
     recommendedMcpServers: [...new Set(recommendedMcpServers)],
   };
 }
@@ -110,8 +105,7 @@ export function buildSectionWorkshopPrompt(input: {
     'You are the Mission Control section architect.',
     'Help the user turn a plain-language recurring workflow into one bounded automation section.',
     'Do not run tools or perform the workflow. Ask at most 1–3 short questions when the source, output, review gate, or cadence is unclear.',
-    'A review section produces structured queue items for a human to approve, then resolves approved items.',
-    'A fire_and_forget section runs one scheduled prompt without creating a review queue.',
+    'A section produces structured queue items; an optional resolve prompt then acts on each approved item (a human approves, or it runs automatically when auto-approve is on).',
     input.projectName ? `Selected project: ${input.projectName}` : 'Scope can remain global unless the user explicitly anchors the workflow to a project.',
     input.currentDraft ? `Current form draft:\n${JSON.stringify(input.currentDraft)}` : '',
     availableMcp.length
@@ -123,16 +117,13 @@ export function buildSectionWorkshopPrompt(input: {
     '{',
     '  "title": "Short section name",',
     '  "scope": "global | project",',
-    '  "mode": "review | fire_and_forget",',
     '  "scheduleCron": "valid five-field cron or null",',
     '  "producePrompt": "Complete standalone instructions, including the desired structured output",',
-    '  "resolvePrompt": "What to do after approval, or empty for fire_and_forget",',
-    '  "createKanbanTask": false,',
+    '  "resolvePrompt": "What to do after approval, or empty when approval only records the item",',
     '  "recommendedMcpServers": []',
     '}',
     '```',
-    'Use review mode when a human should inspect drafts before an external write or implementation.',
-    'Only enable createKanbanTask for approved work that should enter the engineering board.',
+    'Put external writes in the resolve prompt so a human can inspect drafts before they happen.',
     'Never invent credentials, project IDs, MCP server names, or destructive actions.',
     'If you still need information, ask questions and do not emit a mission-section block.',
     '',
@@ -180,10 +171,14 @@ export async function runSectionWorkshop(input: {
     enabled: true,
     scope: input.projectId ? 'project' : 'global',
     project_id: input.projectId || null,
-    mode: 'fire_and_forget',
+    mode: 'review',
     schedule_cron: null,
     provider,
     model: input.model || null,
+    effort: null,
+    resolve_provider: null,
+    resolve_model: null,
+    resolve_effort: null,
     permission_mode: permissionMode,
     dry_run: true,
     auto_approve: false,
@@ -193,10 +188,6 @@ export async function runSectionWorkshop(input: {
     resolve_tools: [],
     tool_policy: {},
     actions: [],
-    create_kanban_task: false,
-    kanban_assignee_provider: null,
-    kanban_review_provider: null,
-    kanban_mcp_tools: [],
     last_run_at: null,
     last_run_error: null,
     created_at: now,

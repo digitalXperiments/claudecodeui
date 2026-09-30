@@ -2,19 +2,18 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   ChangeEvent,
   ClipboardEvent,
-  Dispatch,
   FormEvent,
   KeyboardEvent,
   MouseEvent,
-  SetStateAction,
+  RefObject,
   TouchEvent,
 } from 'react';
 import { useDropzone } from 'react-dropzone';
 
 import { authenticatedFetch } from '../../../utils/api';
 import type { MarkSessionProcessing } from '../../../hooks/useSessionProtection';
-import type { SessionStore } from '../../../stores/useSessionStore';
-import { grantClaudeToolPermission } from '../utils/chatPermissions';
+import type { SessionSlot, SessionStore } from '../../../stores/useSessionStore';
+import { useSessionSlotSelector } from '../../../stores/useSessionStore';
 import {
   clearQueuedMessage,
   readProviderToolsSettings,
@@ -25,7 +24,6 @@ import {
 } from '../utils/chatStorage';
 import type {
   ChatMessage,
-  PendingPermissionRequest,
   PermissionMode,
   SessionEstablishedContext,
 } from '../types/types';
@@ -96,12 +94,25 @@ interface UseChatComposerStateArgs {
   scrollToBottom: () => void;
   addMessage: (msg: ChatMessage, targetSessionId?: string, targetProvider?: LLMProvider) => void;
   setIsUserScrolledUp: (isScrolledUp: boolean) => void;
-  setPendingPermissionRequests: Dispatch<SetStateAction<PendingPermissionRequest[]>>;
   /** Whether the active provider accepts inline image attachments (vision). */
   supportsImages?: boolean;
   /** Whether the active provider accepts non-image file attachments. */
   supportsFiles?: boolean;
+  /**
+   * Optional externally owned textarea ref. ChatInterface owns it so the
+   * transcript's empty state can focus the composer without the composer
+   * state living in ChatInterface.
+   */
+  textareaRef?: RefObject<HTMLTextAreaElement>;
 }
+
+const selectHasSaveableText = (slot: SessionSlot | undefined) => Boolean(
+  slot?.merged.some(
+    (message) => message.kind === 'text'
+      && typeof message.content === 'string'
+      && message.content.trim().length > 0,
+  ),
+);
 
 interface MentionableFile {
   name: string;
@@ -282,9 +293,9 @@ export function useChatComposerState({
   sessionStore,
   addMessage,
   setIsUserScrolledUp,
-  setPendingPermissionRequests,
   supportsImages = true,
   supportsFiles = true,
+  textareaRef: externalTextareaRef,
 }: UseChatComposerStateArgs) {
   const allowsImages = supportsImages !== false;
   const allowsFiles = supportsFiles !== false;
@@ -302,7 +313,8 @@ export function useChatComposerState({
   const [isTextareaExpanded, setIsTextareaExpanded] = useState(false);
   const [commandModalPayload, setCommandModalPayload] = useState<CommandModalPayload | null>(null);
 
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const internalTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const textareaRef = externalTextareaRef ?? internalTextareaRef;
   const inputHighlightRef = useRef<HTMLDivElement>(null);
   const textareaLineHeightRef = useRef<number | null>(null);
   const lastAutosizedInputRef = useRef<string | null>(null);
@@ -316,15 +328,11 @@ export function useChatComposerState({
   // handed back to the parent's `selectedSession` prop yet.
   const sessionKey = selectedSession?.id || currentSessionId || null;
 
-  // Computed on every render, NOT memoized: store updates don't change the
-  // memo deps (sessionStore/sessionKey stay identical as messages arrive), so
-  // a memoized value would stay stuck at the initial "nothing to save" state.
-  const saveAsSkillDisabled = !sessionKey
-    || !sessionStore.getMessages(sessionKey).some(
-      (message) => message.kind === 'text'
-        && typeof message.content === 'string'
-        && message.content.trim().length > 0,
-    );
+  // Subscribed (not read during render): the chat view no longer re-renders
+  // on every store change, so a render-time read would go stale. The boolean
+  // snapshot only re-renders the composer when it actually flips.
+  const hasSaveableText = useSessionSlotSelector(sessionStore, sessionKey, selectHasSaveableText);
+  const saveAsSkillDisabled = !sessionKey || !hasSaveableText;
 
   const [queuedDraft, setQueuedDraft] = useState<QueuedDraft | null>(() => {
     if (typeof window === 'undefined' || !sessionKey) {
@@ -809,10 +817,10 @@ export function useChatComposerState({
       // stash the message here; it's auto-flushed (re-running this same
       // function) once the turn ends, so it still goes through slash-command
       // interception, image upload, etc.
-      // Claude instead attaches the message to the live run (Claude
-      // Code-style "type while working"), so it falls through to the normal
-      // send path below.
-      const isMidRunInject = isLoading && provider === 'claude';
+      // Claude (open stdin) and Codex (app-server `turn/steer`) instead
+      // attach the message to the live run ("type while working"), so it
+      // falls through to the normal send path below.
+      const isMidRunInject = isLoading && (provider === 'claude' || provider === 'codex');
       if (isLoading && !isMidRunInject) {
         queuedDraftSessionRef.current = sessionKey;
         setQueuedDraft({
@@ -1020,6 +1028,20 @@ export function useChatComposerState({
         return;
       }
 
+      // Commit the accepted send to the local UI before any follow-up
+      // callbacks. A slow or failing preference/navigation callback must not
+      // leave an already-running prompt in the textbox with no chat echo.
+      addMessage(userMessage, targetSessionId, provider);
+      setInput('');
+      inputValueRef.current = '';
+      resetCommandMenuState();
+      setAttachedImages([]);
+      setUploadingImages(new Map());
+      setImageErrors(new Map());
+      setIsTextareaExpanded(false);
+      if (textareaRef.current) textareaRef.current.style.height = 'auto';
+      safeLocalStorage.removeItem(`draft_input_${selectedProject.projectId}`);
+
       // Pin this session to the model/effort the message was sent with, so
       // revisiting the chat shows its own values rather than the last global
       // pick. Covers the first message of a brand-new chat too: its session
@@ -1031,33 +1053,21 @@ export function useChatComposerState({
         sendOptions.effort as string,
       );
 
-      // React navigation has not necessarily committed after session creation.
-      // Write the echo to the same session as chat.send, not the old render's view.
-      addMessage(userMessage, targetSessionId, provider);
       // Mark this request as processing in the per-session activity map (the
       // single source of truth the indicator derives from). The id is always
       // concrete at this point — no pending placeholder exists anymore.
+      // `source: 'chat'` takes over an Agent CLI ('shell') entry the send is
+      // handing off; `localSend` shields it from stale idle/Shell acks.
       onSessionProcessing?.(targetSessionId, {
+        source: 'chat',
         statusText: null,
         canInterrupt: true,
+        localSend: true,
       });
 
       setIsUserScrolledUp(false);
       scrollToBottom();
 
-      setInput('');
-      inputValueRef.current = '';
-      resetCommandMenuState();
-      setAttachedImages([]);
-      setUploadingImages(new Map());
-      setImageErrors(new Map());
-      setIsTextareaExpanded(false);
-
-      if (textareaRef.current) {
-        textareaRef.current.style.height = 'auto';
-      }
-
-      safeLocalStorage.removeItem(`draft_input_${selectedProject.projectId}`);
     },
     [
       selectedSession,
@@ -1080,6 +1090,7 @@ export function useChatComposerState({
       addMessage,
       setIsUserScrolledUp,
       slashCommands,
+      textareaRef,
     ],
   );
 
@@ -1141,7 +1152,7 @@ export function useChatComposerState({
     inputValueRef.current = queuedDraft.content;
     setAttachedImages(queuedDraft.images);
     textareaRef.current?.focus();
-  }, [queuedDraft]);
+  }, [queuedDraft, textareaRef]);
 
   const deleteQueuedDraft = useCallback(() => {
     setQueuedDraft(null);
@@ -1222,7 +1233,7 @@ export function useChatComposerState({
     // Re-run for restored drafts and programmatic input changes. User typing is
     // already resized in onInput, so this avoids doing the same forced layout twice.
     resizeTextarea(textareaRef.current);
-  }, [input, resizeTextarea]);
+  }, [input, resizeTextarea, textareaRef]);
 
   useEffect(() => {
     if (!textareaRef.current || input.trim()) {
@@ -1230,7 +1241,7 @@ export function useChatComposerState({
     }
     textareaRef.current.style.height = 'auto';
     setIsTextareaExpanded(false);
-  }, [input]);
+  }, [input, textareaRef]);
 
   const handleInputChange = useCallback(
     (event: ChangeEvent<HTMLTextAreaElement>) => {
@@ -1320,7 +1331,7 @@ export function useChatComposerState({
       textareaRef.current.focus();
     }
     setIsTextareaExpanded(false);
-  }, [resetCommandMenuState]);
+  }, [resetCommandMenuState, textareaRef]);
 
   const handleAbortSession = useCallback(() => {
     if (!canAbortSession) {
@@ -1340,45 +1351,6 @@ export function useChatComposerState({
       sessionId: targetSessionId,
     });
   }, [canAbortSession, currentSessionId, selectedSession?.id, sendMessage]);
-
-  const handleGrantToolPermission = useCallback(
-    (suggestion: { entry: string; toolName: string }) => {
-      if (!suggestion || provider !== 'claude') {
-        return { success: false };
-      }
-      return grantClaudeToolPermission(suggestion.entry);
-    },
-    [provider],
-  );
-
-  const handlePermissionDecision = useCallback(
-    (
-      requestIds: string | string[],
-      decision: { allow?: boolean; message?: string; rememberEntry?: string | null; updatedInput?: unknown },
-    ) => {
-      const ids = Array.isArray(requestIds) ? requestIds : [requestIds];
-      const validIds = ids.filter(Boolean);
-      if (validIds.length === 0) {
-        return;
-      }
-
-      validIds.forEach((requestId) => {
-        sendMessage({
-          type: 'chat.permission-response',
-          requestId,
-          allow: Boolean(decision?.allow),
-          updatedInput: decision?.updatedInput,
-          message: decision?.message,
-          rememberEntry: decision?.rememberEntry,
-        });
-      });
-
-      setPendingPermissionRequests((previous) =>
-        previous.filter((request) => !validIds.includes(request.requestId)),
-      );
-    },
-    [sendMessage, setPendingPermissionRequests],
-  );
 
   const [isInputFocused, setIsInputFocused] = useState(false);
 
@@ -1431,8 +1403,6 @@ export function useChatComposerState({
     syncInputOverlayScroll,
     handleClearInput,
     handleAbortSession,
-    handlePermissionDecision,
-    handleGrantToolPermission,
     handleInputFocusChange,
     isInputFocused,
     commandModalPayload,
@@ -1441,5 +1411,8 @@ export function useChatComposerState({
     showCostModal,
     onSaveAsSkill,
     saveAsSkillDisabled,
+    // The chat.send options builder, shared with chat.prewarm so a prewarmed
+    // Claude process matches the next send.
+    buildSendOptions,
   };
 }

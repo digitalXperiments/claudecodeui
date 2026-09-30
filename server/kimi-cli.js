@@ -595,9 +595,8 @@ async function spawnKimi(command, options = {}, ws) {
     }
     handle.inFlightPromptId = null;
 
-    ws.send(createCompleteMessage({ provider: 'kimi', sessionId: finalSessionId, exitCode: 0 }));
-
     // Refresh badge with latest-turn context occupancy (not sum-of-turns spend).
+    // Sent before `complete` so it stays inside the run's sequenced frames.
     try {
       const kimiNativeId = handle.kimiSessionId || finalSessionId;
       const sessionDir = findKimiSessionDir(kimiNativeId);
@@ -614,6 +613,8 @@ async function spawnKimi(command, options = {}, ws) {
     } catch (tokenError) {
       console.warn('Kimi token budget refresh failed (non-fatal):', tokenError?.message || tokenError);
     }
+
+    ws.send(createCompleteMessage({ provider: 'kimi', sessionId: finalSessionId, exitCode: 0 }));
 
     // Isolated from the main try/catch: a notification-plumbing failure
     // (e.g. a bad user-preferences row) must never retroactively turn an

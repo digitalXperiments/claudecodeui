@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useState } from 'react';
+import { lazy, memo, Suspense, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { useDeviceSettings } from '../../../hooks/useDeviceSettings';
@@ -188,6 +188,7 @@ function Sidebar({
     setCurrentProject,
     setSidebarVisible: (visible) => setPreference('sidebarVisible', visible),
     sidebarVisible,
+    showSettings,
   });
 
   useEffect(() => {
@@ -472,4 +473,6 @@ function Sidebar({
   );
 }
 
-export default Sidebar;
+// sidebarSharedProps is memoized in useProjectsState; memo keeps app-level
+// renders that do not touch sidebar props (status, focus, chat) off this tree.
+export default memo(Sidebar);

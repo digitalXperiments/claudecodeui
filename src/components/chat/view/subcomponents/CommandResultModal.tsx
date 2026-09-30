@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Activity,
   AlertTriangle,
@@ -1255,7 +1255,7 @@ function StatusContent({ data }: { data: StatusCommandData }) {
   );
 }
 
-export default function CommandResultModal({
+function CommandResultModal({
   payload,
   onClose,
   providerModelCatalog,
@@ -1385,3 +1385,7 @@ export default function CommandResultModal({
     </Dialog>
   );
 }
+
+// Rendered by ChatComposerHost, which re-renders on every keystroke; the
+// modal's props do not change while typing.
+export default memo(CommandResultModal);

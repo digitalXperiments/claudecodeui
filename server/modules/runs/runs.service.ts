@@ -59,7 +59,21 @@ export interface RunService {
   markTerminal(runId: string, result: TerminalResult): void;
   /** Reconcile: running runs with dead processes → failed/aborted */
   reconcileOrphans(): number;
-  usageForSession(sessionId: string): { tokens: number; costUsd: number; runCount: number };
+  usageForSession(sessionId: string): {
+    tokens: number;
+    costUsd: number;
+    runCount: number;
+    lastRunCostUsd?: number;
+    burnRateUsdPerMin?: number;
+    context?: {
+      usedTokens: number;
+      contextWindow: number;
+      percent: number | null;
+      inputTokens?: number;
+      outputTokens?: number;
+      model?: string | null;
+    };
+  };
   projectStats(projectId: string): ProjectRunStats;
   globalStats(filter: GlobalStatsFilter): GlobalRunStats;
   getBudget(projectId: string): ProjectRunBudget;
@@ -283,6 +297,71 @@ function requireRun(runId: string): AgentRun {
   return run;
 }
 
+/**
+ * Appends one event for a run the caller has ALREADY verified exists (every
+ * internal caller holds the row from its own requireRun/get). Skipping the
+ * duplicate existence SELECT matters on the streaming path, where this runs
+ * once per provider event.
+ */
+function appendEventForKnownRun(
+  runId: string,
+  event: Omit<RunEventEnvelope, 'event_id' | 'seq'>,
+): RunEventEnvelope {
+  const stored = runsDb.appendEvent(runId, {
+    ...event,
+    payload: (redactPayload(event.payload ?? {}) ?? {}) as Record<string, unknown>,
+  });
+  broadcastSystemEvent({ kind: 'run_event', run_id: runId, event: stored });
+  return stored;
+}
+
+/**
+ * `recordMessage` body; returns the run row it read so the streaming bridge
+ * (`recordNormalizedRunEvent`) can reuse it instead of re-selecting it.
+ * Only `first_token_at` may change here (status is untouched), and the
+ * returned row reflects that.
+ */
+function recordMessageForRun(
+  runId: string,
+  message: NormalizedMessage,
+  source: RunEventEnvelope['source'],
+): AgentRun {
+  const run = requireRun(runId);
+  if (message.kind === 'complete') {
+    return run;
+  }
+
+  let current = run;
+  if (
+    (message.kind === 'text' || message.kind === 'stream_delta') &&
+    !run.first_token_at &&
+    (message.content || message.text)
+  ) {
+    const firstTokenAt = message.timestamp || nowIso();
+    runsDb.updateStatus(runId, run.status, { first_token_at: firstTokenAt });
+    current = { ...run, first_token_at: firstTokenAt };
+    appendEventForKnownRun(runId, {
+      run_id: runId,
+      ts: firstTokenAt,
+      source,
+      type: 'run.first_token',
+      payload: {},
+    });
+  }
+
+  const event = normalizedMessageEvent(message);
+  if (!event) return current;
+  appendEventForKnownRun(runId, {
+    run_id: runId,
+    ts: message.timestamp || nowIso(),
+    source,
+    type: event.type,
+    severity: event.severity,
+    payload: event.payload,
+  });
+  return current;
+}
+
 // ---------------------------------------------------------------------------
 // Service singleton
 // ---------------------------------------------------------------------------
@@ -402,46 +481,11 @@ export const runService: RunService = {
     event: Omit<RunEventEnvelope, 'event_id' | 'seq'>,
   ): RunEventEnvelope {
     requireRun(runId);
-    const stored = runsDb.appendEvent(runId, {
-      ...event,
-      payload: (redactPayload(event.payload ?? {}) ?? {}) as Record<string, unknown>,
-    });
-    broadcastSystemEvent({ kind: 'run_event', run_id: runId, event: stored });
-    return stored;
+    return appendEventForKnownRun(runId, event);
   },
 
   recordMessage(runId: string, message: NormalizedMessage, source: RunEventEnvelope['source']): void {
-    const run = requireRun(runId);
-    if (message.kind === 'complete') {
-      return;
-    }
-
-    if (
-      (message.kind === 'text' || message.kind === 'stream_delta') &&
-      !run.first_token_at &&
-      (message.content || message.text)
-    ) {
-      const firstTokenAt = message.timestamp || nowIso();
-      runsDb.updateStatus(runId, run.status, { first_token_at: firstTokenAt });
-      this.appendEvent(runId, {
-        run_id: runId,
-        ts: firstTokenAt,
-        source,
-        type: 'run.first_token',
-        payload: {},
-      });
-    }
-
-    const event = normalizedMessageEvent(message);
-    if (!event) return;
-    this.appendEvent(runId, {
-      run_id: runId,
-      ts: message.timestamp || nowIso(),
-      source,
-      type: event.type,
-      severity: event.severity,
-      payload: event.payload,
-    });
+    recordMessageForRun(runId, message, source);
   },
 
   listEvents(runId: string, opts: { afterSeq?: number; limit?: number; newest?: boolean } = {}): RunEventEnvelope[] {
@@ -542,7 +586,21 @@ export const runService: RunService = {
     return runsDb.reconcileOrphans();
   },
 
-  usageForSession(sessionId: string): { tokens: number; costUsd: number; runCount: number } {
+  usageForSession(sessionId: string): {
+    tokens: number;
+    costUsd: number;
+    runCount: number;
+    lastRunCostUsd?: number;
+    burnRateUsdPerMin?: number;
+    context?: {
+      usedTokens: number;
+      contextWindow: number;
+      percent: number | null;
+      inputTokens?: number;
+      outputTokens?: number;
+      model?: string | null;
+    };
+  } {
     return runsDb.usageForSession(sessionId);
   },
 };
@@ -560,10 +618,12 @@ export const runService: RunService = {
  * adding a second `token.usage` event per snapshot would double the timeline
  * volume for no extra information.
  */
-function recordProviderUsage(runId: string, message: NormalizedMessage): void {
+function recordProviderUsage(runId: string, message: NormalizedMessage, knownRun?: AgentRun): void {
   if (message.kind !== 'status' || message.text !== 'token_budget') return;
   const snapshot = readTokenBudgetUsage(message.tokenBudget);
-  const run = runService.get(runId);
+  // recordMessage never touches usage/model columns, so the row it just read
+  // is current for everything this function consumes.
+  const run = knownRun ?? runService.get(runId);
   if (!run) return;
   // A request-time alias — Claude's `'default'`, but also generation-agnostic
   // aliases like `'sonnet'`/`'opus[1m]'` — gets resolved by the provider to a
@@ -609,11 +669,14 @@ export function recordNormalizedRunEvent(
   message: NormalizedMessage,
   source: RunEventEnvelope['source'],
 ): void {
-  runService.recordMessage(runId, message, source);
-  recordProviderUsage(runId, message);
+  // One run-row read per streamed event instead of three: recordMessage's
+  // row is reused below. Neither recordMessage nor recordProviderUsage
+  // changes `status`, which is all the permission bookkeeping reads.
+  const recordedRun = recordMessageForRun(runId, message, source);
+  recordProviderUsage(runId, message, recordedRun);
 
   if (message.kind !== 'complete') {
-    const current = runService.get(runId);
+    const current = recordedRun;
     if (current && message.kind === 'permission_request' && !TERMINAL_RUN_STATUSES.has(current.status)) {
       runService.updateStatus(runId, 'waiting_permission');
     } else if (current && current.status === 'waiting_permission') {

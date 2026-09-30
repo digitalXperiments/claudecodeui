@@ -234,7 +234,7 @@ type ActionCategory = 'read' | 'workspace-write' | 'risky';
 type CategoryResult = { category: ActionCategory; reason: string };
 
 const READ_COMMANDS = new Set([
-  'cat', 'head', 'tail', 'less', 'more', 'grep', 'rg', 'ugrep', 'egrep', 'fgrep', 'ls', 'pwd',
+  'cat', 'lsof', 'ps', 'pgrep', 'head', 'tail', 'less', 'more', 'grep', 'rg', 'ugrep', 'egrep', 'fgrep', 'ls', 'pwd',
   'wc', 'which', 'whereis', 'file', 'stat', 'du', 'df', 'tree', 'echo', 'printf', 'sort',
   'uniq', 'cut', 'diff', 'cmp', 'basename', 'dirname', 'md5sum', 'shasum', 'sha256sum',
   'realpath', 'readlink', 'type', 'true', 'false', 'test', 'date', 'uname', 'nproc', 'jq', 'awk', 'column', 'xxd',
@@ -266,18 +266,112 @@ const ALWAYS_RISKY_COMMANDS = new Set([
   'eval', 'source', 'sh', 'bash', 'zsh', 'dash', 'ksh', 'fish', 'env', 'printenv', 'export',
 ]);
 
-function isLocalTscCommand(tokens: string[]): boolean {
-  if (tokens[0] !== 'tsc' || !tokens.slice(1).includes('--noEmit')) return false;
-  return true;
+function isInsideWorkspaceCwd(workspaceRoot: string, cwd: string | null): boolean {
+  return Boolean(cwd && path.isAbsolute(cwd) && isInsideWorkspace('.', workspaceRoot, cwd));
 }
 
-function isLocalNpxTscCommand(tokens: string[]): boolean {
-  if (tokens[0] !== 'npx') return false;
+function classifyLocalTestCommand(
+  head: string,
+  tokens: string[],
+  workspaceRoot: string,
+  cwd: string | null,
+): CategoryResult | null {
+  if (!['node', 'tsx', 'ts-node'].includes(head) || !tokens.slice(1).includes('--test')) return null;
+  if (!isInsideWorkspaceCwd(workspaceRoot, cwd)) {
+    return { category: 'risky', reason: `${head} --test must run inside the worker workspace` };
+  }
+  const testPaths = pathLikeArgs(tokens);
+  if (testPaths.length > 0) {
+    const scoped = classifyPathSet(testPaths, workspaceRoot, cwd, `${head} --test`);
+    if (scoped.category === 'risky') return scoped;
+  }
+  return { category: 'workspace-write', reason: `${head} --test is a local test run in the worker workspace` };
+}
+
+const PYTHON_HEADS = new Set(['python', 'python3']);
+const PYTHON_TOOL_HEADS = new Set(['pytest', 'ruff', 'mypy', 'black', 'isort', 'flake8', 'pyright']);
+const SCRIPT_RUNNER_HEADS = new Set(['node', 'tsx', 'ts-node', 'bun', 'deno', 'bash', 'sh', 'zsh']);
+
+/**
+ * Running the project's own code or tooling from inside the worker's
+ * workspace: `python3 -m pytest`, `pytest`, `ruff`, `make`, `node scripts/x.js`,
+ * `bash scripts/check.sh`. These are what a writer needs to verify its work,
+ * so they are workspace-scoped actions (writers may, read-only seats may not)
+ * rather than unknown commands. Inline code (`-c`, `-e`, `--eval`) stays risky:
+ * it is not project code, and it can do anything.
+ */
+function classifyProjectExecution(
+  head: string,
+  tokens: string[],
+  workspaceRoot: string,
+  cwd: string | null,
+): CategoryResult | null {
+  const args = tokens.slice(1);
+  const inline = args.some((token) => ['-c', '-e', '--eval', '-p', '--print'].includes(token) || /^-[a-z]*c$/i.test(token));
+  let label: string | null = null;
+  let scriptPaths: string[] = [];
+  if (PYTHON_HEADS.has(head)) {
+    if (inline) return null;
+    const moduleIndex = args.indexOf('-m');
+    if (moduleIndex >= 0) {
+      label = `${head} -m ${args[moduleIndex + 1] ?? ''}`.trim();
+    } else {
+      const script = args.find((token) => !token.startsWith('-'));
+      if (!script) return null;
+      label = `${head} ${script}`;
+      scriptPaths = [script];
+    }
+  } else if (PYTHON_TOOL_HEADS.has(head)) {
+    label = head;
+  } else if (head === 'make' || head === 'just' || head === 'ninja' || head === 'cmake') {
+    label = head;
+  } else if (SCRIPT_RUNNER_HEADS.has(head)) {
+    if (inline) return null;
+    const script = args.find((token) => !token.startsWith('-'));
+    if (!script || !/[./]/.test(script)) return null;
+    label = `${head} ${script}`;
+    scriptPaths = [script];
+  } else if (head.startsWith('./') || head.startsWith('scripts/') || head.startsWith('bin/')) {
+    label = head;
+    scriptPaths = [head];
+  }
+  if (!label) return null;
+  if (!isInsideWorkspaceCwd(workspaceRoot, cwd)) {
+    return { category: 'risky', reason: `${label} must run inside the worker workspace` };
+  }
+  if (scriptPaths.length > 0) {
+    const scoped = classifyPathSet(scriptPaths, workspaceRoot, cwd, label);
+    if (scoped.category === 'risky') return scoped;
+  }
+  return { category: 'workspace-write', reason: `${label} runs project code inside the worker workspace` };
+}
+
+function isLocalPackageCheck(
+  head: string,
+  tokens: string[],
+  workspaceRoot: string,
+  cwd: string | null,
+): boolean {
+  if (!['npm', 'yarn', 'pnpm', 'bun'].includes(head)) return false;
+  if (!isInsideWorkspaceCwd(workspaceRoot, cwd)) return false;
   let index = 1;
-  // Only npx's non-installing flag is accepted here. In particular, `-p`
-  // means an npm package for npx and must remain risky.
-  if (tokens[index] === '--no-install') index += 1;
-  return tokens[index] === 'tsc' && isLocalTscCommand(tokens.slice(index));
+  while (index < tokens.length && tokens[index].startsWith('-')) {
+    const flag = tokens[index];
+    index += 1;
+    const inlineValue = flag.match(/^--(?:prefix|cwd|dir|workspace-root)=(.+)$/)?.[1];
+    if (inlineValue && !isInsideWorkspace(inlineValue, workspaceRoot, cwd)) return false;
+    if (PACKAGE_MANAGER_VALUE_FLAGS.has(flag) && !flag.includes('=')) {
+      const value = tokens[index];
+      if (!value || (['-C', '--dir', '--prefix', '--cwd', '--workspace-root'].includes(flag)
+        && !isInsideWorkspace(value, workspaceRoot, cwd))) return false;
+      index += 1;
+    }
+  }
+  const sub = tokens[index] ?? '';
+  // `run <script>` executes a script the project itself defines, from inside
+  // the worker's own checkout — the same trust as `npm test`.
+  if ((sub === 'run' || sub === 'run-script') && /^[a-z0-9:._@/-]+$/i.test(tokens[index + 1] ?? '')) return true;
+  return /^(?:test(?::[a-z0-9._-]+)?|build(?::[a-z0-9._-]+)?|lint(?::[a-z0-9._-]+)?|typecheck|check|tsc)$/.test(sub);
 }
 
 /**
@@ -509,6 +603,20 @@ function classifyPathSet(
 
 function classifyGitSegment(tokens: string[], workspaceRoot: string, cwd: string | null): CategoryResult {
   const args: string[] = [];
+  // `git -C <dir>` / `--git-dir` / `--work-tree` retarget the whole command.
+  // Anything but inspection against another repository crosses the envelope.
+  const retargets: string[] = [];
+  for (let index = 1; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    if (token === '-C' || token === '--git-dir' || token === '--work-tree') {
+      if (tokens[index + 1]) retargets.push(tokens[index + 1]);
+    } else if (/^-C.+/.test(token)) {
+      retargets.push(token.slice(2));
+    } else if (/^--(?:git-dir|work-tree)=/.test(token)) {
+      retargets.push(token.slice(token.indexOf('=') + 1));
+    }
+  }
+  const outsideTarget = retargets.find((target) => !isInsideWorkspace(target, workspaceRoot, cwd));
   for (let index = 1; index < tokens.length; index += 1) {
     const token = tokens[index];
     // These global git options consume the following token when they are not
@@ -526,6 +634,9 @@ function classifyGitSegment(tokens: string[], workspaceRoot: string, cwd: string
   const sub = args.find((token) => !token.startsWith('-')) ?? '';
   const rest = args.slice(args.indexOf(sub) + 1);
 
+  if (outsideTarget && !(GIT_READ_SUBCOMMANDS.has(sub) && sub !== 'config' && sub !== 'branch' && sub !== 'remote')) {
+    return { category: 'risky', reason: `git targets a repository outside the workspace: ${outsideTarget}` };
+  }
   if (GIT_RISKY_SUBCOMMANDS.has(sub)) {
     return { category: 'risky', reason: `git ${sub} reaches beyond the local worktree` };
   }
@@ -666,15 +777,22 @@ function classifyCommandSegment(
 
   let result: CategoryResult;
 
-  if (head === 'for' || head === 'case'
+  const localTest = classifyLocalTestCommand(head, tokens, workspaceRoot, cwd)
+    ?? classifyProjectExecution(head, tokens, workspaceRoot, cwd);
+  if (localTest) {
+    result = localTest;
+  } else if ((head === 'awk' || head === 'gawk' || head === 'nawk')
+    && /system\s*\(|\|\s*"|>\s*"|getline|-i\s*inplace/.test(segment)) {
+    result = { category: 'risky', reason: `${head} program executes commands or writes files` };
+  } else if (head === 'npx' && tokens[1] === '--no-install' && tokens.length > 2) {
+    result = isInsideWorkspaceCwd(workspaceRoot, cwd)
+      ? classifyCommandSegment(tokens.slice(2).join(' '), workspaceRoot, cwd, depth + 1)
+      : { category: 'risky', reason: 'npx --no-install must run inside the worker workspace' };
+  } else if (head === 'for' || head === 'case'
     || head === 'done' || head === 'fi' || head === 'esac') {
     // The body/condition is classified as its own segment. These tokens only
     // describe shell control flow and do not mutate state by themselves.
     result = { category: 'read', reason: `shell control-flow keyword "${head}"` };
-  } else if (isLocalNpxTscCommand(tokens)) {
-    result = cwd && isInsideWorkspace('.', workspaceRoot, cwd)
-      ? { category: 'read', reason: 'npx tsc --noEmit uses the local project typechecker' }
-      : { category: 'risky', reason: 'npx tsc must run inside the worker workspace' };
   } else if (ALWAYS_RISKY_COMMANDS.has(head)) {
     result = { category: 'risky', reason: `"${head}" requires privilege, spawns arbitrary code, or exposes the environment` };
   } else if (head === 'cd') {
@@ -736,8 +854,13 @@ function classifyCommandSegment(
       || sub === '-version'
       || ['build', 'test', 'run'].includes(sub)
       || (sub === 'package' && ['describe', 'dump-package', 'show-dependencies'].includes(packageSub));
-    result = safe
-      ? { category: 'read', reason: `swift ${sub} is a local build/test/inspection command` }
+    const builds = ['build', 'test', 'run'].includes(sub);
+    result = safe && builds
+      ? isInsideWorkspaceCwd(workspaceRoot, cwd)
+        ? { category: 'workspace-write', reason: `swift ${sub} builds/runs project code in the worker workspace` }
+        : { category: 'risky', reason: `swift ${sub} must run inside the worker workspace` }
+      : safe
+      ? { category: 'read', reason: `swift ${sub} is a local inspection command` }
       : { category: 'risky', reason: `unrecognized or stateful swift command "${[sub, packageSub].filter(Boolean).join(' ')}"` };
   } else if (head === 'dns-sd') {
     result = tokens.some((token) => ['-B', '-L', '-Q', '-G', '-Z'].includes(token))
@@ -755,7 +878,11 @@ function classifyCommandSegment(
   } else if (head === 'git') {
     result = classifyGitSegment(tokens, workspaceRoot, cwd);
   } else if (head === 'npm' || head === 'yarn' || head === 'pnpm' || head === 'bun') {
-    result = classifyNodePackageManager(head, tokens, workspaceRoot, cwd, depth);
+    if (isLocalPackageCheck(head, tokens, workspaceRoot, cwd)) {
+      result = { category: 'workspace-write', reason: `${head} ${tokens.slice(1).join(' ')} runs a local package check in the worker workspace` };
+    } else {
+      result = classifyNodePackageManager(head, tokens, workspaceRoot, cwd, depth);
+    }
   } else if (head === 'pip' || head === 'pip3' || head === 'uv') {
     const sub = tokens[1] ?? '';
     result = ['list', 'show', 'freeze', 'check'].includes(sub)
@@ -765,8 +892,14 @@ function classifyCommandSegment(
     const sub = tokens[1] ?? '';
     if (['install', 'get', 'add', 'publish'].includes(sub)) {
       result = { category: 'risky', reason: `${head} ${sub} installs packages` };
-    } else if (['build', 'test', 'check', 'clippy', 'vet', 'fmt', 'version', 'run'].includes(sub)) {
-      result = { category: 'read', reason: `${head} ${sub} is a local build/test command` };
+    } else if (sub === 'version') {
+      result = { category: 'read', reason: `${head} version is informational` };
+    } else if (['build', 'test', 'check', 'clippy', 'vet', 'fmt', 'run'].includes(sub)) {
+      // Builds write target/ and `run` executes project code: workspace-scoped,
+      // never a read (read-only seats must not run them).
+      result = isInsideWorkspaceCwd(workspaceRoot, cwd)
+        ? { category: 'workspace-write', reason: `${head} ${sub} builds/runs project code in the worker workspace` }
+        : { category: 'risky', reason: `${head} ${sub} must run inside the worker workspace` };
     } else {
       result = { category: 'risky', reason: `unrecognized ${head} subcommand "${sub}"` };
     }
@@ -830,12 +963,42 @@ function classifyCommandSegment(
   return result;
 }
 
+/**
+ * Drop heredoc bodies (`cat > f <<'EOF' … EOF`). The body is data fed to the
+ * command's stdin, not shell to execute; classifying each body line as its own
+ * command produced denials like "unrecognized command const". The command line
+ * itself (and its redirect target) is still classified.
+ */
+export function stripHeredocBodies(command: string): string {
+  if (!command.includes('<<')) return command;
+  const lines = command.split('\n');
+  const output: string[] = [];
+  let pending: Array<{ delimiter: string; stripTabs: boolean }> = [];
+  for (const line of lines) {
+    if (pending.length > 0) {
+      const current = pending[0];
+      const candidate = current.stripTabs ? line.replace(/^\t+/, '') : line;
+      if (candidate === current.delimiter) pending = pending.slice(1);
+      continue;
+    }
+    output.push(line);
+    const pattern = /<<(-?)\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\2/g;
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(line)) !== null) {
+      if (line[match.index + 2] === '<') continue; // here-string <<<
+      pending.push({ delimiter: match[3], stripTabs: match[1] === '-' });
+    }
+  }
+  return output.join('\n');
+}
+
 export function classifyCommand(
   command: string,
   workspaceRoot: string,
   cwd: string | null,
   depth = 0,
 ): CategoryResult {
+  command = stripHeredocBodies(command);
   // Unwrap BEFORE splitting: `zsh -lc "find x && rg y"` must not be shredded
   // into `zsh -lc "find x` + `rg y"` by the segment splitter.
   if (depth < MAX_SHELL_UNWRAP_DEPTH) {

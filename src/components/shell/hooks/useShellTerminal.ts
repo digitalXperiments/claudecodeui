@@ -7,7 +7,12 @@ import { WebglAddon } from '@xterm/addon-webgl';
 import { Terminal } from '@xterm/xterm';
 
 import { useTheme } from '../../../contexts/ThemeContext';
-import type { Project } from '../../../types/app';
+import type { Project, ProjectSession } from '../../../types/app';
+import {
+  CODEX_RUNTIME_STATE_CHANGED_EVENT,
+  type CodexRuntimeStateChangedDetail,
+} from '../../../constants/codexRuntimeEvents';
+import { parseGrokSlashCommand } from '../utils/grokRuntimeState';
 import { copyTextToClipboard } from '../../../utils/clipboard';
 import {
   TERMINAL_INIT_DELAY_MS,
@@ -65,7 +70,9 @@ type UseShellTerminalOptions = {
   fitAddonRef: MutableRefObject<FitAddon | null>;
   wsRef: MutableRefObject<WebSocket | null>;
   selectedProject: Project | null | undefined;
+  selectedSession: ProjectSession | null | undefined;
   minimal: boolean;
+  minimumContrastRatio?: number;
   isRestarting: boolean;
   closeSocket: () => void;
 };
@@ -82,11 +89,16 @@ export function useShellTerminal({
   fitAddonRef,
   wsRef,
   selectedProject,
+  selectedSession,
   minimal,
+  minimumContrastRatio,
   isRestarting,
   closeSocket,
 }: UseShellTerminalOptions): UseShellTerminalResult {
   const { isDarkMode } = useTheme();
+  const codexInputBufferRef = useRef('');
+  const selectedSessionRef = useRef(selectedSession);
+  selectedSessionRef.current = selectedSession;
   const [isInitialized, setIsInitialized] = useState(false);
   const resizeTimeoutRef = useRef<number | null>(null);
   const mobileSelectionRef = useRef<MobileTerminalSelectionManager | null>(null);
@@ -137,6 +149,7 @@ export function useShellTerminal({
 
     const nextTerminal = new Terminal({
       ...TERMINAL_OPTIONS,
+      ...(minimumContrastRatio === undefined ? {} : { minimumContrastRatio }),
       theme: getTerminalTheme(isDarkModeRef.current),
     });
     terminalRef.current = nextTerminal;
@@ -270,6 +283,41 @@ export function useShellTerminal({
     setIsInitialized(true);
 
     const dataSubscription = nextTerminal.onData((data) => {
+      const shellProvider = selectedSessionRef.current?.__provider
+        || localStorage.getItem('selected-provider');
+      if (shellProvider === 'codex') {
+        codexInputBufferRef.current = `${codexInputBufferRef.current}${data}`.slice(-200);
+        const completedLines = codexInputBufferRef.current.split(/[\r\n]/);
+        codexInputBufferRef.current = completedLines.pop() || '';
+        for (const line of completedLines) {
+          const fastCommand = line.trim().match(/^\/fast\s+(on|off)$/i);
+          if (fastCommand) {
+            const detail: CodexRuntimeStateChangedDetail = {
+              fastMode: fastCommand[1].toLowerCase() === 'on',
+            };
+            window.dispatchEvent(new CustomEvent<CodexRuntimeStateChangedDetail>(
+              CODEX_RUNTIME_STATE_CHANGED_EVENT,
+              { detail },
+            ));
+          }
+        }
+      } else if (shellProvider === 'grok') {
+        codexInputBufferRef.current = `${codexInputBufferRef.current}${data}`.slice(-240);
+        const completedLines = codexInputBufferRef.current.split(/[\r\n]/);
+        codexInputBufferRef.current = completedLines.pop() || '';
+        for (const line of completedLines) {
+          const detail = parseGrokSlashCommand(line);
+          if (detail.model || detail.effort) {
+            window.dispatchEvent(new CustomEvent('cloudcli:grok-runtime-state', {
+              detail: {
+                sessionId: selectedSessionRef.current?.id,
+                model: detail.model,
+                effort: detail.effort,
+              },
+            }));
+          }
+        }
+      }
       sendSocketMessage(wsRef.current, {
         type: 'input',
         data,
@@ -295,7 +343,12 @@ export function useShellTerminal({
           return;
         }
 
+        const wasAtBottom =
+          currentTerminal.buffer.active.viewportY >= currentTerminal.buffer.active.baseY;
         currentFitAddon.fit();
+        if (wasAtBottom) {
+          currentTerminal.scrollToBottom();
+        }
         sendSocketMessage(wsRef.current, {
           type: 'resize',
           cols: currentTerminal.cols,
@@ -324,6 +377,7 @@ export function useShellTerminal({
     isRestarting,
     hasSelectedProject,
     minimal,
+    minimumContrastRatio,
     selectedProjectKey,
     terminalContainerRef,
     terminalRef,

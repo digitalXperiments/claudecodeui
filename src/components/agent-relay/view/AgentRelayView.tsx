@@ -23,14 +23,6 @@ export default function AgentRelayView({ selectedProject, isVisible }: AgentRela
     { id: 'activity', label: 'Activity', icon: Activity },
   ];
   const projectId = isVisible ? selectedProject?.projectId ?? null : null;
-  // ActivityControl keeps a concrete session scope so its existing “All
-  // sessions” operator affordance remains available. Prefer a user session
-  // over an internal worker session when the project has both.
-  const activitySessionId = isVisible
-    ? selectedProject?.sessions?.find((session) => !session.isInternal)?.id
-      ?? selectedProject?.sessions?.[0]?.id
-      ?? null
-    : null;
 
   const handleTabKeyDown = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
     if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
@@ -96,7 +88,7 @@ export default function AgentRelayView({ selectedProject, isVisible }: AgentRela
           ) : tab === 'mcp' ? (
             <AgentRelayMcpToolsPanel />
           ) : (
-            <AgentRelayActivityControl projectId={projectId} sessionId={activitySessionId} embedded />
+            <AgentRelayActivityControl projectId={projectId} sessionId={null} scope="project" embedded />
           )}
         </div>
       </div>

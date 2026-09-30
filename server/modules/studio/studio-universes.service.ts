@@ -116,7 +116,7 @@ function aggregateStatus(variants: UniverseVariant[]): UniverseStatus {
   if (variants.some((variant) => variant.status === 'queued' || variant.status === 'running' || variant.status === 'waiting_approval')) {
     return 'running';
   }
-  const failed = variants.filter((variant) => variant.status === 'failed' || variant.status === 'cancelled' || variant.status === 'timed_out');
+  const failed = variants.filter((variant) => variant.status === 'failed' || variant.status === 'blocked' || variant.status === 'cancelled' || variant.status === 'timed_out');
   if (failed.length === variants.length) return 'failed';
   if (failed.length > 0) return 'partial';
   return 'ready';

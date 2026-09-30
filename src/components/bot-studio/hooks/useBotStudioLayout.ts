@@ -10,31 +10,31 @@ const MIN_CONTEXT_WIDTH = 320;
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 
-type LayoutState = { rosterWidth: number; contextWidth: number; rosterOpen: boolean; contextOpen: boolean };
-const DEFAULT_LAYOUT: LayoutState = { rosterWidth: 280, contextWidth: 400, rosterOpen: true, contextOpen: true };
+type LayoutState = { rosterWidth: number; contextWidth: number };
+const DEFAULT_LAYOUT: LayoutState = { rosterWidth: 280, contextWidth: 400 };
 
-export function maxRosterWidth(containerWidth: number, contextWidth: number, contextOpen = true): number {
+export function maxRosterWidth(containerWidth: number, contextWidth: number): number {
   if (containerWidth <= 0) return Number.MAX_SAFE_INTEGER;
-  return Math.max(MIN_ROSTER_WIDTH, containerWidth - MIN_CENTRE_WIDTH - (contextOpen ? HANDLE_WIDTH + contextWidth : 0) - HANDLE_WIDTH);
+  return Math.max(MIN_ROSTER_WIDTH, containerWidth - MIN_CENTRE_WIDTH - HANDLE_WIDTH - contextWidth - HANDLE_WIDTH);
 }
 
-export function maxContextWidth(containerWidth: number, rosterWidth: number, rosterOpen = true): number {
+export function maxContextWidth(containerWidth: number, rosterWidth: number): number {
   if (containerWidth <= 0) return Number.MAX_SAFE_INTEGER;
-  return Math.max(MIN_CONTEXT_WIDTH, containerWidth - MIN_CENTRE_WIDTH - (rosterOpen ? HANDLE_WIDTH + rosterWidth : 0) - HANDLE_WIDTH);
+  return Math.max(MIN_CONTEXT_WIDTH, containerWidth - MIN_CENTRE_WIDTH - HANDLE_WIDTH - rosterWidth - HANDLE_WIDTH);
 }
 
-function fitWidths(containerWidth: number, rosterWidth: number, contextWidth: number, rosterOpen: boolean, contextOpen: boolean): Pick<LayoutState, 'rosterWidth' | 'contextWidth'> {
+function fitWidths(containerWidth: number, rosterWidth: number, contextWidth: number): LayoutState {
   if (containerWidth <= 0) return { rosterWidth, contextWidth };
 
-  let nextRosterWidth = clamp(rosterWidth, MIN_ROSTER_WIDTH, maxRosterWidth(containerWidth, contextWidth, contextOpen));
-  let nextContextWidth = clamp(contextWidth, MIN_CONTEXT_WIDTH, maxContextWidth(containerWidth, nextRosterWidth, rosterOpen));
+  let nextRosterWidth = clamp(rosterWidth, MIN_ROSTER_WIDTH, maxRosterWidth(containerWidth, contextWidth));
+  let nextContextWidth = clamp(contextWidth, MIN_CONTEXT_WIDTH, maxContextWidth(containerWidth, nextRosterWidth));
 
   // If the minimum context width would squeeze the roster, give the roster the
   // remaining space while keeping the centre at its hard 480px minimum.
-  if (rosterOpen && contextOpen && nextContextWidth === MIN_CONTEXT_WIDTH) {
+  if (nextContextWidth === MIN_CONTEXT_WIDTH) {
     const rosterMaxWithMinimumContext = Math.max(MIN_ROSTER_WIDTH, containerWidth - MIN_CENTRE_WIDTH - (HANDLE_WIDTH * 2) - MIN_CONTEXT_WIDTH);
     nextRosterWidth = clamp(nextRosterWidth, MIN_ROSTER_WIDTH, rosterMaxWithMinimumContext);
-    nextContextWidth = clamp(nextContextWidth, MIN_CONTEXT_WIDTH, maxContextWidth(containerWidth, nextRosterWidth, rosterOpen));
+    nextContextWidth = clamp(nextContextWidth, MIN_CONTEXT_WIDTH, maxContextWidth(containerWidth, nextRosterWidth));
   }
 
   return { rosterWidth: nextRosterWidth, contextWidth: nextContextWidth };
@@ -46,8 +46,6 @@ function readLayout(): LayoutState {
     return {
       rosterWidth: Math.max(stored.rosterWidth ?? DEFAULT_LAYOUT.rosterWidth, MIN_ROSTER_WIDTH),
       contextWidth: Math.max(stored.contextWidth ?? DEFAULT_LAYOUT.contextWidth, MIN_CONTEXT_WIDTH),
-      rosterOpen: stored.rosterOpen ?? true,
-      contextOpen: stored.contextOpen ?? true,
     };
   } catch {
     return DEFAULT_LAYOUT;
@@ -85,26 +83,12 @@ export function useBotStudioLayout() {
   useEffect(() => {
     if (containerWidth <= 0) return;
     setLayout((current) => {
-      const fitted = fitWidths(containerWidth, current.rosterWidth, current.contextWidth, current.rosterOpen, current.contextOpen);
+      const fitted = fitWidths(containerWidth, current.rosterWidth, current.contextWidth);
       if (fitted.rosterWidth === current.rosterWidth && fitted.contextWidth === current.contextWidth) return current;
       return { ...current, ...fitted };
     });
   }, [containerWidth]);
 
-  const toggleRoster = useCallback(() => {
-    setLayout((current) => {
-      const rosterOpen = !current.rosterOpen;
-      return { ...current, rosterOpen, ...fitWidths(containerWidth, current.rosterWidth, current.contextWidth, rosterOpen, current.contextOpen) };
-    });
-  }, [containerWidth]);
-  const toggleContext = useCallback(() => {
-    const wasTemporarilyCollapsed = contextTemporarilyCollapsed;
-    setContextTemporarilyCollapsed(false);
-    setLayout((current) => {
-      const contextOpen = wasTemporarilyCollapsed ? true : !current.contextOpen;
-      return { ...current, contextOpen, ...fitWidths(containerWidth, current.rosterWidth, current.contextWidth, current.rosterOpen, contextOpen) };
-    });
-  }, [containerWidth, contextTemporarilyCollapsed]);
   const temporarilyCollapseContext = useCallback(() => setContextTemporarilyCollapsed(true), []);
   const restoreContext = useCallback(() => setContextTemporarilyCollapsed(false), []);
   const startResize = useCallback((target: 'roster' | 'context', event: React.PointerEvent) => {
@@ -120,8 +104,8 @@ export function useBotStudioLayout() {
       setLayout((current) => {
         const delta = event.clientX - active.startX;
         const next = active.target === 'roster'
-          ? clamp(active.startWidth + delta, MIN_ROSTER_WIDTH, maxRosterWidth(containerWidth, current.contextWidth, current.contextOpen))
-          : clamp(active.startWidth - delta, MIN_CONTEXT_WIDTH, maxContextWidth(containerWidth, current.rosterWidth, current.rosterOpen));
+          ? clamp(active.startWidth + delta, MIN_ROSTER_WIDTH, maxRosterWidth(containerWidth, current.contextWidth))
+          : clamp(active.startWidth - delta, MIN_CONTEXT_WIDTH, maxContextWidth(containerWidth, current.rosterWidth));
         return active.target === 'roster' ? { ...current, rosterWidth: next } : { ...current, contextWidth: next };
       });
     };
@@ -138,8 +122,6 @@ export function useBotStudioLayout() {
     containerRef,
     contextTemporarilyCollapsed,
     shouldTemporarilyCollapseContext,
-    toggleRoster,
-    toggleContext,
     temporarilyCollapseContext,
     restoreContext,
     startResize,

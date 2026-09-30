@@ -21,7 +21,9 @@ test('mweb expansion surfaces stay Safari 9 / ES5 compatible', async () => {
   assert.match(html, /id="screenReview"/);
   assert.doesNotMatch(html, /data-tool="relay"/);
   assert.doesNotMatch(html, /id="screenMore"/);
-  assert.doesNotMatch(source, /\/api\/agent-relay\/jobs/);
+  // The mobile Relay screen (approvals, cancel, follow-up, land) uses the
+  // authenticated Relay REST surface through the legacy XHR helper.
+  assert.match(source, /\/api\/agent-relay\/jobs/);
   assert.doesNotMatch(source, /\/api\/kanban\/global/);
   assert.doesNotMatch(source, /\/api\/notifications\/inbox/);
   assert.match(source, /X-Refreshed-Token/);

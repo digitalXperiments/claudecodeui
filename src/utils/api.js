@@ -196,7 +196,9 @@ export const api = {
   // config endpoint removed - no longer needed (frontend uses window.location)
   // After the projectName → projectId migration the path/query identifier is
   // the DB-assigned `projectId`; parameter names reflect that for clarity.
-  projects: () => authenticatedFetch('/api/projects'),
+  // DB-only by default; pass `{ sync: true }` from an explicit user refresh to
+  // force a full provider rescan on the server.
+  projects: ({ sync = false } = {}) => authenticatedFetch(sync ? '/api/projects?sync=1' : '/api/projects'),
   archivedProjects: () => authenticatedFetch('/api/projects/archived'),
   projectSessions: (projectId, { limit = 20, offset = 0 } = {}) => {
     const params = new URLSearchParams();

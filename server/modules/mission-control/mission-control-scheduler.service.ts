@@ -3,6 +3,8 @@ import { Cron } from 'croner';
 import { missionControlDb } from '@/modules/mission-control/mission-control.repository.js';
 import { runSectionProduce } from '@/modules/mission-control/mission-control-runner.service.js';
 
+import { drainWorkQueue, recoverWorkDispatches } from './mission-control-dispatch.service.js';
+
 /** Active cron jobs keyed by section id. */
 const jobs = new Map<string, Cron>();
 let started = false;
@@ -75,7 +77,10 @@ export function syncMissionControlSchedules(): void {
 }
 
 export function startMissionControlScheduler(): void {
+  if (started) return;
+  recoverWorkDispatches();
   started = true;
+  for (const section of missionControlDb.listSections()) drainWorkQueue(section.section_id);
   syncMissionControlSchedules();
 }
 

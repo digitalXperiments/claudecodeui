@@ -1,16 +1,35 @@
 import os from 'node:os';
 import path from 'node:path';
-import { readFile } from 'node:fs/promises';
 
 import { sessionsDb } from '@/modules/database/index.js';
 import {
-  buildLookupMap,
+  createIncrementalLookupMap,
+  createLastJsonlMatchScanner,
+} from '@/modules/providers/shared/jsonl/incremental-jsonl.js';
+import {
   extractFirstValidJsonlData,
   findFilesRecursivelyCreatedAfter,
   normalizeSessionName,
   readFileTimestamps,
 } from '@/shared/utils.js';
 import type { IProviderSessionSynchronizer } from '@/shared/interfaces.js';
+
+/**
+ * `~/.claude/history.jsonl` grows with every prompt the user ever typed; it
+ * used to be fully re-read on every watcher event. The incremental map only
+ * parses appended lines (first-wins semantics are append-stable).
+ */
+const historyNameMap = createIncrementalLookupMap('sessionId', 'display');
+
+/**
+ * Remembers, per transcript, the last title-bearing line and how far the file
+ * was scanned, so a streaming transcript's title lookup reads only the bytes
+ * appended since the previous watcher event instead of the whole file.
+ */
+const TITLE_LINE_MARKERS = ['"ai-title"', '"last-prompt"', '"custom-title"'];
+const titleScanner = createLastJsonlMatchScanner<string>({
+  lineFilter: (line) => TITLE_LINE_MARKERS.some((marker) => line.includes(marker)),
+});
 
 type ParsedSession = {
   sessionId: string;
@@ -44,7 +63,7 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
    * Scans ~/.claude/projects and upserts discovered sessions into DB.
    */
   async synchronize(since?: Date): Promise<number> {
-    const nameMap = await buildLookupMap(path.join(this.claudeHome, 'history.jsonl'), 'sessionId', 'display');
+    const nameMap = await historyNameMap.get(path.join(this.claudeHome, 'history.jsonl'));
     const files = await findFilesRecursivelyCreatedAfter(
       path.join(this.claudeHome, 'projects'),
       '.jsonl',
@@ -89,7 +108,7 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
       return null;
     }
 
-    const nameMap = await buildLookupMap(path.join(this.claudeHome, 'history.jsonl'), 'sessionId', 'display');
+    const nameMap = await historyNameMap.get(path.join(this.claudeHome, 'history.jsonl'));
     const parsed = await this.processSessionFile(filePath, nameMap);
     if (!parsed) {
       return null;
@@ -156,46 +175,41 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
     };
   }
 
+  /**
+   * Returns the title from the LAST `ai-title` / `last-prompt` /
+   * `custom-title` row for this session (same result as scanning the file
+   * backwards), reading only bytes appended since the previous lookup.
+   */
   private async extractSessionAiTitleFromEnd(
     filePath: string,
     sessionId: string
   ): Promise<string | undefined> {
     try {
-      const content = await readFile(filePath, 'utf8');
-      const lines = content.split(/\r?\n/);
-
-      for (let index = lines.length - 1; index >= 0; index -= 1) {
-        const line = lines[index]?.trim();
-        if (!line) {
-          continue;
+      return await titleScanner.scan(filePath, `claude-title:${sessionId}`, (value) => {
+        if (!value || typeof value !== 'object') {
+          return undefined;
         }
-
-        let parsed: unknown;
-        try {
-          parsed = JSON.parse(line);
-        } catch {
-          continue;
+        const data = value as Record<string, unknown>;
+        if (data.sessionId !== sessionId) {
+          return undefined;
         }
-
-        const data = parsed as Record<string, unknown>;
         const eventType = typeof data.type === 'string' ? data.type : undefined;
-        const eventSessionId = typeof data.sessionId === 'string' ? data.sessionId : undefined;
         const aiTitle = typeof data.aiTitle === 'string' ? data.aiTitle : undefined;
         const lastPrompt = typeof data.lastPrompt === 'string' ? data.lastPrompt : undefined;
         const claudeRenamedTitle = typeof data.customTitle === 'string' ? data.customTitle : undefined;
 
         if (
-          (eventType === 'ai-title' && eventSessionId === sessionId && aiTitle?.trim()) ||
-          (eventType === 'last-prompt' && eventSessionId === sessionId && lastPrompt?.trim()) ||
-          (eventType === "custom-title" && eventSessionId === sessionId && claudeRenamedTitle?.trim())
+          (eventType === 'ai-title' && aiTitle?.trim()) ||
+          (eventType === 'last-prompt' && lastPrompt?.trim()) ||
+          (eventType === 'custom-title' && claudeRenamedTitle?.trim())
         ) {
           return aiTitle || lastPrompt || claudeRenamedTitle;
         }
-      }
+        return undefined;
+      });
     } catch {
       // Ignore missing/unreadable files so sync can continue.
+      return undefined;
     }
-
-    return undefined;
   }
 }

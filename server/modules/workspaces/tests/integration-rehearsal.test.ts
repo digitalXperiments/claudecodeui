@@ -196,8 +196,12 @@ test('dirty and invalid inputs are rejected and primary stays unchanged', async 
     await writeFile(path.join(a.root_path, 'uncommitted.txt'), 'nope\n');
 
     await assert.rejects(
-      () => rehearsal.run({ projectId, workspaceIds: [a.workspace_id], baseSha }),
+      () => rehearsal.run({ projectId, workspaceIds: [], baseSha }),
       (error: unknown) => error instanceof CloudError && error.code === 'WORKSPACE_CREATE_FAILED',
+    );
+    await assert.rejects(
+      () => rehearsal.run({ projectId, workspaceIds: [a.workspace_id], baseSha }),
+      (error: unknown) => error instanceof CloudError && error.code === 'WORKSPACE_DIRTY_CONFLICT',
     );
     await assert.rejects(
       () =>

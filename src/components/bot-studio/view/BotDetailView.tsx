@@ -1,43 +1,47 @@
 import { useEffect, useState } from 'react';
-import { Check, Copy, MoreHorizontal, Pencil, Play, Power, Trash2 } from 'lucide-react';
+import { Check, Copy, FlaskConical, MoreHorizontal, Pencil, Play, Power, TestTube2, Trash2 } from 'lucide-react';
 
 import type { CreateMcSectionInput } from '../../mission-control/api/missionControlApi';
 import { Button } from '../../../shared/view/ui';
-import SegmentedControl from '../ui/SegmentedControl';
 import Toggle from '../ui/Toggle';
 import Tabs from '../ui/Tabs';
 import BotIcon from '../ui/BotIcon';
-import StatusPill from '../ui/StatusPill';
-import type { BotAutonomy } from '../types';
-import { botPatch, formatAge } from '../types';
+import { formatAge, pipelineStages } from '../types';
 import { isRunActive } from '../ui/runFormatting';
 
 import OverviewTab from './tabs/OverviewTab';
-import BriefTab from './tabs/BriefTab';
-import ToolsTab from './tabs/ToolsTab';
-import TriggersTab from './tabs/TriggersTab';
-import OutputsActionsTab from './tabs/OutputsActionsTab';
-import TicksTab from './tabs/TicksTab';
-import DangerTab from './tabs/DangerTab';
+import PipelineTab from './tabs/PipelineTab';
+import SimulatorTab from './tabs/SimulatorTab';
+import HistoryTab from './tabs/HistoryTab';
+import SettingsTab from './tabs/SettingsTab';
 import type { BotDetailViewProps } from './contracts';
+import { DETAIL_TABS, resolveDetailTab, type DetailFocus, type DetailTab } from './detail/detailTabs';
 
-export type DetailTab = 'overview' | 'inbox' | 'brief' | 'tools' | 'triggers' | 'outputs' | 'ticks' | 'danger';
-const DETAIL_TABS: DetailTab[] = ['overview', 'inbox', 'brief', 'tools', 'triggers', 'outputs', 'ticks', 'danger'];
+export type { DetailTab } from './detail/detailTabs';
 
-export default function BotDetailView({ bot, projectName, workProjectName, items, runs, onUpdate, onRun, onCancelRun, onDelete, onDuplicate, onEdit, onSelectItem, selectedTab, onTabChange, onSelectRun }: BotDetailViewProps) {
-  const initialTab = DETAIL_TABS.includes(selectedTab as DetailTab) ? selectedTab as DetailTab : 'overview';
-  const [tab, setTab] = useState<DetailTab>(initialTab);
+export default function BotDetailView({ workProjects = [], bot, projectName, workProjectName, items, runs, onUpdate, onRun, onCancelRun, onDelete, onDuplicate, onEdit, onSelectItem, selectedTab, onTabChange, onSelectRun }: BotDetailViewProps) {
+  const initial = resolveDetailTab(selectedTab);
+  const [tab, setTab] = useState<DetailTab>(initial.tab);
+  const [focus, setFocus] = useState<DetailFocus>(initial.focus);
   const [busy, setBusy] = useState(false);
   const hasActiveRun = runs.some((run) => isRunActive(run.status));
   const [notice, setNotice] = useState<string | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
-  const [briefDirty, setBriefDirty] = useState(false);
+  const [pipelineDirty, setPipelineDirty] = useState(false);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
-  useEffect(() => { if (selectedTab && DETAIL_TABS.includes(selectedTab as DetailTab)) setTab(selectedTab as DetailTab); }, [selectedTab]);
-  const changeTab = (nextTab: DetailTab) => { if (nextTab !== tab && briefDirty && !window.confirm('Discard unsaved brief changes?')) return; setBriefDirty(false); setTab(nextTab); onTabChange?.(nextTab); };
+  useEffect(() => {
+    if (!selectedTab) return;
+    const next = resolveDetailTab(selectedTab);
+    setTab(next.tab);
+    setFocus(next.focus);
+    // Rewrite legacy deep links (e.g. /tools) to the consolidated tab id.
+    if (next.legacy) onTabChange?.(next.tab);
+  }, [selectedTab]); // eslint-disable-line react-hooks/exhaustive-deps -- react to URL changes only
+  const changeTab = (nextTab: DetailTab, nextFocus: DetailFocus = null) => { if (nextTab !== tab && pipelineDirty && !window.confirm('Discard unsaved pipeline changes?')) return; if (nextTab !== tab) setPipelineDirty(false); setTab(nextTab); setFocus(nextFocus); onTabChange?.(nextTab); };
   const run = async () => { setBusy(true); setNotice(null); try { const result = await onRun(); setNotice(result.created ? `Tick started · ${result.created} item${result.created === 1 ? '' : 's'} created.` : `Tick skipped${result.skipped ? ` · ${result.skipped} skipped` : ''}.`); } catch (error) { setNotice(error instanceof Error ? error.message : 'Unable to run bot.'); } finally { setBusy(false); } };
   const update = async (patch: Partial<CreateMcSectionInput>) => { setBusy(true); setNotice(null); try { await onUpdate(patch); setNotice('Bot updated.'); } catch (error) { setNotice(error instanceof Error ? error.message : 'Unable to update bot.'); throw error; } finally { setBusy(false); } };
   const duplicate = async () => { setMenuOpen(false); setBusy(true); try { await onDuplicate(); } catch (error) { setNotice(error instanceof Error ? error.message : 'Unable to duplicate bot.'); } finally { setBusy(false); } };
+  const stages = pipelineStages(bot);
   const deleteBot = async () => { setMenuOpen(false); if (!window.confirm(`Delete “${bot.title}”?`)) return; setBusy(true); try { await onDelete(); } catch (error) { setNotice(error instanceof Error ? error.message : 'Unable to delete bot.'); setBusy(false); } };
   return (
     <section className="flex min-h-0 flex-1 flex-col bg-muted/10">
@@ -58,6 +62,7 @@ export default function BotDetailView({ bot, projectName, workProjectName, items
           </div>
           <div className="flex shrink-0 basis-auto items-center gap-2 max-[720px]:basis-full max-[720px]:justify-end">
             <Button size="sm" variant="ghost" onClick={onEdit} title="Edit in Architect"><Pencil className="h-3.5 w-3.5" /><span className="hidden md:inline">Architect</span></Button>
+            <Button size="sm" variant="outline" onClick={() => changeTab('test')} title="Simulate a bot tick"><FlaskConical className="h-3.5 w-3.5" /><span className="hidden md:inline">Simulate</span></Button>
             <Button size="sm" onClick={() => void run()} disabled={busy || hasActiveRun} title={hasActiveRun ? 'A tick is already running' : 'Run bot now'}><Play className="h-3.5 w-3.5" /><span className="hidden md:inline">Run now</span></Button>
             <div className="relative">
               <Button size="icon" variant="ghost" onClick={() => setMenuOpen((open) => !open)} aria-label="Bot actions" aria-expanded={menuOpen} title="More bot actions"><MoreHorizontal className="h-4 w-4" /></Button>
@@ -65,18 +70,15 @@ export default function BotDetailView({ bot, projectName, workProjectName, items
             </div>
           </div>
         </div>
-        <div className="mt-4 flex flex-wrap items-center gap-3"><SegmentedControl value={bot.autonomy} onChange={(value: BotAutonomy) => void update(botPatch(value))} label="Bot autonomy" options={[{ value: 'dry_run', label: 'Dry run' }, { value: 'propose', label: 'Propose' }, { value: 'act', label: 'Act' }]} /><label className="flex items-center gap-2 text-xs text-muted-foreground"><Toggle checked={bot.enabled} onChange={(enabled) => void update({ enabled })} label="Enable bot" /><span className="flex items-center gap-1"><Power className="h-3 w-3" />{bot.enabled ? 'Enabled' : 'Paused'}</span></label>{notice ? <span className="flex items-center gap-1 text-xs text-muted-foreground" role="status"><Check className="h-3.5 w-3.5 text-emerald-600" />{notice}</span> : null}</div>
+        <div className="mt-4 flex flex-wrap items-center gap-3"><label className="flex items-center gap-2 text-xs text-muted-foreground"><Toggle checked={bot.enabled} onChange={(enabled) => void update({ enabled })} label="Enable bot" /><span className="flex items-center gap-1"><Power className="h-3 w-3" />{bot.enabled ? 'Enabled' : 'Paused'}</span></label><label className="flex items-center gap-2 text-xs text-muted-foreground" title="Test switch: ticks preview items without resolving or starting work"><Toggle checked={bot.dry_run} onChange={(dry_run) => void update({ dry_run }).catch(() => undefined)} label="Dry run" /><span className="flex items-center gap-1"><TestTube2 className="h-3 w-3" />Dry run</span></label><div className="flex flex-wrap items-center gap-1" aria-label="Pipeline"><span className="rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">Propose</span><span className={`rounded-full px-2 py-0.5 text-[10px] ${stages.resolve === 'none' ? 'bg-muted/50 text-muted-foreground/60 line-through' : stages.resolve === 'auto' ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' : 'bg-amber-500/10 text-amber-700 dark:text-amber-300'}`}>Resolve · {stages.resolve}</span><span className={`rounded-full px-2 py-0.5 text-[10px] ${stages.work === 'none' ? 'bg-muted/50 text-muted-foreground/60 line-through' : stages.work === 'auto' ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' : 'bg-amber-500/10 text-amber-700 dark:text-amber-300'}`}>Work · {stages.work}</span>{bot.dry_run ? <span className="rounded-full bg-violet-500/10 px-2 py-0.5 text-[10px] font-medium text-violet-700 dark:text-violet-300">Dry run</span> : null}</div>{notice ? <span className="flex items-center gap-1 text-xs text-muted-foreground" role="status"><Check className="h-3.5 w-3.5 text-emerald-600" />{notice}</span> : null}</div>
       </header>
-      <Tabs value={tab} onChange={changeTab} options={[{ value: 'overview', label: 'Overview' }, { value: 'inbox', label: `Inbox${bot.pending ? ` · ${bot.pending}` : ''}` }, { value: 'brief', label: 'Brief' }, { value: 'tools', label: 'Tools' }, { value: 'triggers', label: 'Triggers' }, { value: 'outputs', label: 'Outputs & actions' }, { value: 'ticks', label: 'Ticks' }, { value: 'danger', label: 'Danger' }]} />
+      <Tabs value={tab} onChange={(next) => changeTab(next)} options={DETAIL_TABS.map((entry) => ({ value: entry.value, label: entry.value === 'overview' && bot.pending ? `${entry.label} · ${bot.pending}` : entry.label }))} />
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
-        {tab === 'overview' ? <OverviewTab bot={bot} items={items} runs={runs} /> : null}
-        {tab === 'inbox' ? <div className="space-y-2 p-4 sm:p-6">{items.length ? items.map((item) => <button key={item.item_id} type="button" onClick={() => onSelectItem(item)} className="block w-full rounded-xl border border-border/70 bg-card p-3 text-left hover:border-primary/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"><div className="flex items-center justify-between gap-3"><p className="min-w-0 truncate text-xs font-semibold">{item.title}</p><StatusPill status={item.status} /></div><p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{item.summary || 'No summary provided.'}</p></button>) : <p className="text-xs text-muted-foreground">This bot has no inbox items.</p>}</div> : null}
-        {tab === 'brief' ? <BriefTab bot={bot} onSave={update} onDirtyChange={setBriefDirty} /> : null}
-        {tab === 'tools' ? <ToolsTab bot={bot} onSave={update} /> : null}
-        {tab === 'triggers' ? <TriggersTab bot={bot} onSave={update} /> : null}
-        {tab === 'outputs' ? <OutputsActionsTab bot={bot} onSave={update} /> : null}
-        {tab === 'ticks' ? <TicksTab bot={bot} runs={runs} onSelectRun={(run) => { setSelectedRunId(run.run_id); onSelectRun?.(run); }} selectedRunId={selectedRunId} onRun={() => void run()} onCancelRun={onCancelRun} /> : null}
-        {tab === 'danger' ? <DangerTab bot={bot} onDelete={onDelete} onResetPolicy={() => update({ tool_policy: {} })} /> : null}
+        {tab === 'overview' ? <OverviewTab bot={bot} items={items} runs={runs} onSelectItem={onSelectItem} onOpenSettings={() => changeTab('settings')} onOpenHistory={() => changeTab('history')} /> : null}
+        {tab === 'pipeline' ? <PipelineTab key={bot.section_id} bot={bot} projects={workProjects} onSave={update} onDirtyChange={setPipelineDirty} focus={focus} /> : null}
+        {tab === 'test' ? <SimulatorTab key={bot.section_id} bot={bot} items={items} /> : null}
+        {tab === 'history' ? <HistoryTab key={`${bot.section_id}-${focus ?? ''}`} bot={bot} runs={runs} initialView={focus === 'versions' ? 'versions' : 'ticks'} selectedRunId={selectedRunId} onSelectRun={(run) => { setSelectedRunId(run.run_id); onSelectRun?.(run); }} onRun={() => void run()} onCancelRun={onCancelRun} /> : null}
+        {tab === 'settings' ? <SettingsTab bot={bot} items={items} onOpenPipeline={() => changeTab('pipeline', 'propose')} onDelete={onDelete} onResetPolicy={() => update({ tool_policy: {} })} /> : null}
       </div>
     </section>
   );

@@ -171,3 +171,6 @@ opencode.json
 cloudcli-sidebar-app-source.tar.gz
 cloudcli-sidebar.html
 electron/*.tar.gz
+.omp/
+.pi/
+.qwen/

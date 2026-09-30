@@ -114,6 +114,14 @@ export function disableRelayImpactMessage(status: AgentRelayRuntimeStatus | null
   return `Disabling Agent Relay will cancel ${count} active or queued worker ${count === 1 ? 'job' : 'jobs'}. This cannot be undone.`;
 }
 
+export function shouldConfirmDisableAtSave(
+  savedEnabled: boolean,
+  nextEnabled: boolean,
+  status: AgentRelayRuntimeStatus | null,
+): boolean {
+  return savedEnabled && !nextEnabled && activeRelayJobCount(status) > 0;
+}
+
 export default function AgentRelaySettingsForm() {
   const { subscribe } = useWebSocket();
   const [settings, setSettings] = useState<AgentRelaySettings | null>(null);
@@ -190,7 +198,7 @@ export default function AgentRelaySettingsForm() {
     };
   }, []);
 
-  const save = async () => {
+  const save = async (disableConfirmed = false) => {
     if (!settings) return;
     if (settings.enabled && settings.leadProviders.length === 0) {
       setError('Select at least one lead agent before enabling Agent Relay.');
@@ -210,10 +218,29 @@ export default function AgentRelaySettingsForm() {
         return;
       }
     }
-    setSaving(true);
     setError(null);
     setSyncError(null);
     setSyncWarnings([]);
+
+    const disabling = Boolean(savedSettings?.enabled && !settings.enabled);
+    if (disabling && !disableConfirmed) {
+      setSaving(true);
+      try {
+        const freshStatus = await agentRelayApi.getStatus();
+        setStatus(freshStatus);
+        if (shouldConfirmDisableAtSave(Boolean(savedSettings?.enabled), settings.enabled, freshStatus)) {
+          setDisableConfirmOpen(true);
+          return;
+        }
+      } catch (caught) {
+        setError(caught instanceof Error ? caught.message : 'Could not verify active Agent Relay jobs before disabling.');
+        return;
+      } finally {
+        setSaving(false);
+      }
+    }
+
+    setSaving(true);
     let persisted: AgentRelaySettings;
     try {
       persisted = hydrateSettings(await agentRelayApi.updateSettings(settings));
@@ -233,28 +260,19 @@ export default function AgentRelaySettingsForm() {
       .then(setStatus)
       .catch(() => undefined);
 
-    try {
-      const synced = await agentRelayApi.sync();
-      setSyncWarnings(synced.warnings);
-      setSyncError(null);
-    } catch (caught) {
-      setSyncError(caught instanceof Error ? caught.message : 'Could not sync Agent Relay integrations.');
-    } finally {
-      setSaving(false);
-    }
+    // PUT /settings owns the managed integration sync and reports failure by
+    // rejecting the save. Keep the separate Resync action for an explicit
+    // repair instead of running a second sync after every successful save.
+    setSaving(false);
   };
 
   const handleEnabledChange = (enabled: boolean) => {
-    if (!enabled && settings?.enabled && disableRelayImpactMessage(status)) {
-      setDisableConfirmOpen(true);
-      return;
-    }
     setSettings((current) => current ? { ...current, enabled } : current);
   };
 
   const confirmDisable = () => {
     setDisableConfirmOpen(false);
-    setSettings((current) => current ? { ...current, enabled: false } : current);
+    void save(true);
   };
 
   const runSync = async () => {
@@ -264,6 +282,11 @@ export default function AgentRelaySettingsForm() {
     setSyncWarnings([]);
     try {
       const synced = await agentRelayApi.sync();
+      if (synced.settings) {
+        const syncedSettings = hydrateSettings(synced.settings);
+        setSettings(syncedSettings);
+        setSavedSettings(syncedSettings);
+      }
       setSyncWarnings(synced.warnings);
       window.dispatchEvent(new Event('agentRelaySettingsChanged'));
       void agentRelayApi.getStatus()
@@ -578,7 +601,7 @@ export default function AgentRelaySettingsForm() {
           <div className="flex flex-wrap items-start justify-between gap-3 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-800 dark:text-amber-200">
             <div className="flex items-start gap-2">
               <CircleAlert className="mt-0.5 h-4 w-4 shrink-0" />
-              <span>Settings saved, but provider bindings could not be refreshed: {syncError}</span>
+              <span>Integration sync failed: {syncError}</span>
             </div>
             <Button variant="outline" size="sm" onClick={() => void runSync()} disabled={syncing || saving}>
               {syncing ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
@@ -937,7 +960,7 @@ export default function AgentRelaySettingsForm() {
               </select>
             </label>
             <label className="space-y-1.5 text-xs font-medium text-muted-foreground">
-              <span title="Auto applies the task's permission envelope locally and only relays risky or unknown actions. Manual also asks before isolated-worktree writes.">
+              <span title="Auto runs workers inside an OS sandbox and approves everything inside it; only boundary crossings (push, publish, sudo) are denied and reported. Manual asks before isolated-worktree writes.">
                 Approval policy
               </span>
               <select
@@ -957,7 +980,7 @@ export default function AgentRelaySettingsForm() {
               <GitBranch className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
               <div>
                 <div className="text-sm font-medium text-foreground">One worktree and branch per isolated writer</div>
-                <div className="mt-0.5 text-xs text-muted-foreground">Relay never auto-rebases or merges. The lead reviews each diff and integrates branches deliberately.</div>
+                <div className="mt-0.5 text-xs text-muted-foreground">Each worktree starts from a snapshot of your checkout, including uncommitted files. Landing applies only the worker's own changes and never commits your edits.</div>
               </div>
             </div>
             <label className="flex items-center gap-2 text-xs font-medium text-foreground">
@@ -969,6 +992,101 @@ export default function AgentRelaySettingsForm() {
                 className="h-4 w-4 accent-primary"
               />
               Install delegation skill
+            </label>
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-border bg-card p-4">
+          <h4 className="text-sm font-semibold text-foreground">Sandbox and delivery</h4>
+          <p className="mt-1 text-xs leading-5 text-muted-foreground">
+            Workers run inside an OS sandbox (Claude SDK sandbox, Codex seatbelt, or sandbox-exec around Grok/OpenCode-family CLIs): their worktree is writable, your checkout, home directory, and credentials are not. Inside it, nothing needs approval.
+          </p>
+          <div className="mt-4 grid gap-4 sm:grid-cols-2">
+            <label className="space-y-1.5 text-xs font-medium text-muted-foreground">
+              Worker sandbox
+              <select
+                value={settings.workerSandbox}
+                onChange={(event) => setSettings((current) => current ? { ...current, workerSandbox: event.target.value as AgentRelaySettings['workerSandbox'] } : current)}
+                disabled={saving || syncing}
+                className="h-10 w-full rounded-lg border border-border bg-background px-3 text-sm text-foreground"
+              >
+                <option value="enforce">Enforce (recommended)</option>
+                <option value="off">Off — command classification only</option>
+              </select>
+            </label>
+            <label className="space-y-1.5 text-xs font-medium text-muted-foreground">
+              Worker network
+              <select
+                value={settings.workerNetwork}
+                onChange={(event) => setSettings((current) => current ? { ...current, workerNetwork: event.target.value as AgentRelaySettings['workerNetwork'] } : current)}
+                disabled={saving || syncing}
+                className="h-10 w-full rounded-lg border border-border bg-background px-3 text-sm text-foreground"
+              >
+                <option value="open">Open (package installs, localhost)</option>
+                <option value="restricted">Restricted (localhost only)</option>
+              </select>
+            </label>
+            <label className="space-y-1.5 text-xs font-medium text-muted-foreground sm:col-span-2">
+              <span title="Domains Claude workers may reach when network is open. Leave empty for npm, PyPI, GitHub, crates.io, Go proxy, and localhost.">Allowed domains (Claude workers)</span>
+              <input
+                value={settings.workerAllowedDomains.join(', ')}
+                onChange={(event) => setSettings((current) => current ? { ...current, workerAllowedDomains: event.target.value.split(',').map((entry) => entry.trim()).filter(Boolean) } : current)}
+                placeholder="Default: registry.npmjs.org, pypi.org, github.com, localhost, …"
+                disabled={saving || syncing}
+                className="h-10 w-full rounded-lg border border-border bg-background px-3 text-sm text-foreground"
+              />
+            </label>
+            <label className="space-y-1.5 text-xs font-medium text-muted-foreground sm:col-span-2">
+              <span title="Granted to every worker whose provider honors MCP grants, e.g. project memory or a localhost browser.">Default MCP servers for workers</span>
+              <input
+                value={settings.defaultWorkerMcpServers.join(', ')}
+                onChange={(event) => setSettings((current) => current ? { ...current, defaultWorkerMcpServers: event.target.value.split(',').map((entry) => entry.trim()).filter(Boolean) } : current)}
+                placeholder="e.g. obsidian, cloudcli-browser"
+                disabled={saving || syncing}
+                className="h-10 w-full rounded-lg border border-border bg-background px-3 text-sm text-foreground"
+              />
+            </label>
+          </div>
+          <div className="mt-4 grid gap-2 sm:grid-cols-2">
+            <label className="flex items-start gap-2 text-xs text-foreground">
+              <input
+                type="checkbox"
+                checked={settings.autoVerify}
+                onChange={(event) => setSettings((current) => current ? { ...current, autoVerify: event.target.checked } : current)}
+                disabled={saving || syncing}
+                className="mt-0.5 h-4 w-4 accent-primary"
+              />
+              <span><span className="font-medium">Verify writers automatically</span><span className="block text-muted-foreground">Run the project checks in each writer's worktree as soon as it finishes.</span></span>
+            </label>
+            <label className="flex items-start gap-2 text-xs text-foreground">
+              <input
+                type="checkbox"
+                checked={settings.autoRehearse}
+                onChange={(event) => setSettings((current) => current ? { ...current, autoRehearse: event.target.checked } : current)}
+                disabled={saving || syncing || !settings.autoVerify}
+                className="mt-0.5 h-4 w-4 accent-primary"
+              />
+              <span><span className="font-medium">Rehearse batches automatically</span><span className="block text-muted-foreground">When a batch settles, apply its verified writers onto a copy of your checkout and run the checks there.</span></span>
+            </label>
+            <label className="flex items-start gap-2 text-xs text-foreground">
+              <input
+                type="checkbox"
+                checked={settings.autoLand === 'on_pass'}
+                onChange={(event) => setSettings((current) => current ? { ...current, autoLand: event.target.checked ? 'on_pass' : 'off' } : current)}
+                disabled={saving || syncing || !settings.autoRehearse}
+                className="mt-0.5 h-4 w-4 accent-primary"
+              />
+              <span><span className="font-medium">Land passing rehearsals automatically</span><span className="block text-muted-foreground">Off by default. Clean files are committed; files you also edited are merged and left uncommitted.</span></span>
+            </label>
+            <label className="flex items-start gap-2 text-xs text-foreground">
+              <input
+                type="checkbox"
+                checked={settings.allowLeadManualApproval}
+                onChange={(event) => setSettings((current) => current ? { ...current, allowLeadManualApproval: event.target.checked } : current)}
+                disabled={saving || syncing}
+                className="mt-0.5 h-4 w-4 accent-primary"
+              />
+              <span><span className="font-medium">Let leads choose manual approval</span><span className="block text-muted-foreground">Off by default: a lead's per-task "manual" request is replaced by your default policy.</span></span>
             </label>
           </div>
         </div>
@@ -1009,7 +1127,7 @@ export default function AgentRelaySettingsForm() {
             </div>
             <div className="rounded-lg border border-border/70 p-3">
               <dt className="text-[11px] uppercase tracking-wide text-muted-foreground">Worktrees</dt>
-              <dd className="mt-1 text-xs text-foreground">Isolated writers only. No auto-merge.</dd>
+              <dd className="mt-1 text-xs text-foreground">Isolated writers only. Removed after landing or discard; unlanded work is kept.</dd>
             </div>
           </dl>
         </div>
@@ -1038,7 +1156,7 @@ export default function AgentRelaySettingsForm() {
           <div className="border-b border-border/60 px-4 py-4">
             <div className="text-base font-medium text-foreground">Disable Agent Relay?</div>
             <p className="mt-1 text-sm leading-6 text-muted-foreground">
-              {disableRelayImpactMessage(status)} Provider-native MCP and skill bindings will be removed when you save. A new lead chat will be needed if you enable Relay again.
+              {disableRelayImpactMessage(status) ?? 'No active or queued worker jobs are currently running.'} Provider-native MCP and skill bindings will be removed when you save. A new lead chat will be needed if you enable Relay again.
             </p>
           </div>
           <div className="flex items-center justify-end gap-2 px-4 py-3">

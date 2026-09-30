@@ -528,3 +528,39 @@ test('resolveResumeModel prefers a stored changed model over the requested one',
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
+
+test('resolveResumeModel caches the overrides file by mtime and sees external rewrites', async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'provider-model-change-cache-'));
+  const activeModelChangesPath = path.join(tempRoot, 'session-model-changes.json');
+
+  try {
+    const service = createProviderModelsService({
+      activeModelChangesPath,
+      resolveProvider: (provider) => ({
+        models: {
+          getSupportedModels: async () => createModels(`${provider}-models`),
+          getCurrentActiveModel: async () => createCurrentActiveModel(`${provider}-active`),
+          changeActiveModel: async (input) => createSessionActiveModelChange(provider, input),
+        },
+      }),
+    });
+
+    // No file yet: falls back to the requested model (and caches "missing").
+    assert.equal(await service.resolveResumeModel('claude', 'sess-1', 'sonnet'), 'sonnet');
+
+    await writeProviderSessionActiveModelChange('claude', { sessionId: 'sess-1', model: 'opus' }, {
+      filePath: activeModelChangesPath,
+    });
+    assert.equal(await service.resolveResumeModel('claude', 'sess-1', 'sonnet'), 'opus');
+    // Served from cache while the file is unchanged.
+    assert.equal(await service.resolveResumeModel('claude', 'sess-1', 'sonnet'), 'opus');
+
+    // A rewrite with different content changes size/mtime and busts the cache.
+    await writeProviderSessionActiveModelChange('claude', { sessionId: 'sess-1', model: 'haiku-long-name' }, {
+      filePath: activeModelChangesPath,
+    });
+    assert.equal(await service.resolveResumeModel('claude', 'sess-1', 'sonnet'), 'haiku-long-name');
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});

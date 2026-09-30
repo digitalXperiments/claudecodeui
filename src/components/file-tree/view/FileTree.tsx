@@ -48,7 +48,7 @@ export default function FileTree({ selectedProject, onFileOpen }: FileTreeProps)
     }
   }, [toast]);
 
-  const { files, loading, refreshFiles } = useFileTreeData(selectedProject);
+  const { files, loading, error, refreshFiles } = useFileTreeData(selectedProject);
   const { viewMode, changeViewMode } = useFileTreeViewMode();
   const { expandedDirs, toggleDirectory, expandDirectories, collapseAll } = useExpandedDirectories();
   const { searchQuery, setSearchQuery, filteredFiles } = useFileTreeSearch({
@@ -127,6 +127,9 @@ export default function FileTree({ selectedProject, onFileOpen }: FileTreeProps)
   // and only spins the header refresh icon via the `loading` prop.
   if (loading && files.length === 0) {
     return <FileTreeLoadingState />;
+  }
+  if (error && files.length === 0) {
+    return <FileTreeLoadingState error={error} onRetry={refreshFiles} />;
   }
 
   return (

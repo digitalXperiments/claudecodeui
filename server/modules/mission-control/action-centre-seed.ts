@@ -178,10 +178,6 @@ export function buildWorkGmailSectionInput(): CreateMcSectionInput {
     }),
     resolve_tools: ['claude.ai Gmail'],
     actions: GMAIL_ACTIONS,
-    create_kanban_task: false,
-    kanban_assignee_provider: null,
-    kanban_review_provider: null,
-    kanban_mcp_tools: [],
   };
 }
 
@@ -214,10 +210,6 @@ export function buildPersonalGmailSectionInput(): CreateMcSectionInput {
     }),
     resolve_tools: ['Composio'],
     actions: GMAIL_ACTIONS,
-    create_kanban_task: false,
-    kanban_assignee_provider: null,
-    kanban_review_provider: null,
-    kanban_mcp_tools: [],
   };
 }
 
@@ -344,9 +336,5 @@ export function buildSlackSectionInput(): CreateMcSectionInput {
     resolve_prompt: buildSlackResolvePrompt(),
     resolve_tools: ['claude.ai Slack', 'obsidian'],
     actions: SLACK_ACTIONS,
-    create_kanban_task: false,
-    kanban_assignee_provider: null,
-    kanban_review_provider: null,
-    kanban_mcp_tools: [],
   };
 }

@@ -1287,6 +1287,9 @@ export function sanitizeLeafDirectoryName(inputName: string, label = 'directory 
 
 // ---------------------------
 //----------------- SESSION SYNCHRONIZER FILESYSTEM HELPERS ------------
+const TREE_WALK_STAT_BATCH = 32;
+const STAT_FAILED = Symbol('stat-failed');
+
 /**
  * Recursively discovers files that match one extension, with optional incremental filtering.
  *
@@ -1303,26 +1306,48 @@ export async function findFilesRecursivelyCreatedAfter(
 ): Promise<string[]> {
   try {
     const entries = await readdir(rootDir, { withFileTypes: true });
-    for (const entry of entries) {
-      const fullPath = path.join(rootDir, entry.name);
+    // Stats run concurrently in bounded batches (the walk used to await one
+    // `stat` per file serially), while results are appended strictly in
+    // directory-entry order so callers see exactly the same list as before.
+    for (let batchStart = 0; batchStart < entries.length; batchStart += TREE_WALK_STAT_BATCH) {
+      const batch = entries.slice(batchStart, batchStart + TREE_WALK_STAT_BATCH);
+      const statResults = lastScanAt
+        ? await Promise.all(batch.map(async (entry) => {
+          if (!entry.isFile() || !entry.name.endsWith(extension)) return null;
+          try {
+            return await stat(path.join(rootDir, entry.name));
+          } catch {
+            return STAT_FAILED;
+          }
+        }))
+        : null;
 
-      if (entry.isDirectory()) {
-        await findFilesRecursivelyCreatedAfter(fullPath, extension, lastScanAt, fileList);
-        continue;
-      }
+      for (let index = 0; index < batch.length; index += 1) {
+        const entry = batch[index];
+        const fullPath = path.join(rootDir, entry.name);
 
-      if (!entry.isFile() || !entry.name.endsWith(extension)) {
-        continue;
-      }
+        if (entry.isDirectory()) {
+          await findFilesRecursivelyCreatedAfter(fullPath, extension, lastScanAt, fileList);
+          continue;
+        }
 
-      if (!lastScanAt) {
-        fileList.push(fullPath);
-        continue;
-      }
+        if (!entry.isFile() || !entry.name.endsWith(extension)) {
+          continue;
+        }
 
-      const fileStat = await stat(fullPath);
-      if (fileStat.birthtime > lastScanAt) {
-        fileList.push(fullPath);
+        if (!lastScanAt) {
+          fileList.push(fullPath);
+          continue;
+        }
+
+        const fileStat = statResults?.[index];
+        if (fileStat === STAT_FAILED) {
+          // Previously a failed stat aborted the rest of this directory.
+          return fileList;
+        }
+        if (fileStat && fileStat.birthtime > lastScanAt) {
+          fileList.push(fullPath);
+        }
       }
     }
   } catch {

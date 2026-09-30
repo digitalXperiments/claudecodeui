@@ -37,12 +37,14 @@ import {
  * (different syntax: Claude JSON, Grok TOML, Cursor mcp.json, etc.).
  *
  * Isolation: a server only appears on a provider when its binding is enabled.
- * Provider-cloud connectors (claude.ai / grok.com) are never cataloged or
- * fanned out; they appear only in inventory under that provider.
+ * Provider-cloud connectors remain owned by their provider. Users can create
+ * independently authenticated catalog replicas under a separate name.
  */
 
 const CATALOG_DIR_SEGMENTS = ['.cloudcli', 'mcp'] as const;
 const CATALOG_FILE_NAME = 'catalog.json';
+let createQueue: Promise<unknown> = Promise.resolve();
+
 const ACCOUNT_CACHE_FILE_NAME = 'account-inventory-cache.json';
 
 type CatalogFile = {
@@ -656,6 +658,15 @@ export const mcpCatalogService = {
   },
 
   /**
+   * True for a claude.ai account connector when the provider is Claude. These
+   * never live in catalog.json: the Claude runtime loads them from the signed-in
+   * account, so `resolveForProvider` cannot (and need not) resolve them.
+   */
+  isAccountConnector(provider: LLMProvider, name: string): boolean {
+    return provider === 'claude' && /^claude\.ai\b/i.test(name.trim());
+  },
+
+  /**
    * Resolve a set of catalog server names into connection definitions ready
    * to hand a provider's own runtime (e.g. an ACP `session/new` `mcpServers`
    * array) — as opposed to the tool-name-string allow-lists produced by
@@ -953,6 +964,35 @@ export const mcpCatalogService = {
       partial: phase === 'fast',
       warnings,
     };
+  },
+
+  /** Create a separate definition without replacing catalog or discovered servers. */
+  async create(input: McpCatalogUpsertInput): Promise<McpCatalogEntry> {
+    const operation = createQueue.then(async () => {
+      const name = normalizeName(input.name);
+      if (isProviderCloudName(name) || name.startsWith('cloudcli-') || !normalizeMcpIdentity(name)) {
+        throw new AppError('Choose a distinct local name for the replica (for example, leong-shared).', {
+          code: 'MCP_REPLICA_NAME_INVALID', statusCode: 400,
+        });
+      }
+      for (const provider of input.providers ?? []) {
+        const mcp = providerRegistry.resolveProvider(provider).mcp;
+        if (mcp.supportedScopes.length && !mcp.supportedTransports.includes(input.transport)) {
+          throw new AppError(`${provider} does not support ${input.transport}. Change the transport or deselect this agent.`, {
+            code: 'MCP_REPLICA_TRANSPORT_UNSUPPORTED', statusCode: 400,
+          });
+        }
+      }
+      const inventory = await this.listInventory({ phase: 'fast' });
+      if (inventory.items.some((item) => normalizeMcpIdentity(item.name) === normalizeMcpIdentity(name))) {
+        throw new AppError(`An MCP named "${name}" already exists. Choose another name to avoid replacing it.`, {
+          code: 'MCP_NAME_CONFLICT', statusCode: 409,
+        });
+      }
+      return this.upsert({ ...input, name });
+    });
+    createQueue = operation.catch(() => undefined);
+    return operation;
   },
 
   /**

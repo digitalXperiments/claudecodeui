@@ -1,9 +1,10 @@
 import type { IProviderSessions } from '@/shared/interfaces.js';
+import fs from 'node:fs';
 import type { FetchHistoryOptions, FetchHistoryResult, NormalizedMessage } from '@/shared/types.js';
 import { createNormalizedMessage, generateMessageId, readObjectRecord, sliceTailPage } from '@/shared/utils.js';
 
 import { stripAntigravityPromptPlumbing } from './antigravity-conversation-store.js';
-import { readAntigravityHistoryUpdates } from './antigravity-history.js';
+import { antigravityConversationDbPath, readAntigravityHistory } from './antigravity-history.js';
 
 export const ANTIGRAVITY_PROVIDER = 'antigravity' as const;
 
@@ -111,6 +112,14 @@ const deniedPath = (text: string): string => {
   const match = /Access to path "([^"]+)" is denied/.exec(text);
   return match ? match[1] : '';
 };
+
+export function timestampAntigravityReplay(messages: NormalizedMessage[], sessionId: string, latestWrite: number): void {
+  const endTime = Math.max(latestWrite, messages.length);
+  messages.forEach((message, index) => {
+    message.id = `antigravity_history_${sessionId}_${index}`;
+    message.timestamp = new Date(endTime - messages.length + index + 1).toISOString();
+  });
+}
 
 /**
  * Antigravity 1.1.1 misattributes tool failures.
@@ -296,28 +305,51 @@ export class AntigravitySessionsProvider implements IProviderSessions {
     return normalized;
   }
 
+  constructor(private readonly env: NodeJS.ProcessEnv = process.env) {}
+
   async fetchHistory(sessionId: string, options: FetchHistoryOptions = {}): Promise<FetchHistoryResult> {
     const { limit = null, offset = 0 } = options;
     const normalizedOffset = Math.max(0, offset);
     const normalizedLimit = limit === null ? null : Math.max(0, limit);
     // `session/load` is addressed with the agent's own session id, and it
-    // rejects a cwd that does not match the one the session was created in.
+    // rejects a cwd that does not match the one the session was created in —
+    // the reader prefers the cwd recorded in the conversation's `.meta`
+    // sidecar and only falls back to the indexed project path.
     const providerSessionId = options.providerSessionId ?? sessionId;
-    const cwd = options.projectPath ?? '';
-    if (!cwd) {
-      return { messages: [], total: 0, hasMore: false, offset: normalizedOffset, limit: normalizedLimit };
-    }
-
-    const updates = await readAntigravityHistoryUpdates(providerSessionId, cwd);
+    const { updates, status } = await readAntigravityHistory(
+      providerSessionId,
+      options.projectPath ?? '',
+      this.env,
+    );
     const normalized = this.normalizeHistoryUpdates(updates, sessionId);
+    // ACP replay has no event timestamps. createNormalizedMessage assigns the
+    // read time, which makes old rows sort after a newly sent local message.
+    // Anchor the ordered replay to the latest SQLite write instead. Use stable
+    // positional IDs so a later refresh can reconcile the same rows.
+    const dbPath = antigravityConversationDbPath(providerSessionId, this.env);
+    let latestWrite = 0;
+    for (const file of [dbPath, `${dbPath}-wal`]) {
+      try { latestWrite = Math.max(latestWrite, fs.statSync(file).mtimeMs); } catch { /* WAL may be absent. */ }
+    }
+    timestampAntigravityReplay(normalized, sessionId, latestWrite);
     const { page, hasMore } = sliceTailPage(normalized, normalizedLimit, normalizedOffset);
 
-    return {
+    const result: FetchHistoryResult = {
       messages: page,
       total: normalized.length,
       hasMore,
       offset: normalizedOffset,
       limit: normalizedLimit,
     };
+    // An empty page caused by "not written yet" or "replay failed" is not an
+    // empty transcript; flag it so the client retries instead of settling.
+    if (status === 'missing' || status === 'failed') {
+      result.historyPending = true;
+      result.retryable = true;
+      result.historyPendingReason = status === 'missing' ? 'not-persisted' : 'replay-failed';
+    } else if (status === 'stale') {
+      result.historyRefreshing = true;
+    }
+    return result;
   }
 }

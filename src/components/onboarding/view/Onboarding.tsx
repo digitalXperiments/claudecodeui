@@ -1,9 +1,8 @@
 import { Check, ChevronLeft, ChevronRight, Loader2 } from 'lucide-react';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import type { LLMProvider } from '../../../types/app';
 import { authenticatedFetch } from '../../../utils/api';
 import { useProviderAuthStatus } from '../../provider-auth/hooks/useProviderAuthStatus';
-import ProviderLoginModal from '../../provider-auth/view/ProviderLoginModal';
 import AgentConnectionsStep from './subcomponents/AgentConnectionsStep';
 import GitConfigurationStep from './subcomponents/GitConfigurationStep';
 import OnboardingStepProgress from './subcomponents/OnboardingStepProgress';
@@ -11,6 +10,9 @@ import {
   gitEmailPattern,
   readErrorMessageFromResponse,
 } from './utils';
+
+// Provider login embeds the xterm shell; load it only when a login starts.
+const ProviderLoginModal = lazy(() => import('../../provider-auth/view/ProviderLoginModal'));
 
 type OnboardingProps = {
   onComplete?: () => void | Promise<void>;
@@ -244,12 +246,14 @@ export default function Onboarding({ onComplete }: OnboardingProps) {
       </div>
 
       {activeLoginProvider && (
-        <ProviderLoginModal
-          isOpen={Boolean(activeLoginProvider)}
-          onClose={() => setActiveLoginProvider(null)}
-          provider={activeLoginProvider}
-          onComplete={handleLoginComplete}
-        />
+        <Suspense fallback={null}>
+          <ProviderLoginModal
+            isOpen={Boolean(activeLoginProvider)}
+            onClose={() => setActiveLoginProvider(null)}
+            provider={activeLoginProvider}
+            onComplete={handleLoginComplete}
+          />
+        </Suspense>
       )}
     </>
   );

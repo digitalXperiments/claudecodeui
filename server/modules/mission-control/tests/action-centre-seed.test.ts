@@ -59,7 +59,6 @@ test('Work Gmail: provider claude, exact MCP id, 30-minute cron, enabled', () =>
   assert.deepEqual(input.produce_tools, ['claude.ai Gmail']);
   assert.deepEqual(input.resolve_tools, ['claude.ai Gmail']);
   assert.equal(input.auto_approve, false);
-  assert.equal(input.create_kanban_task, false);
 });
 
 test('Slack: provider claude, exact MCP id, 30-minute cron, enabled', () => {

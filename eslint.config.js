@@ -171,6 +171,7 @@ export default tseslint.config(
             "server/shared/json-schema-lite.ts",
             "server/shared/ids.ts",
             "server/shared/lead-session-env.js",
+            "server/shared/worker-sandbox.js",
             "server/shared/run-events.ts",
             "server/shared/scratch.ts",
             "server/shared/skill-transcript-filter.ts",

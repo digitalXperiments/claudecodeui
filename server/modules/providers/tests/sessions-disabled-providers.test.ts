@@ -60,14 +60,19 @@ test('watcher accepts each provider live-session artifact shape', () => {
   assert.equal(isWatcherTargetFile('cursor', '/sessions/a.jsonl'), true);
   assert.equal(isWatcherTargetFile('opencode', '/data/opencode.db'), true);
   assert.equal(isWatcherTargetFile('kilo', '/data/kilo.db'), true);
+  // New OpenCode/Kilo messages land in the WAL before a checkpoint.
+  assert.equal(isWatcherTargetFile('opencode', '/data/opencode.db-wal'), true);
+  assert.equal(isWatcherTargetFile('kilo', '/data/kilo.db-wal'), true);
+  assert.equal(isWatcherTargetFile('opencode', '/data/opencode.db-shm'), false);
   assert.equal(isWatcherTargetFile('cline', '/tasks/abc/task_metadata.json'), true);
   assert.equal(isWatcherTargetFile('cline', '/tasks/abc/api_conversation_history.json'), true);
   assert.equal(isWatcherTargetFile('grok', '/sessions/abc/summary.json'), true);
-  // Antigravity's conversation store is the session; the churny WAL siblings
-  // are not targets, so one turn does not re-index on every write.
+  // Antigravity's WAL contains fresh messages before checkpoint; the SHM file
+  // is only SQLite coordination state and should not trigger re-indexing.
   assert.equal(isWatcherTargetFile('antigravity', '/conversations/abc.db'), true);
   assert.equal(isWatcherTargetFile('antigravity', '/conversations/abc.meta'), true);
-  assert.equal(isWatcherTargetFile('antigravity', '/conversations/abc.db-wal'), false);
+  assert.equal(isWatcherTargetFile('antigravity', '/conversations/abc.db-wal'), true);
+  assert.equal(isWatcherTargetFile('antigravity', '/conversations/abc.db-shm'), false);
   assert.equal(isWatcherTargetFile('grok', '/sessions/abc/chat_history.jsonl'), true);
   assert.equal(isWatcherTargetFile('kimi', '/sessions/abc/state.json'), true);
   assert.equal(isWatcherTargetFile('kimi', '/sessions/abc/agents/main/wire.jsonl'), true);

@@ -189,6 +189,22 @@ const readMetaCwd = (metaPath: string): string | null => {
 };
 
 /**
+ * The working directory Antigravity recorded for a conversation in its `.meta`
+ * sidecar, or `null` when the sidecar is missing/unreadable.
+ *
+ * ACP `session/load` rejects a cwd that differs from the one the session was
+ * created in, so this is the authoritative cwd for replay — the project path
+ * CloudCLI indexed can drift (worktrees, renamed projects).
+ */
+export function readAntigravityConversationCwd(
+  sessionId: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string | null {
+  if (!sessionId) return null;
+  return readMetaCwd(path.join(antigravityConversationsDir(env), `${sessionId}.meta`));
+}
+
+/**
  * Remove CloudCLI's machine-only prompt blocks from a stored user message, so
  * neither session titles nor replayed transcripts show plumbing the user never
  * typed. Shared by the title reader and the history normalizer.
@@ -236,9 +252,56 @@ export function readAntigravityConversation(
     return null;
   }
 
+  return summarizeConversationStore(sessionId, dbPath, stats, readMetaCwd(path.join(dir, `${sessionId}.meta`)));
+}
+
+const readMetaCwdAsync = async (metaPath: string): Promise<string | null> => {
+  try {
+    const parsed = JSON.parse(await fs.promises.readFile(metaPath, 'utf8')) as { cwd?: unknown };
+    return typeof parsed.cwd === 'string' && parsed.cwd.trim() ? parsed.cwd : null;
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * Async variant of `readAntigravityConversation` for the sync/watcher hot
+ * path: the stat and `.meta` read no longer block the event loop (the SQLite
+ * read itself is synchronous in better-sqlite3 and stays bounded to two
+ * indexed queries).
+ */
+export async function readAntigravityConversationAsync(
+  sessionId: string,
+  env: NodeJS.ProcessEnv = process.env,
+  prefetchedStats?: fs.Stats,
+): Promise<AntigravityConversationSummary | null> {
+  const dir = antigravityConversationsDir(env);
+  const dbPath = path.join(dir, `${sessionId}.db`);
+
+  let stats: fs.Stats;
+  if (prefetchedStats) {
+    stats = prefetchedStats;
+  } else {
+    try {
+      stats = await fs.promises.stat(dbPath);
+    } catch {
+      return null;
+    }
+  }
+
+  const cwd = await readMetaCwdAsync(path.join(dir, `${sessionId}.meta`));
+  return summarizeConversationStore(sessionId, dbPath, stats, cwd);
+}
+
+function summarizeConversationStore(
+  sessionId: string,
+  dbPath: string,
+  stats: fs.Stats,
+  cwd: string | null,
+): AntigravityConversationSummary {
   const summary: AntigravityConversationSummary = {
     sessionId,
-    cwd: readMetaCwd(path.join(dir, `${sessionId}.meta`)),
+    cwd,
     firstPrompt: null,
     updatedAt: stats.mtime,
     createdAt: stats.birthtime && stats.birthtime.getTime() > 0 ? stats.birthtime : stats.mtime,
@@ -303,6 +366,45 @@ export function listAntigravityConversations(
     }
     const summary = readAntigravityConversation(sessionId, env);
     if (summary) summaries.push(summary);
+  }
+
+  return summaries.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
+}
+
+/**
+ * Async `listAntigravityConversations` for the session synchronizer: readdir
+ * and the per-store stat pre-filter use fs.promises (stats in bounded
+ * parallel batches) instead of blocking the event loop per file.
+ */
+export async function listAntigravityConversationsAsync(
+  env: NodeJS.ProcessEnv = process.env,
+  options: { since?: Date | null } = {},
+): Promise<AntigravityConversationSummary[]> {
+  const dir = antigravityConversationsDir(env);
+  let entries: string[];
+  try {
+    entries = await fs.promises.readdir(dir);
+  } catch {
+    return [];
+  }
+
+  const since = options.since ? options.since.getTime() : null;
+  const dbEntries = entries.filter((entry) => entry.endsWith('.db'));
+  const summaries: AntigravityConversationSummary[] = [];
+  const STAT_BATCH = 32;
+  for (let start = 0; start < dbEntries.length; start += STAT_BATCH) {
+    const batch = dbEntries.slice(start, start + STAT_BATCH);
+    const stats = await Promise.all(batch.map((entry) => fs.promises.stat(path.join(dir, entry)).catch(() => null)));
+    for (let index = 0; index < batch.length; index += 1) {
+      const entryStats = stats[index];
+      // A store that vanished between readdir and stat is skipped, like the
+      // sync reader's `null`.
+      if (!entryStats) continue;
+      // Cheap pre-filter: skip opening stores that cannot have changed.
+      if (since !== null && entryStats.mtimeMs <= since) continue;
+      const summary = await readAntigravityConversationAsync(batch[index].slice(0, -3), env, entryStats);
+      if (summary) summaries.push(summary);
+    }
   }
 
   return summaries.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());

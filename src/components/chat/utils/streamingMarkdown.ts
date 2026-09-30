@@ -168,3 +168,169 @@ function nextNonBlank(lines: string[], from: number): number | null {
   }
   return null;
 }
+
+/** Where an unclosed fence starts in the (normalized) text, for plain rendering. */
+export type OpenFenceInfo = {
+  /** Offset of the opening fence line in `text`. */
+  start: number;
+  /** True when the opener has no indentation (a top-level block start). */
+  topLevel: boolean;
+};
+
+export type IncrementalStreamingSplit = StreamingMarkdownSplit & {
+  /** The fence-normalized text the split was computed on (`settled + pending`). */
+  text: string;
+  /** Set while the text ends inside an unclosed fenced code block. */
+  openFence: OpenFenceInfo | null;
+};
+
+type SplitterNormalizer = (text: string) => string;
+
+/**
+ * Incremental twin of `splitStreamingMarkdown(normalize(content))`.
+ *
+ * Streaming replies only ever grow, and the realtime handler republishes the
+ * whole accumulated text every 100ms — re-running the block scan (and the
+ * inline-fence normalization) over the entire reply each tick is O(length) per
+ * tick. This keeps the scan state for every complete line already seen and
+ * only processes newly completed lines plus the partial last line. When the
+ * new text is not an extension of the previous one it starts over, so the
+ * result is always identical to the stateless function (pinned by tests).
+ *
+ * `normalize` must only rewrite within single lines (true for
+ * normalizeInlineCodeFences), so normalizing line-complete chunks separately
+ * equals normalizing the whole text.
+ */
+export function createStreamingMarkdownSplitter(normalize: SplitterNormalizer = (text) => text) {
+  let consumedRaw = '';
+  let normalizedPrefix = '';
+  let openFence: OpenFence | null = null;
+  let openFenceStart = -1;
+  let openFenceTopLevel = false;
+  let insideMath = false;
+  let previousNonBlank: string | null = null;
+  let trailingBlankEnd = -1;
+  let confirmedBoundary = -1;
+  let lastSettled = '';
+  let prefixChanged = true;
+
+  const reset = () => {
+    prefixChanged = true;
+    consumedRaw = '';
+    normalizedPrefix = '';
+    openFence = null;
+    openFenceStart = -1;
+    openFenceTopLevel = false;
+    insideMath = false;
+    previousNonBlank = null;
+    trailingBlankEnd = -1;
+    confirmedBoundary = -1;
+  };
+
+  // A non-blank line settles the fate of the blank run before it.
+  const resolveRun = (line: string) => {
+    if (trailingBlankEnd >= 0) {
+      if (!CONTEXT_SENSITIVE_LINE.test(line)) confirmedBoundary = trailingBlankEnd;
+      trailingBlankEnd = -1;
+    }
+  };
+
+  const processLine = (line: string, lineStart: number) => {
+    const fence = readFence(line);
+    if (fence) {
+      resolveRun(line);
+      if (!openFence) {
+        openFence = fence;
+        openFenceStart = lineStart;
+        openFenceTopLevel = line.startsWith(fence.marker);
+      } else if (closesFence(openFence, fence, line)) {
+        openFence = null;
+        openFenceStart = -1;
+      }
+      previousNonBlank = line;
+      return;
+    }
+    if (!openFence && MATH_DELIMITER_PATTERN.test(line)) {
+      resolveRun(line);
+      if (countMathDelimiters(line) % 2 === 1) insideMath = !insideMath;
+      previousNonBlank = line;
+      return;
+    }
+    if (line.trim() !== '') {
+      resolveRun(line);
+      previousNonBlank = line;
+      return;
+    }
+    if (openFence || insideMath) return;
+    if (previousNonBlank === null || CONTEXT_SENSITIVE_LINE.test(previousNonBlank)) return;
+    trailingBlankEnd = lineStart + line.length + 1;
+  };
+
+  const split = (content: string): IncrementalStreamingSplit => {
+    if (!content) {
+      reset();
+      lastSettled = '';
+      prefixChanged = false;
+      return { settled: '', pending: '', text: '', openFence: null };
+    }
+    if (!content.startsWith(consumedRaw)) reset();
+
+    const lastNewline = content.lastIndexOf('\n');
+    if (lastNewline + 1 > consumedRaw.length) {
+      const chunk = normalize(content.slice(consumedRaw.length, lastNewline + 1));
+      let lineStart = normalizedPrefix.length;
+      let cursor = 0;
+      while (cursor < chunk.length) {
+        const end = chunk.indexOf('\n', cursor);
+        const line = chunk.slice(cursor, end);
+        processLine(line, lineStart);
+        lineStart += line.length + 1;
+        cursor = end + 1;
+      }
+      normalizedPrefix += chunk;
+      consumedRaw = content.slice(0, lastNewline + 1);
+    }
+
+    const tail = normalize(content.slice(consumedRaw.length));
+    const text = tail ? normalizedPrefix + tail : normalizedPrefix;
+
+    let splitAt = confirmedBoundary;
+    if (tail.trim() !== '') {
+      if (trailingBlankEnd >= 0 && !CONTEXT_SENSITIVE_LINE.test(tail)) splitAt = trailingBlankEnd;
+    } else if (
+      !openFence
+      && !insideMath
+      && previousNonBlank !== null
+      && !CONTEXT_SENSITIVE_LINE.test(previousNonBlank)
+    ) {
+      // A trailing blank line with nothing after it is always a safe split.
+      splitAt = text.length;
+    }
+
+    let fenceInfo: OpenFenceInfo | null = null;
+    const tailFence = readFence(tail);
+    if (openFence) {
+      if (!(tailFence && closesFence(openFence, tailFence, tail))) {
+        fenceInfo = { start: openFenceStart, topLevel: openFenceTopLevel };
+      }
+    } else if (tailFence && !insideMath) {
+      fenceInfo = { start: normalizedPrefix.length, topLevel: tail.startsWith(tailFence.marker) };
+    }
+
+    if (splitAt < 0) {
+      lastSettled = '';
+      prefixChanged = false;
+      return { settled: '', pending: text, text, openFence: fenceInfo };
+    }
+    // Reuse the previous settled string when the boundary did not move, so the
+    // memoized settled renderer compares by identity instead of by content.
+    const settled = !prefixChanged && lastSettled.length === splitAt
+      ? lastSettled
+      : text.slice(0, splitAt);
+    lastSettled = settled;
+    prefixChanged = false;
+    return { settled, pending: text.slice(splitAt), text, openFence: fenceInfo };
+  };
+
+  return { split, reset };
+}

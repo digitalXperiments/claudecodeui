@@ -102,7 +102,12 @@ function isActionableMissionControlApproval(row: InterruptRow, db: ReturnType<ty
   const item = db
     .prepare(`SELECT status FROM mc_items WHERE item_id = ?`)
     .get(itemId) as { status?: string } | undefined;
-  return item?.status === 'pending' || item?.status === 'failed';
+  return isHumanActionableItemStatus(item?.status);
+}
+
+/** Mission Control item stages that wait on a human (decision, Start work, or QA). */
+function isHumanActionableItemStatus(status: string | undefined): boolean {
+  return status === 'pending' || status === 'failed' || status === 'awaiting_work' || status === 'in_qa';
 }
 
 function filterStaleMissionControlApprovals(
@@ -401,7 +406,7 @@ export const interruptsDb = {
         .prepare(`SELECT status FROM mc_items WHERE item_id = ?`)
         .get(itemId) as { status?: string } | undefined;
       if (!row) return 'missing';
-      return row.status === 'pending' || row.status === 'failed' ? 'actionable' : 'settled';
+      return isHumanActionableItemStatus(row.status) ? 'actionable' : 'settled';
     } catch {
       return 'unknown';
     }

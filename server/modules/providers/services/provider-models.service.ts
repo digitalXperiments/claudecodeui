@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -15,6 +15,7 @@ import type {
   ProviderSessionActiveModelChange,
 } from '@/shared/types.js';
 import {
+  getProviderSessionActiveModelChangesPath,
   readProviderSessionActiveModelChange,
   writeProviderSessionActiveModelChange,
 } from '@/shared/utils.js';
@@ -416,6 +417,8 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
     input: ProviderChangeActiveModelInput,
   ): Promise<ProviderSessionActiveModelChange> => {
     const result = await resolveProvider(provider).models.changeActiveModel(input);
+    changedModelCache.clear();
+    changedModelCacheSignature = null;
 
     // Mirror every persisted override under the provider-native session id so
     // gateway-created sessions (app uuid != provider uuid) actually pick up
@@ -434,18 +437,55 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
         } catch {
           // The override keyed by the app session id is already persisted.
         }
+        changedModelCache.clear();
+        changedModelCacheSignature = null;
       }
     }
 
     return result;
   };
 
+  // resolveResumeModel runs on every resumed chat turn; re-reading and
+  // re-parsing the overrides file each time is wasted work when it has not
+  // changed. Entries are keyed per provider session and dropped wholesale as
+  // soon as the file's mtime/size signature moves (or a change is written).
+  const changedModelCache = new Map<string, ProviderSessionActiveModelChange>();
+  let changedModelCacheSignature: string | null = null;
+
+  const readActiveModelChangesSignature = async (): Promise<string> => {
+    try {
+      const info = await stat(activeModelChangesPath ?? getProviderSessionActiveModelChangesPath());
+      return `${info.mtimeMs}:${info.size}`;
+    } catch {
+      return 'missing';
+    }
+  };
+
   const getChangedActiveModel = async (
     provider: LLMProvider,
     sessionId: string,
-  ): Promise<ProviderSessionActiveModelChange> => readProviderSessionActiveModelChange(provider, sessionId, {
-    filePath: activeModelChangesPath,
-  });
+  ): Promise<ProviderSessionActiveModelChange> => {
+    const signature = await readActiveModelChangesSignature();
+    if (signature !== changedModelCacheSignature) {
+      changedModelCache.clear();
+      changedModelCacheSignature = signature;
+    }
+    const key = `${provider}:${sessionId.trim()}`;
+    const cached = changedModelCache.get(key);
+    if (cached) {
+      return { ...cached };
+    }
+    const result = await readProviderSessionActiveModelChange(provider, sessionId, {
+      filePath: activeModelChangesPath,
+    });
+    // Skip memoizing if a concurrent change cleared the cache mid-read. A
+    // write racing the read is self-correcting: the next stat sees a new
+    // signature and drops everything.
+    if (changedModelCacheSignature === signature) {
+      changedModelCache.set(key, result);
+    }
+    return { ...result };
+  };
 
   const resolveResumeModel = async (
     provider: LLMProvider,
@@ -467,6 +507,8 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
 
   const clearCache = (): void => {
     memoryCache.clear();
+    changedModelCache.clear();
+    changedModelCacheSignature = null;
     pendingRequests.clear();
     persistedCacheLoaded = false;
     persistedCacheLoadPromise = null;

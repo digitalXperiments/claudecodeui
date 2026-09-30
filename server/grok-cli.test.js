@@ -8,6 +8,7 @@ import {
   resolveGrokPromptCompletion,
   shouldDeferGrokIdleCleanup,
   grokRelayWorkerSkipsManagedGateway,
+  updateGrokPermissionMode,
 } from './grok-cli.js';
 
 const createWriter = (messages) => ({
@@ -159,4 +160,8 @@ test('a disposed Grok turn watchdog never fires after the turn ends', (t) => {
   watchdog.dispose();
   t.mock.timers.tick(600_000);
   assert.equal(stalls, 0);
+});
+
+test('a permission-mode change with no live Grok turn defers to the next turn', async () => {
+  assert.equal(await updateGrokPermissionMode('missing-grok-session', 'bypassPermissions', 'missing-app-session'), false);
 });

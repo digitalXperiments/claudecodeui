@@ -1,5 +1,5 @@
 import { useTranslation } from 'react-i18next';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type {
   ChangeEvent,
@@ -203,7 +203,7 @@ interface ChatComposerProps {
   onToggleMobileTools: () => void;
 }
 
-export default function ChatComposer({
+function ChatComposer({
   readOnly = false,
   pendingPermissionRequests,
   handlePermissionDecision,
@@ -877,3 +877,7 @@ export default function ChatComposer({
     </div>
   );
 }
+
+// Memoized so parent renders that do not touch composer props (e.g. a
+// processing-status change in ChatComposerHost's parent) skip this tree.
+export default memo(ChatComposer);

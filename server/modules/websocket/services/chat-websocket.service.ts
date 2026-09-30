@@ -2,18 +2,23 @@ import type { WebSocket } from 'ws';
 
 import { projectsDb, sessionsDb } from '@/modules/database/index.js';
 import { continuityService } from '@/modules/continuity/index.js';
-import { providerCapabilitiesService } from '@/modules/providers/index.js';
+import { providerCapabilitiesService, updateLivePermissionMode, waitForPermissionModeUpdate } from '@/modules/providers/index.js';
 import { interruptsService } from '@/modules/interrupt-queue/index.js';
 import { recordNormalizedRunEvent, runService } from '@/modules/runs/index.js';
 import { workspaceService } from '@/modules/workspaces/index.js';
 import { TERMINAL_RUN_STATUSES } from '@/shared/run-events.js';
 import { chatRunRegistry } from '@/modules/websocket/services/chat-run-registry.service.js';
 import {
+  buildProviderRuntimeOptions,
   filterImagesToUploadStore,
   startProviderRun,
   type ProviderSpawnFn,
 } from '@/modules/websocket/services/chat-run-starter.service.js';
 import { connectedClients, WS_OPEN_STATE } from '@/modules/websocket/services/websocket-state.service.js';
+import {
+  subscribeRunEvents,
+  unsubscribeRunEvents,
+} from '@/modules/websocket/services/system-broadcast.service.js';
 import type {
   AnyRecord,
   AuthenticatedWebSocketRequest,
@@ -53,11 +58,32 @@ export type ChatWebSocketDependencies = {
   getPendingApprovalsForSession: (providerSessionId: string) => unknown[];
   /** True while an interactive provider TUI owns the app session's PTY. */
   isShellSessionActive?: (appSessionId: string) => boolean;
+  /** Stops a provider TUI before Chatbar takes ownership of the same session. */
+  releaseShellSession?: (appSessionId: string) => Promise<boolean>;
   /** Cancels Agent Relay workers dispatched by a lead when that lead stops. */
   cancelRelayJobsForSession?: (appSessionId: string) => void | Promise<void>;
+  /**
+   * Optional process prewarm hooks keyed by provider id (Claude today),
+   * addressed with the provider-native session id. They boot the runtime
+   * without making a model call so the next chat.send skips process startup.
+   */
+  prewarmFns?: Partial<Record<LLMProvider, (providerSessionId: string, options: AnyRecord) => Promise<boolean>>>;
 };
 
 const MAX_DELEGATED_REQUEST_CHARS = 8000;
+
+/** Identical `chat.prewarm` requests for a session within this window are ignored. */
+export const CHAT_PREWARM_DEDUPE_WINDOW_MS = 30_000;
+const PREWARM_DEDUPE_MAX_ENTRIES = 256;
+// appSessionId -> last accepted prewarm (options key + time).
+const recentPrewarms = new Map<string, { key: string; at: number }>();
+
+/** Tests only: forget prewarm dedupe state. */
+export function resetChatPrewarmState(): void {
+  recentPrewarms.clear();
+}
+
+type ChatSessionRow = NonNullable<ReturnType<typeof sessionsDb.getSessionById>>;
 
 /**
  * Extracts the authenticated request user id in the formats currently produced
@@ -133,6 +159,37 @@ export function resolveChatSessionPermissionMode(
 }
 
 /**
+ * Turns the composer's `options` into the client-level run options for a
+ * session: the permission mode is resolved against the persisted session
+ * preference exactly once, here. Shared by chat.send and chat.prewarm so a
+ * prewarmed process matches the next send. Persisting a requested mode is
+ * the caller's job (only chat.send does it).
+ */
+export function resolveChatClientOptions(
+  session: Pick<ChatSessionRow, 'provider' | 'permission_mode'>,
+  clientOptions: AnyRecord,
+): { effectiveClientOptions: AnyRecord; permissionResolution: { mode: string; persistRequested: boolean } } {
+  const permissionResolution = resolveChatSessionPermissionMode(
+    session.provider as LLMProvider,
+    session.permission_mode,
+    clientOptions.permissionMode,
+  );
+  return {
+    permissionResolution,
+    effectiveClientOptions: {
+      ...clientOptions,
+      permissionMode: permissionResolution.mode,
+    },
+  };
+}
+
+function wantsIsolatedWorkspace(clientOptions: AnyRecord): boolean {
+  return clientOptions.isolatedWorkspace === true
+    || clientOptions.isolated_workspace === true
+    || clientOptions.useWorkspace === true;
+}
+
+/**
  * Handles `chat.send`: resolves the session row (provider, project path, and
  * provider-native id all come from the database — never from the client),
  * registers the run, and dispatches to the provider runtime.
@@ -149,7 +206,37 @@ export async function handleChatSend(
     return;
   }
 
-  const session = sessionsDb.getSessionById(sessionId);
+  if (chatRunRegistry.isShuttingDown()) {
+    sendProtocolError(ws, 'SERVER_RESTARTING', 'CloudCLI is waiting for active sessions to finish before restarting.', sessionId);
+    return;
+  }
+
+  // Reserve BEFORE the first await: the socket keeps handling messages while
+  // this send releases a parked Agent CLI PTY or creates a worktree, and a
+  // `chat.subscribe` answered in that window must already report processing.
+  // The reservation is dropped as soon as the run is registered (or the send
+  // fails), and unconditionally here as a backstop.
+  const releaseSendHandler = chatRunRegistry.trackSendHandler();
+  const releasePendingSend = chatRunRegistry.reservePendingSend(sessionId);
+  try {
+    const permissionUpdate = waitForPermissionModeUpdate(sessionId);
+    if (permissionUpdate) await permissionUpdate;
+    await dispatchChatSend(ws, userId, data, dependencies, sessionId, releasePendingSend);
+  } finally {
+    releasePendingSend();
+    releaseSendHandler();
+  }
+}
+
+async function dispatchChatSend(
+  ws: WebSocket,
+  userId: string | number | null,
+  data: AnyRecord,
+  dependencies: ChatWebSocketDependencies,
+  sessionId: string,
+  releasePendingSend: () => void,
+): Promise<void> {
+  let session = sessionsDb.getSessionById(sessionId);
   if (!session) {
     sendProtocolError(
       ws,
@@ -170,11 +257,36 @@ export async function handleChatSend(
     return;
   }
 
-  if (dependencies.isShellSessionActive?.(sessionId)) {
+  if (dependencies.releaseShellSession) {
+    const released = await dependencies.releaseShellSession(sessionId);
+    if (!released) {
+      sendProtocolError(
+        ws,
+        'AGENT_CLI_HANDOFF_FAILED',
+        'Agent CLI could not release this session. Close Agent CLI and try again.',
+        sessionId,
+      );
+      return;
+    }
+    // Releasing awaits the Agent CLI's exit AND its session adoption, which
+    // may have just bound the provider session the TUI created (or merged a
+    // placeholder row). Resume from that mapping, not the pre-release row.
+    const refreshed = sessionsDb.getSessionById(sessionId);
+    if (!refreshed) {
+      sendProtocolError(
+        ws,
+        'SESSION_NOT_FOUND',
+        `Session "${sessionId}" was not found after Agent CLI released it.`,
+        sessionId,
+      );
+      return;
+    }
+    session = refreshed;
+  } else if (dependencies.isShellSessionActive?.(sessionId)) {
     sendProtocolError(
       ws,
       'SHELL_SESSION_ACTIVE',
-      `Session "${sessionId}" is active in Shell. Finish or close the Shell session before sending from Chat.`,
+      `Session "${sessionId}" is active in Agent CLI. Finish or close Agent CLI before sending from Chat.`,
       sessionId,
     );
     return;
@@ -210,18 +322,10 @@ export async function handleChatSend(
   }
 
   const clientOptions = (data.options ?? {}) as AnyRecord;
-  const permissionResolution = resolveChatSessionPermissionMode(
-    provider,
-    session.permission_mode,
-    clientOptions.permissionMode,
-  );
+  const { permissionResolution, effectiveClientOptions } = resolveChatClientOptions(session, clientOptions);
   if (permissionResolution.persistRequested && session.permission_mode !== permissionResolution.mode) {
     sessionsDb.updateSessionRuntimePreferences(sessionId, { permissionMode: permissionResolution.mode });
   }
-  const effectiveClientOptions: AnyRecord = {
-    ...clientOptions,
-    permissionMode: permissionResolution.mode,
-  };
   const command = typeof data.content === 'string' ? data.content : '';
   if (clientOptions.delegatedRequest === true) {
     if (command.length > MAX_DELEGATED_REQUEST_CHARS) {
@@ -253,10 +357,7 @@ export async function handleChatSend(
       return;
     }
   }
-  const wantIsolatedWorkspace =
-    clientOptions.isolatedWorkspace === true ||
-    clientOptions.isolated_workspace === true ||
-    clientOptions.useWorkspace === true;
+  const wantIsolatedWorkspace = wantsIsolatedWorkspace(clientOptions);
 
   // Allocate the durable spine row before dispatching the provider. A live
   // session can accept an injected follow-up message, which belongs to the
@@ -370,6 +471,7 @@ export async function handleChatSend(
       onEvent: recordCanonicalEvent,
     });
   } catch (error) {
+    releasePendingSend();
     if (canonicalRun) {
       const current = runService.get(canonicalRun.run_id);
       if (current && !TERMINAL_RUN_STATUSES.has(current.status)) {
@@ -381,6 +483,10 @@ export async function handleChatSend(
     }
     throw error;
   }
+
+  // Registered (or injected, or rejected): the registry's own run state is
+  // authoritative from here on.
+  releasePendingSend();
 
   if (!result.ok) {
     if (canonicalRun) {
@@ -409,6 +515,95 @@ export async function handleChatSend(
   // Interactive send: await the run so this handler's promise mirrors the run
   // lifetime exactly as before the extraction.
   await result.completion;
+}
+
+/**
+ * Handles `chat.prewarm` { sessionId, expectedProvider?, expectedProjectId?,
+ * options }: boots the provider runtime for an idle, already-started session
+ * so its next chat.send skips process + MCP startup. `options` is exactly
+ * what the composer would send in chat.send right now; the runtime options
+ * are built through the same helpers as chat.send, so the warm fingerprint
+ * matches on the real send.
+ *
+ * Best-effort and silent: every ineligible case is a no-op without a
+ * protocol_error (the UI never asked for anything visible). Skipped when the
+ * kill switch CLOUDCLI_CLAUDE_PREWARM=0 is set, the server is draining, the
+ * session is not an interactive Claude session with a provider id, a run is
+ * running or pending, Agent CLI owns the session, the send would create an
+ * isolated worktree (different cwd), or an identical request was accepted
+ * within CHAT_PREWARM_DEDUPE_WINDOW_MS. The runtime itself re-checks for a
+ * live run / claimed session and enforces the warm pool cap.
+ */
+export async function handleChatPrewarm(
+  data: AnyRecord,
+  dependencies: ChatWebSocketDependencies,
+): Promise<boolean> {
+  if (process.env.CLOUDCLI_CLAUDE_PREWARM === '0') {
+    return false;
+  }
+  const sessionId = readRequiredSessionId(data);
+  if (!sessionId || chatRunRegistry.isShuttingDown()) {
+    return false;
+  }
+  const session = sessionsDb.getSessionById(sessionId);
+  if (!session || session.is_internal || !session.provider_session_id) {
+    return false;
+  }
+  const provider = session.provider as LLMProvider;
+  const prewarmFn = dependencies.prewarmFns?.[provider];
+  if (provider !== 'claude' || !prewarmFn) {
+    return false;
+  }
+  const expectedProvider = typeof data.expectedProvider === 'string' ? data.expectedProvider.trim() : '';
+  if (expectedProvider && expectedProvider !== provider) {
+    return false;
+  }
+  const project = session.project_path ? projectsDb.getProjectPath(session.project_path) : null;
+  const expectedProjectId = typeof data.expectedProjectId === 'string' ? data.expectedProjectId.trim() : '';
+  if (expectedProjectId && expectedProjectId !== project?.project_id) {
+    return false;
+  }
+  if (chatRunRegistry.isRunningOrPending(sessionId) || dependencies.isShellSessionActive?.(sessionId)) {
+    return false;
+  }
+  const clientOptions = (data.options && typeof data.options === 'object' ? data.options : {}) as AnyRecord;
+  if (wantsIsolatedWorkspace(clientOptions)) {
+    return false;
+  }
+
+  const { effectiveClientOptions } = resolveChatClientOptions(session, clientOptions);
+  // No attachments exist before a send; the send's images are per-turn and
+  // not part of the warm fingerprint.
+  delete effectiveClientOptions.images;
+  const runtimeOptions = buildProviderRuntimeOptions({
+    appSessionId: sessionId,
+    projectPath: session.runtime_project_path ?? session.project_path,
+    options: effectiveClientOptions,
+  }, session.provider_session_id);
+
+  const key = JSON.stringify({ providerSessionId: session.provider_session_id, options: runtimeOptions });
+  const now = Date.now();
+  const recent = recentPrewarms.get(sessionId);
+  if (recent && recent.key === key && now - recent.at < CHAT_PREWARM_DEDUPE_WINDOW_MS) {
+    return false;
+  }
+  recentPrewarms.delete(sessionId);
+  recentPrewarms.set(sessionId, { key, at: now });
+  while (recentPrewarms.size > PREWARM_DEDUPE_MAX_ENTRIES) {
+    const oldest = recentPrewarms.keys().next().value;
+    if (oldest === undefined) break;
+    recentPrewarms.delete(oldest);
+  }
+
+  try {
+    return Boolean(await prewarmFn(session.provider_session_id, runtimeOptions));
+  } catch (error) {
+    console.warn('[Chat] prewarm failed', {
+      sessionId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return false;
+  }
 }
 
 /**
@@ -509,7 +704,7 @@ export async function handleChatAbort(
  * This single message replaces the old `check-session-status`,
  * `get-pending-permissions`, and Claude-only writer reconnect flows.
  */
-function handleChatSubscribe(
+export function handleChatSubscribe(
   ws: WebSocket,
   data: AnyRecord,
   dependencies: ChatWebSocketDependencies
@@ -534,7 +729,11 @@ function handleChatSubscribe(
       : 0;
 
     const run = chatRunRegistry.getRun(sessionId);
-    const isProcessing = chatRunRegistry.isProcessing(sessionId);
+    const isRunActive = chatRunRegistry.isProcessing(sessionId);
+    // An accepted chat.send still releasing Agent CLI (or preparing a
+    // worktree) is processing too — answering idle here would clear the
+    // sender's spinner before its run even registers.
+    const isProcessing = chatRunRegistry.isRunningOrPending(sessionId);
     const isShellActive = dependencies.isShellSessionActive?.(sessionId) ?? false;
     const session = sessionsDb.getSessionById(sessionId);
 
@@ -555,7 +754,9 @@ function handleChatSubscribe(
     // Future live events for this run should also land on the socket that
     // asked — additive fan-out, so other tabs following the run keep their
     // stream. This is what makes mid-stream page refreshes work for all
-    // providers.
+    // providers. For a pending send the registry parks the socket: `startRun`
+    // attaches it to the new run, or — if the send ends without a run — it
+    // receives a terminal `complete` so its spinner clears.
     if (isProcessing) {
       chatRunRegistry.attachConnection(sessionId, ws);
     }
@@ -576,7 +777,7 @@ function handleChatSubscribe(
       sessionId,
       isProcessing,
       isShellActive: !isProcessing && isShellActive,
-      lastSeq: run?.lastSeq ?? 0,
+      lastSeq: isRunActive ? run?.lastSeq ?? 0 : 0,
       pendingPermissions,
       timestamp: new Date().toISOString(),
     });
@@ -588,7 +789,9 @@ function handleChatSubscribe(
     // are fully persisted to the provider transcript and served over REST —
     // replaying them (e.g. after a page reload where the client's lastSeq is
     // 0) would duplicate messages the history fetch already returned.
-    if (isProcessing) {
+    // A pending send has no run yet — the registry entry (if any) is the
+    // PREVIOUS, completed run, whose events must not be replayed.
+    if (isRunActive) {
       for (const event of chatRunRegistry.replayEvents(sessionId, lastSeq)) {
         sendJson(ws, event);
       }
@@ -614,8 +817,8 @@ function handlePermissionResponse(data: AnyRecord, dependencies: ChatWebSocketDe
   });
 }
 
-/** Updates settings inherited by subsequent turns; WebSocket ordering avoids a toggle/send race. */
-export function handleChatSessionPreferences(ws: WebSocket, data: AnyRecord): void {
+/** Persist the preference and apply it to the running provider before acknowledging. */
+export async function handleChatSessionPreferences(ws: WebSocket, data: AnyRecord): Promise<void> {
   const sessionId = readRequiredSessionId(data);
   if (!sessionId) {
     sendProtocolError(ws, 'SESSION_ID_REQUIRED', 'chat.session-preferences requires a sessionId.');
@@ -648,8 +851,12 @@ export function handleChatSessionPreferences(ws: WebSocket, data: AnyRecord): vo
     return;
   }
   sessionsDb.updateSessionRuntimePreferences(sessionId, { permissionMode: requested });
+  const live = await updateLivePermissionMode(session, requested);
   sendJson(ws, {
     kind: 'chat_session_preferences_updated',
+    appliedToRunningSession: live.applied,
+    error: live.error,
+    deferred: !live.applied && chatRunRegistry.isProcessing(sessionId),
     sessionId,
     preferences: { permissionMode: requested },
     timestamp: new Date().toISOString(),
@@ -661,10 +868,13 @@ export function handleChatSessionPreferences(ws: WebSocket, data: AnyRecord): vo
  *
  * Inbound protocol (client to server):
  * - `chat.send`                { sessionId, content, options? }
+ * - `chat.prewarm`             { sessionId, options, expectedProvider?, expectedProjectId? } (best-effort, no reply)
  * - `chat.abort`               { sessionId }
  * - `chat.subscribe`           { sessions: [{ sessionId, lastSeq? }] }
  * - `chat.session-preferences` { sessionId, preferences: { permissionMode } }
  * - `chat.permission-response` { requestId, allow, updatedInput?, message?, rememberEntry? }
+ * - `runs.subscribe`           { runIds: string[] }  (`'*'` = every run) — opt in to `run_event` frames
+ * - `runs.unsubscribe`         { runIds?: string[] } (omit to drop all)
  *
  * Outbound protocol (server to client): every frame is `kind`-based — either
  * a provider `NormalizedMessage` (with `seq`) or a gateway event
@@ -695,6 +905,9 @@ export function handleChatConnection(
         case 'chat.send':
           await handleChatSend(ws, userId, data, dependencies);
           return;
+        case 'chat.prewarm':
+          await handleChatPrewarm(data, dependencies);
+          return;
         case 'chat.abort':
           await handleChatAbort(ws, data, dependencies);
           return;
@@ -705,8 +918,22 @@ export function handleChatConnection(
           handlePermissionResponse(data, dependencies);
           return;
         case 'chat.session-preferences':
-          handleChatSessionPreferences(ws, data);
+          await handleChatSessionPreferences(ws, data);
           return;
+        case 'runs.subscribe':
+        case 'runs.unsubscribe': {
+          const runIds = Array.isArray(data.runIds)
+            ? data.runIds.filter((runId: unknown): runId is string => typeof runId === 'string' && runId.length > 0)
+            : typeof data.runId === 'string' && data.runId ? [data.runId] : [];
+          if (messageType === 'runs.subscribe') {
+            for (const runId of runIds) subscribeRunEvents(ws, runId);
+          } else if (runIds.length === 0) {
+            unsubscribeRunEvents(ws);
+          } else {
+            for (const runId of runIds) unsubscribeRunEvents(ws, runId);
+          }
+          return;
+        }
         case 'chat.ping':
           // Application-level liveness check: the browser WebSocket API has no
           // way to send/observe protocol-level ping frames, so a client that
@@ -728,6 +955,7 @@ export function handleChatConnection(
   ws.on('close', () => {
     console.log('[INFO] Chat client disconnected');
     connectedClients.delete(ws);
+    unsubscribeRunEvents(ws);
     // Also remove the socket from every run writer's fan-out set; `ws` emits
     // `close` after `error` too, so this single hook covers both.
     chatRunRegistry.detachConnection(ws);

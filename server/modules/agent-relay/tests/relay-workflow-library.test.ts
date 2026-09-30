@@ -28,6 +28,7 @@ function summary(overrides: Partial<AgentRelayJobSummary> = {}): AgentRelayJobSu
     approvalPolicy: 'auto',
     status: 'completed',
     queuePosition: null,
+    deniedActions: [],
     task: 'task',
     dependsOn: [],
     error: null,
@@ -149,6 +150,7 @@ test('scorecard classifies semantic outcomes, validation failures, retries, dura
   assert.equal(scorecard.cost.knownTotalUsd, 0.35);
   assert.equal(scorecard.cost.costPerKnownCostSuccessUsd, 0.25);
   assert.equal(scorecard.providerBreakdown.grok!.knownCostTotalUsd, 0.10);
-  assert.equal(scorecard.modelBreakdown.unknown, undefined);
+  assert.equal(scorecard.modelBreakdown.unknown?.jobs, 1);
+  assert.equal(scorecard.modelBreakdown.unknown?.knownCostTotalUsd, 0.10);
   assert.equal(scorecard.evidence.workerClaimsHostVerified, false);
 });

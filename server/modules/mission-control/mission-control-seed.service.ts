@@ -134,8 +134,7 @@ export type EnsureSectionResult = {
 
 /**
  * Produce agent (Grok Build) pulls open Trello cards via Composio and emits MC
- * drafts that include an implementer `prompt`. On auto-approve, Mission Control
- * bridges to the global Kanban backlog (no project/agent pre-assigned).
+ * drafts that include an implementer `prompt` for a work session.
  */
 function buildTrelloTasksProducePrompt(board: TrelloSeedBoardConfig): string {
   const projectPathExample = board.suggestedProjectPathExample ?? '/path/to/project';
@@ -232,18 +231,13 @@ export function buildTrelloTasksSectionInput(board: TrelloSeedBoardConfig): Crea
     model: null,
     permission_mode: 'bypassPermissions',
     dry_run: false,
-    // Auto-bridge to Kanban so you assign project/agents and run from the board.
-    // Note: resolved items disappear from the "Actionable" filter — check Kanban
-    // backlog or switch Mission Control filter to "All".
-    auto_approve: true,
+    // Items wait for review; add a work profile in Bot Studio to start work
+    // sessions from approved cards.
+    auto_approve: false,
     produce_prompt: buildTrelloTasksProducePrompt(board),
     produce_tools: ['Composio', 'obsidian'],
     resolve_prompt: '',
     resolve_tools: [],
-    create_kanban_task: true,
-    kanban_assignee_provider: null,
-    kanban_review_provider: null,
-    kanban_mcp_tools: board.kanbanMcpTools ?? ['Composio'],
   };
 }
 
@@ -284,9 +278,7 @@ export function ensureTrelloTasksSection(): EnsureSectionResult {
   const stale =
     !existing.produce_prompt.includes(versionMarker) ||
     existing.provider !== 'grok' ||
-    !existing.create_kanban_task ||
-    JSON.stringify(existing.produce_tools) !== JSON.stringify(input.produce_tools) ||
-    JSON.stringify(existing.kanban_mcp_tools ?? []) !== JSON.stringify(input.kanban_mcp_tools ?? []);
+    JSON.stringify(existing.produce_tools) !== JSON.stringify(input.produce_tools);
 
   if (!stale) {
     return { created: false, updated: false, section: existing, suppressed: false };
@@ -296,9 +288,6 @@ export function ensureTrelloTasksSection(): EnsureSectionResult {
     produce_prompt: input.produce_prompt,
     produce_tools: input.produce_tools,
     provider: 'grok',
-    auto_approve: true,
-    create_kanban_task: true,
-    kanban_mcp_tools: input.kanban_mcp_tools,
     resolve_prompt: '',
     resolve_tools: [],
     schedule_cron: input.schedule_cron,
@@ -384,7 +373,6 @@ function ensureVersionedSeedSection(
     resolve_tools: input.resolve_tools,
     ...(refreshActions && input.actions ? { actions: input.actions } : {}),
     auto_approve: false,
-    create_kanban_task: false,
   });
 
   // updateSection returns null only when the row vanished between the read and

@@ -17,6 +17,9 @@ if (typeof (globalThis as { localStorage?: unknown }).localStorage === 'undefine
 }
 
 import { ThemeProvider } from '../../../../contexts/ThemeContext';
+import { normalizeInlineCodeFences } from '../../utils/chatFormatting';
+import { createStreamingMarkdownSplitter } from '../../utils/streamingMarkdown';
+
 import { Markdown, MarkdownBody } from './Markdown';
 import StreamingMarkdown from './StreamingMarkdown';
 
@@ -50,8 +53,25 @@ const assertRendersLikeMarkdown = (content: string, label: string) => {
     <StreamingMarkdown content={content} isStreaming={false} className={CLASS_NAME} />,
   );
 
-  assert.equal(normalize(streaming), normalize(unsplit), `${label}: streaming split must render like <Markdown>`);
   assert.equal(normalize(finished), normalize(unsplit), `${label}: finished reply must render like <Markdown>`);
+
+  // While streaming, a still-open top-level code fence renders as a plain
+  // preview (highlighted once it closes); everything before it must render
+  // exactly like <Markdown> of that same text.
+  const split = createStreamingMarkdownSplitter(normalizeInlineCodeFences).split(content);
+  if (split.openFence?.topLevel) {
+    assert.ok(streaming.includes('data-streaming-code'), `${label}: open fence renders the plain preview`);
+    const before = split.text.slice(0, split.openFence.start);
+    const previewAt = streaming.indexOf('<div class="group relative my-2" data-streaming-code');
+    const expectedBefore = render(<Markdown className={CLASS_NAME}>{before}</Markdown>).replace(/<\/div>$/, '');
+    assert.equal(
+      normalize(streaming.slice(0, previewAt)),
+      normalize(expectedBefore),
+      `${label}: text before the open fence must render like <Markdown>`,
+    );
+    return;
+  }
+  assert.equal(normalize(streaming), normalize(unsplit), `${label}: streaming split must render like <Markdown>`);
 };
 
 const FIXTURES: Record<string, string> = {
@@ -130,4 +150,14 @@ test('stream_end keeps the same element type mounted at the reply position', () 
   const after = render(<StreamingMarkdown content={content} isStreaming={false} className={CLASS_NAME} />);
 
   assert.equal(normalize(during), normalize(after), 'markup must be stable across the stream_end flip');
+});
+
+test('an open fence streams as plain text and is highlighted once closed', () => {
+  const open = render(<StreamingMarkdown content={'Intro.\n\n```ts\nconst a = 1;\n'} isStreaming className={CLASS_NAME} />);
+  assert.ok(open.includes('data-streaming-code'));
+  assert.ok(open.includes('const a = 1;'));
+  assert.ok(open.includes('>ts<'), 'the language label is kept');
+
+  const closed = render(<StreamingMarkdown content={'Intro.\n\n```ts\nconst a = 1;\n```'} isStreaming className={CLASS_NAME} />);
+  assert.ok(!closed.includes('data-streaming-code'), 'a closed fence goes back through the highlighter');
 });

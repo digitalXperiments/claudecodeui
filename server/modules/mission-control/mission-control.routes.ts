@@ -2,6 +2,9 @@ import express from 'express';
 
 import { AppError, asyncHandler } from '@/shared/utils.js';
 import { missionControlDb } from '@/modules/mission-control/mission-control.repository.js';
+import { getSectionVersionHistory, recordSectionVersion } from '@/modules/mission-control/mission-control-versions.service.js';
+import { listBotMemories, proposeBotMemory, reviewBotMemory } from '@/modules/mission-control/mission-control-memory.service.js';
+import { listBotExceptions } from '@/modules/mission-control/mission-control-exceptions.service.js';
 import { runsDb } from '@/modules/runs/index.js';
 import {
   applyItemAction,
@@ -9,6 +12,7 @@ import {
   retryItem,
   runSectionProduce,
 } from '@/modules/mission-control/mission-control-runner.service.js';
+import { simulateSectionTick } from '@/modules/mission-control/mission-control-simulator.service.js';
 import { matchProjectsForItem, workThisItem } from '@/modules/mission-control/mission-control-work.service.js';
 import { syncMissionControlSchedules } from '@/modules/mission-control/mission-control-scheduler.service.js';
 import {
@@ -19,7 +23,6 @@ import {
   type McItemStatus,
   type McProvider,
   type McToolPolicy,
-  type McSectionMode,
   type McSectionScope,
   type UpdateMcSectionInput,
 } from '@/modules/mission-control/mission-control.types.js';
@@ -37,6 +40,9 @@ import {
   type SectionWorkshopMessage,
   type SectionWorkshopDraft,
 } from '@/modules/mission-control/mission-control-section-workshop.service.js';
+
+import { acceptWorkItem, dispatchWorkItem, followUpWorkItem } from './mission-control-dispatch.service.js';
+import { parseWorkProfile } from './mission-control-work-profile.js';
 
 const router = express.Router();
 
@@ -156,11 +162,6 @@ function parseSectionBody(body: Record<string, unknown>, partial: boolean): Crea
     scope = body.scope === 'project' ? 'project' : 'global';
   }
 
-  let mode: McSectionMode | undefined;
-  if (body.mode !== undefined) {
-    mode = body.mode === 'fire_and_forget' ? 'fire_and_forget' : 'review';
-  }
-
   const projectId =
     body.project_id === null
       ? null
@@ -188,8 +189,8 @@ function parseSectionBody(body: Record<string, unknown>, partial: boolean): Crea
     ...(body.enabled !== undefined ? { enabled: readBoolean(body.enabled, true) } : {}),
     ...(scope !== undefined ? { scope } : {}),
     ...(projectId !== undefined ? { project_id: projectId } : {}),
+    ...(body.work_profile !== undefined ? { work_profile: parseWorkProfile(body.work_profile) } : {}),
     ...(workProjectId !== undefined ? { work_project_id: workProjectId } : {}),
-    ...(mode !== undefined ? { mode } : {}),
     ...(body.schedule_cron !== undefined
       ? { schedule_cron: readString(body.schedule_cron) || null }
       : {}),
@@ -197,6 +198,10 @@ function parseSectionBody(body: Record<string, unknown>, partial: boolean): Crea
     ...(body.model !== undefined
       ? { model: body.model === null ? null : readString(body.model) || null }
       : {}),
+    ...(body.effort !== undefined ? { effort: readNullableString(body.effort) } : {}),
+    ...(body.resolve_provider !== undefined ? { resolve_provider: parseOptionalProvider(body.resolve_provider) } : {}),
+    ...(body.resolve_model !== undefined ? { resolve_model: readNullableString(body.resolve_model) } : {}),
+    ...(body.resolve_effort !== undefined ? { resolve_effort: readNullableString(body.resolve_effort) } : {}),
     ...(body.permission_mode !== undefined
       ? { permission_mode: readString(body.permission_mode) || 'bypassPermissions' }
       : {}),
@@ -218,31 +223,18 @@ function parseSectionBody(body: Record<string, unknown>, partial: boolean): Crea
       : {}),
     ...(body.tool_policy !== undefined ? { tool_policy: parseToolPolicy(body.tool_policy) } : {}),
     ...(body.actions !== undefined ? { actions: parseActions(body.actions) } : {}),
-    ...(body.create_kanban_task !== undefined
-      ? { create_kanban_task: readBoolean(body.create_kanban_task, false) }
-      : {}),
-    ...(body.kanban_assignee_provider !== undefined
-      ? { kanban_assignee_provider: parseKanbanProvider(body.kanban_assignee_provider) }
-      : {}),
-    ...(body.kanban_review_provider !== undefined
-      ? { kanban_review_provider: parseKanbanProvider(body.kanban_review_provider) }
-      : {}),
-    ...(body.kanban_mcp_tools !== undefined
-      ? { kanban_mcp_tools: parseTools(body.kanban_mcp_tools) }
-      : {}),
   };
 }
 
-/** Optional agent provider for bridged kanban cards; null clears it. */
-function parseKanbanProvider(value: unknown): McProvider | null {
-  if (value === null || value === undefined || value === '') {
-    return null;
-  }
+function readNullableString(value: unknown): string | null {
+  return value === null ? null : readString(value) || null;
+}
+
+/** Optional stage agent; null/'' means "same as Propose". */
+function parseOptionalProvider(value: unknown): McProvider | null {
+  if (value === null || value === undefined || value === '') return null;
   if (!isMcProvider(value)) {
-    throw new AppError(`Invalid kanban agent: ${String(value)}`, {
-      code: 'MC_INVALID_PROVIDER',
-      statusCode: 400,
-    });
+    throw new AppError(`Invalid provider: ${String(value)}`, { code: 'MC_INVALID_PROVIDER', statusCode: 400 });
   }
   return value;
 }
@@ -292,6 +284,9 @@ router.post(
     res.json({ success: true, ...result });
   }),
 );
+
+// GET /sections
+router.get('/exceptions', asyncHandler(async (_req, res) => { res.json({ exceptions: listBotExceptions() }); }));
 
 // GET /sections
 router.get(
@@ -352,6 +347,42 @@ router.get(
       });
     }
     res.json({ section });
+  }),
+);
+
+// GET /sections/:id/runs — bounded produce/resolve tick history.
+router.get('/sections/:id/memories', asyncHandler(async (req, res) => {
+  const sectionId = paramId(req.params.id);
+  if (!missionControlDb.getSection(sectionId)) throw new AppError('Section not found', { code: 'MC_SECTION_NOT_FOUND', statusCode: 404 });
+  res.json({ memories: listBotMemories(sectionId) });
+}));
+
+router.post('/sections/:id/memories', asyncHandler(async (req, res) => {
+  const sectionId = paramId(req.params.id);
+  if (!missionControlDb.getSection(sectionId)) throw new AppError('Section not found', { code: 'MC_SECTION_NOT_FOUND', statusCode: 404 });
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const memory = proposeBotMemory(sectionId, readString(body.content), typeof body.sourceItemId === 'string' ? body.sourceItemId : null);
+  res.status(201).json({ memory });
+}));
+
+router.patch('/sections/:id/memories/:memoryId', asyncHandler(async (req, res) => {
+  const sectionId = paramId(req.params.id);
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const status = body.status;
+  if (status !== 'proposed' && status !== 'approved' && status !== 'rejected') throw new AppError('Invalid memory status', { code: 'MC_BAD_MEMORY_STATUS', statusCode: 400 });
+  const memory = reviewBotMemory(sectionId, paramId(req.params.memoryId), status, typeof body.content === 'string' ? body.content : undefined);
+  const section = missionControlDb.getSection(sectionId);
+  if (section) recordSectionVersion(section, 'edited');
+  res.json({ memory });
+}));
+
+// GET /sections/:id/runs — bounded produce/resolve tick history.
+router.get(
+  '/sections/:id/versions',
+  asyncHandler(async (req, res) => {
+    const section = missionControlDb.getSection(paramId(req.params.id));
+    if (!section) throw new AppError('Section not found', { code: 'MC_SECTION_NOT_FOUND', statusCode: 404 });
+    res.json(getSectionVersionHistory(section));
   }),
 );
 
@@ -455,6 +486,15 @@ router.post(
   }),
 );
 
+// POST /sections/:id/simulate — inspect sample produce output without a provider run or writes
+router.post(
+  '/sections/:id/simulate',
+  asyncHandler(async (req, res) => {
+    const result = simulateSectionTick(paramId(req.params.id), req.body?.output);
+    res.json(result);
+  }),
+);
+
 // GET /items
 router.get(
   '/items',
@@ -534,12 +574,35 @@ router.get(
   }),
 );
 
+// POST /items/:id/work/accept — QA passed; the item is done
+router.post(
+  '/items/:id/work/accept',
+  asyncHandler(async (req, res) => {
+    const item = acceptWorkItem(paramId(req.params.id));
+    res.json({ item, pendingCount: missionControlDb.countPending() });
+  }),
+);
+
+// POST /items/:id/work/follow-up — send reviewer feedback (or a retry) into the same work session
+router.post(
+  '/items/:id/work/follow-up',
+  asyncHandler(async (req, res) => {
+    const { item } = await followUpWorkItem(paramId(req.params.id), readString(req.body?.message));
+    res.status(202).json({ item, pendingCount: missionControlDb.countPending() });
+  }),
+);
+
 // POST /items/:id/work — open a scoped chat in the selected project
 router.post(
   '/items/:id/work',
   asyncHandler(async (req, res) => {
     const projectId = readOptionalString(req.body?.projectId);
-    const result = workThisItem(paramId(req.params.id), projectId);
+    const itemId = paramId(req.params.id);
+    const item = missionControlDb.getItem(itemId);
+    const section = item && missionControlDb.getSection(item.section_id);
+    const result = section?.work_profile
+      ? await dispatchWorkItem(itemId, projectId)
+      : workThisItem(itemId, projectId);
     res.status(201).json({
       item: result.item,
       sessionId: result.sessionId,

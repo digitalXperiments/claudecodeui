@@ -16,6 +16,28 @@ export type WorkProjectMatch = {
   reason: string;
 };
 
+// Keep in lockstep with server/modules/mission-control/mission-control.types.ts:MC_PROVIDERS.
+export const MC_PROVIDERS = ['claude', 'codex', 'cursor', 'opencode', 'kilo', 'cline', 'grok', 'kimi', 'qwencode', 'pi', 'omp', 'antigravity'] as const;
+export type McProvider = (typeof MC_PROVIDERS)[number];
+
+export type McWorkProfile = {
+  auto_start: boolean;
+  provider: McProvider;
+  model: string;
+  /** Model effort level; null uses the model's default. */
+  effort: string | null;
+  mcp_servers: string[];
+  /** The work prompt sent to every work session. */
+  context: string;
+  /** Fallback project when no client route matches. */
+  default_project_id: string | null;
+  /** Optional per-client routing; may be empty when default_project_id is set. */
+  routes: Array<{ client: string; aliases: string[]; project_id: string; context: string }>;
+};
+
+/** Present on item.body once a work session exists for the item. */
+export type McWorkSession = { sessionId: string; projectId: string; provider: string; model: string };
+
 export type McSection = {
   section_id: string;
   title: string;
@@ -25,10 +47,19 @@ export type McSection = {
   scope: 'global' | 'project';
   project_id: string | null;
   work_project_id?: string | null;
-  mode: 'review' | 'fire_and_forget';
+  work_profile?: McWorkProfile | null;
+  /** Deprecated: the server always returns 'review' and ignores it on input. */
+  mode?: 'review' | 'fire_and_forget';
   schedule_cron: string | null;
+  /** Propose agent/model (also used by retry). */
   provider: string;
   model: string | null;
+  /** Propose effort; null uses the model default. */
+  effort?: string | null;
+  /** Resolve agent; null means "Same as Propose" and the two fields below are ignored. */
+  resolve_provider?: McProvider | null;
+  resolve_model?: string | null;
+  resolve_effort?: string | null;
   permission_mode: string;
   dry_run: boolean;
   auto_approve: boolean;
@@ -37,10 +68,11 @@ export type McSection = {
   resolve_prompt: string;
   resolve_tools: string[];
   actions: McAction[];
-  create_kanban_task: boolean;
-  kanban_assignee_provider: string | null;
-  kanban_review_provider: string | null;
-  kanban_mcp_tools: string[];
+  /** Deprecated Kanban bridge fields; Bot Studio neither reads nor sends them. */
+  create_kanban_task?: boolean;
+  kanban_assignee_provider?: string | null;
+  kanban_review_provider?: string | null;
+  kanban_mcp_tools?: string[];
   tool_policy?: Record<string, Record<string, 'allow' | 'ask' | 'deny'>>;
   last_run_at: string | null;
   last_run_error: string | null;
@@ -51,7 +83,12 @@ export type McSection = {
 export type McItem = {
   item_id: string;
   section_id: string;
-  status: 'pending' | 'resolving' | 'resolved' | 'dismissed' | 'failed' | 'expired';
+  /**
+   * pending: awaiting a Resolve/approval decision · resolving: resolve agent running ·
+   * awaiting_work: ready for a manual Start work · working: work session queued or running ·
+   * in_qa: work session finished, awaiting human QA · resolved: done.
+   */
+  status: 'pending' | 'resolving' | 'awaiting_work' | 'working' | 'in_qa' | 'resolved' | 'dismissed' | 'failed' | 'expired';
   title: string;
   summary: string;
   body: Record<string, unknown>;
@@ -66,6 +103,8 @@ export type McItem = {
   created_at: string;
   updated_at: string;
   resolved_at: string | null;
+  /** Set once the item entered the Work stage; a failed item with this set failed during Work. */
+  work_ready_at: string | null;
 };
 
 export type McSectionInput = {
@@ -76,10 +115,16 @@ export type McSectionInput = {
   scope?: 'global' | 'project';
   project_id?: string | null;
   work_project_id?: string | null;
+  work_profile?: McWorkProfile | null;
+  /** Deprecated: ignored by the server. */
   mode?: 'review' | 'fire_and_forget';
   schedule_cron?: string | null;
   provider?: string;
   model?: string | null;
+  effort?: string | null;
+  resolve_provider?: McProvider | null;
+  resolve_model?: string | null;
+  resolve_effort?: string | null;
   permission_mode?: string;
   dry_run?: boolean;
   auto_approve?: boolean;
@@ -88,6 +133,7 @@ export type McSectionInput = {
   resolve_prompt?: string;
   resolve_tools?: string[];
   actions?: McAction[];
+  /** Deprecated Kanban bridge fields; Bot Studio no longer sends them. */
   create_kanban_task?: boolean;
   kanban_assignee_provider?: string | null;
   kanban_review_provider?: string | null;
@@ -101,11 +147,9 @@ export type CreateMcSectionInput = McSectionInput;
 export type McSectionWorkshopDraft = {
   title: string;
   scope: 'global' | 'project';
-  mode: 'review' | 'fire_and_forget';
   scheduleCron: string | null;
   producePrompt: string;
   resolvePrompt: string;
-  createKanbanTask: boolean;
   recommendedMcpServers: string[];
 };
 
@@ -244,6 +288,24 @@ export const missionControlApi = {
         method: 'POST',
         body: JSON.stringify(projectId ? { projectId } : {}),
       },
+    );
+    return parseJson(res);
+  },
+
+  /** Accept a work session's result after QA; the item becomes resolved. */
+  async acceptWork(itemId: string): Promise<{ item: McItem }> {
+    const res = await authenticatedFetch(
+      `/api/mission-control/items/${encodeURIComponent(itemId)}/work/accept`,
+      { method: 'POST' },
+    );
+    return parseJson(res);
+  },
+
+  /** Post a message into the item's existing work session (send back / retry work). */
+  async followUpWork(itemId: string, message: string): Promise<{ item: McItem }> {
+    const res = await authenticatedFetch(
+      `/api/mission-control/items/${encodeURIComponent(itemId)}/work/follow-up`,
+      { method: 'POST', body: JSON.stringify({ message }) },
     );
     return parseJson(res);
   },

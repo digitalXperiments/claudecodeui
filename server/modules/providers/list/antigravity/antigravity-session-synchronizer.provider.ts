@@ -7,8 +7,8 @@ import type { IProviderSessionSynchronizer } from '@/shared/interfaces.js';
 import {
   antigravityConversationsDir,
   antigravityTitleFromPrompt,
-  listAntigravityConversations,
-  readAntigravityConversation,
+  listAntigravityConversationsAsync,
+  readAntigravityConversationAsync,
   type AntigravityConversationSummary,
 } from './antigravity-conversation-store.js';
 
@@ -35,7 +35,7 @@ export class AntigravitySessionSynchronizer implements IProviderSessionSynchroni
   private readonly provider = 'antigravity' as const;
 
   async synchronize(since?: Date): Promise<number> {
-    const conversations = listAntigravityConversations(process.env, { since: since ?? null });
+    const conversations = await listAntigravityConversationsAsync(process.env, { since: since ?? null });
 
     let processed = 0;
     for (const conversation of conversations) {
@@ -54,7 +54,7 @@ export class AntigravitySessionSynchronizer implements IProviderSessionSynchroni
     const sessionId = path.basename(filePath).replace(/\.(db(-wal|-shm)?|meta)$/, '');
     if (!sessionId || sessionId === path.basename(filePath)) return null;
 
-    const conversation = readAntigravityConversation(sessionId, process.env);
+    const conversation = await readAntigravityConversationAsync(sessionId, process.env);
     if (!conversation) return null;
 
     return this.indexConversation(conversation) ? sessionId : null;

@@ -58,9 +58,11 @@ export function AuthProvider({ children }: AuthProviderProps) {
     clearStoredToken();
   }, []);
 
-  const checkOnboardingStatus = useCallback(async () => {
+  // `pendingResponse` lets the cold-start bootstrap start this request in
+  // parallel with /auth/status and /auth/user and apply it afterwards.
+  const checkOnboardingStatus = useCallback(async (pendingResponse?: Promise<Response>) => {
     try {
-      const response = await api.user.onboardingStatus();
+      const response = await (pendingResponse ?? api.user.onboardingStatus());
       if (!response.ok) {
         return;
       }
@@ -88,7 +90,19 @@ export function AuthProvider({ children }: AuthProviderProps) {
       }
       setError(null);
 
-      const statusResponse = await api.auth.status();
+      // With a stored token, fire the user + onboarding lookups alongside the
+      // status check instead of as three serial round trips. Their results are
+      // applied in the original order and with the original conditions (ignored
+      // when setup is needed; onboarding only after a valid user), so behaviour
+      // is unchanged — only the latency is. The no-op catches only mark the
+      // promises handled for the early-return paths; awaiting them still throws.
+      const statusRequest = api.auth.status();
+      const userRequest = token ? api.auth.user() : null;
+      const onboardingRequest = token ? api.user.onboardingStatus() : null;
+      userRequest?.catch(() => {});
+      onboardingRequest?.catch(() => {});
+
+      const statusResponse = await statusRequest;
       const statusPayload = await parseJsonSafely<AuthStatusPayload>(statusResponse);
 
       if (statusPayload?.needsSetup) {
@@ -98,11 +112,11 @@ export function AuthProvider({ children }: AuthProviderProps) {
 
       setNeedsSetup(false);
 
-      if (!token) {
+      if (!token || !userRequest) {
         return;
       }
 
-      const userResponse = await api.auth.user();
+      const userResponse = await userRequest;
       // 401/403 mean the token is actually invalid. 5xx / proxy errors during
       // a rebuild must not delete localStorage or a restart looks like logout.
       if (!userResponse.ok) {
@@ -129,7 +143,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
         }
         return nextUser;
       });
-      await checkOnboardingStatus();
+      await checkOnboardingStatus(onboardingRequest ?? undefined);
     } catch (caughtError) {
       console.error('[Auth] Auth status check failed:', caughtError);
       setError(AUTH_ERROR_MESSAGES.authStatusCheckFailed);

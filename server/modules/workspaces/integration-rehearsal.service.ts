@@ -272,8 +272,8 @@ export function createIntegrationRehearsalService(options: IntegrationRehearsalS
     const warnings: string[] = [];
     const uniqueIds = [...new Set(input.workspaceIds.map((id) => id.trim()).filter(Boolean))];
 
-    if (uniqueIds.length < 2) {
-      throw new CloudError('WORKSPACE_CREATE_FAILED', 'Select at least two completed workspaces from the same project');
+    if (uniqueIds.length < 1) {
+      throw new CloudError('WORKSPACE_CREATE_FAILED', 'Select at least one completed workspace from the same project');
     }
     const requestedBase = input.baseSha.trim();
     if (!isSafeRef(requestedBase)) {

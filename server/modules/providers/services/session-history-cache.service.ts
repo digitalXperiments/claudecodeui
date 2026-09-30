@@ -106,30 +106,41 @@ export function createSessionHistoryCache(
         return cached.full;
       }
 
-      // Concurrent requests for the same session share one parse. The file may
-      // gain rows while the load runs; the pre-load stat is what the entry is
-      // keyed by, so the next request would see a changed stat and re-read.
-      const pending = pendingLoads.get(sessionId);
+      // Concurrent requests for the same file revision share one parse. The
+      // key includes the stat: a request that stat'ed a newer revision (e.g.
+      // the post-complete refresh after the final turn was written) must not
+      // join a parse of the older file and be served a stale transcript.
+      const loadKey = `${sessionId}\u0000${transcriptPath}\u0000${stat.mtimeMs}\u0000${stat.size}`;
+      const pending = pendingLoads.get(loadKey);
       if (pending) {
         return pending;
       }
 
       const load = loadFull().then((full) => {
-        entries.delete(sessionId);
-        entries.set(sessionId, {
-          transcriptPath,
-          mtimeMs: stat.mtimeMs,
-          size: stat.size,
-          full,
-        });
-        evictOverBudget();
+        // An older revision's parse finishing after a newer one must not
+        // replace the newer entry.
+        const current = entries.get(sessionId);
+        if (
+          !current
+          || current.transcriptPath !== transcriptPath
+          || current.mtimeMs <= stat.mtimeMs
+        ) {
+          entries.delete(sessionId);
+          entries.set(sessionId, {
+            transcriptPath,
+            mtimeMs: stat.mtimeMs,
+            size: stat.size,
+            full,
+          });
+          evictOverBudget();
+        }
         return full;
       });
-      pendingLoads.set(sessionId, load);
+      pendingLoads.set(loadKey, load);
       try {
         return await load;
       } finally {
-        pendingLoads.delete(sessionId);
+        pendingLoads.delete(loadKey);
       }
     },
   };

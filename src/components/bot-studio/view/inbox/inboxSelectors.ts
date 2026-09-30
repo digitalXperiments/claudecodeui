@@ -1,7 +1,13 @@
 import type { McItem } from '../../../mission-control/api/missionControlApi';
 import type { Bot } from '../../types';
 
-export type InboxFilter = 'needs_attention' | 'pending' | 'resolving' | 'resolved' | 'failed' | 'all';
+export type InboxFilter = 'needs_attention' | 'pending' | 'in_progress' | 'in_qa' | 'resolved' | 'failed' | 'all';
+
+export const INBOX_FILTERS: InboxFilter[] = ['needs_attention', 'pending', 'in_progress', 'in_qa', 'resolved', 'failed', 'all'];
+
+export const INBOX_FILTER_LABELS: Record<InboxFilter, string> = {
+  needs_attention: 'Needs attention', pending: 'Pending', in_progress: 'In progress', in_qa: 'In QA', resolved: 'Resolved', failed: 'Failed', all: 'All',
+};
 
 export type InboxCounts = Record<InboxFilter, number>;
 
@@ -15,24 +21,16 @@ export type InboxKeyboardAction =
   | { type: 'toggle'; itemId: string }
   | { type: 'clear' };
 
-export function getInboxCounts(items: McItem[]): InboxCounts {
-  const pending = items.filter((item) => item.status === 'pending').length;
-  const failed = items.filter((item) => item.status === 'failed').length;
-  return {
-    needs_attention: pending + failed,
-    pending,
-    resolving: items.filter((item) => item.status === 'resolving').length,
-    resolved: items.filter((item) => item.status === 'resolved' || item.status === 'dismissed').length,
-    failed,
-    all: items.length,
-  };
-}
-
 export function inboxFilterMatches(item: McItem, filter: InboxFilter): boolean {
   if (filter === 'all') return true;
-  if (filter === 'needs_attention') return item.status === 'pending' || item.status === 'failed';
+  if (filter === 'needs_attention') return item.status === 'pending' || item.status === 'failed' || item.status === 'awaiting_work' || item.status === 'in_qa';
+  if (filter === 'in_progress') return item.status === 'resolving' || item.status === 'working';
   if (filter === 'resolved') return item.status === 'resolved' || item.status === 'dismissed';
   return item.status === filter;
+}
+
+export function getInboxCounts(items: McItem[]): InboxCounts {
+  return Object.fromEntries(INBOX_FILTERS.map((filter) => [filter, items.filter((item) => inboxFilterMatches(item, filter)).length])) as InboxCounts;
 }
 
 export function inboxSearchText(item: McItem, bot?: Bot): string {
@@ -50,6 +48,8 @@ export function filterInboxItems(items: McItem[], bots: Bot[], filter: InboxFilt
 }
 
 function needsDecision(item: McItem): boolean {
+  if (item.status === 'awaiting_work' || item.status === 'in_qa') return true;
+  if (item.status === 'failed' && item.work_ready_at) return true;
   return (item.status === 'pending' || item.status === 'failed') && item.actions.some((action) => action.kind === 'approve');
 }
 

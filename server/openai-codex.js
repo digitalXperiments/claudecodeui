@@ -14,8 +14,13 @@
  * - getActiveCodexSessions() - List all active sessions
  */
 
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
 import { buildCodexInputItems, normalizeImageDescriptors } from './shared/image-attachments.js';
-import { createCodexAppServer } from './codex-app-server.js';
+import { createCodexAppServer, resolveCodexLauncher } from './codex-app-server.js';
 import {
   createNotificationEvent,
   notifyUserIfEnabled,
@@ -36,8 +41,383 @@ import { createCompleteMessage, createNormalizedMessage } from './shared/utils.j
 import { buildCodexTokenUsage } from './modules/providers/list/codex/codex-token-usage.js';
 import { leadSessionEnv } from './shared/lead-session-env.js';
 import { mapPermissionModeToCodexOptions } from './modules/providers/list/codex/codex-permission-mode.js';
+import { codexSandboxConfig, workerGitGuardEnv } from './shared/worker-sandbox.js';
+import { appServerItemToLegacy } from './modules/providers/list/codex/codex-app-server-items.js';
 
 const activeCodexSessions = new Map();
+
+// ---------------------------------------------------------------------------
+// Warm Codex app-server pool (mirrors the warm Claude pool in claude-sdk.js)
+//
+// An interactive chat turn used to spawn `codex app-server`, initialize it,
+// `thread/resume` the thread and close the process in `finally`. When warm
+// sessions are enabled, a cleanly finished interactive turn instead parks the
+// process keyed by its thread id; the next turn of the same thread skips
+// spawn + initialize + thread/resume and goes straight to `turn/start`.
+//
+//   - Only process-level settings (spawn cwd, full env incl. auth/identity,
+//     `--config` overrides incl. MCP servers, launcher, sandbox mode, Codex
+//     auth file) participate in the fingerprint. model / effort / approval
+//     policy / reviewer / service tier are `turn/start` params and are sent
+//     explicitly every turn. Because an omitted turn/start override means
+//     "keep the thread's current value", a turn that *clears* an override the
+//     warm process was given (effort -> default, tier -> none) respawns.
+//   - Each run subscribes its own message handler and unsubscribes it before
+//     parking. While parked an idle guard drops harmless notifications and
+//     retires the process on any turn/item activity or server request.
+//     Notifications carrying a turn id from an earlier run are dropped.
+//   - Abort, errors, or an unclean turn end retire the process (never reused).
+//   - A warm process that died (or rejects turn/start) falls back to a fresh
+//     spawn transparently.
+//
+// Flags: CLOUDCLI_WARM_CODEX_SESSIONS=0 disables (old behaviour);
+// CLOUDCLI_CODEX_WARM_TTL_MS idle TTL (default 10 min, 0 disables);
+// CLOUDCLI_CODEX_WARM_MAX parked-process cap (default 3, LRU eviction).
+// ---------------------------------------------------------------------------
+
+const DEFAULT_CODEX_WARM_TTL_MS = 10 * 60_000;
+const DEFAULT_CODEX_WARM_MAX = 3;
+const CODEX_WARM_EXIT_WAIT_MS = 3_000;
+// Server notifications that mean a parked (idle) process is doing turn work
+// nobody is listening to; the process is retired when one arrives.
+const CODEX_IDLE_ACTIVITY_METHODS = new Set([
+  'turn/started',
+  'turn/completed',
+  'turn/diff/updated',
+  'turn/plan/updated',
+  'thread/closed',
+  'thread/deleted',
+  'thread/archived',
+  'error',
+]);
+
+// threadId -> parked warm entry (insertion order = LRU order).
+const warmCodexSessions = new Map();
+// Every app-server client this module spawned that has not exited yet.
+const liveCodexServers = new Set();
+let codexExitHookInstalled = false;
+let codexTestOverrides = {};
+
+/** Test seam: replace spawn / model lookups / runtime helpers with fakes. */
+export function __setCodexTestOverrides(overrides) {
+  codexTestOverrides = overrides || {};
+}
+
+function isCodexWarmEnabled() {
+  return process.env.CLOUDCLI_WARM_CODEX_SESSIONS !== '0';
+}
+
+function readCodexWarmTtlMs() {
+  const raw = process.env.CLOUDCLI_CODEX_WARM_TTL_MS;
+  if (raw === undefined || raw === '') {
+    return DEFAULT_CODEX_WARM_TTL_MS;
+  }
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_CODEX_WARM_TTL_MS;
+}
+
+function readCodexWarmMax() {
+  const parsed = Number(process.env.CLOUDCLI_CODEX_WARM_MAX);
+  return Number.isInteger(parsed) && parsed >= 1 ? parsed : DEFAULT_CODEX_WARM_MAX;
+}
+
+/**
+ * Warm reuse is for interactive chat only: automation (unattended), relay
+ * workers (their worktree can be landed/discarded underneath a parked
+ * process) and callers that opt out keep the one-process-per-run model.
+ */
+function isCodexWarmEligible(options = {}) {
+  return isCodexWarmEnabled()
+    && readCodexWarmTtlMs() > 0
+    && Boolean(options.appSessionId)
+    && !options.relayWorker
+    && !options.unattended
+    && options.warmSession !== false;
+}
+
+function hashJson(value) {
+  return crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex').slice(0, 16);
+}
+
+function sortedEntries(object) {
+  return Object.keys(object || {}).sort().map((key) => [key, object[key]]);
+}
+
+/** mtime of the Codex auth file, so a re-login respawns the warm process. */
+function readCodexAuthStamp(env) {
+  if (codexTestOverrides.authStamp) {
+    return codexTestOverrides.authStamp(env);
+  }
+  try {
+    const codexHome = env?.CODEX_HOME || path.join(os.homedir(), '.codex');
+    return fs.statSync(path.join(codexHome, 'auth.json')).mtimeMs;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Everything baked into the app-server process at spawn time. Two runs with
+ * the same fingerprint can share one process; any difference respawns.
+ */
+function computeCodexWarmFingerprint(spawnOptions, { appSessionId = null, sandbox = null } = {}) {
+  let launcher = null;
+  try {
+    launcher = resolveCodexLauncher();
+  } catch {
+    launcher = null;
+  }
+  return JSON.stringify({
+    appSessionId,
+    cwd: spawnOptions.cwd || null,
+    sandbox: sandbox || null,
+    config: hashJson(spawnOptions.config || {}),
+    env: hashJson(sortedEntries(spawnOptions.env)),
+    launcher,
+    auth: readCodexAuthStamp(spawnOptions.env),
+  });
+}
+
+function installCodexExitHook() {
+  if (codexExitHookInstalled) {
+    return;
+  }
+  codexExitHookInstalled = true;
+  // Last resort: 'exit' handlers must be synchronous; close() SIGTERMs the
+  // child synchronously so no orphaned app-server survives a restart.
+  process.once('exit', () => {
+    for (const rpc of liveCodexServers) {
+      try {
+        rpc.close();
+      } catch {
+        // ignore
+      }
+    }
+  });
+}
+
+function spawnCodexServer(spawnOptions) {
+  const create = codexTestOverrides.createCodexAppServer || createCodexAppServer;
+  const rpc = create({
+    ...spawnOptions,
+    ...(codexTestOverrides.spawn ? { spawnFn: codexTestOverrides.spawn } : {}),
+  });
+  installCodexExitHook();
+  liveCodexServers.add(rpc);
+  rpc.onExit?.(() => liveCodexServers.delete(rpc));
+  return rpc;
+}
+
+/** A process wrapper that may outlive one run by being parked. */
+function createCodexLive(rpc, { fingerprint = null, appSessionId = null } = {}) {
+  const live = {
+    rpc,
+    fingerprint,
+    appSessionId,
+    threadId: null,
+    closed: false,
+    closeReason: null,
+    idleTimer: null,
+    idleUnsubscribe: null,
+    // Turn ids already finished on this process: their stragglers are dropped.
+    finishedTurnIds: new Set(),
+    // Last explicit turn/start overrides (sticky in the app-server thread).
+    model: null,
+    activeModel: null,
+    effort: null,
+    serviceTier: undefined,
+    turns: 0,
+  };
+  live.exitUnsubscribe = rpc.onExit?.(() => {
+    retireCodexLive(live, live.closed ? live.closeReason : 'exited');
+  }) || null;
+  return live;
+}
+
+function clearCodexIdleState(live) {
+  if (live.idleTimer) {
+    clearTimeout(live.idleTimer);
+    live.idleTimer = null;
+  }
+  if (live.idleUnsubscribe) {
+    live.idleUnsubscribe();
+    live.idleUnsubscribe = null;
+  }
+}
+
+/**
+ * Removes a process from the pool, drops every listener this module attached
+ * and closes the app-server (stdio pipes destroyed, SIGTERM then SIGKILL).
+ * Safe to call repeatedly.
+ */
+function retireCodexLive(live, reason = 'closed') {
+  if (!live) {
+    return;
+  }
+  clearCodexIdleState(live);
+  if (live.threadId && warmCodexSessions.get(live.threadId) === live) {
+    warmCodexSessions.delete(live.threadId);
+  }
+  if (live.closed) {
+    return;
+  }
+  live.closed = true;
+  live.closeReason = reason;
+  live.exitUnsubscribe?.();
+  live.exitUnsubscribe = null;
+  try {
+    live.rpc.close();
+  } catch {
+    // ignore
+  }
+}
+
+async function waitForCodexExit(live, timeoutMs = CODEX_WARM_EXIT_WAIT_MS) {
+  if (!live?.rpc?.exited) {
+    return;
+  }
+  let timer = null;
+  await Promise.race([
+    live.rpc.exited,
+    new Promise((resolve) => {
+      timer = setTimeout(resolve, timeoutMs);
+      timer.unref?.();
+    }),
+  ]);
+  if (timer) {
+    clearTimeout(timer);
+  }
+}
+
+function enforceCodexWarmCap() {
+  const max = readCodexWarmMax();
+  while (warmCodexSessions.size > max) {
+    const [, oldest] = warmCodexSessions.entries().next().value;
+    retireCodexLive(oldest, 'lru');
+  }
+}
+
+function codexMessageTurnId(params) {
+  return params?.turnId || params?.turn?.id || null;
+}
+
+/** Guard installed while parked: nobody is listening, so any work retires. */
+function createCodexIdleGuard(live) {
+  return (message) => {
+    if (!message || typeof message !== 'object') {
+      return;
+    }
+    if (typeof message.id !== 'undefined' && typeof message.method === 'string') {
+      // A server request while idle: nobody can answer it. Reply empty so
+      // the app-server does not wait, then retire the process.
+      try {
+        live.rpc.respond(message.id, {});
+      } catch {
+        // ignore
+      }
+      retireCodexLive(live, 'idle-request');
+      return;
+    }
+    const method = typeof message.method === 'string' ? message.method : '';
+    const turnId = codexMessageTurnId(message.params);
+    if (turnId && live.finishedTurnIds.has(turnId) && method !== 'turn/started') {
+      return; // straggler from the turn that just finished
+    }
+    if (CODEX_IDLE_ACTIVITY_METHODS.has(method) || method.startsWith('item/')) {
+      console.warn(`[Codex] Warm app-server for ${live.threadId} emitted "${method}" while idle — retiring`);
+      retireCodexLive(live, 'idle-activity');
+    }
+  };
+}
+
+function parkCodexLive(live, threadId) {
+  live.threadId = threadId;
+  const existing = warmCodexSessions.get(threadId);
+  if (existing && existing !== live) {
+    retireCodexLive(existing, 'replaced');
+  }
+  warmCodexSessions.delete(threadId);
+  warmCodexSessions.set(threadId, live);
+  live.idleUnsubscribe = live.rpc.onMessage(createCodexIdleGuard(live));
+  live.idleTimer = setTimeout(() => retireCodexLive(live, 'idle-ttl'), readCodexWarmTtlMs());
+  live.idleTimer.unref?.();
+  enforceCodexWarmCap();
+}
+
+/**
+ * The app-server treats an omitted turn/start override as "keep the thread's
+ * current value". A cold process re-reads the thread from disk, so clearing an
+ * override (back to default) is only faithful on a fresh process.
+ */
+function turnOverridesCompatible(live, { model, effort, serviceTier }) {
+  if (live.model && !model) return false;
+  if (live.effort && !effort) return false;
+  if (live.serviceTier !== undefined && serviceTier === undefined) return false;
+  return true;
+}
+
+/**
+ * Takes the parked process for `threadId` when it is alive and its
+ * fingerprint matches; otherwise retires it and waits (bounded) for it to
+ * exit so two app-servers never drive the same thread at once.
+ */
+async function acquireWarmCodexSession(threadId, fingerprint, turnOverrides) {
+  const warm = threadId ? warmCodexSessions.get(threadId) : null;
+  if (!warm) {
+    return null;
+  }
+  if (
+    fingerprint
+    && !warm.closed
+    && warm.rpc.alive !== false
+    && warm.fingerprint === fingerprint
+    && turnOverridesCompatible(warm, turnOverrides)
+  ) {
+    warmCodexSessions.delete(threadId);
+    clearCodexIdleState(warm);
+    return warm;
+  }
+  retireCodexLive(warm, fingerprint ? 'options-changed' : 'not-eligible');
+  await waitForCodexExit(warm);
+  return null;
+}
+
+/**
+ * Closes every parked warm app-server (call from graceful shutdown).
+ * Processes still serving a run are left to finish; the process 'exit' hook
+ * closes whatever remains.
+ */
+export async function closeAllWarmCodexSessions() {
+  const parked = [...warmCodexSessions.values()];
+  for (const live of parked) {
+    retireCodexLive(live, 'shutdown');
+  }
+  await Promise.all(parked.map((live) => waitForCodexExit(live)));
+}
+
+/**
+ * Retires the parked app-server for one thread so another client can resume
+ * it, e.g. Agent CLI starting `codex resume`.
+ */
+export async function releaseWarmCodexSession(threadId) {
+  const live = threadId ? warmCodexSessions.get(threadId) : null;
+  if (!live) {
+    return;
+  }
+  retireCodexLive(live, 'released');
+  await waitForCodexExit(live);
+}
+
+/** Diagnostics / tests: current warm pool state. */
+export function getWarmCodexSessionStats() {
+  return {
+    parked: [...warmCodexSessions.keys()],
+    live: liveCodexServers.size,
+    enabled: isCodexWarmEnabled(),
+    ttlMs: readCodexWarmTtlMs(),
+    max: readCodexWarmMax(),
+  };
+}
 
 /**
  * Resolve CloudCLI's managed Obsidian MCP into the environment/configuration
@@ -59,98 +439,6 @@ function loadManagedObsidianCodexRuntime() {
       error instanceof Error ? error.message : error,
     );
     return null;
-  }
-}
-
-function appServerItemToLegacy(item) {
-  if (!item || typeof item !== 'object') {
-    return null;
-  }
-
-  const base = { type: 'item', uuid: item.id };
-  switch (item.type) {
-    case 'agentMessage':
-      // Codex uses commentary agent messages for progress/narration and
-      // final_answer for the reply proper. Keep commentary on the existing
-      // reasoning path so it is rendered as one collapsible thinking block
-      // instead of looking like a normal assistant answer.
-      if (item.phase === 'commentary') {
-        return {
-          ...base,
-          itemType: 'reasoning',
-          message: {
-            role: 'assistant',
-            content: item.text || '',
-            isReasoning: true,
-          },
-        };
-      }
-      return {
-        ...base,
-        itemType: 'agent_message',
-        message: { role: 'assistant', content: item.text || '' },
-      };
-    case 'reasoning':
-      return {
-        ...base,
-        itemType: 'reasoning',
-        message: {
-          role: 'assistant',
-          content: Array.isArray(item.summary) ? item.summary.join('\n') : '',
-          isReasoning: true,
-        },
-      };
-    case 'commandExecution':
-      return {
-        ...base,
-        itemType: 'command_execution',
-        command: item.command,
-        output: item.aggregatedOutput,
-        exitCode: item.exitCode,
-        status: item.status,
-      };
-    case 'fileChange':
-      return {
-        ...base,
-        itemType: 'file_change',
-        changes: item.changes,
-        status: item.status,
-      };
-    case 'mcpToolCall':
-      return {
-        ...base,
-        itemType: 'mcp_tool_call',
-        server: item.server,
-        tool: item.tool,
-        arguments: item.arguments,
-        result: item.result,
-        error: item.error,
-        status: item.status,
-      };
-    case 'webSearch':
-      return {
-        ...base,
-        itemType: 'web_search',
-        query: item.query,
-      };
-    case 'plan':
-      return {
-        ...base,
-        itemType: 'todo_list',
-        items: item.text ? [{ text: item.text, completed: false }] : [],
-      };
-    case 'error':
-      return {
-        ...base,
-        itemType: 'error',
-        message: { role: 'error', content: item.message || 'Unknown error' },
-      };
-    default:
-      return {
-        ...base,
-        itemType: item.type || 'Unknown',
-        item,
-      };
   }
 }
 
@@ -322,24 +610,32 @@ export async function queryCodex(command, options = {}, ws) {
     unattended = false,
     approvalTimeoutMs,
     relayWorker = false,
+    relaySandbox = null,
     appSessionId,
   } = options;
 
-  const resolvedModel = await providerModelsService.resolveResumeModel(
-    'codex',
-    sessionId,
-    model,
-  );
+  const resolveResumeModel = codexTestOverrides.resolveResumeModel
+    || ((id, requested) => providerModelsService.resolveResumeModel('codex', id, requested));
+  const resolvedModel = await resolveResumeModel(sessionId, model);
 
   const workingDirectory = cwd || projectPath || process.cwd();
   // Bounded approval wait for unattended (swarm) runs; 0 = wait forever (chat).
   const approvalWaitMs = resolveApprovalTimeoutMs({ unattended, approvalTimeoutMs });
-  const { sandbox, approvalPolicy, approvalsReviewer } = mapPermissionModeToCodexOptions(permissionMode, { unattended });
+  const mapped = mapPermissionModeToCodexOptions(permissionMode, { unattended });
+  const { sandbox, approvalsReviewer } = mapped;
+  // A sandboxed relay writer runs everything inside workspace-write without
+  // asking ("on-request": Codex only asks to *leave* the sandbox), instead of
+  // "untrusted", which asked about nearly every command.
+  const relaySandboxedWriter = Boolean(relayWorker && relaySandbox?.mode === 'isolated_write' && sandbox === 'workspace-write');
+  const approvalPolicy = relaySandboxedWriter ? 'on-request' : mapped.approvalPolicy;
   // Codex does not support per-task MCP grants on this app-server path. A
   // relay worker therefore gets no managed or inherited CloudCLI MCPs; the
   // lead can select a provider with explicit grant support when MCP is needed.
-  const managedObsidianRuntime = relayWorker ? null : loadManagedObsidianCodexRuntime();
-  const catalog = (await providerModelsService.getProviderModels('codex')).models;
+  const loadObsidianRuntime = codexTestOverrides.loadManagedObsidianCodexRuntime || loadManagedObsidianCodexRuntime;
+  const managedObsidianRuntime = relayWorker ? null : loadObsidianRuntime();
+  const getProviderModels = codexTestOverrides.getProviderModels
+    || (() => providerModelsService.getProviderModels('codex'));
+  const catalog = (await getProviderModels()).models;
   const selectedModel = catalog.OPTIONS.find((option) => option.value === resolvedModel) || null;
   const allowedEfforts = selectedModel?.effort?.values?.map((value) => value.value) || [];
   const resolvedEffort = typeof effort === 'string' && effort !== 'default' && allowedEfforts.includes(effort)
@@ -352,8 +648,14 @@ export async function queryCodex(command, options = {}, ws) {
   });
   const serviceTierOverride = serviceTier === undefined ? {} : { serviceTier };
 
+  const warmEligible = isCodexWarmEligible(options);
   let appServer;
+  let live = null;
+  let reusedWarm = false;
   let rpcUnsubscribe;
+  let exitUnsubscribe;
+  let turnSettled = false;
+  let runFailed = false;
   let capturedSessionId = sessionId;
   let turnId = null;
   let sessionCreatedSent = false;
@@ -366,9 +668,18 @@ export async function queryCodex(command, options = {}, ws) {
   let resolveTurn;
   let rejectTurn;
   const turnFinished = new Promise((resolve, reject) => {
-    resolveTurn = resolve;
-    rejectTurn = reject;
+    resolveTurn = (turn) => {
+      turnSettled = true;
+      resolve(turn);
+    };
+    rejectTurn = (error) => {
+      turnSettled = true;
+      reject(error);
+    };
   });
+  // Keep an unobserved early rejection (e.g. exit before turn/start) from
+  // surfacing as an unhandled rejection; the run awaits it below.
+  turnFinished.catch(() => {});
 
   const getSessionRecord = () => capturedSessionId && activeCodexSessions.get(capturedSessionId);
   const sendNormalized = (raw) => {
@@ -570,6 +881,12 @@ export async function queryCodex(command, options = {}, ws) {
     if (params.threadId && capturedSessionId && params.threadId !== capturedSessionId) {
       return;
     }
+    // A reused process: drop stragglers from turns of earlier runs so they
+    // can never reach this run's writer.
+    const messageTurnId = codexMessageTurnId(params);
+    if (messageTurnId && live?.finishedTurnIds.has(messageTurnId)) {
+      return;
+    }
 
     switch (message.method) {
       case 'item/started': {
@@ -684,7 +1001,7 @@ export async function queryCodex(command, options = {}, ws) {
 
   try {
     const managedConfig = relayWorker
-      ? { mcp_servers: {} }
+      ? { mcp_servers: {}, ...(relaySandboxedWriter ? codexSandboxConfig(relaySandbox) : {}) }
       : managedObsidianRuntime?.config
       ? {
         ...managedObsidianRuntime.config,
@@ -704,49 +1021,96 @@ export async function queryCodex(command, options = {}, ws) {
         CLOUDCLI_PROJECT_PATH: workingDirectory,
       }
       : {};
-    appServer = createCodexAppServer({
+    const spawnOptions = {
       cwd: workingDirectory,
       env: {
         ...(managedObsidianRuntime?.env ?? process.env),
         ...identityEnv,
         ...leadSessionEnv(options.appSessionId),
+        // Codex runs in-sandbox commands without asking, so a push can never
+        // reach the relay broker: make git itself refuse every push.
+        ...(relayWorker ? workerGitGuardEnv(managedObsidianRuntime?.env ?? process.env) : {}),
       },
       config: managedConfig,
-    });
-    rpcUnsubscribe = appServer.onMessage(handleAppServerMessage);
-    await appServer.request('initialize', {
-      clientInfo: { name: 'cloudcli', title: 'CloudCLI', version: '0.1.0' },
-      capabilities: { experimentalApi: true },
-    });
-    appServer.notify('initialized');
+    };
+    const fingerprint = warmEligible
+      ? computeCodexWarmFingerprint(spawnOptions, { appSessionId: appSessionId || null, sandbox })
+      : null;
+    const turnOverrides = { model: resolvedModel || null, effort: resolvedEffort || null, serviceTier };
 
-    const threadMethod = sessionId ? 'thread/resume' : 'thread/start';
-    const threadParams = sessionId
-      ? {
-        threadId: sessionId,
-        cwd: workingDirectory,
-        model: resolvedModel,
-        approvalPolicy,
-        approvalsReviewer,
-        sandbox,
-        ...serviceTierOverride,
+    const attach = (nextLive) => {
+      live = nextLive;
+      appServer = nextLive.rpc;
+      rpcUnsubscribe = appServer.onMessage(handleAppServerMessage);
+      // A crash mid-turn must end the run instead of hanging on turnFinished.
+      exitUnsubscribe = appServer.onExit?.((info) => {
+        if (!turnSettled) {
+          rejectTurn(new Error(`Codex app-server exited (${info?.signal || `code ${info?.code ?? 1}`})`));
+        }
+      });
+    };
+    const detach = () => {
+      rpcUnsubscribe?.();
+      rpcUnsubscribe = null;
+      exitUnsubscribe?.();
+      exitUnsubscribe = null;
+    };
+
+    const startColdServer = async () => {
+      attach(createCodexLive(spawnCodexServer(spawnOptions), {
+        fingerprint,
+        appSessionId: appSessionId || null,
+      }));
+      await appServer.request('initialize', {
+        clientInfo: { name: 'cloudcli', title: 'CloudCLI', version: '0.1.0' },
+        capabilities: { experimentalApi: true },
+      });
+      appServer.notify('initialized');
+
+      const threadMethod = sessionId ? 'thread/resume' : 'thread/start';
+      const threadParams = sessionId
+        ? {
+          threadId: sessionId,
+          cwd: workingDirectory,
+          model: resolvedModel,
+          approvalPolicy,
+          approvalsReviewer,
+          sandbox,
+          ...serviceTierOverride,
+        }
+        : {
+          cwd: workingDirectory,
+          model: resolvedModel,
+          approvalPolicy,
+          approvalsReviewer,
+          sandbox,
+          ...serviceTierOverride,
+        };
+      const threadResult = await appServer.request(threadMethod, threadParams);
+      const thread = threadResult?.thread || {};
+      if (typeof thread.model === 'string' && thread.model.trim()) {
+        activeModel = thread.model.trim();
       }
-      : {
-        cwd: workingDirectory,
-        model: resolvedModel,
-        approvalPolicy,
-        approvalsReviewer,
-        sandbox,
-        ...serviceTierOverride,
-      };
-    const threadResult = await appServer.request(threadMethod, threadParams);
-    const thread = threadResult?.thread || {};
-    if (typeof thread.model === 'string' && thread.model.trim()) {
-      activeModel = thread.model.trim();
-    }
-    capturedSessionId = thread.id || thread.sessionId || capturedSessionId;
-    if (!capturedSessionId) {
-      throw new Error('Codex app-server did not return a thread id');
+      capturedSessionId = thread.id || thread.sessionId || capturedSessionId;
+      if (!capturedSessionId) {
+        throw new Error('Codex app-server did not return a thread id');
+      }
+      live.threadId = capturedSessionId;
+      live.activeModel = activeModel;
+    };
+
+    // Warm path: the thread is already loaded in a parked process, so skip
+    // spawn + initialize + thread/resume entirely.
+    const warm = warmEligible || warmCodexSessions.has(sessionId)
+      ? await acquireWarmCodexSession(sessionId, fingerprint, turnOverrides)
+      : null;
+    if (warm) {
+      reusedWarm = true;
+      attach(warm);
+      capturedSessionId = warm.threadId;
+      activeModel = resolvedModel || warm.activeModel || activeModel;
+    } else {
+      await startColdServer();
     }
 
     activeCodexSessions.set(capturedSessionId, {
@@ -756,6 +1120,8 @@ export async function queryCodex(command, options = {}, ws) {
       startedAt: new Date().toISOString(),
       ws,
       turnId: null,
+      appSessionId: appSessionId || null,
+      workingDirectory,
     });
     if (ws.setSessionId && typeof ws.setSessionId === 'function') {
       ws.setSessionId(capturedSessionId);
@@ -770,7 +1136,7 @@ export async function queryCodex(command, options = {}, ws) {
       }));
     }
 
-    const turnResult = await appServer.request('turn/start', {
+    const turnStartParams = {
       threadId: capturedSessionId,
       input: buildCodexAppServerInput(command, images, workingDirectory),
       model: resolvedModel,
@@ -778,8 +1144,31 @@ export async function queryCodex(command, options = {}, ws) {
       approvalPolicy,
       approvalsReviewer,
       ...serviceTierOverride,
-    });
+    };
+    let turnResult;
+    try {
+      turnResult = await appServer.request('turn/start', turnStartParams);
+    } catch (error) {
+      // A parked process that died or no longer holds the thread: no turn
+      // started, so fall back to a fresh spawn transparently.
+      if (!reusedWarm || abortController.signal.aborted || turnSettled) {
+        throw error;
+      }
+      console.warn(`[Codex] Warm app-server for ${capturedSessionId} failed turn/start (${error?.message || error}) — respawning`);
+      detach();
+      retireCodexLive(live, 'warm-failed');
+      reusedWarm = false;
+      await startColdServer();
+      const record = getSessionRecord();
+      if (record) record.rpc = appServer;
+      turnResult = await appServer.request('turn/start', turnStartParams);
+    }
     turnId = turnResult?.turn?.id || null;
+    live.turns += 1;
+    live.model = resolvedModel || live.model;
+    live.activeModel = activeModel;
+    live.effort = resolvedEffort || null;
+    live.serviceTier = serviceTier;
     const session = getSessionRecord();
     if (session) session.turnId = turnId;
     await turnFinished;
@@ -824,6 +1213,7 @@ export async function queryCodex(command, options = {}, ws) {
     }
 
   } catch (error) {
+    runFailed = true;
     const session = capturedSessionId ? activeCodexSessions.get(capturedSessionId) : null;
     const wasAborted =
       session?.status === 'aborted' ||
@@ -834,7 +1224,9 @@ export async function queryCodex(command, options = {}, ws) {
       console.error('[Codex] Error:', error);
 
       // Check if Codex CLI is available for a clearer error message
-      const installed = await providerAuthService.isProviderInstalled('codex');
+      const isInstalled = codexTestOverrides.isProviderInstalled
+        || (() => providerAuthService.isProviderInstalled('codex'));
+      const installed = await isInstalled();
       const errorContent = !installed
         ? 'Codex CLI is not configured. Please set up authentication first.'
         : error.message;
@@ -856,13 +1248,34 @@ export async function queryCodex(command, options = {}, ws) {
 
   } finally {
     rpcUnsubscribe?.();
-    appServer?.close();
-    // Update session status
-    if (capturedSessionId) {
-      const session = activeCodexSessions.get(capturedSessionId);
-      if (session) {
-        session.status = session.status === 'aborted' ? 'aborted' : 'completed';
+    exitUnsubscribe?.();
+    const record = capturedSessionId ? activeCodexSessions.get(capturedSessionId) : null;
+    const aborted = record?.status === 'aborted' || abortController.signal.aborted;
+    if (live) {
+      // Remember every turn id this run saw so stragglers are dropped later.
+      if (turnId) live.finishedTurnIds.add(turnId);
+      if (record?.turnId) live.finishedTurnIds.add(record.turnId);
+      const canPark = warmEligible
+        && isCodexWarmEnabled()
+        && readCodexWarmTtlMs() > 0
+        && !runFailed
+        && !aborted
+        && turnSettled
+        && Boolean(turnId)
+        && Boolean(capturedSessionId)
+        && !live.closed
+        && live.rpc.alive !== false;
+      if (canPark) {
+        parkCodexLive(live, capturedSessionId);
+      } else {
+        retireCodexLive(live, aborted ? 'aborted' : runFailed ? 'failed' : 'per-turn');
       }
+    } else {
+      appServer?.close();
+    }
+    // Update session status (a parked process is never shown as processing).
+    if (record) {
+      record.status = record.status === 'aborted' ? 'aborted' : 'completed';
     }
   }
 }
@@ -895,6 +1308,51 @@ export function abortCodexSession(sessionId) {
   }
 
   return true;
+}
+
+/**
+ * Steers a follow-up message into the active Codex turn (app-server
+ * `turn/steer`), so chat sends during a running turn attach to it instead of
+ * being rejected with RUN_IN_PROGRESS.
+ * @param {string} command - Follow-up user message
+ * @param {Object} options - Runtime options (sessionId, appSessionId, images, cwd)
+ * @returns {Promise<boolean>} Whether the message reached the live turn
+ */
+export async function injectCodexMessage(command, options = {}) {
+  let threadId = options.sessionId || null;
+  let session = threadId ? activeCodexSessions.get(threadId) : null;
+  if (!session && options.appSessionId) {
+    for (const [id, entry] of activeCodexSessions.entries()) {
+      if (entry.appSessionId === options.appSessionId && entry.status === 'running') {
+        threadId = id;
+        session = entry;
+        break;
+      }
+    }
+  }
+  if (!session || session.status !== 'running' || !session.turnId || !session.rpc) {
+    return false;
+  }
+
+  try {
+    const result = await session.rpc.request('turn/steer', {
+      threadId,
+      input: buildCodexAppServerInput(
+        command,
+        options.images,
+        options.cwd || session.workingDirectory || process.cwd(),
+      ),
+      expectedTurnId: session.turnId,
+    });
+    if (result?.turnId) {
+      session.turnId = result.turnId;
+    }
+    return true;
+  } catch (error) {
+    // Turn already finished (or ids raced): the caller retries the run lock.
+    console.warn(`[Codex] turn/steer failed for ${threadId}:`, error?.message || error);
+    return false;
+  }
 }
 
 /**
@@ -959,4 +1417,4 @@ setInterval(() => {
       }
     }
   }
-}, 5 * 60 * 1000); // Every 5 minutes
+}, 5 * 60 * 1000).unref?.(); // Every 5 minutes; never keeps the process alive

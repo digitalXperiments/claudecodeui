@@ -1,6 +1,8 @@
 import { useCallback, useState } from 'react';
+
 import type { Project, ProjectSession } from '../../../types/app';
 import Shell from '../../shell/view/Shell';
+
 import StandaloneShellEmptyState from './subcomponents/StandaloneShellEmptyState';
 import StandaloneShellHeader from './subcomponents/StandaloneShellHeader';
 
@@ -13,6 +15,7 @@ type StandaloneShellProps = {
   autoConnect?: boolean;
   /** Keep the provider TUI from competing with an active Chatbar run. */
   waitForChat?: boolean;
+  onReturnToChat?: () => void;
   onComplete?: ((exitCode: number) => void) | null;
   onClose?: (() => void) | null;
   title?: string | null;
@@ -20,6 +23,7 @@ type StandaloneShellProps = {
   showHeader?: boolean;
   compact?: boolean;
   minimal?: boolean;
+  minimumContrastRatio?: number;
 };
 
 export default function StandaloneShell({
@@ -30,6 +34,7 @@ export default function StandaloneShell({
   isActive = true,
   autoConnect = true,
   waitForChat = false,
+  onReturnToChat,
   onComplete = null,
   onClose = null,
   title = null,
@@ -37,6 +42,7 @@ export default function StandaloneShell({
   showHeader = true,
   compact = false,
   minimal = false,
+  minimumContrastRatio,
 }: StandaloneShellProps) {
   const [isCompleted, setIsCompleted] = useState(false);
 
@@ -71,8 +77,11 @@ export default function StandaloneShell({
           isPlainShell={shouldUsePlainShell}
           isActive={isActive}
           waitForChat={waitForChat}
+          onReturnToChat={onReturnToChat}
           onProcessComplete={handleProcessComplete}
           minimal={minimal}
+          minimumContrastRatio={minimumContrastRatio}
+          showControls={showHeader}
           autoConnect={minimal ? true : autoConnect}
         />
       </div>

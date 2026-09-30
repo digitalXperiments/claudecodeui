@@ -29,6 +29,7 @@ import type {
   ContinuityRecovery,
 } from '../../types/continuity';
 import { buildContinuityModePatch, formatContinuityWaitingLabel } from '../../utils/continuityUi';
+import { runAfterSessionPaint } from '../../../../utils/sessionPaintGate';
 
 const PROVIDERS: Array<{ id: LLMProvider; label: string }> = [
   { id: 'claude', label: 'Claude' },
@@ -143,7 +144,9 @@ export default function ContinuityControl({
     setError(null);
   }, [sessionId]);
 
-  useEffect(() => { void refresh(); }, [refresh]);
+  // Continuity state + boomerang check (~1 s server-side) are composer
+  // chrome, not transcript: load them once the transcript has painted.
+  useEffect(() => runAfterSessionPaint(() => { void refresh(); }), [refresh]);
 
   useEffect(() => {
     const refreshDefaults = () => { void refresh(); };
@@ -161,10 +164,16 @@ export default function ContinuityControl({
     }
   }), [refresh, sessionId, subscribe]);
 
+  // Tick only while a countdown can be on screen (a recovery with a retry
+  // time). An unconditional 1s setState re-rendered this control — and, via
+  // the composer, its parents — every second for every open chat.
+  const hasCountdown = Boolean(recovery?.retryAt);
   useEffect(() => {
+    if (!hasCountdown) return undefined;
+    setNow(Date.now());
     const timer = window.setInterval(() => setNow(Date.now()), 1_000);
     return () => window.clearInterval(timer);
-  }, []);
+  }, [hasCountdown]);
 
   const updatePosition = useCallback(() => {
     const rect = buttonRef.current?.getBoundingClientRect();

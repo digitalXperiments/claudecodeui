@@ -1,3 +1,4 @@
+import { updateLivePermissionMode } from './services/live-permission-mode.service.js';
 import express, { type Request, type Response } from 'express';
 
 
@@ -567,7 +568,7 @@ router.post(
         statusCode: 400,
       });
     }
-    const entry = await mcpCatalogService.upsert({
+    const entry = await mcpCatalogService[body.createOnly === true ? 'create' : 'upsert']({
       ...payload,
       scope: payload.scope === 'user' ? 'user' : 'project',
       providers,
@@ -841,11 +842,14 @@ router.put(
       });
     }
     const updated = sessionsDb.updateSessionRuntimePreferences(sessionId, { permissionMode });
+    const live = await updateLivePermissionMode(row, permissionMode);
     res.json(createApiSuccessResponse({
       session: {
         id: updated?.session_id,
         provider: updated?.provider,
         permissionMode: updated?.permission_mode,
+        appliedToRunningSession: live.applied,
+        error: live.error,
       },
     }));
   }),

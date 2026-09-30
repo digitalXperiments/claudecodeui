@@ -27,11 +27,12 @@ Never in this lead session:
 Always:
 
 1. `relay_capabilities` then `relay_delegate`
-2. `relay_wait` / `relay_peek` / `relay_status`
-3. `relay_approve` / `relay_deny` **only** if you dispatched with `approvalPolicy: "manual"` and a worker is parked — auto jobs never ask you
-4. `relay_result` (and `relay_diff` for isolated writes)
-5. Re-delegate verification and follow-ups. **You** land isolated writes onto the primary checkout (see Land isolated writes)
-6. Answer the user in your own voice from worker evidence
+2. End your turn, or `relay_wait` briefly if the answer is imminent. The server
+   wakes you with a digest when workers finish and when delivery is ready
+3. `relay_result` for full reports (and `relay_diff` for isolated writes)
+4. Re-delegate fixes and follow-ups. **You** land passing rehearsals with
+   `relay_land` (see Land isolated writes)
+5. Answer the user in your own voice from worker evidence
 
 If you cannot yet name files or a scope, dispatch a **scout** (`read_only`)
 whose only job is to return the map you need for the next batch. Do not scout
@@ -59,19 +60,21 @@ you are landing an already-finished isolated write onto the primary checkout.
    `isolated_write` only for a disjoint implementation scope; it gets its own
    worktree and feature branch. When that job completes, the lead must land
    it (see Land isolated writes).
-5. **Use `approvalPolicy: "auto"` (the default) almost always.** Auto never
-   parks you: scouts (`read_only`) get every proven-safe read approved and
-   every mutation denied; writers get in-worktree edits approved and
-   anything risky/unknown denied. The worker reports the blocker instead of
-   spending your tokens on `relay_approve`. Use `manual` only when you
-   *want* to gate each isolated-worktree mutation yourself. A worker never
-   grants itself authority. Grok scouts must use native `read_file` / `grep`
-   (not MCP `use_tool`) for repo inspection. Relay unwraps MCP `use_tool` and
-   classifies the inner tool; `search_tool` is allowed in read-only, writes
-   and unknown inner tools are denied.
+5. **Leave `approvalPolicy` unset.** Workers run inside an OS sandbox: a
+   writer can edit, install, build, test, and commit in its own worktree; a
+   scout can run anything that only reads. None of that ever reaches you.
+   Only boundary crossings (push, publish, sudo, remote GitHub actions) are
+   denied, and they come back to you as `deniedActions` to do yourself after
+   review. `manual` is an operator setting; if you pass it, it is replaced by
+   the operator default with a warning. A worker never grants itself
+   authority.
 6. **Write a brief, not a wish.** Every task needs: the scope boundary, the
    concrete paths or symbols to start from, the constraints, and the exact
    evidence you want back. Name files. Workers cannot see your context.
+6b. **Declare `requires` for what a worker needs** — MCP servers (granted
+   automatically, and only providers that honor grants are picked), network,
+   or host tools (`commands: ["swift"]`). Unmet needs fail the dispatch with
+   a clear reason instead of a worker reporting `blocked` ten minutes later.
 7. **Declare `outputSchema` when you will consume the answer programmatically.**
    The worker must return a `data` object matching your JSON Schema; CloudCLI
    validates it server-side, sends one automatic repair turn on violation, and
@@ -142,12 +145,17 @@ output shape, and an instruction for the unknown case.
 
 ## Supervise
 
-This is the part that is usually skipped, and it is why a lead looks idle.
+You do not have to poll. When workers reach a terminal state, or a batch's
+delivery is ready, the server starts a turn for you with a digest (status,
+summary, open questions, denied actions, and the rehearsal id to land). It
+never wakes you for jobs you already saw through `relay_wait` /
+`relay_status` / `relay_result`, and a busy turn defers the digest instead
+of dropping it. Long batches: dispatch, tell the user what is running, and
+end the turn.
 
-- **`relay_wait`** (`returnWhen: "any"`) to harvest incrementally, then call it
-  again with **only the still-unfinished ids**. It returns early when a worker
-  is blocked on an approval you must answer, so you are never deadlocked
-  against your own worker. One call waits at most 60 seconds — plan on looping.
+- **`relay_wait`** (`returnWhen: "any"`) when you expect an answer within a
+  minute and want to continue in the same turn. One call waits at most 60
+  seconds; do not loop on it for long jobs — end the turn instead.
 - **`relay_peek`** while a job runs. It reports elapsed time, **idle time**, the
   tool-call trail, and a live tail of the worker's streamed prose
   (`recentOutput`). A `running` job with a large `idleMs` is genuinely stuck —
@@ -163,12 +171,20 @@ Do not start implementing, grepping, or testing while workers run.
 
 ## Unblock
 
-Default `auto` workers never park on permissions. The host auto-approves
-in-envelope actions and auto-denies the rest; the worker continues and
-reports the blocker. Do **not** poll `relay_pending_approvals` on auto jobs
-and do not spend a turn approving routine work.
+Workers never park on permissions under `auto`. The OS sandbox confines them;
+anything inside it runs, boundary crossings are denied and recorded as
+`deniedActions` on the job. Do **not** poll `relay_pending_approvals` and do
+not spend turns approving routine work.
 
-`manual` is the only policy that surfaces a lead approval. Then:
+- A `blocked` job finished its turn but could not complete the assignment.
+  Read its `openQuestions` and `deniedActions`, then `relay_follow_up` with
+  the missing decision, or do the denied step yourself after review.
+- Provider quota/auth/launch failures fail over to another authenticated
+  provider automatically (see `failovers` on the job); you do not need to
+  re-dispatch them.
+
+Only if the operator enabled lead-selectable `manual` and you dispatched
+with it:
 
 1. A parked worker appears in `relay_wait`, `relay_status`, `relay_peek`, and
    `relay_pending_approvals`.
@@ -197,29 +213,35 @@ and do not spend a turn approving routine work.
   mid-session too — call it while a worker is still running, queued, or
   parked on an approval, and it is delivered right away instead of waiting
   for the worker to finish.
-- `relay_diff` before landing any isolated write. Then land it yourself
-  (see Land isolated writes).
+- `relay_diff` to review an isolated write. Then land it (see Land isolated
+  writes).
 - A `timed_out` job may still carry partial findings. Read them, then
   re-delegate remaining work.
 - `relay_cancel` anything redundant or stalled.
 
 ## Land isolated writes
 
-`isolated_write` workers can only mutate **their own** worktree and feature
-branch. The host denies commands that target the user's primary checkout
-(including `cd` into it). Relay never rebases or auto-merges.
+Each writer's worktree starts from a snapshot of the primary checkout
+(including the user's uncommitted files), so its own work is exactly what it
+committed after that snapshot. The host commits anything a writer leaves
+uncommitted. Delivery is automatic up to the landing decision:
 
-After `relay_diff` on a finished writer, **the lead must land the change**:
+1. **Verify** — the server runs the project checks in each finished writer's
+   worktree (`delivery.stage: verified` / `verify_failed`).
+2. **Rehearse** — when the batch settles, the server applies the verified
+   final-stage writers onto a throwaway copy of the primary *as it is now*
+   and runs the checks there. Your wake digest carries the `rehearsalId`
+   (`delivery.stage: ready_to_land` / `rehearsal_failed`).
+3. **Land** — `relay_land { rehearsalId }` after reviewing the diff. It
+   applies each writer's files onto the primary even when it has uncommitted
+   work: clean paths are committed, paths that also carry the user's edits are
+   merged but left uncommitted, and overlaps are reported as conflicts without
+   writing markers. Landed worktrees and branches are removed.
 
-1. On the **primary checkout**, merge or cherry-pick the unique commits (or use
-   Workspaces `applyToPrimary` if that API is available).
-2. Resolve conflicts there. Keep the worker's product intent.
-3. Remove the extra worktree (`git worktree remove`) and delete the merged
-   `relay/*` branch so leftovers do not pile up.
-
-**Do not** dispatch another `isolated_write` "integrator". It cannot touch
-the primary tree and only creates another worktree. Do not re-implement the
-feature on main instead of landing the worker's commits.
+A stacked pipeline (writer B `dependsOn` writer A) starts B from A's branch,
+so landing the final stage lands the whole pipeline. `relay_discard` throws a
+writer away. Do not re-implement a worker's feature on main instead of
+landing it, and do not dispatch an "integrator" writer.
 
 ## Report
 

@@ -3,19 +3,20 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useWebSocket } from '../../../contexts/WebSocketContext';
 import type { CreateMcSectionInput, McItem, McSection } from '../../mission-control/api/missionControlApi';
 import { botStudioApi, type BotRun } from '../api/botStudioApi';
-import { botPatch, sectionToBot, type Bot, type BotAutonomy } from '../types';
+import { sectionToBot, type Bot } from '../types';
+import type { InboxFilter } from '../view/inbox/inboxSelectors';
 
 import { removeItem, setItemStatus, upsertItem, upsertSection } from './botStudioReducers';
 
 export type BotStudioFilters = {
-  status: 'pending' | 'resolving' | 'resolved' | 'failed' | 'all';
+  status: InboxFilter;
   botId: string;
   search: string;
 };
 
 export type BotStudioSummary = Awaited<ReturnType<typeof botStudioApi.summary>>;
 export type BotStudioItemStatus = McItem['status'];
-type SaveBotPatch = Partial<CreateMcSectionInput> & { section_id?: string; autonomy?: BotAutonomy };
+type SaveBotPatch = Partial<CreateMcSectionInput> & { section_id?: string };
 
 const EMPTY_SUMMARY: BotStudioSummary = { pendingCount: 0, sectionCount: 0, sections: [] };
 
@@ -35,6 +36,7 @@ export function useBotStudio() {
   const [runsBySection, setRunsBySection] = useState<Record<string, BotRun[]>>({});
   const [mcpServers, setMcpServers] = useState<Array<{ name: string; displayName?: string; connected?: boolean; needsAuth?: boolean }>>([]);
   const [loading, setLoading] = useState(true);
+  const [exceptionCount, setExceptionCount] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [filters, setFilters] = useState<BotStudioFilters>({ status: 'pending', botId: 'all', search: '' });
   const generationRef = useRef(0);
@@ -112,6 +114,8 @@ export function useBotStudio() {
       setSummary(nextSummary ?? EMPTY_SUMMARY);
       setError(null);
 
+      // Exceptions are supplemental: the Inbox chip shows their count.
+      void botStudioApi.listExceptions().then((entries) => { if (generation === generationRef.current) setExceptionCount(entries.length); }).catch(() => undefined);
       // Detail tabs load their own runs through runsFor. Activity explicitly
       // requests the cross-bot feed, so opening Bot Studio never fans out here.
     } catch (nextError) {
@@ -257,8 +261,7 @@ export function useBotStudio() {
     const sourcePatch = typeof idOrPatch === 'string' ? maybePatch ?? {} : idOrPatch;
     const payload = { ...sourcePatch };
     delete payload.section_id;
-    const patch = payload.autonomy ? botPatch(payload) : payload;
-    const updated = await botStudioApi.updateSection(sectionId, patch);
+    const updated = await botStudioApi.updateSection(sectionId, payload);
     setSections((current) => upsertSection(current, updated));
     return updated;
   }, []);
@@ -289,10 +292,14 @@ export function useBotStudio() {
       scope: source.scope,
       project_id: source.project_id,
       work_project_id: source.work_project_id,
-      mode: source.mode,
+      work_profile: source.work_profile ? { ...source.work_profile, auto_start: false } : null,
       schedule_cron: source.schedule_cron,
       provider: source.provider,
       model: source.model,
+      effort: source.effort ?? null,
+      resolve_provider: source.resolve_provider ?? null,
+      resolve_model: source.resolve_model ?? null,
+      resolve_effort: source.resolve_effort ?? null,
       permission_mode: source.permission_mode,
       dry_run: source.dry_run,
       auto_approve: source.auto_approve,
@@ -301,17 +308,12 @@ export function useBotStudio() {
       resolve_prompt: source.resolve_prompt,
       resolve_tools: source.resolve_tools,
       actions: source.actions,
-      create_kanban_task: source.create_kanban_task,
-      kanban_assignee_provider: source.kanban_assignee_provider,
-      kanban_review_provider: source.kanban_review_provider,
-      kanban_mcp_tools: source.kanban_mcp_tools,
       tool_policy: source.tool_policy,
     };
     const duplicate = await createBot(copy);
     return duplicate;
   }, [createBot, sections]);
 
-  const setAutonomy = useCallback((sectionId: string, autonomy: BotAutonomy) => saveBot(sectionId, botPatch(autonomy)), [saveBot]);
   const setEnabled = useCallback((sectionId: string, enabled: boolean) => saveBot(sectionId, { enabled }), [saveBot]);
 
   const bulkEnabled = useCallback(async (enabled: boolean) => {
@@ -321,7 +323,31 @@ export function useBotStudio() {
   }, [refreshAll]);
 
   const previewItem = useCallback((itemId: string, actionId?: string, body?: Record<string, unknown>) => botStudioApi.previewItem(itemId, actionId, body), []);
-  const workItem = useCallback((itemId: string, projectId?: string) => botStudioApi.workThis(itemId, projectId), []);
+  const workItem = useCallback(async (itemId: string, projectId?: string) => {
+    const result = await botStudioApi.workThis(itemId, projectId);
+    if (result.item) setItems((current) => upsertItem(current, result.item));
+    void refreshItems();
+    return result;
+  }, [refreshItems]);
+  const acceptWork = useCallback(async (itemId: string) => {
+    const result = await botStudioApi.acceptWork(itemId);
+    if (result.item) setItems((current) => upsertItem(current, result.item));
+    void refreshItems();
+    return result;
+  }, [refreshItems]);
+  const followUpWork = useCallback(async (itemId: string, message: string) => {
+    const previous = itemsRef.current.find((item) => item.item_id === itemId);
+    optimisticItemStatus(itemId, 'working');
+    try {
+      const result = await botStudioApi.followUpWork(itemId, message);
+      if (result.item) setItems((current) => upsertItem(current, result.item));
+      void refreshItems();
+      return result;
+    } catch (nextError) {
+      if (previous) optimisticItemStatus(itemId, previous.status);
+      throw nextError;
+    }
+  }, [optimisticItemStatus, refreshItems]);
   const workMatches = useCallback((itemId: string) => botStudioApi.workMatches(itemId), []);
   const runsFor = useCallback((sectionId: string, limit = 30) => {
     if (!runsRef.current[sectionId]) void loadRuns(sectionId, limit);
@@ -341,13 +367,14 @@ export function useBotStudio() {
     sections,
     setSections,
     mcpServers,
+    exceptionCount,
+    setExceptionCount,
     isConnected,
     runsBySection,
     refreshAll,
     refreshItems,
     runBot,
     cancelRun,
-    setAutonomy,
     setEnabled,
     saveBot,
     deleteBot,
@@ -358,6 +385,8 @@ export function useBotStudio() {
     previewItem,
     retryItem,
     workItem,
+    acceptWork,
+    followUpWork,
     workMatches,
     runsFor,
     loadActivityRuns,

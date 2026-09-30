@@ -13,7 +13,7 @@ afterEach(() => configureSectionWorkshopRunner(null));
 test('section workshop prompt includes context, transcript, and exact MCP inventory', () => {
   const prompt = buildSectionWorkshopPrompt({
     projectName: 'CloudCLI',
-    currentDraft: { title: 'Inbox', mode: 'review' },
+    currentDraft: { title: 'Inbox' },
     availableMcpServers: ['Slack', 'Linear'],
     messages: [
       { role: 'user', content: 'Triage customer feedback each morning' },
@@ -46,11 +46,9 @@ test('section workshop parser sanitizes fields and deduplicates MCP names', () =
   assert.deepEqual(draft, {
     title: 'Feedback triage',
     scope: 'project',
-    mode: 'review',
     scheduleCron: '0 9 * * 1-5',
     producePrompt: 'Collect feedback and return bounded drafts.',
     resolvePrompt: 'Create the approved ticket.',
-    createKanbanTask: true,
     recommendedMcpServers: ['Slack', 'Linear'],
   });
 });
@@ -62,7 +60,6 @@ test('section workshop parser defaults unsafe enums and rejects incomplete outpu
     '```',
   ].join('\n'));
   assert.equal(safe?.scope, 'global');
-  assert.equal(safe?.mode, 'review');
   assert.equal(parseSectionWorkshopDraft('no fenced payload'), null);
   assert.equal(parseSectionWorkshopDraft('```mission-section\n{"title":"Missing prompt"}\n```'), null);
 });

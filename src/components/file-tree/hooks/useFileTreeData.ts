@@ -3,15 +3,19 @@ import { api } from '../../../utils/api';
 import type { Project } from '../../../types/app';
 import type { FileTreeNode } from '../types/types';
 
+const FILE_TREE_TIMEOUT_MS = 30_000;
+
 type UseFileTreeDataResult = {
   files: FileTreeNode[];
   loading: boolean;
+  error: string | null;
   refreshFiles: () => void;
 };
 
 export function useFileTreeData(selectedProject: Project | null): UseFileTreeDataResult {
   const [files, setFiles] = useState<FileTreeNode[]>([]);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const abortControllerRef = useRef<AbortController | null>(null);
 
@@ -27,6 +31,7 @@ export function useFileTreeData(selectedProject: Project | null): UseFileTreeDat
     if (!projectId) {
       setFiles([]);
       setLoading(false);
+      setError(null);
       return;
     }
 
@@ -34,7 +39,14 @@ export function useFileTreeData(selectedProject: Project | null): UseFileTreeDat
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
     }
-    abortControllerRef.current = new AbortController();
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+    // A stalled request must not leave the panel on "Loading files..." forever.
+    let timedOut = false;
+    const timeoutId = window.setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, FILE_TREE_TIMEOUT_MS);
 
     // Track mount state so aborted or late responses do not enqueue stale state updates.
     let isActive = true;
@@ -42,15 +54,17 @@ export function useFileTreeData(selectedProject: Project | null): UseFileTreeDat
     const fetchFiles = async () => {
       if (isActive) {
         setLoading(true);
+        setError(null);
       }
       try {
-        const response = await api.getFiles(projectId, { signal: abortControllerRef.current!.signal });
+        const response = await api.getFiles(projectId, { signal: controller.signal });
 
         if (!response.ok) {
           const errorText = await response.text();
           console.error('File fetch failed:', response.status, errorText);
           if (isActive) {
             setFiles([]);
+            setError(`Failed to load files (${response.status})`);
           }
           return;
         }
@@ -60,15 +74,17 @@ export function useFileTreeData(selectedProject: Project | null): UseFileTreeDat
           setFiles(data);
         }
       } catch (error) {
-        if ((error as { name?: string }).name === 'AbortError') {
+        if ((error as { name?: string }).name === 'AbortError' && !timedOut) {
           return;
         }
 
         console.error('Error fetching files:', error);
         if (isActive) {
           setFiles([]);
+          setError(timedOut ? 'Loading files timed out' : 'Failed to load files');
         }
       } finally {
+        window.clearTimeout(timeoutId);
         if (isActive) {
           setLoading(false);
         }
@@ -79,13 +95,15 @@ export function useFileTreeData(selectedProject: Project | null): UseFileTreeDat
 
     return () => {
       isActive = false;
-      abortControllerRef.current?.abort();
+      window.clearTimeout(timeoutId);
+      controller.abort();
     };
   }, [selectedProject?.projectId, refreshKey]);
 
   return {
     files,
     loading,
+    error,
     refreshFiles,
   };
 }

@@ -4,6 +4,8 @@ import ReactMarkdown from 'react-markdown';
 import rehypeKatex from 'rehype-katex';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
+// KaTeX CSS is no longer global (main.jsx); load it with the preview that renders math.
+import 'katex/dist/katex.min.css';
 import type { PluggableList } from 'unified';
 import MarkdownCodeBlock from './MarkdownCodeBlock';
 

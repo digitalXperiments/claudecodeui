@@ -15,7 +15,9 @@ import { sessionsService } from '@/modules/providers/index.js';
 import type { LLMProvider } from '@/shared/types.js';
 import { AppError } from '@/shared/utils.js';
 
-const WORK_PROVIDERS = ['claude', 'grok', 'codex', 'cursor', 'opencode', 'kilo', 'cline', 'kimi', 'pi', 'omp'] as const;
+import { routeWorkItem } from './mission-control-work-profile.js';
+
+const WORK_PROVIDERS = ['claude', 'grok', 'codex', 'cursor', 'opencode', 'kilo', 'cline', 'kimi', 'pi', 'omp', 'antigravity', 'qwencode'] as const;
 
 export type WorkThisMatch = {
   projectId: string;
@@ -125,6 +127,11 @@ function scoreProject(
 }
 
 export function matchProjectsForItem(item: McItem, section: McSection | null): WorkThisMatch[] {
+  if (section?.work_profile) {
+    const route = routeWorkItem(item, section.work_profile);
+    const project = projectsDb.getProjectById(route.project_id);
+    return project && !project.isArchived ? [{ projectId: project.project_id, projectPath: project.project_path, name: project.custom_project_name || path.basename(project.project_path), score: 100, reason: 'client mapping' }] : [];
+  }
   if (section?.work_project_id) {
     const workProject = projectsDb.getProjectById(section.work_project_id);
     if (workProject && !workProject.isArchived) {

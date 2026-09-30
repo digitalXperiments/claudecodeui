@@ -65,12 +65,16 @@ export class PiSessionSynchronizer implements IProviderSessionSynchronizer {
     // Pi has no separate session metadata/title index. Re-scan transcript
     // headers on startup so existing "Untitled Pi Session" rows get their
     // first-prompt title populated after upgrading CloudCLI.
-    void since;
+    // With a `since` cursor, files untouched since the last scan whose row is
+    // already indexed at this path with a real title are skipped — re-parsing
+    // them would only re-derive the same header data. Untitled/missing rows
+    // and anything created or modified after the cursor are still processed.
     const files = await findFilesRecursivelyCreatedAfter(this.piSessionsRoot, '.jsonl', null);
 
     let processed = 0;
     for (const filePath of files) {
       if (!filePath.endsWith('.jsonl')) continue;
+      if (since && await this.isUnchangedAndTitled(filePath, since)) continue;
       const parsed = await this.processSessionFile(filePath);
       if (!parsed) continue;
 
@@ -88,6 +92,33 @@ export class PiSessionSynchronizer implements IProviderSessionSynchronizer {
     }
 
     return processed;
+  }
+
+  private async isUnchangedAndTitled(filePath: string, since: Date): Promise<boolean> {
+    let fileStat: fsSync.Stats;
+    try {
+      fileStat = await fsSync.promises.stat(filePath);
+    } catch {
+      return false;
+    }
+    if (fileStat.birthtime > since || fileStat.mtime > since) {
+      return false;
+    }
+
+    const base = path.basename(filePath, '.jsonl');
+    const underscoreIdx = base.lastIndexOf('_');
+    const fileSessionId = underscoreIdx >= 0 ? base.slice(underscoreIdx + 1) : base;
+    if (!fileSessionId) {
+      return false;
+    }
+    const row = sessionsDb.getSessionByProviderSessionId(fileSessionId, this.provider)
+      ?? sessionsDb.getSessionById(fileSessionId);
+    return Boolean(
+      row
+      && row.jsonl_path === filePath
+      && row.custom_name
+      && row.custom_name !== 'Untitled Pi Session',
+    );
   }
 
   async synchronizeFile(filePath: string): Promise<string | null> {

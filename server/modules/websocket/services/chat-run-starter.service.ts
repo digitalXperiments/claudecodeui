@@ -93,6 +93,29 @@ export type StartProviderRunParams = {
   onEvent?: (message: NormalizedMessage) => void;
 };
 
+/**
+ * The options object a provider runtime receives for a run. Shared by
+ * `startProviderRun` and the `chat.prewarm` handler, so a prewarmed Claude
+ * process is spawned with exactly the options (and warm fingerprint) the
+ * next chat.send will produce.
+ */
+export function buildProviderRuntimeOptions(
+  params: Pick<StartProviderRunParams, 'appSessionId' | 'projectPath' | 'options'>,
+  providerSessionId: string | null,
+): AnyRecord {
+  return {
+    ...params.options,
+    // Image attachments are re-validated server-side: only files inside the
+    // global upload store may reach the provider runtimes' file reads.
+    images: filterImagesToUploadStore(params.options.images),
+    appSessionId: params.appSessionId,
+    sessionId: providerSessionId ?? undefined,
+    resume: Boolean(providerSessionId),
+    cwd: params.options.cwd ?? params.projectPath ?? undefined,
+    projectPath: params.projectPath ?? params.options.projectPath,
+  };
+}
+
 export type StartProviderRunResult =
   | {
       ok: true;
@@ -133,17 +156,8 @@ export async function startProviderRun(params: StartProviderRunParams): Promise<
   // id their CLI/SDK understands for resume). Brand-new sessions have no
   // provider id yet, so the runtime starts fresh and announces one, which the
   // gateway writer captures and maps back to the app session id.
-  const buildRuntimeOptions = (providerSessionId: string | null): AnyRecord => ({
-    ...params.options,
-    // Image attachments are re-validated server-side: only files inside the
-    // global upload store may reach the provider runtimes' file reads.
-    images: filterImagesToUploadStore(params.options.images),
-    appSessionId: params.appSessionId,
-    sessionId: providerSessionId ?? undefined,
-    resume: Boolean(providerSessionId),
-    cwd: params.options.cwd ?? params.projectPath ?? undefined,
-    projectPath: params.projectPath ?? params.options.projectPath,
-  });
+  const buildRuntimeOptions = (providerSessionId: string | null): AnyRecord =>
+    buildProviderRuntimeOptions(params, providerSessionId);
 
   const startRunArgs = {
     appSessionId: params.appSessionId,

@@ -30,9 +30,12 @@ type ShellProps = {
   isPlainShell?: boolean;
   onProcessComplete?: ((exitCode: number) => void) | null;
   minimal?: boolean;
+  minimumContrastRatio?: number;
   autoConnect?: boolean;
   waitForChat?: boolean;
+  onReturnToChat?: () => void;
   isActive?: boolean;
+  showControls?: boolean;
 };
 
 export default function Shell({
@@ -42,9 +45,12 @@ export default function Shell({
   isPlainShell = false,
   onProcessComplete = null,
   minimal = false,
+  minimumContrastRatio,
   autoConnect = false,
   waitForChat = false,
+  onReturnToChat,
   isActive = true,
+  showControls = true,
 }: ShellProps) {
   const { t } = useTranslation('chat');
   const [isRestarting, setIsRestarting] = useState(false);
@@ -70,7 +76,8 @@ export default function Shell({
     initialCommand,
     isPlainShell,
     minimal,
-    autoConnect,
+    minimumContrastRatio,
+    autoConnect: autoConnect && isActive,
     waitForChat,
     isRestarting,
     onProcessComplete,
@@ -172,7 +179,12 @@ export default function Shell({
       if (fitAddon && terminal && container) {
         const { width, height } = container.getBoundingClientRect();
         if (width >= 2 && height >= 2) {
+          const wasAtBottom =
+            terminal.buffer.active.viewportY >= terminal.buffer.active.baseY;
           fitAddon.fit();
+          if (wasAtBottom) {
+            terminal.scrollToBottom();
+          }
           if (isConnected) {
             sendSocketMessage(wsRef.current, {
               type: 'resize',
@@ -308,7 +320,7 @@ export default function Shell({
 
   return (
     <div className="flex h-full w-full flex-col bg-background text-foreground">
-      <ShellHeader
+      {showControls && <ShellHeader
         isConnected={isConnected}
         isInitialized={isInitialized}
         isRestarting={isRestarting}
@@ -324,7 +336,7 @@ export default function Shell({
         restartLabel={t('shell.actions.restart')}
         restartTitle={t('shell.actions.restartTitle')}
         disableRestart={isRestarting || !isInitialized || isWaitingForChat}
-      />
+      />}
 
       <div className="relative flex-1 overflow-hidden p-2">
         <div
@@ -339,6 +351,8 @@ export default function Shell({
             description={overlayDescription}
             loadingLabel={t('shell.loading')}
             waitingLabel={t('shell.waitingForChat')}
+            onReturnToChat={onReturnToChat}
+            returnToChatLabel={t('shell.returnToChat', { defaultValue: 'Return to Chat' })}
             connectLabel={t('shell.actions.connect')}
             connectTitle={t('shell.actions.connectTitle')}
             connectingLabel={t('shell.connecting')}

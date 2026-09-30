@@ -2,6 +2,7 @@ import React from 'react';
 import { ChevronDown, ChevronUp, Gauge, Loader2, RefreshCw, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
+import { cn } from '../../../../lib/utils';
 import SessionProviderLogo from '../../../llm-logo-provider/SessionProviderLogo';
 import type { LLMProvider } from '../../../../types/app';
 import {
@@ -274,6 +275,127 @@ function ProviderUsageRow({
   );
 }
 
+function getCompactWindows(provider: ProviderUsage): {
+  session: UsageWindow | null;
+  weekly: UsageWindow | null;
+} {
+  const primaryWindow = getPrimaryUsageWindow(provider);
+  const weeklyWindow = provider.windows.find((window) => (
+    /week/i.test(window.id) || /week/i.test(window.label)
+  )) ?? null;
+  const sessionWindow = primaryWindow && primaryWindow !== weeklyWindow
+    ? primaryWindow
+    : provider.windows.find((window) => window !== weeklyWindow) ?? null;
+  return { session: sessionWindow, weekly: weeklyWindow };
+}
+
+function CompactMetricCell({ provider, label, window, now }: {
+  provider: ProviderUsage;
+  label: 'Session' | 'Weekly';
+  window: UsageWindow | null;
+  now: number;
+}) {
+  const ratio = getRemainingRatio(window);
+  const percent = ratio === null ? null : Math.round(ratio * 100);
+  const colors = toneClasses[getUsageTone(provider, window)];
+  const rawCountdown = formatCountdown(window?.resetsAt ?? null, now);
+  const parsedReset = window?.resetsAt ? Date.parse(window.resetsAt) : NaN;
+  const resetLabel = provider.status === 'stale' && Number.isFinite(parsedReset) && parsedReset <= now
+    ? 'overdue'
+    : rawCountdown?.replace(/^resets in /, '').replace(/^resets /, '') ?? null;
+
+  return (
+    <div className="min-w-0 px-2 py-2.5 text-center" data-usage-window={label.toLowerCase()}>
+      <div className={`text-lg font-semibold leading-none ${colors.text}`}>{percent === null ? '—' : `${percent}%`}</div>
+      <div
+        className="mx-auto mt-2 h-1.5 w-full max-w-16 overflow-hidden rounded-full bg-muted"
+        role={percent === null ? undefined : 'progressbar'}
+        aria-label={percent === null ? undefined : `${provider.displayName} ${label.toLowerCase()} remaining quota`}
+        aria-valuemin={percent === null ? undefined : 0}
+        aria-valuemax={percent === null ? undefined : 100}
+        aria-valuenow={percent ?? undefined}
+      >
+        {percent !== null ? <div className={`h-full rounded-full ${colors.bar}`} style={{ width: `${percent}%` }} /> : null}
+      </div>
+      <div className="mt-1.5 min-h-3.5 truncate text-[10px] leading-3.5 text-muted-foreground" title={rawCountdown ?? undefined}>
+        {resetLabel ?? ''}
+      </div>
+    </div>
+  );
+}
+
+function CompactUsageMatrix({ providers, isExpanded, now, onToggleProvider }: {
+  providers: ProviderUsage[];
+  isExpanded: (providerId: string) => boolean;
+  now: number;
+  onToggleProvider?: (providerId: string) => void;
+}) {
+  const groups: ProviderUsage[][] = [];
+  for (let index = 0; index < providers.length; index += 4) {
+    groups.push(providers.slice(index, index + 4));
+  }
+
+  return (
+    <div className="space-y-2">
+      {groups.map((group) => (
+        <div key={group.map((provider) => provider.providerId).join(':')} className="overflow-hidden rounded-xl border border-border/70 bg-background/75">
+          <div
+            className="grid items-center border-b border-border/60"
+            style={{ gridTemplateColumns: `repeat(${group.length}, minmax(0, 1fr))` }}
+          >
+            {group.map((provider) => (
+              <button
+                key={provider.providerId}
+                type="button"
+                onClick={() => onToggleProvider?.(provider.providerId)}
+                className={cn(
+                  'flex h-11 items-center justify-center border-l border-border/50 first:border-l-0 hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
+                  isExpanded(provider.providerId) && 'bg-accent/60',
+                )}
+                aria-label={`${provider.displayName} usage details`}
+                aria-expanded={isExpanded(provider.providerId)}
+                title={provider.displayName}
+              >
+                <SessionProviderLogo provider={providerIdForLogo(provider.providerId)} className="h-5 w-5 object-contain" />
+              </button>
+            ))}
+          </div>
+          {(['Session', 'Weekly'] as const).map((label) => (
+            <div
+              key={label}
+              className="grid items-center border-b border-border/50 last:border-b-0"
+              style={{ gridTemplateColumns: `repeat(${group.length}, minmax(0, 1fr))` }}
+            >
+              {group.map((provider) => (
+                <div key={provider.providerId} className="border-l border-border/50 first:border-l-0">
+                  <CompactMetricCell provider={provider} label={label} window={getCompactWindows(provider)[label.toLowerCase() as 'session' | 'weekly']} now={now} />
+                </div>
+              ))}
+            </div>
+          ))}
+
+          {group.filter((provider) => isExpanded(provider.providerId)).map((provider) => (
+            <div key={provider.providerId} className="space-y-2 border-t border-border/60 bg-muted/20 px-2.5 py-2">
+              <div className="flex items-center gap-1.5 text-[10px] font-medium text-foreground">
+                <SessionProviderLogo provider={providerIdForLogo(provider.providerId)} className="h-3.5 w-3.5" />
+                <span>{provider.displayName}</span>
+              </div>
+              {provider.windows.length > 0 ? provider.windows.map((window) => (
+                <UsageWindowBar key={window.id} provider={provider} window={window} now={now} />
+              )) : <div className="text-[10px] text-muted-foreground">Signed in · usage unavailable</div>}
+              {provider.error ? (
+                <div className={`break-words text-[10px] ${provider.status === 'stale' ? 'text-amber-700 dark:text-amber-300' : 'text-red-700 dark:text-red-300'}`}>
+                  {provider.error}
+                </div>
+              ) : null}
+            </div>
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function UsageWindowBar({
   provider,
   window,
@@ -325,6 +447,7 @@ export type ProviderUsageLegendContentProps = {
   error?: string | null;
   refreshNotice?: string | null;
   refreshing?: boolean;
+  loading?: boolean;
   collapsed: boolean;
   expandedProvider?: string | null;
   expandedProviders?: string[];
@@ -335,6 +458,8 @@ export type ProviderUsageLegendContentProps = {
   onToggleExpandAll?: () => void;
   onExpandAll?: () => void;
   onCollapseAll?: () => void;
+  /** Render inside a parent panel instead of as a floating chat card. */
+  embedded?: boolean;
 };
 
 export function ProviderUsageLegendContent({
@@ -342,6 +467,7 @@ export function ProviderUsageLegendContent({
   error = null,
   refreshNotice = null,
   refreshing = false,
+  loading = false,
   collapsed,
   expandedProvider,
   expandedProviders,
@@ -352,10 +478,10 @@ export function ProviderUsageLegendContent({
   onToggleExpandAll,
   onExpandAll,
   onCollapseAll,
+  embedded = false,
 }: ProviderUsageLegendContentProps) {
   const { t } = useTranslation('chat');
   const providers = data?.providers.filter((provider) => provider.signedIn) ?? [];
-  if (providers.length === 0) return null;
 
   const isExpanded = (providerId: string): boolean => {
     if (expandedProviders !== undefined) {
@@ -398,7 +524,49 @@ export function ProviderUsageLegendContent({
   };
 
   const updatedLabel = refreshNotice || `Updated ${formatRelativeUpdated(data?.fetchedAt ?? null, now)}`;
-  if (collapsed) {
+
+  if (embedded) {
+    return (
+      <aside
+        data-testid="provider-usage-legend"
+        data-collapsed="false"
+        aria-label={t('providerUsage.title', { defaultValue: 'Provider usage' })}
+        className="min-h-0 overflow-y-auto bg-card/20 px-2.5 pb-2.5"
+      >
+        <div className="flex h-8 items-center gap-1.5 px-0.5 text-[10px] text-muted-foreground">
+          <span className="min-w-0 flex-1 truncate">{data ? updatedLabel : loading ? 'Loading usage…' : 'Usage unavailable'}</span>
+          {error ? <span className="truncate text-red-700 dark:text-red-300">{error}</span> : null}
+          <button
+            type="button"
+            onClick={onRefresh}
+            disabled={refreshing || loading}
+            aria-label={t('providerUsage.refresh', { defaultValue: 'Refresh provider usage' })}
+            className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-md hover:bg-accent hover:text-foreground disabled:opacity-60"
+          >
+            {refreshing || loading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+          </button>
+        </div>
+
+        {loading && !data ? (
+          <div className="grid grid-cols-4 gap-1.5" aria-label="Loading provider usage">
+            {[0, 1, 2, 3].map((item) => (
+              <div key={item} className="h-[104px] animate-pulse rounded-xl border border-border/50 bg-muted/60" />
+            ))}
+          </div>
+        ) : providers.length > 0 ? (
+          <CompactUsageMatrix providers={providers} isExpanded={isExpanded} now={now} onToggleProvider={onToggleProvider} />
+        ) : (
+          <div className="rounded-lg border border-dashed border-border px-3 py-3 text-center text-[11px] text-muted-foreground">
+            No signed-in provider usage is available.
+          </div>
+        )}
+      </aside>
+    );
+  }
+
+  if (providers.length === 0) return null;
+
+  if (collapsed && !embedded) {
     return (
       <button
         type="button"
@@ -420,11 +588,13 @@ export function ProviderUsageLegendContent({
       data-testid="provider-usage-legend"
       data-collapsed="false"
       aria-label={t('providerUsage.title', { defaultValue: 'Provider usage' })}
-      className="chat-provider-usage-card fixed bottom-4 right-4 z-30 flex max-h-[min(36rem,calc(100vh-2rem))] w-[min(22rem,calc(100vw-2rem))] flex-col overflow-hidden rounded-2xl border border-border/70 bg-card/95 shadow-2xl backdrop-blur"
+      className={embedded
+        ? 'flex min-h-0 flex-1 flex-col overflow-hidden bg-card/20'
+        : 'chat-provider-usage-card fixed bottom-4 right-4 z-30 flex max-h-[min(36rem,calc(100vh-2rem))] w-[min(22rem,calc(100vw-2rem))] flex-col overflow-hidden rounded-2xl border border-border/70 bg-card/95 shadow-2xl backdrop-blur'}
     >
       <div className="flex items-center gap-1.5 border-b border-border/60 px-3 py-2.5">
-        <span className="min-w-0 flex-1 text-xs font-semibold uppercase tracking-wide text-foreground">
-          {t('providerUsage.title', { defaultValue: 'Usage' })}
+        <span className="min-w-0 flex-1 text-xs text-muted-foreground">
+          {embedded ? updatedLabel : t('providerUsage.title', { defaultValue: 'Usage' })}
         </span>
         <button
           type="button"
@@ -455,7 +625,7 @@ export function ProviderUsageLegendContent({
             ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden data-testid="provider-usage-refresh-spinner" />
             : <RefreshCw className="h-3.5 w-3.5" aria-hidden />}
         </button>
-        <button
+        {!embedded ? <button
           type="button"
           onClick={onToggleCollapsed}
           title="Close provider usage"
@@ -463,11 +633,11 @@ export function ProviderUsageLegendContent({
           className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           <X className="h-4 w-4" aria-hidden />
-        </button>
+        </button> : null}
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto p-3">
         <div className="text-[10px] text-muted-foreground" aria-live="polite">
-          {updatedLabel}
+          {!embedded ? updatedLabel : null}
           {error && <span className="ml-1 text-red-700 dark:text-red-300">· {error}</span>}
         </div>
         <div className="mt-2 space-y-2">

@@ -4,6 +4,7 @@ import test from 'node:test';
 
 import {
   applyClaudeSpawnAuthEnv,
+  invalidateClaudeSpawnAuthEnvCache,
   resolveClaudeSpawnOAuthToken,
   setClaudeSpawnAuthEnvIoForTests,
 } from '../claude-spawn-auth-env.js';
@@ -138,6 +139,68 @@ test('applyClaudeSpawnAuthEnv preserves native auth and avoids injecting CLAUDE_
     assert.equal(sdkOptions.env?.CLAUDE_CODE_OAUTH_TOKEN, undefined);
     assert.equal(sdkOptions.env?.USER, 'rammanohar');
     assert.equal(sdkOptions.env?.PATH, '/usr/bin');
+  } finally {
+    setClaudeSpawnAuthEnvIoForTests(null);
+  }
+});
+
+test('applyClaudeSpawnAuthEnv caches the Keychain decision for 60s and never caches a miss', async () => {
+  const live = JSON.stringify({
+    claudeAiOauth: { accessToken: 'cached-token', expiresAt: Date.now() + 3_600_000 },
+  });
+  let spawns = 0;
+  let payload: string | null = live;
+  const countingSpawn = ((cmd: string, args: string[]) => {
+    spawns += 1;
+    return fakeSecuritySpawn({ __default__: payload })(cmd, args);
+  }) as ClaudeSpawnIoSpawn;
+  let clock = 1_000_000;
+  setClaudeSpawnAuthEnvIoForTests({
+    platform: () => 'darwin',
+    env: () => ({}) as NodeJS.ProcessEnv,
+    username: () => 'someone',
+    homedir: () => '/tmp-home-no-claude',
+    readFile: async () => {
+      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    },
+    spawn: countingSpawn,
+    now: () => clock,
+    keychainTimeoutMs: () => 2_000,
+  });
+  try {
+    const first: { env?: NodeJS.ProcessEnv } = { env: {} };
+    await applyClaudeSpawnAuthEnv(first);
+    const afterFirst = spawns;
+    assert.ok(afterFirst > 0);
+
+    const second: { env?: NodeJS.ProcessEnv } = { env: {} };
+    await applyClaudeSpawnAuthEnv(second);
+    assert.equal(spawns, afterFirst, 'second call within TTL must not spawn `security`');
+    assert.equal(second.env?.USER, 'someone');
+
+    clock += 61_000;
+    await applyClaudeSpawnAuthEnv({ env: {} });
+    assert.ok(spawns > afterFirst, 'expired entry re-reads Keychain');
+
+    const beforeInvalidate = spawns;
+    invalidateClaudeSpawnAuthEnvCache();
+    await applyClaudeSpawnAuthEnv({ env: {} });
+    assert.ok(spawns > beforeInvalidate, 'invalidate forces a re-read');
+
+    // A miss (nothing readable) is not cached.
+    payload = null;
+    invalidateClaudeSpawnAuthEnvCache();
+    const beforeMiss = spawns;
+    await applyClaudeSpawnAuthEnv({ env: {} });
+    const afterMiss = spawns;
+    assert.ok(afterMiss > beforeMiss);
+    await applyClaudeSpawnAuthEnv({ env: {} });
+    assert.ok(spawns > afterMiss, 'a miss must be retried on the next call');
+
+    // An explicit API key changes the cache key and short-circuits.
+    const withKey: { env?: NodeJS.ProcessEnv } = { env: { ANTHROPIC_API_KEY: 'sk-test' } };
+    await applyClaudeSpawnAuthEnv(withKey);
+    assert.equal(withKey.env?.CLAUDE_CODE_OAUTH_TOKEN, undefined);
   } finally {
     setClaudeSpawnAuthEnvIoForTests(null);
   }

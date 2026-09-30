@@ -31,8 +31,14 @@ test('relay envelope approves safe reads, denies read-only mutation, auto-denies
 
   for (const command of [
     'tsc --noEmit',
-    'npx tsc --noEmit',
     'npx --no-install tsc -p server/tsconfig.json --noEmit',
+    './node_modules/.bin/tsx --test server/modules/agent-relay/tests/agent-relay-permission.test.ts',
+    '/bin/zsh -lc "./node_modules/.bin/tsx --test server/modules/agent-relay/tests/agent-relay-permission.test.ts"',
+    'npx --no-install tsx --test server/modules/agent-relay/tests/agent-relay-permission.test.ts',
+    'npm test',
+    'npm run test:server',
+    'npm run build',
+    'npm run lint:fix',
   ]) {
     assert.equal(
       classifyRelayPermissionRequest({
@@ -51,14 +57,24 @@ test('relay envelope approves safe reads, denies read-only mutation, auto-denies
       mode: 'isolated_write',
       envelopeRoot: WORKTREE,
       toolName: 'Bash',
-      command: 'npx tsc --noEmit',
+      command: 'npm run test:server',
       cwd: '/primary/checkout',
     }).tier,
     'deny',
   );
   assert.equal(
-    // Install-flavored npx (`-p`/`--package`) stays risky; under the default
-    // `auto` approval policy that is auto-denied, not parked for the lead.
+    // Bare/install-flavored npx can download and execute remote packages.
+    // Local binary invocations must use --no-install.
+    classifyRelayPermissionRequest({
+      mode: 'isolated_write',
+      envelopeRoot: WORKTREE,
+      toolName: 'Bash',
+      command: 'npx test',
+      cwd: WORKTREE,
+    }).tier,
+    'deny',
+  );
+  assert.equal(
     classifyRelayPermissionRequest({
       mode: 'isolated_write',
       envelopeRoot: WORKTREE,
@@ -68,6 +84,39 @@ test('relay envelope approves safe reads, denies read-only mutation, auto-denies
     }).tier,
     'deny',
   );
+  for (const command of [
+    'npm --prefix /primary/checkout test',
+    'npm run test:server && git push',
+    'npm run build && rm -rf /primary/checkout',
+  ]) {
+    assert.equal(
+      classifyRelayPermissionRequest({
+        mode: 'isolated_write',
+        envelopeRoot: WORKTREE,
+        toolName: 'Bash',
+        command,
+        cwd: WORKTREE,
+      }).tier,
+      'deny',
+      command,
+    );
+  }
+  for (const command of [
+    './node_modules/.bin/tsx --test server/modules/agent-relay/tests/agent-relay-permission.test.ts',
+    'npm test',
+  ]) {
+    assert.equal(
+      classifyRelayPermissionRequest({
+        mode: 'read_only',
+        envelopeRoot: WORKTREE,
+        toolName: 'Bash',
+        command,
+        cwd: WORKTREE,
+      }).tier,
+      'deny',
+      command,
+    );
+  }
   assert.equal(
     classifyRelayPermissionRequest({
       mode: 'read_only',

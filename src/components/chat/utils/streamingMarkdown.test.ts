@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { splitStreamingMarkdown } from './streamingMarkdown';
+import { normalizeInlineCodeFences } from './chatFormatting';
+import { createStreamingMarkdownSplitter, splitStreamingMarkdown } from './streamingMarkdown';
 
 /**
  * The split is only sound if `settled + pending === content` and the two halves
@@ -155,4 +156,76 @@ test('a closed $$ block can be settled once its delimiter arrives', () => {
 
   assert.equal(settled, 'Intro.\n\n$$\na = b\n\nc = d\n$$\n\n');
   assert.equal(pending, 'After');
+});
+
+// ─── Incremental splitter ─────────────────────────────────────────────────
+
+const INCREMENTAL_FIXTURES = [
+  'One.\n\nTwo.\n\nThree partial',
+  'Intro.\n\n```ts\nconst a = 1;\n\nconst b = 2;\n```\n\nAfter the block\n\n- a\n\n- b\n\nTail',
+  '# Heading\n\nText with ```inline``` fence.\n\n> quote\n\nPara\n| a | b |\n|---|---|\n| 1 | 2 |\n\nEnd.\n\n',
+  'Math:\n\n$$\nx = 1\n\ny = 2\n$$\n\n$$z$$\n\nAfter\n\n    indented code\n\n    more\n\nDone',
+  '[ref]: https://example.com\n\nUse [ref].\n\n1. one\n2. two\n\n~~~\ncode\n\n~~~\n\n```\nunclosed\n\nstill',
+  '\n\nleading blanks\n\n\n\nmany blanks  \n  \n\nx',
+  'para\n```js\nlet a;\n\n``\n```\n\nnext',
+];
+
+test('the incremental splitter matches the stateless split on every streamed prefix', () => {
+  for (const fixture of INCREMENTAL_FIXTURES) {
+    const splitter = createStreamingMarkdownSplitter(normalizeInlineCodeFences);
+    for (let length = 0; length <= fixture.length; length++) {
+      const prefix = fixture.slice(0, length);
+      const expected = splitStreamingMarkdown(normalizeInlineCodeFences(prefix));
+      const actual = splitter.split(prefix);
+      assert.equal(actual.settled, expected.settled, `settled mismatch at ${length} of ${JSON.stringify(fixture)}`);
+      assert.equal(actual.pending, expected.pending, `pending mismatch at ${length} of ${JSON.stringify(fixture)}`);
+      assert.equal(actual.text, normalizeInlineCodeFences(prefix));
+    }
+  }
+});
+
+test('the incremental splitter matches with irregular chunks and restarts on non-extensions', () => {
+  const splitter = createStreamingMarkdownSplitter(normalizeInlineCodeFences);
+  let seed = 7;
+  const random = () => {
+    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+    return seed / 0x7fffffff;
+  };
+  for (let round = 0; round < 50; round++) {
+    const fixture = INCREMENTAL_FIXTURES[round % INCREMENTAL_FIXTURES.length];
+    let length = 0;
+    while (length <= fixture.length) {
+      const prefix = fixture.slice(0, length);
+      const expected = splitStreamingMarkdown(normalizeInlineCodeFences(prefix));
+      assert.deepEqual(
+        { settled: splitter.split(prefix).settled, pending: splitter.split(prefix).pending },
+        expected,
+      );
+      length += 1 + Math.floor(random() * 40);
+    }
+    // Next round starts from a different (non-extension) document.
+  }
+});
+
+test('the settled string keeps its identity while the boundary does not move', () => {
+  const splitter = createStreamingMarkdownSplitter();
+  const first = splitter.split('Para one.\n\nPara two is gro');
+  const second = splitter.split('Para one.\n\nPara two is growing longer');
+  assert.equal(first.settled, 'Para one.\n\n');
+  assert.ok(Object.is(first.settled, second.settled));
+});
+
+test('an unclosed fence is reported until its closing marker arrives', () => {
+  const splitter = createStreamingMarkdownSplitter();
+  const open = splitter.split('Intro.\n\n```py\nprint(1)\n\nprint(2)');
+  assert.deepEqual(open.openFence, { start: 'Intro.\n\n'.length, topLevel: true });
+  assert.equal(open.settled, 'Intro.\n\n');
+
+  const closing = splitter.split('Intro.\n\n```py\nprint(1)\n\nprint(2)\n```');
+  assert.equal(closing.openFence, null, 'a closing marker on the partial line closes the fence');
+
+  const indented = createStreamingMarkdownSplitter().split('- item\n\n   ```\ncode');
+  assert.equal(indented.openFence?.topLevel, false);
+
+  assert.equal(createStreamingMarkdownSplitter().split('No fences here').openFence, null);
 });

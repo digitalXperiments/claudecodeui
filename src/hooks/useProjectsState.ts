@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, type NavigateFunction } from 'react-router-dom';
 
-import { api, authenticatedFetch } from '../utils/api';
+import { api } from '../utils/api';
+import { fetchProjectTaskMasterInfo, fetchSessionMeta } from '../utils/sessionRequests';
+import { whenSessionPainted } from '../utils/sessionPaintGate';
 import type { ServerEvent } from '../contexts/WebSocketContext';
 import type {
   AppTab,
@@ -378,7 +380,13 @@ export function useProjectsState({
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [isLoadingProjects, setIsLoadingProjects] = useState(true);
   const [loadingProgress, setLoadingProgress] = useState<LoadingProgress | null>(null);
-  const [isInputFocused, setIsInputFocused] = useState(false);
+  // Written by the composer on focus/blur. Nothing renders from it, so it is a
+  // ref: as state it re-rendered the whole app (sidebar, main content, status
+  // bar) on every composer focus change.
+  const isInputFocusedRef = useRef(false);
+  const setIsInputFocused = useCallback((focused: boolean) => {
+    isInputFocusedRef.current = focused;
+  }, []);
   const [showSettings, setShowSettings] = useState(false);
   const [settingsInitialTab, setSettingsInitialTab] = useState('agents');
   const [externalMessageUpdate, setExternalMessageUpdate] = useState(0);
@@ -566,13 +574,15 @@ export function useProjectsState({
     }
 
     try {
-      const response = await api.projectTaskmaster(projectId);
+      // Rebuilds the selected project object when it lands, so keep it out of
+      // a session open's critical path; shares TaskMasterContext's request.
+      await whenSessionPainted();
+      const response = await fetchProjectTaskMasterInfo<{ taskmaster?: Project['taskmaster'] }>(projectId);
       if (!response.ok) {
         return;
       }
 
-      const data = (await response.json()) as { taskmaster?: Project['taskmaster'] };
-      const taskMasterInfo = data.taskmaster;
+      const taskMasterInfo = response.data?.taskmaster;
       if (!taskMasterInfo) {
         return;
       }
@@ -806,7 +816,18 @@ export function useProjectsState({
           return previousProject;
         }
         const updated = upsertSessionIntoProject(previousProject, upsert);
-        return updated === previousProject ? previousProject : updated;
+        if (updated === previousProject) {
+          return previousProject;
+        }
+        // An in-place metadata change (lastActivity, messageCount, summary) of
+        // an already-listed session keeps the selected project's identity.
+        // Nothing reads the session list off `selectedProject` (the sidebar
+        // renders from `projects`), but consumers key effects and memo on the
+        // object — a new identity per watcher tick re-rendered the chat tree
+        // and refetched its token usage on every write of a streaming session.
+        const listChanged = (updated.sessions?.length ?? 0) !== (previousProject.sessions?.length ?? 0)
+          || updated.sessionMeta !== previousProject.sessionMeta;
+        return listChanged ? updated : previousProject;
       });
 
       const aliasedSelectedSessionId =
@@ -922,8 +943,9 @@ export function useProjectsState({
     const listed = projects.some((project) => project.sessions?.some((session) => session.id === sessionId));
     if (listed) return;
     let cancelled = false;
-    void authenticatedFetch(`/api/providers/sessions/${encodeURIComponent(sessionId)}/meta`)
-      .then((response) => (response.ok ? response.json() : null))
+    // Shared with useChatProviderState's meta read for the same session.
+    void fetchSessionMeta<{ data?: { session?: unknown } }>(sessionId)
+      .then((response) => (response.ok ? response.data : null))
       .then((payload) => {
         if (cancelled) return;
         const meta = payload?.data?.session as {
@@ -1159,7 +1181,7 @@ export function useProjectsState({
 
   const handleSidebarRefresh = useCallback(async () => {
     try {
-      const response = await api.projects();
+      const response = await api.projects({ sync: true }); // explicit refresh forces a provider rescan
       const freshProjects = (await response.json()) as Project[];
       const projectsWithTaskMaster = mergeTaskMasterCache(freshProjects, projects);
       const mergedProjects = mergeExpandedSessionPages(projects, projectsWithTaskMaster);
@@ -1328,7 +1350,7 @@ export function useProjectsState({
     sidebarOpen,
     isLoadingProjects,
     loadingProgress,
-    isInputFocused,
+    isInputFocusedRef,
     showSettings,
     settingsInitialTab,
     externalMessageUpdate,

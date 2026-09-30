@@ -18,6 +18,7 @@ import {
   resolveQwenPermissionPolicy,
   sliceTextByLines,
   spawnAntigravity,
+  updateAcpPermissionMode,
   spawnQwenCode,
   spawnKilo,
   spawnOpenCode,
@@ -721,6 +722,13 @@ test('Antigravity lead sessions attach catalog MCP resolved for antigravity', { 
       const capture = JSON.parse(await readFile(argsCapturePath, 'utf8'));
       assert.equal(capture.mcpServers.length, 1);
       assert.equal(capture.mcpServers[0].name, 'obsidian');
+      disposeAntigravitySessions();
+      mcpCatalogService.resolveForProvider = async (_provider, names) => names.map((name) => ({ name, transport: 'stdio', command: 'fake-mcp', args: [] }));
+      await spawnAntigravity('Scoped task', { cwd: tempRoot, appSessionId: 'app-scoped-agy', strictMcpSelection: true, mcpServers: ['Fluxito'] }, createWriter([]));
+      const scoped = JSON.parse(await readFile(argsCapturePath, 'utf8'));
+      assert.deepEqual(scoped.mcpServers.map((server) => server.name), ['Fluxito']);
+      mcpCatalogService.resolveForProvider = async () => [];
+      await assert.rejects(spawnAntigravity('Missing tools', { cwd: tempRoot, strictMcpSelection: true, mcpServers: ['Fluxito'] }, createWriter([])), /required work-session MCP/);
     } finally {
       disposeAntigravitySessions();
       if (previousOverride === undefined) delete process.env.ANTIGRAVITY_ACP_PATH;
@@ -910,4 +918,53 @@ test('sliceTextByLines returns the whole text when no window is asked for', () =
   assert.equal(sliceTextByLines('a\nb', undefined, undefined), 'a\nb');
   assert.equal(sliceTextByLines('a\nb\nc', 2, undefined), 'b\nc');
   assert.equal(sliceTextByLines('a\nb\nc', undefined, 2), 'a\nb');
+});
+
+
+test('Antigravity switches a running approval to bypass without another prompt', { concurrency: false }, async () => {
+  await withFakeAgent('antigravity-live-permission-', async (tempRoot) => {
+    const binaryPath = path.join(tempRoot, 'agy_acp_server');
+    await writeFile(binaryPath, '#!/bin/sh\nnode "$(dirname "$0")/opencode.cjs" "$@"\n', 'utf8');
+    await chmod(binaryPath, 0o755);
+    const previousOverride = process.env.ANTIGRAVITY_ACP_PATH;
+    process.env.ANTIGRAVITY_ACP_PATH = binaryPath;
+    const capturePath = path.join(tempRoot, 'capture.json');
+    process.env.OPENCODE_ARGS_CAPTURE = capturePath;
+    try {
+      const messages = [];
+      let signalRequest;
+      const requested = new Promise((resolve) => { signalRequest = resolve; });
+      const writer = {
+        ...createWriter(messages),
+        send(message) {
+          messages.push(message);
+          if (message.kind === 'permission_request') signalRequest();
+        },
+      };
+      const run = spawnAntigravity('NEEDS_PERMISSION', {
+        cwd: tempRoot, appSessionId: 'live-mode-app', permissionMode: 'default',
+        unattended: false,
+      }, writer);
+      await requested;
+      assert.equal(await updateAcpPermissionMode('antigravity', 'unknown-native-id', 'bypassPermissions', 'live-mode-app'), true);
+      await run;
+      const capture = JSON.parse(await readFile(capturePath, 'utf8'));
+      assert.equal(capture.permissionDecision, 'once');
+      assert.equal(capture.configOptions.at(-1).value, 'yolo');
+      assert.equal(capture.prompts.length, 1);
+      assert.ok(messages.some((message) => message.kind === 'permission_cancelled' && message.reason === 'permission_mode_changed'));
+      assert.equal(await updateAcpPermissionMode('antigravity', 'open-live-1', 'default', 'live-mode-app'), true);
+      // Subsequent requests must ask again after tightening the live mode.
+      const nextMessages = [];
+      await spawnAntigravity('NEEDS_PERMISSION', {
+        cwd: tempRoot, sessionId: 'open-live-1', appSessionId: 'live-mode-app',
+        permissionMode: 'default', unattended: true, approvalTimeoutMs: 100,
+      }, createWriter(nextMessages));
+      assert.ok(nextMessages.some((message) => message.kind === 'permission_request'));
+    } finally {
+      disposeAntigravitySessions();
+      if (previousOverride === undefined) delete process.env.ANTIGRAVITY_ACP_PATH;
+      else process.env.ANTIGRAVITY_ACP_PATH = previousOverride;
+    }
+  });
 });

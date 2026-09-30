@@ -22,14 +22,29 @@ export function isMcProvider(value: unknown): value is McProvider {
   return typeof value === 'string' && (MC_PROVIDERS as readonly string[]).includes(value);
 }
 
-export type McSectionMode = 'review' | 'fire_and_forget';
+/**
+ * Legacy column. Bots now run one pipeline (propose → resolve → work); every
+ * section is normalized to 'review' and `fire_and_forget` is only read by the
+ * one-time migration.
+ */
+export type McSectionMode = 'review';
 export type McSectionScope = 'global' | 'project';
 export type McToolPolicyDecision = 'allow' | 'ask' | 'deny';
 export type McToolPolicy = Record<string, Record<string, McToolPolicyDecision>>;
 
+/**
+ * Pipeline position of an item:
+ * pending (awaiting a resolve/approval decision) → resolving → awaiting_work
+ * (ready for a manual Start work) → working (session queued/running) → in_qa
+ * (session finished, awaiting human QA) → resolved. `failed` keeps
+ * `work_ready_at` when the failure happened in the work stage.
+ */
 export type McItemStatus =
   | 'pending'
   | 'resolving'
+  | 'awaiting_work'
+  | 'working'
+  | 'in_qa'
   | 'resolved'
   | 'dismissed'
   | 'failed'
@@ -89,6 +104,20 @@ export function withSystemItemActions(actions: McAction[]): McAction[] {
   ];
 }
 
+export type McWorkProfile = {
+  auto_start: boolean;
+  provider: McProvider;
+  model: string;
+  /** Model effort level; null uses the model's default. */
+  effort: string | null;
+  mcp_servers: string[];
+  /** The work prompt: instructions for every work session. */
+  context: string;
+  /** Project used when no client route matches. */
+  default_project_id: string | null;
+  routes: Array<{ client: string; aliases: string[]; project_id: string; context: string }>;
+};
+
 export type McSection = {
   section_id: string;
   title: string;
@@ -99,10 +128,18 @@ export type McSection = {
   project_id: string | null;
   /** Project used when an operator opens Work this for an item. */
   work_project_id?: string | null;
+  work_profile?: McWorkProfile | null;
   mode: McSectionMode;
   schedule_cron: string | null;
+  /** Propose (and retry) agent. */
   provider: McProvider;
   model: string | null;
+  /** Propose effort; null uses the model default. */
+  effort: string | null;
+  /** Resolve agent; null means "same as Propose" (provider/model/effort). */
+  resolve_provider: McProvider | null;
+  resolve_model: string | null;
+  resolve_effort: string | null;
   permission_mode: string;
   dry_run: boolean;
   auto_approve: boolean;
@@ -112,18 +149,6 @@ export type McSection = {
   resolve_tools: string[];
   tool_policy: McToolPolicy;
   actions: McAction[];
-  /** On approve, also create a card on the global kanban backlog. */
-  create_kanban_task: boolean;
-  /** On approve, also launch an autonomous swarm for this item. */
-  /** Default implementation agent pre-assigned to bridged kanban cards. */
-  kanban_assignee_provider: McProvider | null;
-  /** Default review agent pre-assigned to bridged kanban cards. */
-  kanban_review_provider: McProvider | null;
-  /**
-   * MCP server names to attach to bridged kanban cards (task tools.mcpServers).
-   * Steers the implementer toward the correct integrations.
-   */
-  kanban_mcp_tools: string[];
   last_run_at: string | null;
   last_run_error: string | null;
   created_at: string;
@@ -145,6 +170,8 @@ export type McItem = {
   dedupe_key: string;
   result: Record<string, unknown> | null;
   error: string | null;
+  /** Set when the item passed the resolve gate and became eligible for work. */
+  work_ready_at: string | null;
   created_at: string;
   updated_at: string;
   resolved_at: string | null;
@@ -158,10 +185,15 @@ export type CreateMcSectionInput = {
   scope?: McSectionScope;
   project_id?: string | null;
   work_project_id?: string | null;
+  work_profile?: McWorkProfile | null;
   mode?: McSectionMode;
   schedule_cron?: string | null;
   provider?: McProvider;
   model?: string | null;
+  effort?: string | null;
+  resolve_provider?: McProvider | null;
+  resolve_model?: string | null;
+  resolve_effort?: string | null;
   permission_mode?: string;
   dry_run?: boolean;
   auto_approve?: boolean;
@@ -171,10 +203,6 @@ export type CreateMcSectionInput = {
   resolve_tools?: string[];
   tool_policy?: McToolPolicy;
   actions?: McAction[];
-  create_kanban_task?: boolean;
-  kanban_assignee_provider?: McProvider | null;
-  kanban_review_provider?: McProvider | null;
-  kanban_mcp_tools?: string[];
 };
 
 export type UpdateMcSectionInput = Partial<CreateMcSectionInput>;

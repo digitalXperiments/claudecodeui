@@ -1,15 +1,72 @@
-import React, { memo, useMemo, useState } from 'react';
+import React, { memo, useEffect, useMemo, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import remarkMath from 'remark-math';
 import type { PluggableList } from 'unified';
-import rehypeKatex from 'rehype-katex';
 import { SyntaxHighlighter, oneDark, oneLight } from '../../../../shared/syntaxHighlighter';
 import { useTranslation } from 'react-i18next';
 import { normalizeInlineCodeFences } from '../../utils/chatFormatting';
 import { copyTextToClipboard } from '../../../../utils/clipboard';
 import { usePaletteOps } from '../../../../contexts/PaletteOpsContext';
 import { useTheme } from '../../../../contexts/ThemeContext';
+
+// Math support (remark-math + rehype-katex + KaTeX CSS, ~330 KB) is loaded on
+// demand the first time a message contains a math marker, instead of on every
+// app start. remark-math runs with singleDollarTextMath=false, so `$$` is the
+// only syntax it renders; `\(` / `\[` are cheap extra triggers.
+const MATH_MARKER = /\$\$|\\\(|\\\[/;
+
+type MathPlugins = {
+  remarkMath: typeof import('remark-math').default;
+  rehypeKatex: typeof import('rehype-katex').default;
+};
+
+let loadedMathPlugins: MathPlugins | null = null;
+let mathPluginsPromise: Promise<MathPlugins> | null = null;
+
+const loadMathPlugins = (): Promise<MathPlugins> => {
+  if (!mathPluginsPromise) {
+    mathPluginsPromise = Promise.all([
+      import('remark-math'),
+      import('rehype-katex'),
+      import('katex/dist/katex.min.css'),
+    ]).then(([remarkMathModule, rehypeKatexModule]) => {
+      loadedMathPlugins = {
+        remarkMath: remarkMathModule.default,
+        rehypeKatex: rehypeKatexModule.default,
+      };
+      return loadedMathPlugins;
+    });
+    mathPluginsPromise.catch(() => {
+      // Allow a later message to retry after a transient chunk-load failure.
+      mathPluginsPromise = null;
+    });
+  }
+  return mathPluginsPromise;
+};
+
+/** Returns the math plugins once loaded, kicking off the load when `content` needs them. */
+const useMathPlugins = (content: string): MathPlugins | null => {
+  const needsMath = MATH_MARKER.test(content);
+  const [plugins, setPlugins] = useState<MathPlugins | null>(loadedMathPlugins);
+
+  useEffect(() => {
+    if (!needsMath || plugins) {
+      return;
+    }
+    let cancelled = false;
+    loadMathPlugins().then(
+      (loaded) => {
+        if (!cancelled) setPlugins(loaded);
+      },
+      () => {},
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [needsMath, plugins]);
+
+  return needsMath ? plugins ?? loadedMathPlugins : null;
+};
 
 type MarkdownProps = {
   children: React.ReactNode;
@@ -200,11 +257,18 @@ type MarkdownBodyProps = {
  */
 export const MarkdownBody = memo(function MarkdownBody({ children }: MarkdownBodyProps) {
   const content = normalizeInlineCodeFences(String(children ?? ''));
+  const mathPlugins = useMathPlugins(content);
   const remarkPlugins = useMemo(
-    (): PluggableList => [remarkGfm, [remarkMath, { singleDollarTextMath: false }]],
-    [],
+    (): PluggableList =>
+      mathPlugins
+        ? [remarkGfm, [mathPlugins.remarkMath, { singleDollarTextMath: false }]]
+        : [remarkGfm],
+    [mathPlugins],
   );
-  const rehypePlugins = useMemo(() => [rehypeKatex], []);
+  const rehypePlugins = useMemo(
+    (): PluggableList => (mathPlugins ? [mathPlugins.rehypeKatex] : []),
+    [mathPlugins],
+  );
   const { openFileInEditor } = usePaletteOps();
 
   const components = useMemo(

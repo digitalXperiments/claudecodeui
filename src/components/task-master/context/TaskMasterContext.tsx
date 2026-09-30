@@ -3,6 +3,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { api } from '../../../utils/api';
 import { useAuth } from '../../auth/context/AuthContext';
 import { useWebSocket } from '../../../contexts/WebSocketContext';
+import { useTasksSettings } from '../../../contexts/TasksSettingsContext';
 import type {
   TaskMasterContextError,
   TaskMasterContextValue,
@@ -13,6 +14,8 @@ import type {
   TaskMasterTask,
   TaskMasterWebSocketMessage,
 } from '../types';
+import { fetchProjectTaskMasterInfo } from '../../../utils/sessionRequests';
+import { runAfterSessionPaint, whenSessionPainted } from '../../../utils/sessionPaintGate';
 
 const TaskMasterContext = createContext<TaskMasterContextValue | null>(null);
 
@@ -60,6 +63,7 @@ export function useTaskMaster() {
 export function TaskMasterProvider({ children }: { children: React.ReactNode }) {
   const { subscribe } = useWebSocket();
   const { user, token, isLoading: isAuthLoading } = useAuth();
+  const { tasksEnabled } = useTasksSettings() as { tasksEnabled: boolean };
 
   const [projects, setProjects] = useState<TaskMasterProject[]>([]);
   const [currentProject, setCurrentProjectState] = useState<TaskMasterProject | null>(null);
@@ -136,13 +140,18 @@ export function TaskMasterProvider({ children }: { children: React.ReactNode }) 
       const requestSequence = ++taskMasterRequestSeqRef.current;
 
       try {
-        const response = await api.projectTaskmaster(projectId);
+        // Not needed to paint a session: wait until its transcript has.
+        await whenSessionPainted();
+        if (requestSequence !== taskMasterRequestSeqRef.current) {
+          return;
+        }
+        // Concurrent callers (MainContent sync + sidebar select) share one
+        // in-flight request; nothing is cached once it settles.
+        const response = await fetchProjectTaskMasterInfo<{ taskmaster?: TaskMasterProjectInfo }>(projectId);
         if (!response.ok) {
           throw new Error(`Failed to fetch TaskMaster details: ${response.status}`);
         }
-
-        const data = (await response.json()) as { taskmaster?: TaskMasterProjectInfo };
-        const resolvedTaskMasterInfo = data.taskmaster ?? null;
+        const resolvedTaskMasterInfo = response.data?.taskmaster ?? null;
 
         if (
           requestSequence !== taskMasterRequestSeqRef.current
@@ -325,18 +334,32 @@ export function TaskMasterProvider({ children }: { children: React.ReactNode }) 
     }
   }, [clearError, handleError, token, user]);
 
+  // Startup: the app already loads /api/projects (useProjectsState) and hands
+  // the selected project to setCurrentProject, which fetches its TaskMaster
+  // info. The `projects` list here is only refreshed on demand (TaskBoard,
+  // NextTaskBanner setup refresh, taskmaster-project-updated broadcasts), so no
+  // duplicate /api/projects request runs on boot. Signing out still resets.
   useEffect(() => {
-    if (!isAuthLoading && user && token) {
+    if (!isAuthLoading && (!user || !token)) {
       void refreshProjects();
+    }
+  }, [isAuthLoading, refreshProjects, token, user]);
+
+  // The TaskMaster MCP status only feeds task UI, so skip it when tasks are off.
+  useEffect(() => {
+    if (!isAuthLoading && user && token && tasksEnabled) {
       void refreshMCPStatus();
     }
-  }, [isAuthLoading, refreshMCPStatus, refreshProjects, token, user]);
+  }, [isAuthLoading, refreshMCPStatus, tasksEnabled, token, user]);
 
+  // Auto-load tasks only when the tasks feature is on (task views call
+  // refreshTasks themselves), and after a session open's transcript paints.
   useEffect(() => {
-    if (currentProject?.projectId && user && token) {
-      void refreshTasks();
+    if (currentProject?.projectId && user && token && tasksEnabled) {
+      return runAfterSessionPaint(() => { void refreshTasks(); });
     }
-  }, [currentProject?.projectId, refreshTasks, token, user]);
+    return undefined;
+  }, [currentProject?.projectId, refreshTasks, tasksEnabled, token, user]);
 
   // Low-frequency TaskMaster broadcasts only — subscribe avoids putting every
   // chat stream frame into React state (which used to re-render the whole tree).

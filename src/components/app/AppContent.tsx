@@ -3,6 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 
 import Sidebar from '../sidebar/view/Sidebar';
+import { SessionStatusBar } from '../status-bar';
 import { useSidebarResize } from '../sidebar/hooks/useSidebarResize';
 import MainContent from '../main-content/view/MainContent';
 import { useWebSocket } from '../../contexts/WebSocketContext';
@@ -12,8 +13,10 @@ import { useSessionProtection } from '../../hooks/useSessionProtection';
 import { useProjectsState } from '../../hooks/useProjectsState';
 import { useQueuedMessageAutoSend } from '../../hooks/useQueuedMessageAutoSend';
 import { api } from '../../utils/api';
+import { createRunSeqCursor, trackRunSeq } from '../../utils/runSeqCursor';
 import type { WorkThisSessionRequest } from '../bot-studio/types';
 import type { LLMProvider } from '../../types/app';
+import type { SessionEstablishedContext, SessionNavigationOptions } from '../chat/types/types';
 
 const CommandPalette = lazy(() => import('../command-palette/CommandPalette'));
 
@@ -64,7 +67,7 @@ function AppContentInner() {
   const { isMobile } = useDeviceSettings({ trackPWA: false });
   const { ws, sendMessage, subscribe, isConnected } = useWebSocket();
   const { panelWidth, sidebarRef, handleResizeStart } = useSidebarResize(isMobile);
-  const runningSessionLastSeqRef = useRef(new Map<string, number>());
+  const runningSessionSeqCursorRef = useRef(createRunSeqCursor());
   const runningSessionsRequestRef = useRef<Promise<void> | null>(null);
 
   const {
@@ -108,12 +111,29 @@ function AppContentInner() {
     activeSessions: processingSessions,
   });
 
+  // Stable callbacks: inline arrows here gave MainContent (and through it the
+  // memoized ChatInterface) new props on every AppContent render.
+  const handleMenuClick = useCallback(() => setSidebarOpen(true), [setSidebarOpen]);
+  const handleNavigateToSession = useCallback(
+    (targetSessionId: string, options?: SessionNavigationOptions) =>
+      navigate(`/session/${targetSessionId}`, { replace: Boolean(options?.replace) }),
+    [navigate],
+  );
+  const handleSessionEstablished = useCallback(
+    (targetSessionId: string, context: SessionEstablishedContext) =>
+      registerOptimisticSession({ sessionId: targetSessionId, ...context }),
+    [registerOptimisticSession],
+  );
+
+  const activeSessionId = selectedSession?.id ?? sessionId ?? null;
+  const activeActivity = activeSessionId ? processingSessions.get(activeSessionId) ?? null : null;
+
   // Queued messages for sessions that finish while another session (or none)
   // is being viewed are sent from here; the viewed session's composer handles
   // its own queue. Include Shell activity so we do not dispatch into a live TUI.
   useQueuedMessageAutoSend({
     processingSessions,
-    activeSessionId: selectedSession?.id ?? sessionId ?? null,
+    activeSessionId,
     ws,
     sendMessage,
     markSessionProcessing,
@@ -125,18 +145,10 @@ function AppContentInner() {
         return;
       }
 
-      // `seq` is scoped to one provider run. Clear the background cursor at
-      // the terminal frame so a later turn in the same conversation can
-      // legitimately start again at seq=1.
-      if (event.kind === 'complete') {
-        runningSessionLastSeqRef.current.delete(event.sessionId);
-        return;
-      }
-
-      const known = runningSessionLastSeqRef.current.get(event.sessionId) ?? 0;
-      if (event.seq > known) {
-        runningSessionLastSeqRef.current.set(event.sessionId, event.seq);
-      }
+      // `seq` is scoped to one provider run. The cursor is cleared at the
+      // terminal frame and ignores stragglers of the finished run until the
+      // next turn starts again at seq=1.
+      trackRunSeq(runningSessionSeqCursorRef.current, event.sessionId, event.kind, event.seq);
     });
   }, [subscribe]);
 
@@ -189,7 +201,7 @@ function AppContentInner() {
             type: 'chat.subscribe',
             sessions: normalizedSessions.filter((session) => session.source === 'chat').map((session) => ({
               sessionId: session.sessionId,
-              lastSeq: runningSessionLastSeqRef.current.get(session.sessionId) ?? 0,
+              lastSeq: runningSessionSeqCursorRef.current.lastSeq.get(session.sessionId) ?? 0,
             })),
           });
         }
@@ -313,7 +325,8 @@ function AppContentInner() {
   }, []);
 
   return (
-    <div className="fixed inset-0 flex bg-background" style={{ bottom: 'var(--keyboard-height, 0px)' }}>
+    <div className="fixed inset-0 flex flex-col bg-background" style={{ bottom: 'var(--keyboard-height, 0px)' }}>
+      <div className="flex min-h-0 flex-1">
       {!isMobile ? (
         <div ref={sidebarRef} className="relative h-full flex-shrink-0 border-r border-border/50">
           <Sidebar {...sidebarSharedProps} projectsPanelWidth={panelWidth} />
@@ -365,18 +378,14 @@ function AppContentInner() {
           ws={ws}
           sendMessage={sendMessage}
           isMobile={isMobile}
-          onMenuClick={() => setSidebarOpen(true)}
+          onMenuClick={handleMenuClick}
           isLoading={isLoadingProjects}
           onInputFocusChange={setIsInputFocused}
           onSessionProcessing={markSessionProcessing}
           onSessionIdle={markSessionIdle}
           processingSessions={processingSessions}
-          onNavigateToSession={(targetSessionId: string, options) =>
-            navigate(`/session/${targetSessionId}`, { replace: Boolean(options?.replace) })
-          }
-          onSessionEstablished={(targetSessionId, context) =>
-            registerOptimisticSession({ sessionId: targetSessionId, ...context })
-          }
+          onNavigateToSession={handleNavigateToSession}
+          onSessionEstablished={handleSessionEstablished}
           onShowSettings={openSettings}
           externalMessageUpdate={externalMessageUpdate}
           newSessionTrigger={newSessionTrigger}
@@ -395,6 +404,30 @@ function AppContentInner() {
           onWorkThis={handleBotWorkThis}
         />
       </div>
+      </div>
+
+      {!studioActive && !botsActive ? (
+        <SessionStatusBar
+          sessionId={activeSessionId}
+          activity={activeActivity}
+          subscribe={subscribe}
+          sendMessage={sendMessage}
+          workspaceName={selectedProject?.displayName ?? 'CloudCLI'}
+          workspacePath={selectedProject?.fullPath}
+          projectId={selectedProject?.projectId}
+        />
+      ) : (
+        <div
+          role="status"
+          aria-label="Workspace status"
+          className="flex h-7 shrink-0 items-center gap-3 border-t border-border/60 bg-muted/35 px-3 text-[11px] text-muted-foreground"
+          style={{ paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}
+        >
+          <span className="ml-auto max-w-[40vw] truncate" title={selectedProject?.fullPath}>
+            {selectedProject?.displayName ?? 'CloudCLI'}
+          </span>
+        </div>
+      )}
 
       <Suspense fallback={null}>
         <CommandPalette

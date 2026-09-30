@@ -252,10 +252,6 @@ export function buildXArticlesSectionInput(projectId: string): CreateMcSectionIn
     resolve_tools: ['obsidian'],
     actions: X_ARTICLES_ACTIONS,
     // Articles are not engineering tasks; keep them off the board.
-    create_kanban_task: false,
-    kanban_assignee_provider: null,
-    kanban_review_provider: null,
-    kanban_mcp_tools: [],
   };
 }
 
@@ -300,22 +296,18 @@ export function buildSwipeDigestSectionInput(projectId: string): CreateMcSection
     enabled: true,
     scope: 'project',
     project_id: projectId,
-    // The work is the file it writes; the item is just a run log.
-    mode: 'fire_and_forget',
+    // The work is the file it writes; the item is just a run log, so it is
+    // recorded as done automatically (no resolve prompt).
     // Sunday 09:00 — patterns refresh before Monday's drafting run.
     schedule_cron: '0 9 * * 0',
     provider: 'claude',
     model: null,
     permission_mode: 'bypassPermissions',
     dry_run: false,
-    auto_approve: false,
+    auto_approve: true,
     produce_prompt: buildSwipeDigestProducePrompt(),
     produce_tools: ['obsidian'],
     resolve_prompt: '',
     resolve_tools: [],
-    create_kanban_task: false,
-    kanban_assignee_provider: null,
-    kanban_review_provider: null,
-    kanban_mcp_tools: [],
   };
 }

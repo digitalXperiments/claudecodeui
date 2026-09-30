@@ -2,6 +2,7 @@ import { systemNotificationsDb } from '@/modules/database/index.js';
 import {
   buildProducePrompt,
   buildResolvePrompt,
+  sectionForPhase,
   parseJsonFromAgentText,
   runMissionControlAgent,
 } from '@/modules/mission-control/mission-control-agent.service.js';
@@ -10,13 +11,10 @@ import {
   missionControlDb,
 } from '@/modules/mission-control/mission-control.repository.js';
 import type {
-  McAction,
   McDraftItem,
   McItem,
   McSection,
 } from '@/modules/mission-control/mission-control.types.js';
-import { isKanbanEnabled } from '@/modules/app-features/index.js';
-import { kanbanDb, COLUMN_BACKLOG } from '@/modules/kanban/index.js';
 import { AppError } from '@/shared/utils.js';
 import { resolveProviderAuthFailure } from '@/shared/provider-auth-failure.js';
 import {
@@ -25,11 +23,13 @@ import {
   trelloDedupeKeyAliases,
 } from '@/modules/mission-control/trello-dedupe.js';
 
+import { drainWorkQueue, markWorkReady, refreshQueuedWork } from './mission-control-dispatch.service.js';
+
 /**
  * Normalize produce JSON into a candidate list. Accepts a bare array, a single
  * draft object, or a common wrapper ({ items | drafts | results }).
  */
-function draftCandidates(raw: unknown): unknown[] {
+export function draftCandidates(raw: unknown): unknown[] {
   if (Array.isArray(raw)) return raw;
   if (raw && typeof raw === 'object') {
     const o = raw as Record<string, unknown>;
@@ -49,7 +49,7 @@ function draftCandidates(raw: unknown): unknown[] {
   return [];
 }
 
-function coerceDrafts(raw: unknown): McDraftItem[] {
+export function coerceDrafts(raw: unknown): McDraftItem[] {
   const arr = draftCandidates(raw);
   const drafts: McDraftItem[] = [];
   for (const entry of arr) {
@@ -115,7 +115,7 @@ function isSlackReplyRequiredDraft(draft: McDraftItem): boolean {
     && draft.body.needsMyReply === true;
 }
 
-function filterSectionDrafts(section: McSection, drafts: McDraftItem[]): McDraftItem[] {
+export function filterSectionDrafts(section: McSection, drafts: McDraftItem[]): McDraftItem[] {
   return isSlackSection(section)
     ? drafts.filter(isSlackReplyRequiredDraft)
     : drafts;
@@ -128,9 +128,11 @@ function filterSectionDrafts(section: McSection, drafts: McDraftItem[]): McDraft
  * empty one so the card does not render a blank draft box, and never accept
  * operatorContext from the model — that field is the human's guidance channel.
  */
-function prepareDraftForSection(section: McSection, draft: McDraftItem): McDraftItem {
-  if (!isSlackSection(section)) return draft;
+export function prepareDraftForSection(section: McSection, draft: McDraftItem): McDraftItem {
   const body = { ...draft.body };
+  delete body.workSession;
+  delete body.workQueuedAt;
+  if (!isSlackSection(section)) return { ...draft, body };
   delete body.operatorContext;
 
   const replyDraft = typeof body.draft === 'string' ? body.draft.trim() : '';
@@ -223,9 +225,8 @@ export function finishMissionControlSectionRun(sectionId: string, error: string 
 }
 
 /**
- * Run a section's produce step (scheduled or manual).
- * - review mode: parse draft items into the queue
- * - fire_and_forget: store one resolved result item with agent output
+ * Run a section's produce step (scheduled or manual): parse draft items and
+ * move each new one into the pipeline (auto-resolve, work queue, or review).
  */
 export type ProduceRunResult = {
   created: number;
@@ -290,44 +291,7 @@ export async function runSectionProduce(sectionId: string): Promise<ProduceRunRe
       };
     }
 
-    if (section.mode === 'fire_and_forget') {
-      const now = new Date();
-      const dedupeKey = `run:${section.section_id}:${now.toISOString()}`;
-      const firstLine =
-        text
-          .split('\n')
-          .map((l) => l.trim())
-          .find((l) => l.length > 0) || 'Run completed';
-      const title = `${section.title} · ${now.toLocaleString()}`;
-      const item = missionControlDb.insertItemIfNew(section, {
-        title,
-        summary: firstLine.slice(0, 240),
-        body: {
-          output: text,
-          mode: 'fire_and_forget',
-          ranAt: now.toISOString(),
-        },
-        dedupeKey,
-        confidence: 1,
-        source: { kind: 'fire_and_forget', ranAt: now.toISOString() },
-      });
-      if (item) {
-        missionControlDb.setItemStatus(item.item_id, 'resolved', {
-          result: { output: text, ranAt: now.toISOString() },
-          resolvedAt: now.toISOString(),
-        });
-      }
-      finishMissionControlSectionRun(sectionId);
-      const resolved = item ? [missionControlDb.getItem(item.item_id)!] : [];
-      return {
-        created: resolved.length,
-        skipped: 0,
-        items: resolved,
-        message: 'Fire-and-forget run logged.',
-      };
-    }
-
-    // Review mode: structured drafts
+    // Structured drafts
     let parsed: unknown;
     try {
       parsed = parseJsonFromAgentText(text);
@@ -389,6 +353,7 @@ export async function runSectionProduce(sectionId: string): Promise<ProduceRunRe
       // resolve/auto-approve. Only treat as an error when the model returned
       // objects that were missing required title + dedupeKey.
       if (candidateCount === 0) {
+        drainWorkQueue(sectionId);
         finishMissionControlSectionRun(sectionId);
         return {
           created: 0,
@@ -427,6 +392,7 @@ export async function runSectionProduce(sectionId: string): Promise<ProduceRunRe
             trelloDedupeKeyAliases(trelloRefs),
           ) ?? missionControlDb.findItemByTrelloRefs(section.section_id, trelloRefs);
         if (existing) {
+          refreshQueuedWork(section, existing, prepareDraftForSection(section, draft).body);
           skipped++;
           continue;
         }
@@ -436,13 +402,21 @@ export async function runSectionProduce(sectionId: string): Promise<ProduceRunRe
         prepareDraftForSection(section, draft),
       );
       if (!item) {
+        const existing = missionControlDb.findItemByDedupeAliases(section.section_id, [draft.dedupeKey]);
+        if (existing) refreshQueuedWork(section, existing, prepareDraftForSection(section, draft).body);
         skipped++;
         continue;
       }
       let current = item;
-      if (section.auto_approve) {
-        const approve = current.actions.find((a) => a.kind === 'approve');
-        if (approve && (current.status === 'pending' || current.status === 'failed')) {
+      const hasResolve = Boolean(section.resolve_prompt.trim());
+      if (!hasResolve && section.work_profile) {
+        // No resolve stage: the item goes straight to the work gate.
+        current = markWorkReady(section, item.item_id);
+      } else if (section.auto_approve) {
+        // Automatic resolve (or record-only when there is no resolve prompt).
+        // Only approve-kind actions ever run without a human.
+        const approve = current.actions.find((a) => a.kind === 'approve' && a.terminal !== false);
+        if (approve) {
           const next = await applyItemAction(current.item_id, approve.id, undefined);
           // auto-approve should never hard-delete; if it did, skip the item
           if (!next) continue;
@@ -453,11 +427,9 @@ export async function runSectionProduce(sectionId: string): Promise<ProduceRunRe
     }
 
     finishMissionControlSectionRun(sectionId);
-    notifyPendingItems(
-      section,
-      section.auto_approve ? 0 : createdItems.length,
-      section.auto_approve ? [] : createdItems.map((item) => item.item_id),
-    );
+    drainWorkQueue(sectionId);
+    const needsHuman = createdItems.filter((entry) => entry.status === 'pending' || entry.status === 'awaiting_work' || entry.status === 'failed');
+    notifyPendingItems(section, needsHuman.length, needsHuman.map((entry) => entry.item_id));
 
     const parts: string[] = [];
     if (createdItems.length) parts.push(`${createdItems.length} new`);
@@ -485,413 +457,6 @@ export async function runSectionProduce(sectionId: string): Promise<ProduceRunRe
  * Apply a review action. Returns the updated item, or `null` when the item
  * was hard-deleted (kind `delete`) so the dedupe key is free for a re-run.
  */
-/** Best-effort pull of a tracking reference (e.g. a JIRA key + URL) from a
- * resolve result, so the bridged card links back to the created ticket. */
-function extractTicketRef(result: Record<string, unknown> | null): {
-  label: string | null;
-  url: string | null;
-} {
-  if (!result) {
-    return { label: null, url: null };
-  }
-  const pick = (keys: string[]): string | null => {
-    for (const key of keys) {
-      const value = result[key];
-      if (typeof value === 'string' && value.trim()) {
-        return value.trim();
-      }
-    }
-    return null;
-  };
-  return {
-    label: pick(['key', 'issueKey', 'issue_key', 'ticket', 'ticketKey', 'id']),
-    url: pick(['url', 'link', 'browseUrl', 'permalink', 'self']),
-  };
-}
-
-/** Keys that are agent-instruction fields (used as prompt, not re-dumped as body). */
-const PROMPT_BODY_KEYS = [
-  'prompt',
-  'agentPrompt',
-  'agent_prompt',
-  'implementationPrompt',
-  'implementation_prompt',
-  'instructions',
-] as const;
-
-/**
- * Prefer a pre-authored agent prompt from the produce body when present.
- * Produce agents sometimes put the implementer instructions in a known field.
- */
-function extractBodyPrompt(body: Record<string, unknown>): string | null {
-  for (const key of PROMPT_BODY_KEYS) {
-    const value = body[key];
-    if (typeof value === 'string' && value.trim()) {
-      return value.trim();
-    }
-  }
-  return null;
-}
-
-function humanizeKey(key: string): string {
-  return key
-    .replace(/([a-z])([A-Z])/g, '$1 $2')
-    .replace(/[_-]+/g, ' ')
-    .replace(/\b\w/g, (c) => c.toUpperCase());
-}
-
-function formatValue(value: unknown, indent = 0): string {
-  const pad = '  '.repeat(indent);
-  if (value == null) return `${pad}—`;
-  if (typeof value === 'string') {
-    const trimmed = value.trim();
-    if (!trimmed) return `${pad}—`;
-    // Multi-line strings: keep as-is, indented.
-    if (trimmed.includes('\n')) {
-      return trimmed
-        .split('\n')
-        .map((line) => `${pad}${line}`)
-        .join('\n');
-    }
-    return `${pad}${trimmed}`;
-  }
-  if (typeof value === 'number' || typeof value === 'boolean') {
-    return `${pad}${String(value)}`;
-  }
-  if (Array.isArray(value)) {
-    if (value.length === 0) return `${pad}(none)`;
-    // Array of primitives → bullets; array of objects → nested blocks.
-    if (value.every((v) => typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean')) {
-      return value.map((v) => `${pad}- ${String(v)}`).join('\n');
-    }
-    return value
-      .map((entry, i) => {
-        if (entry && typeof entry === 'object' && !Array.isArray(entry)) {
-          const nested = formatRecord(entry as Record<string, unknown>, indent + 1);
-          return `${pad}- [${i + 1}]\n${nested}`;
-        }
-        return `${pad}- ${JSON.stringify(entry)}`;
-      })
-      .join('\n');
-  }
-  if (typeof value === 'object') {
-    return formatRecord(value as Record<string, unknown>, indent);
-  }
-  return `${pad}${JSON.stringify(value)}`;
-}
-
-function formatRecord(record: Record<string, unknown>, indent = 0): string {
-  const keys = Object.keys(record);
-  if (keys.length === 0) return `${'  '.repeat(indent)}(empty)`;
-  return keys
-    .map((key) => {
-      const label = humanizeKey(key);
-      const val = record[key];
-      if (
-        val != null &&
-        typeof val === 'object' &&
-        !Array.isArray(val) &&
-        Object.keys(val as object).length > 0
-      ) {
-        return `${'  '.repeat(indent)}**${label}:**\n${formatRecord(val as Record<string, unknown>, indent + 1)}`;
-      }
-      if (Array.isArray(val) && val.length > 0 && typeof val[0] === 'object') {
-        return `${'  '.repeat(indent)}**${label}:**\n${formatValue(val, indent + 1)}`;
-      }
-      if (typeof val === 'string' && val.includes('\n')) {
-        return `${'  '.repeat(indent)}**${label}:**\n${formatValue(val, indent + 1)}`;
-      }
-      const single = formatValue(val, 0).trim();
-      return `${'  '.repeat(indent)}**${label}:** ${single}`;
-    })
-    .join('\n');
-}
-
-function isNonEmptyRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length > 0);
-}
-
-/** Drop bridge bookkeeping and body echoes already covered by item fields. */
-function slimApprovalResult(
-  result: Record<string, unknown>,
-  itemBody: Record<string, unknown>,
-): Record<string, unknown> {
-  const slim: Record<string, unknown> = { ...result };
-  delete slim.kanbanTaskId;
-  // Bare approve / dry-run flags add no implementer value.
-  if (slim.approved === true) delete slim.approved;
-  if (slim.dryRun === true) delete slim.dryRun;
-  // resolve-without-prompt stores a copy of the item body under result.body.
-  if (slim.body === itemBody || deepEqualJson(slim.body, itemBody)) {
-    delete slim.body;
-  } else if (isNonEmptyRecord(slim.body)) {
-    // Still strip prompt keys so they only appear in the prompt field.
-    const bodyCopy = { ...(slim.body as Record<string, unknown>) };
-    for (const key of PROMPT_BODY_KEYS) {
-      delete bodyCopy[key];
-    }
-    if (isNonEmptyRecord(bodyCopy)) {
-      slim.body = bodyCopy;
-    } else {
-      delete slim.body;
-    }
-  }
-  return slim;
-}
-
-function deepEqualJson(a: unknown, b: unknown): boolean {
-  try {
-    return JSON.stringify(a) === JSON.stringify(b);
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Build an exhaustive human-readable description for a bridged kanban card.
- * Pulls summary, body fields, ticket tracking, approval result, source, and
- * metadata so the card stands alone without opening Mission Control.
- */
-export function buildKanbanBridgeDescription(
-  item: McItem,
-  section: McSection,
-): string {
-  const sections: string[] = [];
-  const { label, url } = extractTicketRef(item.result);
-
-  if (item.summary?.trim()) {
-    sections.push(`## Summary\n\n${item.summary.trim()}`);
-  }
-
-  const body = item.body ?? {};
-  const bodyForDisplay = { ...body };
-  for (const key of PROMPT_BODY_KEYS) {
-    delete bodyForDisplay[key];
-  }
-  if (isNonEmptyRecord(bodyForDisplay)) {
-    sections.push(`## Details\n\n${formatRecord(bodyForDisplay)}`);
-  }
-
-  const trackingLines: string[] = [];
-  if (label) trackingLines.push(`- **Ticket:** ${label}`);
-  if (url) trackingLines.push(`- **URL:** ${url}`);
-  if (trackingLines.length > 0) {
-    sections.push(`## Tracking\n\n${trackingLines.join('\n')}`);
-  }
-
-  if (isNonEmptyRecord(item.result)) {
-    const resultForDisplay = slimApprovalResult(item.result, item.body);
-    if (isNonEmptyRecord(resultForDisplay)) {
-      sections.push(`## Approval result\n\n${formatRecord(resultForDisplay)}`);
-    }
-  }
-
-  if (isNonEmptyRecord(item.source)) {
-    sections.push(`## Source\n\n${formatRecord(item.source)}`);
-  }
-
-  const meta: string[] = [
-    `- **Mission Control section:** ${section.title}`,
-    `- **Item id:** ${item.item_id}`,
-    `- **Dedupe key:** ${item.dedupe_key || '—'}`,
-  ];
-  // Stable machine-readable markers so the bridge can find this card later
-  // even if the agent used a shortLink on a previous run.
-  const trelloRefs = collectTrelloCardRefs({
-    dedupeKey: item.dedupe_key,
-    body: item.body,
-    source: item.source,
-    result: item.result,
-  });
-  for (const ref of trelloRefs) {
-    meta.push(`- **Trello ref:** \`${ref}\``);
-  }
-  if (item.dedupe_key) {
-    meta.push(`- **External key:** \`${item.dedupe_key}\``);
-  }
-  if (typeof item.confidence === 'number' && item.confidence > 0) {
-    meta.push(`- **Confidence:** ${item.confidence}`);
-  }
-  if (item.provider) {
-    meta.push(`- **Produced by:** ${item.provider}${item.model ? ` / ${item.model}` : ''}`);
-  }
-  if (item.created_at) {
-    meta.push(`- **Created:** ${item.created_at}`);
-  }
-  sections.push(`## Metadata\n\n${meta.join('\n')}`);
-
-  return sections.join('\n\n').trim();
-}
-
-/**
- * Generate the implementer prompt at card-create time so the kanban agent has
- * a ready-to-run instruction when the card is moved to In Progress.
- *
- * Prefer an explicit prompt field from the produce body when present; otherwise
- * compose a structured brief from title, summary, details, and ticket context.
- */
-export function buildKanbanBridgePrompt(item: McItem, section: McSection): string {
-  const fromBody = extractBodyPrompt(item.body ?? {});
-  const { label, url } = extractTicketRef(item.result);
-  const tracking = [label, url].filter(Boolean).join(' — ');
-
-  if (fromBody) {
-    const parts = [
-      fromBody,
-      '',
-      '---',
-      `Task: ${item.title}`,
-    ];
-    if (item.summary?.trim()) {
-      parts.push(`Summary: ${item.summary.trim()}`);
-    }
-    if (tracking) {
-      parts.push(`Tracking: ${tracking}`);
-    }
-    parts.push(`Source: Mission Control · ${section.title}`);
-    return parts.join('\n').trim();
-  }
-
-  const parts: string[] = [
-    'You are the implementation agent for a Kanban task created from Mission Control.',
-    '',
-    '## Goal',
-    item.title.trim(),
-  ];
-
-  if (item.summary?.trim()) {
-    parts.push('', '## Summary', item.summary.trim());
-  }
-
-  const body = item.body ?? {};
-  const bodyForPrompt = { ...body };
-  for (const key of PROMPT_BODY_KEYS) {
-    delete bodyForPrompt[key];
-  }
-  if (isNonEmptyRecord(bodyForPrompt)) {
-    parts.push('', '## Requirements / context', formatRecord(bodyForPrompt));
-  }
-
-  if (tracking) {
-    parts.push('', '## Tracking', tracking);
-  }
-
-  if (isNonEmptyRecord(item.result)) {
-    const slim = slimApprovalResult(item.result, item.body);
-    if (isNonEmptyRecord(slim)) {
-      parts.push('', '## Approval / ticket context', formatRecord(slim));
-    }
-  }
-
-  parts.push(
-    '',
-    '## Your job',
-    '1. Read the goal and requirements carefully; treat them as the source of truth.',
-    '2. Inspect the project codebase and implement the change end-to-end.',
-    '3. Cover edge cases called out in the requirements; do not leave TODOs for core behavior.',
-    '4. Run relevant checks/tests when available and fix failures you introduce.',
-    '5. Leave a short summary of what changed and how to verify it.',
-    '',
-    `Origin: Mission Control · ${section.title}`,
-  );
-
-  return parts.join('\n').trim();
-}
-
-/**
- * Mission Control → Kanban bridge. When an approved item resolves and its
- * section opts in, create a backlog card on the single global board, pre-linked
- * to the created ticket and (optionally) pre-assigned a default agent. The card
- * starts with no project — the user attaches one, then moving it to In Progress
- * auto-runs. Description is exhaustive (summary, body, ticket, source, meta);
- * prompt is generated at create time so the implementer can run immediately.
- * Idempotent via `result.kanbanTaskId`; never fails the approval.
- */
-function maybeBridgeToKanban(
-  section: McSection,
-  action: McAction,
-  item: McItem,
-): McItem {
-  if (!isKanbanEnabled()) {
-    return item;
-  }
-  if (!section.create_kanban_task || action.kind !== 'approve' || item.status !== 'resolved') {
-    return item;
-  }
-  const alreadyBridged =
-    item.result && typeof item.result.kanbanTaskId === 'string' && item.result.kanbanTaskId;
-  if (alreadyBridged) {
-    return item;
-  }
-  try {
-    const board = kanbanDb.getOrCreateGlobalBoard();
-    // Reuse an existing Kanban card if this Trello card was bridged before
-    // under a different MC item / shortLink vs full-id alias.
-    const trelloRefs = collectTrelloCardRefs({
-      dedupeKey: item.dedupe_key,
-      body: item.body,
-      source: item.source,
-      result: item.result,
-    });
-    const markers = [
-      ...trelloRefs,
-      ...trelloDedupeKeyAliases(trelloRefs),
-      item.dedupe_key,
-    ].filter((m): m is string => typeof m === 'string' && m.length > 0);
-
-    if (markers.length > 0) {
-      const existingTask = kanbanDb.findTaskByTextMarkers(board.board_id, markers);
-      if (existingTask) {
-        return missionControlDb.setItemStatus(item.item_id, 'resolved', {
-          result: {
-            ...(item.result ?? {}),
-            kanbanTaskId: existingTask.task_id,
-            kanbanReused: true,
-          },
-        });
-      }
-    }
-
-    const description = buildKanbanBridgeDescription(item, section);
-    const prompt = buildKanbanBridgePrompt(item, section);
-
-    const kanbanMcp = Array.isArray(section.kanban_mcp_tools)
-      ? section.kanban_mcp_tools.filter((t) => typeof t === 'string' && t.trim().length > 0)
-      : [];
-    // Prefer section project scope when present; otherwise leave empty for the user.
-    const bridgeProjectId =
-      section.scope === 'project' && section.project_id?.trim() ? section.project_id.trim() : '';
-    const task = kanbanDb.createTask({
-      boardId: board.board_id,
-      projectId: bridgeProjectId,
-      title: item.title,
-      description,
-      prompt,
-      columnId: COLUMN_BACKLOG,
-      assigneeProvider: section.kanban_assignee_provider,
-      reviewProvider: section.kanban_review_provider,
-      ...(kanbanMcp.length > 0
-        ? {
-            tools: {
-              mcpServers: kanbanMcp,
-            },
-          }
-        : {}),
-    });
-
-    return missionControlDb.setItemStatus(item.item_id, 'resolved', {
-      result: { ...(item.result ?? {}), kanbanTaskId: task.task_id },
-    });
-  } catch (error) {
-    console.error(
-      '[mission-control] kanban bridge failed:',
-      error instanceof Error ? error.message : error,
-    );
-    return item;
-  }
-}
-
-
 export async function applyItemAction(
   itemId: string,
   actionId: string,
@@ -916,7 +481,7 @@ export async function applyItemAction(
   // Hard delete frees the section+dedupe_key unique constraint so produce can
   // recreate the draft. Allowed on terminal rows too (dismissed/resolved/…).
   if (action.kind === 'delete') {
-    if (item.status === 'resolving') {
+    if (item.status === 'resolving' || item.status === 'working') {
       throw new AppError(`Item is 'resolving', not deletable yet`, {
         code: 'MC_ITEM_NOT_ACTIONABLE',
         statusCode: 400,
@@ -933,7 +498,10 @@ export async function applyItemAction(
     return null;
   }
 
-  if (item.status !== 'pending' && item.status !== 'failed') {
+  // Resolve actions run before the work stage; Dismiss closes any waiting item.
+  const dismissible = ['pending', 'failed', 'awaiting_work', 'in_qa'].includes(item.status);
+  const resolvable = (item.status === 'pending' || item.status === 'failed') && !item.work_ready_at;
+  if (action.kind === 'dismiss' ? !dismissible : !resolvable) {
     throw new AppError(`Item is '${item.status}', not actionable`, {
       code: 'MC_ITEM_NOT_ACTIONABLE',
       statusCode: 400,
@@ -961,28 +529,32 @@ export async function applyItemAction(
   missionControlDb.setItemStatus(itemId, 'resolving', { body });
 
   if (section.dry_run) {
+    // Dry run never starts work, even when the bot has a work stage.
     const resolved = missionControlDb.setItemStatus(itemId, 'resolved', {
       result: { dryRun: true },
       resolvedAt: new Date().toISOString(),
       error: null,
     });
-    const bridged = maybeBridgeToKanban(section, action, resolved);
     await resolveMissionControlInterrupts(itemId, actionId);
     finishMissionControlSectionRun(section.section_id);
-    return bridged;
+    return resolved;
   }
 
   if (!section.resolve_prompt.trim()) {
-    // Approve without resolve prompt just marks resolved with body.
-    const resolved = missionControlDb.setItemStatus(itemId, 'resolved', {
-      result: { approved: true, body },
-      resolvedAt: new Date().toISOString(),
-      error: null,
-    });
-    const bridged = maybeBridgeToKanban(section, action, resolved);
+    // Approve without resolve prompt records the approved body, then hands
+    // off to the work stage when the bot has one.
+    const approved = { approved: true, body };
+    const next = section.work_profile
+      ? markWorkReady(section, itemId, { result: approved })
+      : missionControlDb.setItemStatus(itemId, 'resolved', {
+        result: approved,
+        resolvedAt: new Date().toISOString(),
+        error: null,
+      });
     await resolveMissionControlInterrupts(itemId, actionId);
     finishMissionControlSectionRun(section.section_id);
-    return bridged;
+    drainWorkQueue(section.section_id);
+    return next;
   }
 
   try {
@@ -1000,10 +572,10 @@ export async function applyItemAction(
     // resolving it with an error dump as the result.
     if (!success) {
       const error =
-          resolveProviderAuthFailure(section.provider, errorMessage, text)
+          resolveProviderAuthFailure(sectionForPhase(section, 'resolve').provider, errorMessage, text)
           || errorMessage
           || text.slice(0, 500)
-          || `Provider "${section.provider}" run failed`;
+          || `Provider "${sectionForPhase(section, 'resolve').provider}" run failed`;
       const failed = missionControlDb.setItemStatus(itemId, 'failed', { error });
       finishMissionControlSectionRun(section.section_id, error);
       return failed;
@@ -1022,7 +594,7 @@ export async function applyItemAction(
       // result that *parsed* is the model's answer, even if it happens to
       // discuss expired sessions — checking that would fail items for
       // legitimately auth-themed content.
-      const authFailure = resolveProviderAuthFailure(section.provider, errorMessage, text);
+      const authFailure = resolveProviderAuthFailure(sectionForPhase(section, 'resolve').provider, errorMessage, text);
       if (authFailure) {
         const failed = missionControlDb.setItemStatus(itemId, 'failed', { error: authFailure });
         finishMissionControlSectionRun(section.section_id, authFailure);
@@ -1050,15 +622,19 @@ export async function applyItemAction(
       return pending;
     }
 
-    const resolved = missionControlDb.setItemStatus(itemId, 'resolved', {
-      result,
-      resolvedAt: new Date().toISOString(),
-      error: null,
-    });
-    const bridged = maybeBridgeToKanban(section, action, resolved);
+    // Resolve succeeded: hand off to the work stage (its result becomes work
+    // context) or finish the item.
+    const next = section.work_profile
+      ? markWorkReady(section, itemId, { result })
+      : missionControlDb.setItemStatus(itemId, 'resolved', {
+        result,
+        resolvedAt: new Date().toISOString(),
+        error: null,
+      });
     await resolveMissionControlInterrupts(itemId, actionId);
     finishMissionControlSectionRun(section.section_id);
-    return bridged;
+    drainWorkQueue(section.section_id);
+    return next;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const failed = missionControlDb.setItemStatus(itemId, 'failed', {
@@ -1081,7 +657,7 @@ export type RetryItemResult = {
  * place. Runs the same produce prompt as the section, finds the draft that
  * matches this item (by dedupe key, then title), and resets the item to
  * `pending` with the fresh body. A provider/runtime failure marks the item
- * `failed` (retryable). No kanban bridge is triggered.
+ * `failed` (retryable).
  */
 export async function retryItem(itemId: string): Promise<RetryItemResult> {
   const item = missionControlDb.getItem(itemId);
@@ -1198,7 +774,7 @@ export type PreviewItemResolutionResult =
 
 /**
  * Preview what resolving an item with a given action would produce, WITHOUT
- * mutating the item or running the kanban bridge.
+ * mutating the item.
  *
  * - Sections with no resolve prompt (or dry runs) resolve instantly: the
  *   preview is the body that would be approved (`type: 'static'`).
@@ -1280,10 +856,10 @@ export async function previewItemResolution(
 
   if (!success) {
     const message =
-      resolveProviderAuthFailure(section.provider, errorMessage, text)
+      resolveProviderAuthFailure(sectionForPhase(section, 'resolve').provider, errorMessage, text)
       || errorMessage
       || text.slice(0, 500)
-      || `Provider "${section.provider}" run failed`;
+      || `Provider "${sectionForPhase(section, 'resolve').provider}" run failed`;
     finishMissionControlSectionRun(section.section_id, message);
     return { success: false, error: message };
   }

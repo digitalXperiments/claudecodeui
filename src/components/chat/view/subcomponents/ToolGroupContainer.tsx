@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { memo, useMemo, useState } from 'react';
 import { ChevronRight } from 'lucide-react';
 
 import type { ChatMessage, ClaudePermissionSuggestion, PermissionGrantResult, Provider } from '../../types/types';
@@ -63,7 +63,7 @@ function getToolGroupIcon(icon: string | undefined, toolName: string): string {
   return icon || toolName.slice(0, 1).toUpperCase();
 }
 
-export default function ToolGroupContainer({
+function ToolGroupContainer({
   group,
   prevMessage,
   createDiff,
@@ -148,3 +148,5 @@ export default function ToolGroupContainer({
     </div>
   );
 }
+
+export default memo(ToolGroupContainer);
