@@ -7,7 +7,9 @@ import { isBotsRuntimeV2Enabled, onAppFeaturesChanged } from '@/modules/app-feat
 
 import { actionGate, initBotGate } from './gate/index.js';
 import { registerBotGatewayMcp, setGatewayGate, unregisterBotGatewayMcp } from './gateway/index.js';
+import { installChannels } from './channels/install.js';
 import { installKernel } from './kernel/install.js';
+import { installLearning } from './learning/index.js';
 import { botSignals, startSignals, stopSignals } from './signals/index.js';
 
 type WakeHandler = (botId: string) => void;
@@ -45,9 +47,22 @@ function initCore(): void {
   });
 }
 
+/**
+ * Hard kill switch for isolated/e2e servers: `CLOUDCLI_BOTS_RUNTIME=off` keeps the runtime
+ * stopped even when the flag is on. A booting kernel resumes queued events for real, and
+ * provider auth can come from the OS keychain, so a scratch HOME alone does not isolate it.
+ */
+export function isBotsRuntimeForcedOff(): boolean {
+  return (process.env.CLOUDCLI_BOTS_RUNTIME ?? '').trim().toLowerCase() === 'off';
+}
+
 export async function startBotsRuntime(): Promise<void> {
   initCore();
   if (running || !isBotsRuntimeV2Enabled()) return;
+  if (isBotsRuntimeForcedOff()) {
+    console.log('[bots] runtime v2 flag is on but CLOUDCLI_BOTS_RUNTIME=off; not starting');
+    return;
+  }
   running = true;
   botSignals.setWakeHandler(wakeHandler);
   startSignals();
@@ -88,6 +103,8 @@ let flagListenerInstalled = false;
 export async function bootBotsRuntime(): Promise<void> {
   initCore();
   installKernel();
+  installChannels();
+  installLearning();
   if (!flagListenerInstalled) {
     flagListenerInstalled = true;
     onAppFeaturesChanged((next, previous) => {

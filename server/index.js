@@ -152,6 +152,10 @@ import {
     botHooksPublicRouter,
     botKernelRouter,
     botTriggersRouter,
+    botActionsPublicRouter,
+    botChannelsRouter,
+    botThreadRouter,
+    botLearningRouter,
     stopBotsRuntime,
 } from './modules/bots/index.js';
 import { appFeaturesRoutes } from './modules/app-features/index.js';
@@ -572,6 +576,8 @@ app.use('/api/agent-relay-mcp', agentRelayMcpRoutes);
 app.use('/api/bot-gateway-mcp', botGatewayMcpRoutes);
 app.use('/api/hooks/bots', botHooksPublicRouter);
 app.use('/api/hooks', webhooksIngestRoutes);
+// Signed approve/deny links sent to Slack/Telegram/push: the token is the capability.
+app.use('/api/bot-actions', botActionsPublicRouter);
 
 // Optional API key validation (if configured)
 app.use('/api', validateApiKey);
@@ -667,6 +673,11 @@ app.use('/api/browser-capture', authenticateToken, browserCaptureRoutes);
 
 // Mission Control — global + project produce/resolve queues
 app.use('/api/mission-control', authenticateToken, missionControlRoutes);
+// Routers with static prefixes (/channels, /brief, /operator-profile) go before the
+// /:botId/* routers so a bot id can never shadow them.
+app.use('/api/bots', authenticateToken, botChannelsRouter);
+app.use('/api/bots', authenticateToken, botLearningRouter);
+app.use('/api/bots', authenticateToken, botThreadRouter);
 app.use('/api/bots', authenticateToken, botTriggersRouter);
 app.use('/api/bots', authenticateToken, botKernelRouter);
 

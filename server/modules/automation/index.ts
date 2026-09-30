@@ -2,6 +2,7 @@ export { default, default as automationRoutes } from '@/modules/automation/autom
 export { automationDb } from '@/modules/automation/automation.repository.js';
 export {
   automationService,
+  addAutomationEventSink,
   configureAutomationEventSink,
   configureAutomationRuntimes,
   startAutomationKernel,

@@ -40,6 +40,7 @@ export type AutomationFireResult = {
 export type AutomationEventSink = (input: FireInput) => void;
 
 let automationEventSink: AutomationEventSink | null = null;
+const automationEventSinks = new Set<AutomationEventSink>();
 
 /**
  * Observe every event passed to `automationService.fire`. Used by the Bot
@@ -48,6 +49,17 @@ let automationEventSink: AutomationEventSink | null = null;
  */
 export function configureAutomationEventSink(sink: AutomationEventSink | null): void {
   automationEventSink = sink;
+}
+
+/**
+ * Add an additional event listener (multi-listener form of the sink). Independent of the single
+ * slot above; returns an unsubscribe function.
+ */
+export function addAutomationEventSink(sink: AutomationEventSink): () => void {
+  automationEventSinks.add(sink);
+  return () => {
+    automationEventSinks.delete(sink);
+  };
 }
 
 let runtimeSpawnFns: Partial<Record<LLMProvider, ProviderSpawnFn>> = {};
@@ -715,9 +727,9 @@ export const automationService = {
     return deleted;
   },
   async fire(input: FireInput): Promise<AutomationFireResult[]> {
-    if (automationEventSink) {
+    for (const sink of [...(automationEventSink ? [automationEventSink] : []), ...automationEventSinks]) {
       try {
-        automationEventSink(input);
+        sink(input);
       } catch (error) {
         console.error('[Automation] event sink failed', {
           type: input.type,

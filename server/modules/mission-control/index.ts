@@ -1,7 +1,7 @@
 export { default as missionControlRoutes } from '@/modules/mission-control/mission-control.routes.js';
 export { missionControlDb } from '@/modules/mission-control/mission-control.repository.js';
 export { MC_PROVIDERS } from '@/modules/mission-control/mission-control.types.js';
-export { approvedMemoryContext, listBotMemories, proposeBotMemory, reviewBotMemory } from '@/modules/mission-control/mission-control-memory.service.js';
+export { approvedMemoryContext, deleteBotMemories, listBotMemories, MAX_APPROVED_MEMORIES, proposeBotMemory, reviewBotMemory } from '@/modules/mission-control/mission-control-memory.service.js';
 export type { BotMemory } from '@/modules/mission-control/mission-control-memory.service.js';
 export {
   buildRuntimeOptions,
@@ -99,3 +99,6 @@ export {
 } from '@/modules/mission-control/action-centre-seed.js';
 export * from '@/modules/mission-control/mission-control.types.js';
 export { recordSectionVersion } from '@/modules/mission-control/mission-control-versions.service.js';
+export { emitItemFeedback, onItemFeedback, summarizeBodyEdit } from '@/modules/mission-control/mission-control-feedback.service.js';
+export type { ItemFeedbackEvent, ItemFeedbackKind, ItemFeedbackListener } from '@/modules/mission-control/mission-control-feedback.service.js';
+export { acceptWorkItem, followUpWorkItem } from '@/modules/mission-control/mission-control-dispatch.service.js';

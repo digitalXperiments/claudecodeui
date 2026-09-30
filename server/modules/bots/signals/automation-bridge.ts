@@ -1,10 +1,10 @@
 /**
  * Bridges automation-kernel events (run_completed, kanban_event,
  * interrupt_created, webhook_inbound) onto bot triggers so recipes and bots
- * observe the same stream. Registered through `configureAutomationEventSink`.
+ * observe the same stream. Registered through `addAutomationEventSink`.
  */
 
-import { configureAutomationEventSink, type AutomationFireInput } from '@/modules/automation/index.js';
+import { addAutomationEventSink, type AutomationFireInput } from '@/modules/automation/index.js';
 import { interruptsService } from '@/modules/interrupt-queue/index.js';
 import { kanbanDb } from '@/modules/kanban/index.js';
 import { runService } from '@/modules/runs/index.js';
@@ -180,12 +180,16 @@ export function handleAutomationEvent(input: AutomationFireInput): number {
   return ingested;
 }
 
+let unsubscribeBridge: (() => void) | null = null;
+
 export function startAutomationBridge(): void {
-  configureAutomationEventSink((input) => {
+  unsubscribeBridge?.();
+  unsubscribeBridge = addAutomationEventSink((input) => {
     handleAutomationEvent(input);
   });
 }
 
 export function stopAutomationBridge(): void {
-  configureAutomationEventSink(null);
+  unsubscribeBridge?.();
+  unsubscribeBridge = null;
 }

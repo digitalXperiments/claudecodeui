@@ -352,6 +352,7 @@ async function act(ctx: EpisodeContext, section: McSection, events: BotEvent[], 
       goal_updates: applied.goalUpdates,
       ...(applied.goalErrors.length ? { goal_errors: applied.goalErrors } : {}),
       notified,
+      ...(envelope.reply ? { reply: envelope.reply } : {}),
       ...(produce.error ? { error: produce.error } : {}),
     },
   };

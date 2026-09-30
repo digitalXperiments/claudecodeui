@@ -24,6 +24,7 @@ import {
 } from '@/modules/mission-control/trello-dedupe.js';
 
 import { drainWorkQueue, markWorkReady, refreshQueuedWork } from './mission-control-dispatch.service.js';
+import { emitItemFeedback, summarizeBodyEdit, type ItemFeedbackKind } from './mission-control-feedback.service.js';
 
 /**
  * Normalize produce JSON into a candidate list. Accepts a bare array, a single
@@ -445,7 +446,7 @@ export async function ingestProduceDrafts(
       // Only approve-kind actions ever run without a human.
       const approve = current.actions.find((a) => a.kind === 'approve' && a.terminal !== false);
       if (approve) {
-        const next = await applyItemAction(current.item_id, approve.id, undefined, { trigger });
+        const next = await applyItemAction(current.item_id, approve.id, undefined, { trigger, actor: 'auto' });
         // auto-approve should never hard-delete; if it did, skip the item
         if (!next) continue;
         current = next;
@@ -476,6 +477,12 @@ export async function ingestProduceDrafts(
   };
 }
 
+function feedbackKindForAction(kind: string): ItemFeedbackKind {
+  if (kind === 'approve' || kind === 'dismiss' || kind === 'delete') return kind;
+  if (kind === 'deny' || kind === 'reject') return 'deny';
+  return 'action';
+}
+
 /**
  * Apply a review action. Returns the updated item, or `null` when the item
  * was hard-deleted (kind `delete`) so the dedupe key is free for a re-run.
@@ -484,7 +491,7 @@ export async function applyItemAction(
   itemId: string,
   actionId: string,
   editedBody?: Record<string, unknown>,
-  opts: { trigger?: string } = {},
+  opts: { trigger?: string; actor?: 'human' | 'auto' } = {},
 ): Promise<McItem | null> {
   const item = missionControlDb.getItem(itemId);
   if (!item) {
@@ -519,6 +526,7 @@ export async function applyItemAction(
       });
     }
     await resolveMissionControlInterrupts(itemId, actionId);
+    emitItemFeedback({ itemId, sectionId: item.section_id, kind: 'delete', actor: opts.actor, actionId, actionKind: action.kind, item });
     return null;
   }
 
@@ -531,6 +539,13 @@ export async function applyItemAction(
       statusCode: 400,
     });
   }
+
+  const feedback = { itemId, sectionId: item.section_id, actor: opts.actor, actionId, actionKind: action.kind, item };
+  if (editedBody) {
+    const editSummary = summarizeBodyEdit(item.body, editedBody);
+    if (editSummary) emitItemFeedback({ ...feedback, kind: 'edit', text: editSummary });
+  }
+  emitItemFeedback({ ...feedback, kind: feedbackKindForAction(action.kind) });
 
   if (action.kind === 'dismiss') {
     const dismissed = missionControlDb.setItemStatus(itemId, 'dismissed', {

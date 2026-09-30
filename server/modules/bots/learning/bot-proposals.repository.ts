@@ -92,6 +92,17 @@ export const botProposalsDb = {
     return result.changes > 0 ? botProposalsDb.get(proposalId) : null;
   },
 
+  setEvidence(proposalId: string, evidence: unknown[]): BotLearningProposal | null {
+    const result = getConnection()
+      .prepare('UPDATE bot_learning_proposals SET evidence_json = ? WHERE proposal_id = ?')
+      .run(JSON.stringify(evidence), proposalId);
+    return result.changes > 0 ? botProposalsDb.get(proposalId) : null;
+  },
+
+  deleteForBot(botId: string): number {
+    return getConnection().prepare('DELETE FROM bot_learning_proposals WHERE bot_id = ?').run(botId).changes;
+  },
+
   delete(proposalId: string): boolean {
     return getConnection().prepare('DELETE FROM bot_learning_proposals WHERE proposal_id = ?').run(proposalId).changes > 0;
   },

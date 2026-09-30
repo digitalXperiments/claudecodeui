@@ -314,7 +314,7 @@ function notifyUserIfEnabled({ userId, event }) {
  * Pushes a summary notification through the given channels (default webPush +
  * desktop), honoring the user's channel enablement. Used by the daily digest.
  */
-function notifyDigest({ userId, title, body, channels = ['webPush', 'desktop'] }) {
+function notifyDigest({ userId, title, body, channels = ['webPush', 'desktop'], data = /** @type {Record<string, unknown> | null} */ (null) }) {
   if (!userId || !title) {
     return;
   }
@@ -322,7 +322,7 @@ function notifyDigest({ userId, title, body, channels = ['webPush', 'desktop'] }
   const payload = {
     title,
     body,
-    data: { tag: 'digest' }
+    data: data || { tag: 'digest' }
   };
   for (const channelId of channels) {
     const channel = notificationChannels.find((candidate) => candidate.id === channelId);

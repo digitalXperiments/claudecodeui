@@ -19,6 +19,7 @@ import { AppError } from '@/shared/utils.js';
 
 import { getMissionControlRuntime, buildRuntimeOptions, shouldUseToolGateway } from './mission-control-agent.service.js';
 import { missionControlDb } from './mission-control.repository.js';
+import { emitItemFeedback } from './mission-control-feedback.service.js';
 import { buildWorkThisPrompt } from './mission-control-work.service.js';
 import { routeWorkItem } from './mission-control-work-profile.js';
 import type { McItem, McSection, McWorkProfile } from './mission-control.types.js';
@@ -255,6 +256,7 @@ export async function followUpWorkItem(itemId: string, message: string) {
   if (!project || project.isArchived) throw new AppError('Work project is missing or archived.', { code: 'MC_WORK_NO_PROJECT', statusCode: 409 });
   if (work.provider === profile.provider) await preflight(section, profile);
   const providerSessionId = sessionsDb.getSessionById(work.sessionId)?.provider_session_id ?? null;
+  emitItemFeedback({ itemId, sectionId: item.section_id, kind: 'send_back', text: message.trim(), item });
   const completion = await runWorkTurn({
     section, profile, itemId, sourceKey: workSourceKey(item), work, projectPath: project.project_path,
     content: `Reviewer feedback on your work for "${item.title}":\n\n${message.trim()}\n\nAddress it, verify the result, and report what changed.`,
@@ -268,7 +270,9 @@ export function acceptWorkItem(itemId: string): McItem {
   const item = missionControlDb.getItem(itemId);
   if (!item) throw new AppError('Item not found', { code: 'MC_ITEM_NOT_FOUND', statusCode: 404 });
   if (item.status !== 'in_qa') throw new AppError('Only items in QA can be accepted.', { code: 'MC_ITEM_NOT_ACTIONABLE', statusCode: 409 });
-  return missionControlDb.setItemStatus(itemId, 'resolved', { resolvedAt: new Date().toISOString(), error: null });
+  const accepted = missionControlDb.setItemStatus(itemId, 'resolved', { resolvedAt: new Date().toISOString(), error: null });
+  emitItemFeedback({ itemId, sectionId: item.section_id, kind: 'accept', item });
+  return accepted;
 }
 
 /** One worker per bot; queued awaiting_work items are the durable queue. */

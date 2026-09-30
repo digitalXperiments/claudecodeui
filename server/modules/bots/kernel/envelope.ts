@@ -10,9 +10,11 @@ export interface KernelEnvelope {
   commitments: Array<Record<string, unknown>>;
   goalProgress: Array<Record<string, unknown>>;
   notify: { title: string; body: string; urgency: number } | null;
+  /** A conversational answer to the operator: posted to the bot thread and the originating channel. */
+  reply: string;
 }
 
-const ENVELOPE_KEYS = ['summary', 'plan', 'items', 'commitments', 'goal_progress', 'notify'] as const;
+const ENVELOPE_KEYS = ['summary', 'plan', 'items', 'commitments', 'goal_progress', 'notify', 'reply'] as const;
 
 const isObject = (value: unknown): value is Record<string, unknown> =>
   Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -39,7 +41,7 @@ function parseNotify(value: unknown): KernelEnvelope['notify'] {
  */
 export function parseKernelEnvelope(text: string): KernelEnvelope {
   const parsed = parseJsonFromAgentText(text);
-  const empty: KernelEnvelope = { summary: '', plan: '', items: [], commitments: [], goalProgress: [], notify: null };
+  const empty: KernelEnvelope = { summary: '', plan: '', items: [], commitments: [], goalProgress: [], notify: null, reply: '' };
   if (Array.isArray(parsed)) return { ...empty, items: parsed };
   if (!isObject(parsed)) return empty;
   if (!ENVELOPE_KEYS.some((key) => key in parsed)) {
@@ -53,6 +55,7 @@ export function parseKernelEnvelope(text: string): KernelEnvelope {
     commitments: objectArray(parsed.commitments),
     goalProgress: objectArray(parsed.goal_progress),
     notify: parseNotify(parsed.notify),
+    reply: toText(parsed.reply, 4000),
   };
 }
 

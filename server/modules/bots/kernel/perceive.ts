@@ -17,6 +17,7 @@ import { resolveBotHome } from '@/modules/bots/bots-home.js';
 import type { BotEvent } from '@/modules/bots/bots.types.js';
 import { botThreadDb } from '@/modules/bots/channels/bot-thread.repository.js';
 import { botSkillsDb } from '@/modules/bots/learning/bot-skills.repository.js';
+import { operatorProfileContext } from '@/modules/bots/learning/operator-profile.service.js';
 import { botCommitmentsDb } from '@/modules/bots/kernel/bot-commitments.repository.js';
 import { botEpisodesDb } from '@/modules/bots/kernel/bot-episodes.repository.js';
 import { botGoalsDb } from '@/modules/bots/kernel/bot-goals.repository.js';
@@ -171,6 +172,9 @@ export function buildKernelPrompt(input: PerceiveInput): Perception {
 
   const memory = approvedMemoryContext(botId);
   if (memory) fixed.push(truncate(memory, 6_000));
+
+  const preferences = operatorProfileContext();
+  if (preferences) fixed.push(preferences);
 
   const skills = skillLines(botId);
   if (skills.length > 0) {

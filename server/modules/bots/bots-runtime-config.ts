@@ -15,6 +15,8 @@ export interface BotRuntimeConfig {
   /** Route tool calls through the bot tool gateway (default true when the runtime flag is on). */
   gateway?: boolean;
   enforcement?: 'enforced' | 'advisory';
+  /** Learning loop settings. Only memory proposals can ever auto-promote. */
+  learning?: { auto_promote_memory_min_confidence?: number };
 }
 
 const BACKENDS = new Set(['local', 'docker', 'ssh']);
@@ -67,6 +69,12 @@ export function normalizeBotRuntimeConfig(raw: unknown): BotRuntimeConfig {
   if (typeof source.gateway === 'boolean') config.gateway = source.gateway;
   if (typeof source.enforcement === 'string' && ENFORCEMENT.has(source.enforcement)) {
     config.enforcement = source.enforcement as BotRuntimeConfig['enforcement'];
+  }
+  if (isObject(source.learning)) {
+    const learning: NonNullable<BotRuntimeConfig['learning']> = {};
+    const min = source.learning.auto_promote_memory_min_confidence;
+    if (typeof min === 'number' && Number.isFinite(min) && min >= 0 && min <= 1) learning.auto_promote_memory_min_confidence = min;
+    config.learning = learning;
   }
   return config;
 }

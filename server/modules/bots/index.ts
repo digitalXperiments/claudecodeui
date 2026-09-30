@@ -30,8 +30,11 @@ export * from '@/modules/bots/gate/index.js';
 export * from '@/modules/bots/gateway/index.js';
 export * from '@/modules/bots/signals/index.js';
 export * from '@/modules/bots/kernel/index.js';
+export * from '@/modules/bots/channels/index.js';
+export * from '@/modules/bots/learning/index.js';
 export {
   bootBotsRuntime,
+  isBotsRuntimeForcedOff,
   isBotsRuntimeRunning,
   registerBotsRuntimeHook,
   setBotsRuntimeWakeHandler,
