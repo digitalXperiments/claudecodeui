@@ -2,15 +2,20 @@ import os from 'node:os';
 
 import { jsonrepair } from 'jsonrepair';
 
+import { isBotsRuntimeV2Enabled } from '@/modules/app-features/index.js';
+import { botGateDecisionsDb, buildGatewayRunGuards, readBotRuntimeConfig, resolveBotHome } from '@/modules/bots/index.js';
+import { gatewaySessions } from '@/shared/bot-gateway-sessions.js';
 import { projectsDb } from '@/modules/database/index.js';
 import { recordNormalizedRunEvent, runService } from '@/modules/runs/index.js';
 import { sessionsService } from '@/modules/providers/index.js';
 import {
   chatRunRegistry,
   DETACHED_CONNECTION,
+  getProviderAbortFn,
   startProviderRun,
   type ProviderSpawnFn,
 } from '@/modules/websocket/index.js';
+import { TERMINAL_RUN_STATUSES } from '@/shared/run-events.js';
 import type { AnyRecord, LLMProvider } from '@/shared/types.js';
 import { expandMcpSelectionsToTools } from '@/shared/mcp-tool-expand.js';
 import { AppError } from '@/shared/utils.js';
@@ -18,6 +23,12 @@ import type { McSection, McToolPolicyDecision } from '@/modules/mission-control/
 import { missionControlDb } from '@/modules/mission-control/mission-control.repository.js';
 import { recordSectionVersion } from '@/modules/mission-control/mission-control-versions.service.js';
 import { approvedMemoryContext } from '@/modules/mission-control/mission-control-memory.service.js';
+import {
+  classifyFailoverError,
+  classifyFailoverFailure,
+  runShowsSideEffects,
+  type FailoverReason,
+} from '@/modules/mission-control/mission-control-failover.js';
 
 export { expandMcpSelectionsToTools };
 
@@ -35,9 +46,13 @@ export function getMissionControlRuntime(provider: LLMProvider): ProviderSpawnFn
   return runtime;
 }
 
+/** The shape of one produce draft; the bot kernel embeds it in its own envelope. */
+export const PRODUCE_ITEM_SHAPE =
+  '{ "title": string, "summary": string, "body": object, "dedupeKey": string (a STABLE source id), "confidence": number }';
+
 const PRODUCE_ENVELOPE =
   'Return ONLY a JSON array of items, each exactly ' +
-  '{ "title": string, "summary": string, "body": object, "dedupeKey": string (a STABLE source id), "confidence": number }. ' +
+  `${PRODUCE_ITEM_SHAPE}. ` +
   'If there is nothing to produce, return [] (empty array) — do not invent items and do not write prose. ' +
   'No tool narration, no code fences. ' +
   'Strict JSON only: escape every " and \\ and newline inside strings (use \\n for line breaks). ' +
@@ -379,6 +394,9 @@ function resolveProjectPath(section: McSection): string {
     }
     return path;
   }
+  // Bot runtime v2: a global bot works in its own home (created on demand, outside Documents /
+  // Desktop / Downloads) instead of the user's home directory.
+  if (isBotsRuntimeV2Enabled()) return resolveBotHome(section.section_id);
   // Global sections run from the user home by default (MCP / personal tools).
   return os.homedir();
 }
@@ -418,8 +436,21 @@ export function buildToolPolicyAdvisoryPrompt(section: McSection, tools: string[
   ].filter(Boolean).join('\n');
 }
 
+export const BOT_GATEWAY_SERVER_NAME = 'cloudcli-tool-gateway';
+
+/** Bot runtime v2 routes a section's MCP tools through the Tool Gateway unless the bot opted out. */
+export function shouldUseToolGateway(section: McSection): boolean {
+  if (!isBotsRuntimeV2Enabled()) return false;
+  try {
+    return readBotRuntimeConfig(section.section_id)?.gateway !== false;
+  } catch {
+    return false;
+  }
+}
+
 export function buildRuntimeOptions(section: McSection, tools: string[]): AnyRecord {
   const provider = section.provider;
+  const useGateway = shouldUseToolGateway(section);
   const permissionMode = section.permission_mode || 'bypassPermissions';
   // Mission Control sections always run detached (no websocket/human on the
   // other end) — see startProviderRun's DETACHED_CONNECTION below. Providers
@@ -432,19 +463,26 @@ export function buildRuntimeOptions(section: McSection, tools: string[]): AnyRec
   if (section.effort) {
     options.effort = section.effort;
   }
-  if (tools.length > 0) {
+  if (useGateway) {
+    // The gateway is the only MCP server the run may use; the real servers sit behind it.
+    options.mcpServers = [BOT_GATEWAY_SERVER_NAME];
+    options.strictMcpSelection = true;
+    options.botGatewayStrict = true;
+  } else if (tools.length > 0) {
     options.mcpServers = tools;
   }
 
-  const expandedTools = expandMcpSelectionsToTools(tools, provider);
+  const expandedTools = expandMcpSelectionsToTools(useGateway ? [BOT_GATEWAY_SERVER_NAME] : tools, provider);
   const entries = policyEntries(section, tools);
   const policyServers = new Set(
     tools.filter((server) => Object.keys(section.tool_policy?.[server] ?? {}).length > 0),
   );
-  const fallbackTools = expandMcpSelectionsToTools(
-    tools.filter((server) => !policyServers.has(server)),
-    provider,
-  );
+  const fallbackTools = useGateway
+    ? ['mcp__cloudcli-tool-gateway__*']
+    : expandMcpSelectionsToTools(
+      tools.filter((server) => !policyServers.has(server)),
+      provider,
+    );
   const allowedPolicyTools = entries
     .filter((entry) => entry.decision === 'allow')
     .map((entry) => entry.pattern);
@@ -464,7 +502,7 @@ export function buildRuntimeOptions(section: McSection, tools: string[]): AnyRec
         // Ask tools are intentionally omitted from allowedTools. Restricted
         // policies also downgrade bypassPermissions above, so Claude's
         // unattended default mode cannot auto-allow omitted tools.
-        allowedTools: [...new Set([...fallbackTools, ...allowedPolicyTools])],
+        allowedTools: [...new Set(useGateway ? fallbackTools : [...fallbackTools, ...allowedPolicyTools])],
         // Mission Control runs are always headless (no human on the other
         // end to answer). AskUserQuestion/ExitPlanMode must never be reached:
         // deny them outright instead of stalling on an approval nobody can
@@ -502,6 +540,30 @@ export type McAgentRunResult = {
   success: boolean;
   /** Provider/runtime error text when the run failed, otherwise null. */
   errorMessage: string | null;
+  /**
+   * Bot runtime v2 provider failover: every attempt in order (the primary first). Only present when
+   * the bot has `routing.fallback` entries; each attempt is its own agent run.
+   */
+  attempts?: McAgentAttempt[];
+};
+
+export type McAgentAttempt = {
+  runId: string | null;
+  provider: string;
+  model: string | null;
+  success: boolean;
+  /** Why this attempt was abandoned for the next fallback (absent on the last attempt). */
+  failoverReason?: FailoverReason;
+};
+
+/** `meta.fallback_from` on a fallback attempt's agent run. */
+export type McFallbackFrom = {
+  run_id: string | null;
+  provider: string;
+  model: string | null;
+  reason: FailoverReason;
+  detail: string;
+  attempt: number;
 };
 
 /**
@@ -520,16 +582,175 @@ export function sectionForPhase(section: McSection, phase?: string): McSection {
   return { ...section, provider: section.resolve_provider, model: section.resolve_model, effort: section.resolve_effort };
 }
 
-export async function runMissionControlAgent(params: {
+export type RunMissionControlAgentParams = {
   section: McSection;
   prompt: string;
   tools: string[];
   sourceRef?: string;
   trigger?: string;
   phase?: 'produce' | 'resolve' | 'retry' | 'architect';
-}): Promise<McAgentRunResult> {
+  /** Bot runtime v2 episode this run belongs to (bound to the gateway session for taint tracking). */
+  episodeId?: string;
+  /** Called once the canonical run exists (before the provider starts) so callers can abort it. */
+  onRunCreated?: (run: { runId: string; appSessionId: string }) => void;
+};
+
+const MAX_FALLBACK_ATTEMPTS = 5;
+
+function sameAgent(a: McSection, b: McSection): boolean {
+  return a.provider === b.provider && (a.model ?? null) === (b.model ?? null) && (a.effort ?? null) === (b.effort ?? null);
+}
+
+/** The section as seen by one fallback route; a same-provider route inherits model/effort it leaves unset. */
+function sectionForFallback(base: McSection, route: { provider: string; model?: string; effort?: string }): McSection {
+  const same = route.provider === base.provider;
+  return {
+    ...base,
+    provider: route.provider as McSection['provider'],
+    model: route.model ?? (same ? base.model : null),
+    effort: route.effort ?? (same ? base.effort : null),
+  };
+}
+
+/** Ordered fallback agents for a section (runtime flag on), minus any identical to the primary. */
+function fallbackSections(primary: McSection): McSection[] {
+  let routes: Array<{ provider: string; model?: string; effort?: string }> = [];
+  try {
+    routes = readBotRuntimeConfig(primary.section_id)?.routing?.fallback ?? [];
+  } catch {
+    return [];
+  }
+  const chain: McSection[] = [];
+  let previous = primary;
+  for (const route of routes.slice(0, MAX_FALLBACK_ATTEMPTS)) {
+    const candidate = sectionForFallback(primary, route);
+    if (sameAgent(candidate, previous)) continue;
+    chain.push(candidate);
+    previous = candidate;
+  }
+  return chain;
+}
+
+const TOOL_EVENT_PAGE = 500;
+const TOOL_EVENT_MAX_PAGES = 40;
+
+/** Names of every `tool.call` event recorded for a run (paged, bounded). */
+function recordedToolNames(runId: string): unknown[] {
+  const names: unknown[] = [];
+  let afterSeq = 0;
+  for (let page = 0; page < TOOL_EVENT_MAX_PAGES; page += 1) {
+    const events = runService.listEvents(runId, { afterSeq, limit: TOOL_EVENT_PAGE });
+    for (const event of events) {
+      if (event.type === 'tool.call') names.push(event.payload?.tool ?? null);
+    }
+    if (events.length < TOOL_EVENT_PAGE) return names;
+    afterSeq = events[events.length - 1].seq ?? afterSeq;
+  }
+  // More events than we are willing to scan: assume the run acted.
+  names.push(null);
+  return names;
+}
+
+/**
+ * True when the failed run may already have acted; retrying on another provider could repeat it.
+ * Combines the Action Gate's decision rows (any non-read call that was allowed or approved,
+ * including built-in and first-party bot__ calls) with the run's recorded tool calls (native
+ * Bash/Write/Edit/WebFetch..., first-party writes that bypass the gate). Unknown is "maybe".
+ */
+function failedRunHadSideEffects(botId: string, runId: string | null): boolean {
+  if (!runId) return false;
+  try {
+    const run = runService.get(runId);
+    return runShowsSideEffects({
+      provider: String(run?.provider ?? ''),
+      decisions: botGateDecisionsDb
+        .listForBot(botId, 2000)
+        .filter((decision) => decision.run_id === runId)
+        .map((decision) => ({ decision: decision.decision, outcome: decision.outcome, risk: decision.risk })),
+      toolNames: recordedToolNames(runId),
+    });
+  } catch {
+    // Unknown is treated as "maybe": never risk a duplicate send on a failed diagnostic.
+    return true;
+  }
+}
+
+function wasAborted(runId: string | null): boolean {
+  if (!runId) return false;
+  try {
+    return runService.get(runId)?.status === 'aborted';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Headless provider run. With the bot runtime flag on and `routing.fallback` configured, a run
+ * that fails on an auth failure, rate/usage limit or unavailable provider is retried once per
+ * fallback entry in order (each attempt is its own agent run carrying `meta.fallback_from`) and
+ * stops at the first success. A normal task failure, a gate denial, an aborted run, or a failed
+ * run that already executed a write-class tool never falls over.
+ */
+export async function runMissionControlAgent(params: RunMissionControlAgentParams): Promise<McAgentRunResult> {
+  const primary = sectionForPhase(params.section, params.phase);
+  const chain = isBotsRuntimeV2Enabled() ? fallbackSections(primary) : [];
+  if (chain.length === 0) return runAgentAttempt(params, { section: primary });
+
+  const attempts: McAgentAttempt[] = [];
+  const all = [primary, ...chain];
+  let fallbackFrom: McFallbackFrom | undefined;
+  let lastResult: McAgentRunResult | null = null;
+  let lastError: unknown;
+  let hasError = false;
+
+  for (let index = 0; index < all.length; index += 1) {
+    const section = all[index];
+    let runId: string | null = null;
+    const attemptParams: RunMissionControlAgentParams = {
+      ...params,
+      onRunCreated: (run) => {
+        runId = run.runId;
+        params.onRunCreated?.(run);
+      },
+    };
+    let classification: ReturnType<typeof classifyFailoverFailure> = null;
+    try {
+      const result = await runAgentAttempt(attemptParams, { section, fallbackFrom });
+      lastResult = result;
+      hasError = false;
+      attempts.push({ runId: result.runId, provider: section.provider, model: section.model ?? null, success: result.success });
+      if (result.success) return { ...result, attempts };
+      classification = classifyFailoverFailure(section.provider, result.errorMessage);
+    } catch (error) {
+      lastError = error;
+      hasError = true;
+      attempts.push({ runId, provider: section.provider, model: section.model ?? null, success: false });
+      classification = classifyFailoverError(section.provider, error);
+    }
+
+    const last = index === all.length - 1;
+    if (!classification || last || wasAborted(runId) || failedRunHadSideEffects(primary.section_id, runId)) break;
+    attempts[attempts.length - 1].failoverReason = classification.reason;
+    fallbackFrom = {
+      run_id: runId ?? lastResult?.runId ?? null,
+      provider: section.provider,
+      model: section.model ?? null,
+      reason: classification.reason,
+      detail: classification.detail,
+      attempt: index + 1,
+    };
+  }
+
+  if (hasError) throw lastError;
+  return { ...(lastResult as McAgentRunResult), attempts };
+}
+
+async function runAgentAttempt(
+  params: RunMissionControlAgentParams,
+  attempt: { section: McSection; fallbackFrom?: McFallbackFrom },
+): Promise<McAgentRunResult> {
   const { prompt, tools } = params;
-  const section = sectionForPhase(params.section, params.phase);
+  const section = attempt.section;
   const provider = section.provider as LLMProvider;
   const spawnFn = runtimeSpawnFns[provider];
   if (!spawnFn) {
@@ -563,53 +784,111 @@ export async function runMissionControlAgent(params: {
       ...(botVersion != null ? { bot_version: botVersion } : {}),
       ...(params.sourceRef && params.sourceRef !== section.section_id ? { item_id: params.sourceRef } : {}),
       phase: params.phase ?? 'produce',
+      ...(params.episodeId ? { runtime: 'v2', episode_id: params.episodeId } : {}),
+      ...(attempt.fallbackFrom ? { fallback_from: attempt.fallbackFrom } : {}),
     },
   });
+  params.onRunCreated?.({ runId: canonicalRun.run_id, appSessionId });
 
-  let result: Awaited<ReturnType<typeof startProviderRun>>;
-  try {
-    runService.updateStatus(canonicalRun.run_id, 'starting');
-    result = await startProviderRun({
-      appSessionId,
+  // Bot runtime v2: bind this app session to its bot so the Tool Gateway (spawned by the
+  // provider as a stdio child) knows which servers and gate context apply. Unbound in finally.
+  const gatewayBound = shouldUseToolGateway(section);
+  if (gatewayBound) {
+    gatewaySessions.bind(appSessionId, {
+      botId: section.section_id,
+      episodeId: params.episodeId,
+      runId: canonicalRun.run_id,
+      servers: tools,
       provider,
-      providerSessionId: null,
-      projectPath,
-      spawnFn,
-      content: ['codex', 'grok', 'opencode', 'kimi', 'cursor'].includes(provider)
-        ? [prompt, buildToolPolicyAdvisoryPrompt(section, tools)].filter(Boolean).join('\n\n')
-        : prompt,
-      options: buildRuntimeOptions(section, tools),
-      connection: DETACHED_CONNECTION,
-      userId: null,
-      onEvent: (message) => recordNormalizedRunEvent(canonicalRun.run_id, message, 'mission_control'),
-    });
-  } catch (error) {
-    runService.markTerminal(canonicalRun.run_id, {
-      status: 'failed',
-      errorSummary: error instanceof Error ? error.message : String(error),
-    });
-    throw error;
-  }
-
-  if (!result.ok) {
-    runService.markTerminal(canonicalRun.run_id, {
-      status: 'failed',
-      errorSummary: 'A run is already in progress for this session',
-    });
-    throw new AppError('A run is already in progress for this session', {
-      code: 'MC_RUN_IN_PROGRESS',
-      statusCode: 409,
     });
   }
-
-  runService.linkSession(canonicalRun.run_id, appSessionId);
-  if (runService.get(canonicalRun.run_id)?.status === 'starting') {
-    runService.updateStatus(canonicalRun.run_id, 'running');
+  // Gateway-bound runs also route Claude's built-in tools through the gate and prove their
+  // binding with a per-run secret (see gateway/ENFORCEMENT.md).
+  const runOptions = buildRuntimeOptions(section, tools);
+  if (gatewayBound) {
+    const guards = buildGatewayRunGuards(section, { appSessionId, episodeId: params.episodeId, runId: canonicalRun.run_id, projectPath });
+    runOptions.builtinToolGate = guards.builtinToolGate;
+    runOptions.botGatewaySecret = guards.bindingSecret;
   }
+  try {
+    let result: Awaited<ReturnType<typeof startProviderRun>>;
+    try {
+      runService.updateStatus(canonicalRun.run_id, 'starting');
+      result = await startProviderRun({
+        appSessionId,
+        provider,
+        providerSessionId: null,
+        projectPath,
+        spawnFn,
+        content: ['codex', 'grok', 'opencode', 'kimi', 'cursor'].includes(provider)
+          ? [prompt, buildToolPolicyAdvisoryPrompt(section, tools)].filter(Boolean).join('\n\n')
+          : prompt,
+        options: runOptions,
+        connection: DETACHED_CONNECTION,
+        userId: null,
+        onEvent: (message) => recordNormalizedRunEvent(canonicalRun.run_id, message, 'mission_control'),
+      });
+    } catch (error) {
+      runService.markTerminal(canonicalRun.run_id, {
+        status: 'failed',
+        errorSummary: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
 
-  await result.completion;
-  const { text, failed, errorMessage } = extractRunOutcome(appSessionId);
-  return { appSessionId, runId: canonicalRun.run_id, text, success: !failed, errorMessage };
+    if (!result.ok) {
+      runService.markTerminal(canonicalRun.run_id, {
+        status: 'failed',
+        errorSummary: 'A run is already in progress for this session',
+      });
+      throw new AppError('A run is already in progress for this session', {
+        code: 'MC_RUN_IN_PROGRESS',
+        statusCode: 409,
+      });
+    }
+
+    runService.linkSession(canonicalRun.run_id, appSessionId);
+    if (runService.get(canonicalRun.run_id)?.status === 'starting') {
+      runService.updateStatus(canonicalRun.run_id, 'running');
+    }
+
+    await result.completion;
+    const { text, failed, errorMessage } = extractRunOutcome(appSessionId);
+    return { appSessionId, runId: canonicalRun.run_id, text, success: !failed, errorMessage };
+  } finally {
+    if (gatewayBound) gatewaySessions.unbind(appSessionId);
+  }
+}
+
+/**
+ * Best-effort cancel of a live Mission Control run (same path as the runs API cancel):
+ * kill the provider process, complete the registry entry and flip the DB status.
+ */
+export async function abortMissionControlRun(runId: string): Promise<void> {
+  const run = runService.get(runId);
+  if (!run) return;
+  const appSessionId = run.app_session_id;
+  const registryRun = appSessionId ? chatRunRegistry.getRun(appSessionId) : undefined;
+  if (appSessionId && registryRun && registryRun.status === 'running') {
+    const abortFn = run.provider ? getProviderAbortFn(run.provider) : undefined;
+    let success = false;
+    if (abortFn) {
+      try {
+        success = Boolean(await abortFn(registryRun.providerSessionId || appSessionId));
+      } catch (error) {
+        console.error(`[MissionControl] provider abort failed for run ${runId}:`, error);
+      }
+    }
+    chatRunRegistry.completeRun(appSessionId, { exitCode: success ? 0 : 1, aborted: true });
+  }
+  const current = runService.get(runId);
+  if (current && !TERMINAL_RUN_STATUSES.has(current.status)) {
+    try {
+      runService.markTerminal(runId, { status: 'aborted', errorSummary: 'aborted by bot kernel (episode timeout)' });
+    } catch {
+      // already terminal
+    }
+  }
 }
 
 export function buildProducePrompt(section: McSection): string {

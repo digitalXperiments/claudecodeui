@@ -214,6 +214,10 @@
       "kanban": {
         "label": "Kanban board",
         "description": "Show the Kanban rail button, panel, and Action Centre → board bridge. Off hides it completely."
+      },
+      "botsRuntimeV2": {
+        "label": "Bot runtime v2 (preview)",
+        "description": "Always-on bots: event triggers, goals, action gate, channels, learning. Off keeps today's Bot Studio."
       }
     },
     "spend": {

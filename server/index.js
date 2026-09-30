@@ -146,6 +146,21 @@ import {
     stopKanbanScheduler,
 } from './modules/kanban/index.js';
 import missionControlRoutes from './modules/mission-control/mission-control.routes.js';
+import {
+    bootBotsRuntime,
+    botGatewayMcpRoutes,
+    botHooksPublicRouter,
+    botKernelRouter,
+    botTriggersRouter,
+    botActionsPublicRouter,
+    botChannelsRouter,
+    botThreadRouter,
+    botLearningRouter,
+    botGateRouter,
+    botCollabRouter,
+    botExecRouter,
+    stopBotsRuntime,
+} from './modules/bots/index.js';
 import { appFeaturesRoutes } from './modules/app-features/index.js';
 import {
     applyItemAction,
@@ -556,6 +571,16 @@ app.get('/health', (req, res) => {
 // it before the installation-wide optional API key middleware as well as JWT;
 // provider-native MCP clients only receive the dedicated Relay credential.
 app.use('/api/agent-relay-mcp', agentRelayMcpRoutes);
+// Same for the bot runtime tool gateway (stdio MCP proxy → gate; its own token plus a
+// per-run binding secret) and the webhook ingest routes (HMAC / webhook API key). External
+// senders and MCP children never hold the installation API key or a JWT, so these must
+// precede both validateApiKey and the `app.use('/api', authenticateToken, ...)` routers.
+// Per-bot hooks precede /api/hooks, which would swallow them.
+app.use('/api/bot-gateway-mcp', botGatewayMcpRoutes);
+app.use('/api/hooks/bots', botHooksPublicRouter);
+app.use('/api/hooks', webhooksIngestRoutes);
+// Signed approve/deny links sent to Slack/Telegram/push: the token is the capability.
+app.use('/api/bot-actions', botActionsPublicRouter);
 
 // Optional API key validation (if configured)
 app.use('/api', validateApiKey);
@@ -638,8 +663,6 @@ app.use('/api/project-memory', authenticateToken, projectMemoryRoutes);
 // Agent API Routes (uses API key authentication)
 app.use('/api/agent', agentRoutes);
 
-// Webhook ingest (API key auth — headers, body, or query; no JWT)
-app.use('/api/hooks', webhooksIngestRoutes);
 
 // Webhook config CRUD (JWT)
 app.use('/api/webhooks', authenticateToken, webhooksRoutes);
@@ -653,6 +676,17 @@ app.use('/api/browser-capture', authenticateToken, browserCaptureRoutes);
 
 // Mission Control — global + project produce/resolve queues
 app.use('/api/mission-control', authenticateToken, missionControlRoutes);
+// Routers with static prefixes (/channels, /brief, /operator-profile) go before the
+// /:botId/* routers so a bot id can never shadow them.
+app.use('/api/bots', authenticateToken, botGateRouter);
+app.use('/api/bots', authenticateToken, botChannelsRouter);
+app.use('/api/bots', authenticateToken, botLearningRouter);
+app.use('/api/bots', authenticateToken, botThreadRouter);
+app.use('/api/bots', authenticateToken, botCollabRouter);
+// Exec guards PATCH /:botId/runtime (backend + fallback validation) before the kernel handler.
+app.use('/api/bots', authenticateToken, botExecRouter);
+app.use('/api/bots', authenticateToken, botTriggersRouter);
+app.use('/api/bots', authenticateToken, botKernelRouter);
 
 // Product flags (Kanban visibility, live spend caps)
 app.use('/api/features', authenticateToken, appFeaturesRoutes);
@@ -2278,6 +2312,13 @@ async function runDeferredBootTasks() {
     } catch (error) {
         console.error('[MissionControl] scheduler start failed:', error.message);
     }
+
+    try {
+        // Inert unless feature.bots_runtime_v2 is on; follows later flag flips.
+        await bootBotsRuntime();
+    } catch (error) {
+        console.error('[Bots] runtime start failed:', error.message);
+    }
 }
 
 // Initialize database and start server
@@ -2422,6 +2463,11 @@ async function startServer() {
                 stopRunMaintenance();
             } catch (err) {
                 console.error('[Kanban] Error stopping scheduler during shutdown:', err?.message || err);
+            }
+            try {
+                await stopBotsRuntime();
+            } catch (err) {
+                console.error('[Bots] Error stopping runtime during shutdown:', err?.message || err);
             }
             try {
                 stopMissionControlScheduler();

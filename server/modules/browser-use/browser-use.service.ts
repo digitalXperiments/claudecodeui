@@ -29,6 +29,7 @@ import {
   PendingInputStore,
   type CreateBrowserHumanPromptInput,
 } from '@/modules/browser-use/browser-use.prompts.js';
+import { ActionRecorder, type RecordedAction } from '@/modules/browser-use/browser-use.recorder.js';
 import {
   assessPageState,
   browserPageStateEnabled,
@@ -81,9 +82,14 @@ type BrowserUseSession = {
   workspacePath: string;
   networkRecording: boolean;
   controller: 'agent' | 'human';
+  /**
+   * Persistent profile directory this session was launched with (bot sessions: `<botHome>/browser-profile`).
+   * Server-side only: it proves which bot a session belongs to and is never sent to clients.
+   */
+  profileDir?: string | null;
 };
 
-type PublicBrowserUseSession = Omit<BrowserUseSession, 'ownerId'>;
+type PublicBrowserUseSession = Omit<BrowserUseSession, 'ownerId' | 'profileDir'>;
 
 type RuntimeHandle = {
   browser?: any;
@@ -118,6 +124,7 @@ const consoleBuffers = new Map<string, BrowserConsoleBuffer>();
 const consoleAttachedPages = new WeakSet<object>();
 const dialogHandlers = new Map<string, DialogAction>();
 const baseUserAgents = new Map<string, string>();
+const actionRecorders = new Map<string, ActionRecorder>();
 const promptNotificationIds = new Map<string, string>();
 const humanInputQueues = new Map<string, Promise<void>>();
 const browserUseTestSessions = new Set<string>();
@@ -311,6 +318,24 @@ function normalizeProfileName(profileName?: string | null): string | null {
   }
 
   return normalized.slice(0, 80);
+}
+
+/**
+ * A caller-chosen persistent profile directory (bot runtime: `<botHome>/browser-profile`). Only
+ * trusted server code may supply one, and the directory must be named `browser-profile` so the
+ * MCP route cannot be pointed at an arbitrary folder.
+ */
+export function normalizeProfileDir(profileDir?: string | null): string | null {
+  const raw = String(profileDir ?? '').trim();
+  if (!raw) return null;
+  if (!path.isAbsolute(raw) || raw.includes('\0')) {
+    throw new Error('profileDir must be an absolute path.');
+  }
+  const resolved = path.resolve(raw);
+  if (path.basename(resolved) !== 'browser-profile') {
+    throw new Error('profileDir must be a directory named "browser-profile".');
+  }
+  return resolved;
 }
 
 function getProfilePath(profileName: string): string {
@@ -513,7 +538,7 @@ async function assessAfterAction(
 }
 
 function publicSession(session: BrowserUseSession): PublicBrowserUseSession {
-  const { ownerId: _ownerId, ...publicFields } = session;
+  const { ownerId: _ownerId, profileDir: _profileDir, ...publicFields } = session;
   return publicFields;
 }
 
@@ -669,6 +694,8 @@ async function closeHandle(sessionId: string): Promise<void> {
   dialogHandlers.delete(sessionId);
   const handle = handles.get(sessionId);
   handles.delete(sessionId);
+  actionRecorders.get(sessionId)?.dispose();
+  actionRecorders.delete(sessionId);
   const networkCapture = networkCaptures.get(sessionId);
   networkCaptures.delete(sessionId);
   consoleBuffers.delete(sessionId);
@@ -892,14 +919,16 @@ export const browserUseService = {
       .map(publicSession);
   },
 
-  async createAgentSession(options?: { profileName?: string | null; recordNetwork?: boolean }) {
+  async createAgentSession(options?: { profileName?: string | null; profileDir?: string | null; recordNetwork?: boolean }) {
     const settings = readSettings();
     if (!settings.enabled) {
       throw new Error('Browser agent tools are disabled.');
     }
 
     await expireStaleSessions();
-    const profileName = normalizeProfileName(options?.profileName);
+    const profileDir = normalizeProfileDir(options?.profileDir);
+    // A directory profile is shown as a generic name; the path itself stays server-side.
+    const profileName = profileDir ? 'bot-profile' : normalizeProfileName(options?.profileName);
 
     const now = new Date().toISOString();
     const sessionId = randomUUID();
@@ -923,6 +952,7 @@ export const browserUseService = {
       workspacePath: sessionWorkspacePath,
       networkRecording: options?.recordNetwork ?? NETWORK_RECORDING_DEFAULT,
       controller: 'agent',
+      profileDir,
     };
 
     const activeOwnerSessions = ownerSessions(AGENT_OWNER_ID).filter((item) => item.status === 'ready');
@@ -956,8 +986,9 @@ export const browserUseService = {
     };
 
     if (profileName) {
-      fs.mkdirSync(PROFILE_ROOT, { recursive: true });
-      context = await readiness.playwright.chromium.launchPersistentContext(getProfilePath(profileName), {
+      const userDataDir = profileDir ?? getProfilePath(profileName);
+      fs.mkdirSync(profileDir ?? PROFILE_ROOT, { recursive: true });
+      context = await readiness.playwright.chromium.launchPersistentContext(userDataDir, {
         ...launchOptions,
         ...contextOptions,
       });
@@ -1554,6 +1585,46 @@ export const browserUseService = {
     };
   },
 
+  /**
+   * Start recording what a person does in this session (clicks, typed values, selects, Enter and
+   * page navigations). Requires a real browser context. Restarting clears the previous buffer.
+   */
+  async startActionRecording(sessionId: string) {
+    await this.getAgentSession(sessionId);
+    const handle = handles.get(sessionId);
+    if (!handle?.context) throw new Error('Browser runtime handle is not available.');
+    let recorder = actionRecorders.get(sessionId);
+    if (!recorder) {
+      recorder = new ActionRecorder();
+      actionRecorders.set(sessionId, recorder);
+    }
+    try {
+      await recorder.attach(handle.context);
+    } catch (error) {
+      actionRecorders.delete(sessionId);
+      throw error;
+    }
+    recorder.start({ page: handle.page });
+    return { recording: true };
+  },
+
+  /** Stop recording and return the raw buffer (includes typed values; redact before exposing). */
+  async stopActionRecording(sessionId: string): Promise<{ actions: RecordedAction[]; startedAt: number; stoppedAt: number }> {
+    await this.getAgentSession(sessionId);
+    const recorder = actionRecorders.get(sessionId);
+    if (!recorder) throw new Error('This session is not being recorded.');
+    return recorder.stop();
+  },
+
+  /**
+   * Server-side facts a human handoff needs before it may take the wheel: which profile directory
+   * the session was launched with (its owner) and who is driving it now.
+   */
+  async describeAgentSession(sessionId: string): Promise<{ profileDir: string | null; controller: 'agent' | 'human' }> {
+    const session = await this.getAgentSession(sessionId);
+    return { profileDir: session.profileDir ?? null, controller: session.controller };
+  },
+
   async takeHumanControl(sessionId: string) {
     const session = await this.getAgentSession(sessionId);
     if (session.controller === 'human') {
@@ -1851,6 +1922,8 @@ export const browserUseTestHooks = {
       handles.delete(sessionId);
       networkCaptures.delete(sessionId);
       consoleBuffers.delete(sessionId);
+      actionRecorders.get(sessionId)?.dispose();
+      actionRecorders.delete(sessionId);
       sessions.delete(sessionId);
       browserUseTestSessions.delete(sessionId);
     }

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Check, Copy, FlaskConical, MoreHorizontal, Pencil, Play, Power, TestTube2, Trash2 } from 'lucide-react';
 
 import type { CreateMcSectionInput } from '../../mission-control/api/missionControlApi';
+import { useAppFeatures } from '../../../hooks/useAppFeatures';
 import { Button } from '../../../shared/view/ui';
 import Toggle from '../ui/Toggle';
 import Tabs from '../ui/Tabs';
@@ -14,13 +15,21 @@ import PipelineTab from './tabs/PipelineTab';
 import SimulatorTab from './tabs/SimulatorTab';
 import HistoryTab from './tabs/HistoryTab';
 import SettingsTab from './tabs/SettingsTab';
+import { ActivityTab } from './tabs/runtime/ActivityTab';
+import { GoalsTab } from './tabs/runtime/GoalsTab';
+import { LearningTab } from './tabs/runtime/LearningTab';
+import { RulesTab } from './tabs/runtime/RulesTab';
+import { ThreadTab } from './tabs/runtime/ThreadTab';
+import { TriggersTab } from './tabs/runtime/TriggersTab';
 import type { BotDetailViewProps } from './contracts';
-import { DETAIL_TABS, resolveDetailTab, type DetailFocus, type DetailTab } from './detail/detailTabs';
+import { detailTabsFor, isRuntimeTabId, resolveDetailTab, type DetailFocus, type DetailTab } from './detail/detailTabs';
 
 export type { DetailTab } from './detail/detailTabs';
 
 export default function BotDetailView({ workProjects = [], bot, projectName, workProjectName, items, runs, onUpdate, onRun, onCancelRun, onDelete, onDuplicate, onEdit, onSelectItem, selectedTab, onTabChange, onSelectRun }: BotDetailViewProps) {
-  const initial = resolveDetailTab(selectedTab);
+  const { features, loaded: featuresLoaded } = useAppFeatures();
+  const runtimeV2 = features.botsRuntimeV2;
+  const initial = resolveDetailTab(selectedTab, { runtimeV2 });
   const [tab, setTab] = useState<DetailTab>(initial.tab);
   const [focus, setFocus] = useState<DetailFocus>(initial.focus);
   const [busy, setBusy] = useState(false);
@@ -31,12 +40,16 @@ export default function BotDetailView({ workProjects = [], bot, projectName, wor
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   useEffect(() => {
     if (!selectedTab) return;
-    const next = resolveDetailTab(selectedTab);
+    // Runtime tab ids (incl. `triggers`, which is a legacy redirect with the flag off) are ambiguous until the flag loads.
+    if (!featuresLoaded && isRuntimeTabId(selectedTab)) return;
+    const next = resolveDetailTab(selectedTab, { runtimeV2 });
     setTab(next.tab);
     setFocus(next.focus);
     // Rewrite legacy deep links (e.g. /tools) to the consolidated tab id.
     if (next.legacy) onTabChange?.(next.tab);
-  }, [selectedTab]); // eslint-disable-line react-hooks/exhaustive-deps -- react to URL changes only
+  }, [selectedTab, runtimeV2, featuresLoaded]); // eslint-disable-line react-hooks/exhaustive-deps -- react to URL / flag changes only
+  // A runtime tab can only be showing while the flag is on; fall back to Overview if it is switched off.
+  const visibleTab: DetailTab = runtimeV2 || !isRuntimeTabId(tab) ? tab : 'overview';
   const changeTab = (nextTab: DetailTab, nextFocus: DetailFocus = null) => { if (nextTab !== tab && pipelineDirty && !window.confirm('Discard unsaved pipeline changes?')) return; if (nextTab !== tab) setPipelineDirty(false); setTab(nextTab); setFocus(nextFocus); onTabChange?.(nextTab); };
   const run = async () => { setBusy(true); setNotice(null); try { const result = await onRun(); setNotice(result.created ? `Tick started · ${result.created} item${result.created === 1 ? '' : 's'} created.` : `Tick skipped${result.skipped ? ` · ${result.skipped} skipped` : ''}.`); } catch (error) { setNotice(error instanceof Error ? error.message : 'Unable to run bot.'); } finally { setBusy(false); } };
   const update = async (patch: Partial<CreateMcSectionInput>) => { setBusy(true); setNotice(null); try { await onUpdate(patch); setNotice('Bot updated.'); } catch (error) { setNotice(error instanceof Error ? error.message : 'Unable to update bot.'); throw error; } finally { setBusy(false); } };
@@ -72,13 +85,19 @@ export default function BotDetailView({ workProjects = [], bot, projectName, wor
         </div>
         <div className="mt-4 flex flex-wrap items-center gap-3"><label className="flex items-center gap-2 text-xs text-muted-foreground"><Toggle checked={bot.enabled} onChange={(enabled) => void update({ enabled })} label="Enable bot" /><span className="flex items-center gap-1"><Power className="h-3 w-3" />{bot.enabled ? 'Enabled' : 'Paused'}</span></label><label className="flex items-center gap-2 text-xs text-muted-foreground" title="Test switch: ticks preview items without resolving or starting work"><Toggle checked={bot.dry_run} onChange={(dry_run) => void update({ dry_run }).catch(() => undefined)} label="Dry run" /><span className="flex items-center gap-1"><TestTube2 className="h-3 w-3" />Dry run</span></label><div className="flex flex-wrap items-center gap-1" aria-label="Pipeline"><span className="rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">Propose</span><span className={`rounded-full px-2 py-0.5 text-[10px] ${stages.resolve === 'none' ? 'bg-muted/50 text-muted-foreground/60 line-through' : stages.resolve === 'auto' ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' : 'bg-amber-500/10 text-amber-700 dark:text-amber-300'}`}>Resolve · {stages.resolve}</span><span className={`rounded-full px-2 py-0.5 text-[10px] ${stages.work === 'none' ? 'bg-muted/50 text-muted-foreground/60 line-through' : stages.work === 'auto' ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' : 'bg-amber-500/10 text-amber-700 dark:text-amber-300'}`}>Work · {stages.work}</span>{bot.dry_run ? <span className="rounded-full bg-violet-500/10 px-2 py-0.5 text-[10px] font-medium text-violet-700 dark:text-violet-300">Dry run</span> : null}</div>{notice ? <span className="flex items-center gap-1 text-xs text-muted-foreground" role="status"><Check className="h-3.5 w-3.5 text-emerald-600" />{notice}</span> : null}</div>
       </header>
-      <Tabs value={tab} onChange={(next) => changeTab(next)} options={DETAIL_TABS.map((entry) => ({ value: entry.value, label: entry.value === 'overview' && bot.pending ? `${entry.label} · ${bot.pending}` : entry.label }))} />
+      <Tabs value={visibleTab} onChange={(next) => changeTab(next)} options={detailTabsFor(runtimeV2).map((entry) => ({ value: entry.value, label: entry.value === 'overview' && bot.pending ? `${entry.label} · ${bot.pending}` : entry.label }))} />
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
-        {tab === 'overview' ? <OverviewTab bot={bot} items={items} runs={runs} onSelectItem={onSelectItem} onOpenSettings={() => changeTab('settings')} onOpenHistory={() => changeTab('history')} /> : null}
-        {tab === 'pipeline' ? <PipelineTab key={bot.section_id} bot={bot} projects={workProjects} onSave={update} onDirtyChange={setPipelineDirty} focus={focus} /> : null}
-        {tab === 'test' ? <SimulatorTab key={bot.section_id} bot={bot} items={items} /> : null}
-        {tab === 'history' ? <HistoryTab key={`${bot.section_id}-${focus ?? ''}`} bot={bot} runs={runs} initialView={focus === 'versions' ? 'versions' : 'ticks'} selectedRunId={selectedRunId} onSelectRun={(run) => { setSelectedRunId(run.run_id); onSelectRun?.(run); }} onRun={() => void run()} onCancelRun={onCancelRun} /> : null}
-        {tab === 'settings' ? <SettingsTab bot={bot} items={items} onOpenPipeline={() => changeTab('pipeline', 'propose')} onDelete={onDelete} onResetPolicy={() => update({ tool_policy: {} })} /> : null}
+        {visibleTab === 'overview' ? <OverviewTab bot={bot} items={items} runs={runs} onSelectItem={onSelectItem} onOpenSettings={() => changeTab('settings')} onOpenHistory={() => changeTab('history')} /> : null}
+        {visibleTab === 'pipeline' ? <PipelineTab key={bot.section_id} bot={bot} projects={workProjects} onSave={update} onDirtyChange={setPipelineDirty} focus={focus} /> : null}
+        {visibleTab === 'test' ? <SimulatorTab key={bot.section_id} bot={bot} items={items} /> : null}
+        {visibleTab === 'history' ? <HistoryTab key={`${bot.section_id}-${focus ?? ''}`} bot={bot} runs={runs} initialView={focus === 'versions' ? 'versions' : 'ticks'} selectedRunId={selectedRunId} onSelectRun={(run) => { setSelectedRunId(run.run_id); onSelectRun?.(run); }} onRun={() => void run()} onCancelRun={onCancelRun} /> : null}
+        {runtimeV2 && visibleTab === 'activity' ? <ActivityTab key={bot.section_id} botId={bot.section_id} section={bot} /> : null}
+        {runtimeV2 && visibleTab === 'thread' ? <ThreadTab key={bot.section_id} botId={bot.section_id} section={bot} /> : null}
+        {runtimeV2 && visibleTab === 'goals' ? <GoalsTab key={bot.section_id} botId={bot.section_id} section={bot} /> : null}
+        {runtimeV2 && visibleTab === 'triggers' ? <TriggersTab key={bot.section_id} botId={bot.section_id} section={bot} /> : null}
+        {runtimeV2 && visibleTab === 'rules' ? <RulesTab key={bot.section_id} botId={bot.section_id} section={bot} /> : null}
+        {runtimeV2 && visibleTab === 'learning' ? <LearningTab key={bot.section_id} botId={bot.section_id} section={bot} /> : null}
+        {visibleTab === 'settings' ? <SettingsTab bot={bot} items={items} onOpenPipeline={() => changeTab('pipeline', 'propose')} onDelete={onDelete} onResetPolicy={() => update({ tool_policy: {} })} /> : null}
       </div>
     </section>
   );

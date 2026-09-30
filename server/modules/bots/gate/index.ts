@@ -1,0 +1,34 @@
+export { botGateRouter } from '@/modules/bots/gate/gate.routes.js';
+export { botSpendDb } from '@/modules/bots/gate/bot-spend.repository.js';
+export {
+  SAFETY_FLOOR,
+  type AutoReviewer,
+  type GateContext,
+  type GateRequest,
+  type GateVerdict,
+  type HumanGateOutcome,
+  type Risk,
+} from '@/modules/bots/gate/gate.types.js';
+export { buildReviewerSdkOptions } from '@/modules/bots/gate/auto-reviewer.js';
+export { classifyToolRisk, type ClassifyToolInput } from '@/modules/bots/gate/tool-risk.js';
+export { rules, matchRules, ruleMatchesRequest, globMatches, escapeGlobLiteral } from '@/modules/bots/gate/rules.service.js';
+export { budgets, wakeAllowed, type BudgetCheck } from '@/modules/bots/gate/budgets.service.js';
+export { setAutoReviewer, defaultAutoReviewer, runAutoReviewer } from '@/modules/bots/gate/auto-reviewer.js';
+export {
+  actionGate,
+  initBotGate,
+  recordGateDenial,
+  summarizeArgs,
+  resolveBotGateDecision,
+  setGateHumanPollInterval,
+} from '@/modules/bots/gate/action-gate.service.js';
+export {
+  BUILTIN_GATE_SERVER,
+  builtinDenylistReason,
+  createBuiltinToolGate,
+  protectedCommandReason,
+  protectedPathReason,
+  type BuiltinToolDecision,
+  type BuiltinToolGate,
+  type BuiltinToolGateContext,
+} from '@/modules/bots/gate/builtin-tool-gate.js';

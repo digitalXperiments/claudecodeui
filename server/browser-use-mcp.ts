@@ -447,6 +447,8 @@ async function callTool(name: string, args: Record<string, unknown>) {
     case 'browser_create_session':
       return jsonResponse(await callBrowserUseApi(name, {
         profileName: readOptionalString(args.profileName),
+        // Set by the bot Tool Gateway for a bot's own persistent profile; never taken from tool args.
+        profileDir: readOptionalString(process.env.CLOUDCLI_BROWSER_USE_PROFILE_DIR),
         recordNetwork: typeof args.recordNetwork === 'boolean' ? args.recordNetwork : undefined,
       }));
     case 'browser_list_sessions':

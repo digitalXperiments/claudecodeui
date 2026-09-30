@@ -6,7 +6,7 @@ import { Button } from '../../../shared/view/ui';
 import { botStudioApi, type BotRun, type BotRunTimeline } from '../api/botStudioApi';
 import { formatAge } from '../types';
 import StatusPill from '../ui/StatusPill';
-import { formatDuration, isRunActive } from '../ui/runFormatting';
+import { formatDuration, formatTrigger, isRunActive } from '../ui/runFormatting';
 
 import { selectExplainableRunSteps, type TimelineTone } from './run-timeline/runTimelineSelectors';
 
@@ -114,7 +114,7 @@ export default function RunTimeline({ run }: { run: BotRun }) {
     <section>
       <div className="flex flex-wrap items-center gap-2"><StatusPill status={currentStatus} />{refreshing ? <span className="inline-flex items-center gap-1 text-[10px] text-muted-foreground"><Loader2 className="h-3 w-3 animate-spin" />Updating</span> : null}</div>
       <p className="mt-2 text-xs text-muted-foreground">{detail?.provider ?? 'Unknown provider'}{detail?.model ? ' · ' + detail.model : ''}{detail?.effort ? ' · ' + detail.effort : ''}</p>
-      <p className="mt-1 text-[10px] text-muted-foreground">{detail?.trigger ?? run.trigger ?? 'manual'} trigger · {detail?.started_at || run.started_at ? dateTime(detail?.started_at ?? run.started_at) : 'Not started'}</p>
+      <p className="mt-1 text-[10px] text-muted-foreground">{formatTrigger(detail?.trigger ?? run.trigger)} trigger · {detail?.started_at || run.started_at ? dateTime(detail?.started_at ?? run.started_at) : 'Not started'}</p>
     </section>
 
     <dl className="grid grid-cols-2 gap-2">

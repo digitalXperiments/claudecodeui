@@ -8,6 +8,7 @@
 import { appConfigDb } from '@/modules/database/index.js';
 
 export const KANBAN_ENABLED_KEY = 'feature.kanban_enabled';
+export const BOTS_RUNTIME_V2_KEY = 'feature.bots_runtime_v2';
 export const SPEND_SOFT_USD_KEY = 'spend.soft_cost_usd';
 export const SPEND_HARD_USD_KEY = 'spend.hard_cost_usd';
 
@@ -16,6 +17,7 @@ export const DEFAULT_HARD_COST_USD = 250;
 
 export type AppFeatures = {
   kanbanEnabled: boolean;
+  botsRuntimeV2: boolean;
   spendSoftCostUsd: number | null;
   spendHardCostUsd: number | null;
 };
@@ -40,6 +42,7 @@ function readPositiveNumber(key: string, fallback: number | null): number | null
 export function getAppFeatures(): AppFeatures {
   return {
     kanbanEnabled: readBoolean(KANBAN_ENABLED_KEY, true),
+    botsRuntimeV2: readBoolean(BOTS_RUNTIME_V2_KEY, false),
     spendSoftCostUsd: readPositiveNumber(SPEND_SOFT_USD_KEY, DEFAULT_SOFT_COST_USD),
     spendHardCostUsd: readPositiveNumber(SPEND_HARD_USD_KEY, DEFAULT_HARD_COST_USD),
   };
@@ -49,15 +52,33 @@ export function isKanbanEnabled(): boolean {
   return getAppFeatures().kanbanEnabled;
 }
 
+export function isBotsRuntimeV2Enabled(): boolean {
+  return getAppFeatures().botsRuntimeV2;
+}
+
 export type AppFeaturesPatch = {
   kanbanEnabled?: boolean;
+  botsRuntimeV2?: boolean;
   spendSoftCostUsd?: number | null;
   spendHardCostUsd?: number | null;
 };
 
+type AppFeaturesListener = (features: AppFeatures, previous: AppFeatures) => void;
+const featureListeners = new Set<AppFeaturesListener>();
+
+/** Subscribe to feature changes (e.g. the bot runtime starts/stops when its flag flips). */
+export function onAppFeaturesChanged(listener: AppFeaturesListener): () => void {
+  featureListeners.add(listener);
+  return () => featureListeners.delete(listener);
+}
+
 export function updateAppFeatures(patch: AppFeaturesPatch): AppFeatures {
+  const previous = getAppFeatures();
   if (patch.kanbanEnabled !== undefined) {
     appConfigDb.set(KANBAN_ENABLED_KEY, patch.kanbanEnabled ? 'true' : 'false');
+  }
+  if (patch.botsRuntimeV2 !== undefined) {
+    appConfigDb.set(BOTS_RUNTIME_V2_KEY, patch.botsRuntimeV2 ? 'true' : 'false');
   }
   if (patch.spendSoftCostUsd !== undefined) {
     appConfigDb.set(
@@ -71,5 +92,13 @@ export function updateAppFeatures(patch: AppFeaturesPatch): AppFeatures {
       patch.spendHardCostUsd == null ? 'off' : String(patch.spendHardCostUsd),
     );
   }
-  return getAppFeatures();
+  const next = getAppFeatures();
+  for (const listener of featureListeners) {
+    try {
+      listener(next, previous);
+    } catch (error) {
+      console.error('[app-features] listener failed:', error);
+    }
+  }
+  return next;
 }

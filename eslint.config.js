@@ -172,6 +172,8 @@ export default tseslint.config(
             "server/shared/ids.ts",
             "server/shared/lead-session-env.js",
             "server/shared/worker-sandbox.js",
+            "server/shared/bot-gateway-sessions.ts",
+            "server/shared/mcp-server-filter.js",
             "server/shared/run-events.ts",
             "server/shared/scratch.ts",
             "server/shared/skill-transcript-filter.ts",

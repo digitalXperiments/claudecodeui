@@ -43,6 +43,7 @@ router.put(
     const body = (req.body ?? {}) as Record<string, unknown>;
     const features = updateAppFeatures({
       kanbanEnabled: readOptionalBoolean(body.kanbanEnabled, 'kanbanEnabled'),
+      botsRuntimeV2: readOptionalBoolean(body.botsRuntimeV2, 'botsRuntimeV2'),
       spendSoftCostUsd: readOptionalCost(body.spendSoftCostUsd, 'spendSoftCostUsd'),
       spendHardCostUsd: readOptionalCost(body.spendHardCostUsd, 'spendHardCostUsd'),
     });

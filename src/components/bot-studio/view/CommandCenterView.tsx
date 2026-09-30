@@ -17,11 +17,13 @@ import { cn } from '../../../lib/utils';
 import type { BotRun } from '../api/botStudioApi';
 import type { Bot, BotHealth } from '../types';
 import { formatAge } from '../types';
+import { formatTrigger } from '../ui/runFormatting';
 import BotIcon from '../ui/BotIcon';
 import Skeleton from '../ui/Skeleton';
 import StatusPill from '../ui/StatusPill';
 
 import { selectCommandCenterSnapshot } from './dashboard/commandCenterSelectors';
+import RuntimeStrip from './runtime/RuntimeStrip';
 
 type CommandCenterViewProps = {
   bots: Bot[];
@@ -32,6 +34,9 @@ type CommandCenterViewProps = {
   onSelectBot: (bot: Bot) => void;
   onOpenInbox: () => void;
   onOpenActivity: () => void;
+  /** Bot runtime v2: shows the runtime strip and its Brief shortcut. */
+  runtimeV2?: boolean;
+  onOpenBrief?: () => void;
 };
 
 const healthLabels: Record<BotHealth, string> = {
@@ -89,6 +94,8 @@ export default function CommandCenterView({
   onSelectBot,
   onOpenInbox,
   onOpenActivity,
+  runtimeV2 = false,
+  onOpenBrief,
 }: CommandCenterViewProps) {
   useEffect(() => { onLoad?.(); }, [onLoad]);
   const needle = search.trim().toLowerCase();
@@ -115,6 +122,8 @@ export default function CommandCenterView({
         </div>
         {needle ? <p className="rounded-full bg-muted px-2.5 py-1 text-[10px] text-muted-foreground">Showing {visibleBots.length} of {bots.length} bots</p> : null}
       </div>
+
+      {runtimeV2 && onOpenBrief ? <RuntimeStrip bots={bots} onOpenBrief={onOpenBrief} /> : null}
 
       <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-4">
         <Metric label="Running now" value={String(snapshot.runningRuns.length)} detail={snapshot.runningRuns.length === 1 ? 'active tick' : 'active ticks'} icon={PlayCircle} onClick={onOpenActivity} />
@@ -159,7 +168,7 @@ export default function CommandCenterView({
               <span className="min-w-0 flex-1">
                 <span className="block truncate text-xs font-medium">{bot.title}</span>
                 <span className="mt-1 flex min-w-0 items-center gap-2 text-[10px] text-muted-foreground">
-                  <span className="truncate">{run.trigger || 'manual'} tick</span><span>·</span><span className="shrink-0">{formatAge(run.started_at)}</span>
+                  <span className="truncate">{formatTrigger(run.trigger)} tick</span><span>·</span><span className="shrink-0">{formatAge(run.started_at)}</span>
                   {run.cost_usd != null ? <><span>·</span><span className="shrink-0">{'$'}{run.cost_usd.toFixed(2)}</span></> : null}
                 </span>
               </span>

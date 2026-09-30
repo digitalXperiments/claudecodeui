@@ -3,6 +3,8 @@ import { rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
 
+import { updateAppFeatures } from '@/modules/app-features/index.js';
+import { gatewaySessions } from '@/shared/bot-gateway-sessions.js';
 import { makeScratchDir } from '@/shared/scratch.js';
 import { closeConnection, getConnection, initializeDatabase, projectsDb } from '@/modules/database/index.js';
 import { mcpCatalogService, providerModelsService } from '@/modules/providers/index.js';
@@ -397,4 +399,30 @@ test('Propose and Resolve run on their own agent, model and effort; Work never i
   const item = missionControlDb.insertItemIfNew(same, { title: 'Manual', summary: '', body: {}, dedupeKey: 'manual' })!;
   await applyItemAction(item.item_id, 'approve');
   assert.deepEqual(seen[0], { provider: 'grok', model: 'grok-4', effort: 'high' });
+}));
+
+test('M3(c): gateway-bound work sessions bind tainted and carry the built-in gate and binding secret', async () => fixture(async ({ profile }) => {
+  updateAppFeatures({ botsRuntimeV2: true });
+  try {
+    const captured: { seen: { appSessionId: string; options: Record<string, unknown> } | null; binding: ReturnType<typeof gatewaySessions.get> } = { seen: null, binding: null };
+    configureMissionControlRuntimes({ antigravity: async (_prompt, options, sink) => {
+      const appSessionId = String((options as { appSessionId?: string }).appSessionId ?? '');
+      captured.seen = { appSessionId, options: options as Record<string, unknown> };
+      captured.binding = gatewaySessions.get(appSessionId);
+      (sink as Sink).send({ kind: 'complete', provider: 'antigravity', exitCode: 0 });
+    } });
+    const section = missionControlDb.createSection({ title: 'Gateway work', work_profile: { ...profile, auto_start: false } });
+    const item = readyItem(section, { title: 'Task', summary: '', body: { client: 'VAST' }, dedupeKey: 'gw:task:1' });
+    const result = await dispatchWorkItem(item.item_id);
+    await result.completion;
+    const { seen, binding } = captured;
+    assert.ok(seen, 'the work runtime ran');
+    assert.ok(binding, 'the session was bound to the bot while the turn ran');
+    assert.equal(binding.tainted, true, 'work acts on possibly-untrusted items');
+    assert.equal(typeof seen.options.builtinToolGate, 'function');
+    assert.equal(seen.options.botGatewaySecret, binding.secret);
+    assert.equal(gatewaySessions.get(seen.appSessionId!), null, 'unbound once the turn settled');
+  } finally {
+    updateAppFeatures({ botsRuntimeV2: false });
+  }
 }));

@@ -11,6 +11,7 @@
  *   browser-use-mcp - Run Browser MCP stdio server
  *   agent-relay-mcp - Run Agent Relay MCP stdio server
  *   session-mailbox-mcp - Run Session Mailbox MCP stdio server
+ *   bot-tool-gateway-mcp - Run Bot Tool Gateway MCP stdio server
  *   status        - Show configuration and data locations
  *   help          - Show help information
  *   version       - Show version information
@@ -162,6 +163,7 @@ Commands:
   browser-use-mcp  Run the Browser MCP stdio server
   agent-relay-mcp  Run the Agent Relay MCP stdio server
   session-mailbox-mcp  Run the Session Mailbox MCP stdio server
+  bot-tool-gateway-mcp  Run the Bot Tool Gateway MCP stdio server
   status           Show configuration and data locations
   update           Update to the latest version
   help             Show this help information
@@ -620,6 +622,10 @@ async function startSessionMailboxMcp() {
     await import('./session-mailbox-mcp.js');
 }
 
+async function startBotToolGatewayMcp() {
+    await import('./bot-tool-gateway-mcp.js');
+}
+
 // Parse CLI arguments
 function parseArgs(args) {
     const parsed = { command: 'start', options: {} };
@@ -681,6 +687,9 @@ async function main() {
             break;
         case 'session-mailbox-mcp':
             await startSessionMailboxMcp();
+            break;
+        case 'bot-tool-gateway-mcp':
+            await startBotToolGatewayMcp();
             break;
         case 'status':
         case 'info':

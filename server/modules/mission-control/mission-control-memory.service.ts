@@ -3,6 +3,9 @@ import { randomUUID } from 'node:crypto';
 import { getConnection } from '@/modules/database/index.js';
 import { AppError } from '@/shared/utils.js';
 
+/** Approved memories per bot (raised from 20 for the learning loop). */
+export const MAX_APPROVED_MEMORIES = 50;
+
 export type BotMemory = {
   memoryId: string;
   sectionId: string;
@@ -50,7 +53,7 @@ export function reviewBotMemory(sectionId: string, memoryId: string, status: Bot
   if (existing.status === status && existing.content === clean) return map(existing);
   if (status === 'approved' && existing.status !== 'approved') {
     const count = db.prepare(`SELECT COUNT(*) AS count FROM mc_bot_memories WHERE section_id = ? AND status = 'approved'`).get(sectionId) as { count: number };
-    if (count.count >= 20) throw new AppError('A bot can have at most 20 approved memories', { code: 'MC_MEMORY_LIMIT', statusCode: 400 });
+    if (count.count >= MAX_APPROVED_MEMORIES) throw new AppError(`A bot can have at most ${MAX_APPROVED_MEMORIES} approved memories`, { code: 'MC_MEMORY_LIMIT', statusCode: 400 });
   }
   db.prepare('UPDATE mc_bot_memories SET content = ?, status = ?, updated_at = ? WHERE memory_id = ? AND section_id = ?')
     .run(clean, status, new Date().toISOString(), memoryId, sectionId);
@@ -65,6 +68,11 @@ export function approvedMemoryContext(sectionId: string): string {
 
 export function listApprovedBotMemoryContents(sectionId: string): string[] {
   const rows = getConnection().prepare(`SELECT content FROM mc_bot_memories WHERE section_id = ? AND status = 'approved'
-    ORDER BY updated_at DESC, memory_id DESC LIMIT 20`).all(sectionId) as Array<{ content: string }>;
+    ORDER BY updated_at DESC, memory_id DESC LIMIT ?`).all(sectionId, MAX_APPROVED_MEMORIES) as Array<{ content: string }>;
   return rows.map((row) => row.content);
+}
+
+/** Privacy purge: remove every memory of a bot (any status). Returns the number removed. */
+export function deleteBotMemories(sectionId: string): number {
+  return getConnection().prepare('DELETE FROM mc_bot_memories WHERE section_id = ?').run(sectionId).changes;
 }

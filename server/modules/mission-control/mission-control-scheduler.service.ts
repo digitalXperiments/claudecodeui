@@ -5,6 +5,17 @@ import { runSectionProduce } from '@/modules/mission-control/mission-control-run
 
 import { drainWorkQueue, recoverWorkDispatches } from './mission-control-dispatch.service.js';
 
+/**
+ * Injected by the bot kernel while the runtime flag is on: sections it returns `true` for are
+ * owned by the signals scheduler, so the legacy cron must not also tick them.
+ */
+let scheduleFilter: ((sectionId: string) => boolean) | null = null;
+
+export function setMissionControlScheduleFilter(filter: ((sectionId: string) => boolean) | null): void {
+  scheduleFilter = filter;
+  syncMissionControlSchedules();
+}
+
 /** Active cron jobs keyed by section id. */
 const jobs = new Map<string, Cron>();
 let started = false;
@@ -19,14 +30,15 @@ function clearJob(sectionId: string): void {
   }
 }
 
-async function tickSection(sectionId: string): Promise<void> {
+/** Runs one scheduled produce tick for a section (exported for tests). */
+export async function tickSection(sectionId: string): Promise<void> {
   if (running.has(sectionId)) {
     console.warn('[MissionControl] skip overlapping schedule tick', { sectionId });
     return;
   }
   running.add(sectionId);
   try {
-    await runSectionProduce(sectionId);
+    await runSectionProduce(sectionId, { trigger: 'schedule' });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error('[MissionControl] scheduled produce failed', { sectionId, error: message });
@@ -42,7 +54,9 @@ async function tickSection(sectionId: string): Promise<void> {
 export function syncMissionControlSchedules(): void {
   if (!started) return;
 
-  const scheduled = missionControlDb.listEnabledScheduledSections();
+  const scheduled = missionControlDb
+    .listEnabledScheduledSections()
+    .filter((section) => !scheduleFilter?.(section.section_id));
   const wanted = new Set(scheduled.map((s) => s.section_id));
 
   for (const sectionId of [...jobs.keys()]) {

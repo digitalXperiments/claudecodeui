@@ -1,0 +1,174 @@
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import express from 'express';
+
+import { appConfigDb } from '@/modules/database/index.js';
+import { mcpCatalogService } from '@/modules/providers/index.js';
+
+import { callGatewayTool, listGatewayToolsForSession } from './gateway.service.js';
+import { gatewaySessions } from './sessions.js';
+
+export const BOT_GATEWAY_MCP_SERVER_NAME = 'cloudcli-tool-gateway';
+const MCP_TOKEN_CONFIG_KEY = 'bot_gateway_mcp_token';
+/** Providers the gateway entry is projected to (Antigravity has no MCP facet to project into). */
+const GATEWAY_PROVIDERS = ['claude', 'cursor', 'codex', 'opencode', 'kilo', 'cline', 'grok', 'kimi', 'qwencode', 'pi', 'omp'] as const;
+
+export function getBotGatewayMcpToken(): string {
+  const existing = appConfigDb.get(MCP_TOKEN_CONFIG_KEY)?.trim();
+  if (existing) return existing;
+  const token = randomBytes(32).toString('hex');
+  appConfigDb.set(MCP_TOKEN_CONFIG_KEY, token);
+  return token;
+}
+
+function getApiUrl(): string {
+  const port = process.env.SERVER_PORT || process.env.PORT || '3001';
+  return `http://127.0.0.1:${port}/api/bot-gateway-mcp`;
+}
+
+function getMcpCommand(): { command: string; args: string[] } {
+  // Compiled layout: <root>/server/bot-tool-gateway-mcp.js; source layout: <root>/server/bot-tool-gateway-mcp.ts.
+  let dir = path.dirname(fileURLToPath(import.meta.url));
+  for (let i = 0; i < 6; i += 1) {
+    const compiled = path.join(dir, 'bot-tool-gateway-mcp.js');
+    if (fs.existsSync(compiled)) return { command: process.execPath, args: [compiled] };
+    const source = path.join(dir, 'bot-tool-gateway-mcp.ts');
+    const tsxCli = path.join(dir, '..', 'node_modules', 'tsx', 'dist', 'cli.mjs');
+    if (fs.existsSync(source) && fs.existsSync(tsxCli)) {
+      return { command: process.execPath, args: [tsxCli, '--tsconfig', path.join(dir, 'tsconfig.json'), source] };
+    }
+    dir = path.dirname(dir);
+  }
+  return { command: 'cloudcli', args: ['bot-tool-gateway-mcp'] };
+}
+
+/**
+ * True for an isolated/test server: a non-default DATABASE_PATH under a tmp/ directory. Such a
+ * server must not rewrite the operator's real provider configs.
+ */
+export function isIsolatedServer(): boolean {
+  const dbPath = process.env.DATABASE_PATH?.trim();
+  if (!dbPath) return false;
+  const resolved = path.resolve(dbPath);
+  if (resolved === path.resolve(os.homedir(), '.cloudcli', 'auth.db')) return false;
+  if (resolved.split(path.sep).includes('tmp')) return true;
+  return [os.tmpdir(), fs.realpathSync.native(os.tmpdir())].some((dir) => {
+    const rel = path.relative(dir, resolved);
+    return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
+  });
+}
+
+/** Why registration is skipped in this process, or null when it should proceed. */
+function registrationSkipReason(): string | null {
+  if (process.env.CLOUDCLI_BOT_GATEWAY_REGISTER === '0') return 'CLOUDCLI_BOT_GATEWAY_REGISTER=0';
+  if (isIsolatedServer()) return 'isolated server (non-default DATABASE_PATH under tmp/)';
+  return null;
+}
+
+/** Upserts the `cloudcli-tool-gateway` catalog entry (stdio proxy) and projects it to providers. */
+export async function registerBotGatewayMcp(): Promise<{ name: string; skipped?: string }> {
+  const skipped = registrationSkipReason();
+  if (skipped) return { name: BOT_GATEWAY_MCP_SERVER_NAME, skipped };
+  const { command, args } = getMcpCommand();
+  await mcpCatalogService.upsert({
+    name: BOT_GATEWAY_MCP_SERVER_NAME,
+    scope: 'user',
+    transport: 'stdio',
+    command,
+    args,
+    env: {
+      CLOUDCLI_BOT_GATEWAY_API_URL: getApiUrl(),
+      CLOUDCLI_BOT_GATEWAY_MCP_TOKEN: getBotGatewayMcpToken(),
+    },
+    // Codex only forwards named parent variables to MCP children; providers that
+    // inherit the whole environment get these for free.
+    envVars: ['CLOUDCLI_SESSION_ID', 'CLOUDCLI_LEAD_SESSION_ID', 'CLOUDCLI_BOT_GATEWAY_BINDING_SECRET'],
+    providers: [...GATEWAY_PROVIDERS],
+  });
+  return { name: BOT_GATEWAY_MCP_SERVER_NAME };
+}
+
+/** Removes the gateway catalog entry (and its provider projections). Call when the runtime stops or the flag turns off. */
+export async function unregisterBotGatewayMcp(): Promise<{ removed: boolean; skipped?: string }> {
+  const skipped = registrationSkipReason();
+  if (skipped) return { removed: false, skipped };
+  const result = await mcpCatalogService.remove(BOT_GATEWAY_MCP_SERVER_NAME);
+  return { removed: result.removed };
+}
+
+function digest(value: string): Buffer {
+  return createHash('sha256').update(value).digest();
+}
+
+function tokenMatches(presented: string, expected: string): boolean {
+  return presented.length > 0 && timingSafeEqual(digest(presented), digest(expected));
+}
+
+function readBearerToken(header: unknown): string {
+  if (typeof header !== 'string') return '';
+  return /^Bearer\s+(\S.*)$/i.exec(header.trim())?.[1]?.trim() ?? '';
+}
+
+const router = express.Router();
+
+router.use((req, res, next) => {
+  if (!tokenMatches(readBearerToken(req.headers.authorization), getBotGatewayMcpToken())) {
+    res.status(401).json({ success: false, error: 'Invalid Bot Gateway MCP token.' });
+    return;
+  }
+  next();
+});
+
+/**
+ * Per-binding secret: a session id alone (guessable, visible to other processes) cannot speak for a
+ * run. Checked whenever the binding's provider stamps the secret on the gateway child.
+ */
+router.use((req, res, next) => {
+  const sessionId = String(req.headers['x-bot-gateway-session-id'] || '').trim();
+  const binding = sessionId ? gatewaySessions.get(sessionId) : null;
+  if (binding?.secretRequired) {
+    const presented = String(req.headers['x-bot-gateway-binding-secret'] || '').trim();
+    if (!binding.secret || !tokenMatches(presented, binding.secret)) {
+      res.status(401).json({ success: false, error: 'Invalid Bot Gateway binding secret.' });
+      return;
+    }
+  }
+  next();
+});
+
+/** Caller identity comes from the stdio child's env (never the body), so a session cannot speak for another. */
+function readCallerSessionId(req: express.Request): string {
+  return String(req.headers['x-bot-gateway-session-id'] || '').trim();
+}
+
+router.post('/tools/list', async (req, res) => {
+  try {
+    const sessionId = readCallerSessionId(req);
+    const tools = sessionId ? await listGatewayToolsForSession(sessionId) : [];
+    res.json({ success: true, data: { tools } });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error instanceof Error ? error.message : 'Tool listing failed.' });
+  }
+});
+
+router.post('/tools/call', async (req, res) => {
+  try {
+    const sessionId = readCallerSessionId(req);
+    const body = (req.body && typeof req.body === 'object' ? req.body : {}) as Record<string, unknown>;
+    const name = typeof body.name === 'string' ? body.name : '';
+    if (!name) {
+      res.status(400).json({ success: false, error: 'name is required.' });
+      return;
+    }
+    const result = await callGatewayTool(sessionId, name, body.arguments);
+    res.json({ success: true, data: result });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error instanceof Error ? error.message : 'Tool call failed.' });
+  }
+});
+
+export default router;

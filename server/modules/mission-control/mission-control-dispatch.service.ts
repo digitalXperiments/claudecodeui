@@ -8,6 +8,8 @@
  * same session.
  */
 
+import { buildGatewayRunGuards } from '@/modules/bots/index.js';
+import { gatewaySessions } from '@/shared/bot-gateway-sessions.js';
 import { recordNormalizedRunEvent, runService } from '@/modules/runs/index.js';
 import { getConnection, projectsDb, sessionsDb } from '@/modules/database/index.js';
 import { getMemoryPreamble, mcpCatalogService, providerModelsService, sessionsService } from '@/modules/providers/index.js';
@@ -15,8 +17,9 @@ import { DETACHED_CONNECTION, startProviderRun } from '@/modules/websocket/index
 import type { LLMProvider } from '@/shared/types.js';
 import { AppError } from '@/shared/utils.js';
 
-import { getMissionControlRuntime, buildRuntimeOptions } from './mission-control-agent.service.js';
+import { getMissionControlRuntime, buildRuntimeOptions, shouldUseToolGateway } from './mission-control-agent.service.js';
 import { missionControlDb } from './mission-control.repository.js';
+import { emitItemFeedback } from './mission-control-feedback.service.js';
 import { buildWorkThisPrompt } from './mission-control-work.service.js';
 import { routeWorkItem } from './mission-control-work-profile.js';
 import type { McItem, McSection, McWorkProfile } from './mission-control.types.js';
@@ -111,6 +114,22 @@ async function runWorkTurn(params: {
     // Profile tools/effort only apply while the session's agent is still the profile's agent.
     const sameAgent = work.provider === profile.provider;
     let failure: string | null = null;
+    // With the tool gateway on, the work session reaches its MCP servers only through the
+    // gateway, so it must be bound to this bot for the turn (unbound when the turn settles).
+    const gatewayBound = shouldUseToolGateway(section);
+    if (gatewayBound) {
+      gatewaySessions.bind(work.sessionId, {
+        botId: section.section_id,
+        runId: runId ?? undefined,
+        servers: sameAgent ? profile.mcp_servers : [],
+        provider: work.provider,
+        // Work acts on items derived from possibly-untrusted inputs: consequential calls need a human.
+        tainted: true,
+      });
+    }
+    const guards = gatewayBound
+      ? buildGatewayRunGuards(section, { appSessionId: work.sessionId, runId: runId ?? undefined, projectPath: params.projectPath })
+      : null;
     const started = await startProviderRun({
       appSessionId: work.sessionId, provider: work.provider, providerSessionId: params.providerSessionId,
       projectPath: params.projectPath, spawnFn: getMissionControlRuntime(work.provider), content: params.content,
@@ -118,6 +137,7 @@ async function runWorkTurn(params: {
         ...buildRuntimeOptions({ ...section, provider: work.provider, model: work.model, effort: null }, sameAgent ? profile.mcp_servers : []),
         ...(sameAgent && profile.effort ? { effort: profile.effort } : {}),
         strictMcpSelection: true,
+        ...(guards ? { builtinToolGate: guards.builtinToolGate, botGatewaySecret: guards.bindingSecret } : {}),
       },
       connection: DETACHED_CONNECTION, userId: null,
       onEvent: (event) => {
@@ -129,10 +149,14 @@ async function runWorkTurn(params: {
     if (!started.ok) throw new Error('Work session is already running. Wait for it to finish, then try again.');
     const completion = started.completion.then(() => finish(failure))
       .catch((error: unknown) => finish(error instanceof Error ? error.message : String(error)))
-      .finally(() => active.delete(work.sessionId));
+      .finally(() => {
+        active.delete(work.sessionId);
+        gatewaySessions.unbind(work.sessionId);
+      });
     active.set(work.sessionId, completion);
     return completion;
   } catch (error) {
+    gatewaySessions.unbind(work.sessionId);
     finish(error instanceof Error ? error.message : String(error));
     throw error;
   }
@@ -232,6 +256,7 @@ export async function followUpWorkItem(itemId: string, message: string) {
   if (!project || project.isArchived) throw new AppError('Work project is missing or archived.', { code: 'MC_WORK_NO_PROJECT', statusCode: 409 });
   if (work.provider === profile.provider) await preflight(section, profile);
   const providerSessionId = sessionsDb.getSessionById(work.sessionId)?.provider_session_id ?? null;
+  emitItemFeedback({ itemId, sectionId: item.section_id, kind: 'send_back', text: message.trim(), item });
   const completion = await runWorkTurn({
     section, profile, itemId, sourceKey: workSourceKey(item), work, projectPath: project.project_path,
     content: `Reviewer feedback on your work for "${item.title}":\n\n${message.trim()}\n\nAddress it, verify the result, and report what changed.`,
@@ -245,7 +270,9 @@ export function acceptWorkItem(itemId: string): McItem {
   const item = missionControlDb.getItem(itemId);
   if (!item) throw new AppError('Item not found', { code: 'MC_ITEM_NOT_FOUND', statusCode: 404 });
   if (item.status !== 'in_qa') throw new AppError('Only items in QA can be accepted.', { code: 'MC_ITEM_NOT_ACTIONABLE', statusCode: 409 });
-  return missionControlDb.setItemStatus(itemId, 'resolved', { resolvedAt: new Date().toISOString(), error: null });
+  const accepted = missionControlDb.setItemStatus(itemId, 'resolved', { resolvedAt: new Date().toISOString(), error: null });
+  emitItemFeedback({ itemId, sectionId: item.section_id, kind: 'accept', item });
+  return accepted;
 }
 
 /** One worker per bot; queued awaiting_work items are the durable queue. */

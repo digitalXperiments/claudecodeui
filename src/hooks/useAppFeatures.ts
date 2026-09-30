@@ -4,6 +4,7 @@ import { appFeaturesApi, type AppFeatures } from '../components/settings/api/app
 
 const DEFAULTS: AppFeatures = {
   kanbanEnabled: true,
+  botsRuntimeV2: false,
   spendSoftCostUsd: 80,
   spendHardCostUsd: 250,
 };
