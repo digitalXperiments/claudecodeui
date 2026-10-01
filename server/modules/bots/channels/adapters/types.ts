@@ -11,7 +11,7 @@ export interface OutboundAction {
   key: string;
   label: string;
   style?: 'primary' | 'secondary' | 'destructive';
-  /** A signed action link (no public inbound URL is assumed, so buttons are plain URLs). */
+  /** A signed action link. Only a public https base URL makes it a usable button; see `isPublicHttpsUrl`. */
   url: string;
 }
 
@@ -68,6 +68,35 @@ export function checkBaseUrl(config: Record<string, unknown>): string | null {
     return url.protocol === 'http:' || url.protocol === 'https:' ? null : 'action_base_url must be http(s)';
   } catch {
     return 'action_base_url must be a valid URL';
+  }
+}
+
+/** Appended to a message that went out without approval buttons. */
+export const OPEN_CLOUDCLI_LINE = 'Open CloudCLI to approve';
+
+const PRIVATE_HOST = /^(?:localhost|.*\.localhost|.*\.local|.*\.internal|.*\.lan|0\.0\.0\.0|127\.\d+\.\d+\.\d+|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(?:1[6-9]|2\d|3[01])\.\d+\.\d+|169\.254\.\d+\.\d+|\[?(?:::1?|fe80:[^\]]*|f[cd][0-9a-f]{2}:[^\]]*)\]?)$/i;
+
+/** True for an https URL a phone can reach: not localhost, loopback, a private range or a `.local` name. */
+export function isPublicHttpsUrl(value: unknown): boolean {
+  try {
+    const url = new URL(String(value));
+    if (url.protocol !== 'https:') return false;
+    const host = url.hostname.toLowerCase();
+    if (!host || PRIVATE_HOST.test(host)) return false;
+    // A bare single-label host (`cloudcli`) only resolves on a LAN.
+    return host.includes('.') || host.includes(':');
+  } catch {
+    return false;
+  }
+}
+
+/** True for a URL that points at this machine or a private network (any scheme). */
+export function isLocalUrl(value: unknown): boolean {
+  try {
+    const host = new URL(String(value)).hostname.toLowerCase();
+    return !host || PRIVATE_HOST.test(host) || !(host.includes('.') || host.includes(':'));
+  } catch {
+    return true;
   }
 }
 

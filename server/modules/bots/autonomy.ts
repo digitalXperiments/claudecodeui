@@ -7,18 +7,18 @@ import { thread } from '@/modules/bots/channels/thread.service.js';
 import type { BotAutonomy } from '@/modules/bots/bots-runtime-config.js';
 
 export const AUTONOMY_LABELS: Record<BotAutonomy, string> = {
-  careful: 'Careful',
-  trusted: 'Trusted',
-  unrestricted: 'Unrestricted',
+  ask: 'Ask',
+  auto: 'Auto',
+  bypass: 'Bypass',
 };
 
 /** One sentence per level for the UI. */
 export const AUTONOMY_SUMMARIES: Record<BotAutonomy, string> = {
-  careful: 'Asks you before it sends, publishes, deletes, spends money, changes production or touches anything outside its workspace.',
-  trusted:
-    'Does those things without asking, unless it has just read untrusted content (a web page or an email from outside). Sign-ins, passwords and keys always ask.',
-  unrestricted:
-    "CloudCLI does not check this bot's tool calls. Only the provider's own permission mode applies, so it can do anything its tools allow.",
+  ask: 'Reads freely. Asks you before anything with side effects: sending, publishing, deleting, buying, sign-ins, or changing things outside its own folder.',
+  auto:
+    'Does everything on its own except buying, sign-ins and passwords, and deleting, which always ask. After it reads outside content (an email or web page), an automatic reviewer checks risky actions and asks you when it is unsure.',
+  bypass:
+    "CloudCLI does not check this bot's tool calls and never asks. Only the provider's own permission mode applies, so it can do anything its tools allow.",
 };
 
 /** Why a run that was ungated is stopped when the bot is tightened. */
@@ -37,10 +37,10 @@ export interface AutonomyChangeEffect {
 
 /**
  * What an autonomy change does to the run that is in progress. The tool gateway and built-in tool
- * gate are wired when a run is built, so a run that started `unrestricted` has neither and cannot be
+ * gate are wired when a run is built, so a run that started `bypass` has neither and cannot be
  * tightened in place (it is stopped and its events requeue); a gated run reads the level on every
- * tool call, so careful <-> trusted is live; and a run that started gated cannot become ungated
- * mid-flight, so loosening to `unrestricted` takes effect with the next run.
+ * tool call, so ask <-> auto is live; and a run that started gated cannot become ungated
+ * mid-flight, so loosening to `bypass` takes effect with the next run.
  */
 export function describeAutonomyChange(
   before: BotAutonomy,
@@ -48,7 +48,7 @@ export function describeAutonomyChange(
   state: { runActive: boolean; stoppedRun: boolean },
 ): AutonomyChangeEffect {
   const label = AUTONOMY_LABELS[after];
-  if (before === 'unrestricted' && after !== 'unrestricted') {
+  if (before === 'bypass' && after !== 'bypass') {
     return state.stoppedRun
       ? {
           applied: 'now',
@@ -58,11 +58,11 @@ export function describeAutonomyChange(
         }
       : { applied: 'now', stopped_run: false, message: `Saved. This bot is now ${label}; every run from here on is checked.`, note: 'applies right away' };
   }
-  if (after === 'unrestricted' && state.runActive) {
+  if (after === 'bypass' && state.runActive) {
     return {
       applied: 'next_run',
       stopped_run: false,
-      message: 'Saved. This bot is now Unrestricted from its next run; the run in progress keeps its checks until it finishes.',
+      message: 'Saved. This bot is now Bypass from its next run; the run in progress keeps its checks until it finishes.',
       note: 'applies from its next run; the run in progress keeps its checks',
     };
   }

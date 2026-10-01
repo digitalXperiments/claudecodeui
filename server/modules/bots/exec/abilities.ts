@@ -119,7 +119,7 @@ export function buildPlainAbilities(input: {
   const ask = rules.filter((rule) => rule.decision === 'ask').map((rule) => `Check with you before using ${describeMatch(rule.match)}`);
   const deny = rules.filter((rule) => rule.decision === 'deny').map((rule) => `Use ${describeMatch(rule.match)}`);
 
-  if (autonomy === 'unrestricted') {
+  if (autonomy === 'bypass') {
     // The gate is off: only the provider's permission mode and the section's tool policy apply.
     const policyDeny = rules
       .filter((rule) => rule.created_from === 'section_policy' && rule.decision === 'deny')
@@ -137,15 +137,20 @@ export function buildPlainAbilities(input: {
 
   const canDoAlone = [
     apps.length > 0 ? `Read and search in its connected apps (${listNames(apps)})` : 'Read, search and summarise what it can reach in its workspace',
-    'Write drafts and notes in its own workspace and spaces',
+    'Read any file or folder on this computer except sign-in files, keys and CloudCLI\'s own data',
+    'Write drafts, notes and files in its own folder and workspace',
     ...cap(allow),
   ];
   const asksFirst: string[] = [];
-  if (autonomy === 'trusted') {
-    canDoAlone.push('Send, publish, delete, spend money and change live systems without asking, as long as it has not just read untrusted content');
-    canDoAlone.push('Read or run things outside its workspace when it has not just read untrusted content');
-    asksFirst.push('Anything involving passwords, API keys or signing in');
-    asksFirst.push('Any send, publish, delete, purchase or change once it has read untrusted content (an outside email or web page), until you approve');
+  if (autonomy === 'auto') {
+    canDoAlone.push('Send, publish and change live systems on its own, and change files or run commands outside its folder');
+    asksFirst.push(
+      'Spend money or make purchases',
+      'Anything involving passwords, API keys, sign-ins or security settings',
+      'Delete or remove things, including deleting folders, force-pushing and dropping data',
+      'Anything it does after reading outside content (an email or web page) that sends, publishes or changes live systems: an automatic reviewer checks it first, and you are asked when the reviewer is not sure',
+      'Use a tool CloudCLI does not recognise: the automatic reviewer checks it first, and you are asked when it is not sure',
+    );
   } else {
     asksFirst.push(
       'Send emails or messages',
@@ -153,8 +158,9 @@ export function buildPlainAbilities(input: {
       'Delete or remove things',
       'Spend money or make purchases',
       'Change live (production) systems',
-      'Touch files outside its workspace, or run commands it cannot prove stay local',
+      'Change files or run commands outside its own folder and workspace',
       'Anything involving passwords, API keys or signing in',
+      'Use a tool CloudCLI does not recognise',
     );
   }
   asksFirst.push(...cap(ask));
@@ -198,15 +204,15 @@ async function buildApps(section: McSection, autonomy: BotAutonomy): Promise<Abi
     if (inCatalog) {
       apps.push({ server, connected: true, source: 'catalog', phases, tools_policy_counts: counts });
     } else if (PROVIDER_CONNECTOR.test(server)) {
-      // Provider-hosted connectors cannot be proxied by the tool gateway: only an Unrestricted bot reaches them.
-      const reachable = autonomy === 'unrestricted';
+      // Provider-hosted connectors cannot be proxied by the tool gateway: only a Bypass bot reaches them.
+      const reachable = autonomy === 'bypass';
       apps.push({
         server,
         connected: reachable,
         source: 'provider',
         phases,
         tools_policy_counts: counts,
-        ...(reachable ? {} : { note: 'A provider-hosted connector: only reachable when autonomy is Unrestricted (the tool gateway cannot proxy it).' }),
+        ...(reachable ? {} : { note: 'A provider-hosted connector: only reachable when autonomy is Bypass (the tool gateway cannot proxy it).' }),
       });
     } else {
       apps.push({ server, connected: false, source: 'missing', phases, tools_policy_counts: counts, note: 'Not found in the CloudCLI MCP catalog.' });

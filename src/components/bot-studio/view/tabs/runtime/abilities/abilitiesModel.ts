@@ -1,17 +1,18 @@
 /**
  * Pure helpers behind the Abilities tab and the wizard's autonomy picker: the plain-language copy for
  * each autonomy level, the lists the server writes, enforcement wording, the typed confirmation for
- * Unrestricted, browser sign-in handling (URL cleanup, 409 wording, where to show the session) and
+ * Bypass, browser sign-in handling (URL cleanup, 409 wording, where to show the session) and
  * deep-link focus parsing. No React here, so it all runs under `node --test`.
  */
 
+import { normalizeAutonomy } from '../../../../types/botRuntime';
 import type {
   BotAbilitiesApp, BotAbilitiesPlain, BotAutonomy, BotBrowserSignIn, BotBrowserStatus, BotBrowserViewHint, BotGateLevel,
 } from '../../../../types/botRuntime';
 
 // ---- autonomy ---------------------------------------------------------------------------------
 
-export type AutonomyTone = 'safe' | 'trusted' | 'danger';
+export type AutonomyTone = 'safe' | 'caution' | 'danger';
 
 export type AutonomyChoice = {
   value: BotAutonomy;
@@ -23,62 +24,61 @@ export type AutonomyChoice = {
   tone: AutonomyTone;
 };
 
-export const DEFAULT_AUTONOMY: BotAutonomy = 'careful';
+export const DEFAULT_AUTONOMY: BotAutonomy = 'ask';
 
-export const UNRESTRICTED_CONFIRMATION = 'unrestricted';
+/** The word typed to confirm switching to Bypass. */
+export const BYPASS_CONFIRMATION = 'bypass';
 
 export const AUTONOMY_CHOICES: AutonomyChoice[] = [
   {
-    value: 'careful',
-    label: 'Careful',
-    tagline: 'Recommended. Asks before anything risky.',
-    meaning: 'Reads, drafts and works in its own folder. Asks you before sending, publishing, deleting, buying or working outside its folder.',
+    value: 'ask',
+    label: 'Ask',
+    tagline: 'Recommended. Reads freely, asks before side effects.',
+    meaning: 'Reads anything except password and login files, and writes inside its own folder. Asks you first before sending, publishing, deleting, buying, logging in, or changing files and running commands outside its folder. Tools it does not recognise ask too.',
     tone: 'safe',
   },
   {
-    value: 'trusted',
-    label: 'Trusted',
+    value: 'auto',
+    label: 'Auto',
     tagline: 'Gets things done without waiting for you.',
-    meaning: 'Also sends, publishes, deletes and works outside its folder on its own. It still asks right after it has read outside content (emails, web pages), and it never touches your passwords or login files.',
-    tone: 'trusted',
+    meaning: 'Does everything on its own, except it always asks before purchases, credentials (passwords, logins, tokens, security settings) and deleting, including destructive commands. After it has read outside content (emails, web pages), an automatic reviewer checks any send, publish or production change against your brief and goals; if the reviewer is not sure, or fails, it asks you. Your "never" rules, budgets and dry run still apply, and passwords and login files stay off limits.',
+    tone: 'caution',
   },
   {
-    value: 'unrestricted',
-    label: 'Unrestricted',
+    value: 'bypass',
+    label: 'Bypass',
     tagline: 'No gate at all.',
-    meaning: 'No gate at all: the AI provider\'s own "bypass" setting applies. Only for bots you fully trust that read nothing from outside.',
+    meaning: 'No gate and no questions: the AI provider\'s own permission setting applies. Only for bots you fully trust.',
     tone: 'danger',
   },
 ];
 
-export const UNRESTRICTED_WARNING = 'Nothing checks what this bot does. It can send, delete, spend and open any file on this computer without asking. Only choose this for a bot you fully trust that never reads emails, web pages or other outside content, because anything it reads could tell it what to do.';
+export const BYPASS_WARNING = 'Nothing checks what this bot does and it never asks. It can send, delete, spend and open any file on this computer without asking. Only choose this for a bot you fully trust, because anything it reads, such as emails or web pages, could tell it what to do.';
 
-export function normalizeAutonomy(raw: unknown): BotAutonomy {
-  return raw === 'trusted' || raw === 'unrestricted' || raw === 'careful' ? raw : DEFAULT_AUTONOMY;
-}
+export { normalizeAutonomy };
 
 export function autonomyChoice(value: BotAutonomy): AutonomyChoice {
   return AUTONOMY_CHOICES.find((choice) => choice.value === value) ?? AUTONOMY_CHOICES[0];
 }
 
 /** Choosing this level needs the word typed out first. */
-export const needsTypedConfirmation = (value: BotAutonomy): boolean => value === 'unrestricted';
+export const needsTypedConfirmation = (value: BotAutonomy): boolean => value === 'bypass';
 
-export const isUnrestrictedConfirmation = (typed: string): boolean => typed.trim().toLowerCase() === UNRESTRICTED_CONFIRMATION;
+export const isBypassConfirmation = (typed: string): boolean => typed.trim().toLowerCase() === BYPASS_CONFIRMATION;
 
 /** The one-sentence summary shown under the picker in the wizard. */
 export function autonomySummary(value: BotAutonomy): string {
   switch (normalizeAutonomy(value)) {
-    case 'trusted': return 'This bot can read, draft, send, publish and delete on its own; it will still ask right after it has read outside content such as emails or web pages.';
-    case 'unrestricted': return 'Nothing will check this bot. It can do anything the AI provider allows, without asking you.';
-    default: return 'This bot can read and draft on its own; it will ask before sending, deleting or buying.';
+    case 'auto': return 'This bot acts on its own, but always asks before purchases, credentials and deleting. After reading outside content, an automatic reviewer checks anything it sends or publishes; if unsure, it asks you.';
+    case 'bypass': return 'Nothing checks this bot and it never asks. It can do anything the AI provider allows.';
+    default: return 'This bot can read anything and work in its own folder; it asks before sending, publishing, deleting, buying, logging in, or changing things outside its folder.';
   }
 }
 
 /** A short label for chips and the review step. */
 export function autonomyLabel(value: BotAutonomy): string {
   const choice = autonomyChoice(normalizeAutonomy(value));
-  return `${choice.label}${choice.value === 'careful' ? ' (asks before risky actions)' : choice.value === 'trusted' ? ' (acts on its own)' : ' (no gate)'}`;
+  return `${choice.label}${choice.value === 'ask' ? ' (asks before side effects)' : choice.value === 'auto' ? ' (acts on its own)' : ' (no gate)'}`;
 }
 
 // ---- enforcement ------------------------------------------------------------------------------
@@ -95,12 +95,12 @@ export function enforcementLine(provider: string, level: BotGateLevel | null | u
 }
 
 /**
- * The raw provider permission mode only matters when nothing else is in charge: Unrestricted (the
+ * The raw provider permission mode only matters when nothing else is in charge: Bypass (the
  * provider's own setting is the only control) or a provider the gate can only advise. `level` is null
  * while still unknown.
  */
 export function showProviderPermissionMode(autonomy: BotAutonomy, level: BotGateLevel | null | undefined): boolean {
-  if (autonomy === 'unrestricted') return true;
+  if (autonomy === 'bypass') return true;
   return level === 'advisory' || level === 'off';
 }
 
@@ -117,7 +117,7 @@ export function permissionModeWords(mode: string | null | undefined): string {
 
 /** Why the permission mode is on screen (or null when it should stay hidden). */
 export function permissionModeReason(autonomy: BotAutonomy, level: BotGateLevel | null | undefined, provider: string): string | null {
-  if (autonomy === 'unrestricted') return 'You chose Unrestricted, so there is no gate. This setting is now the only thing that decides what the provider will do on its own.';
+  if (autonomy === 'bypass') return 'You chose Bypass, so there is no gate. This setting is now the only thing that decides what the provider will do on its own.';
   if (level === 'advisory') return `${providerName(provider)} can use tools the gate cannot see, so this setting acts as a second line of defence.`;
   if (level === 'off') return 'There is no gate, so this setting is the only control.';
   return null;

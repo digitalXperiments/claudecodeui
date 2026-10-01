@@ -13,7 +13,7 @@ import { botOutboundLogDb } from '@/modules/bots/channels/bot-outbound-log.repos
 import { generateBrief, sendBrief } from '@/modules/bots/channels/brief.service.js';
 import { channelsService } from '@/modules/bots/channels/channels.service.js';
 import { deliverOnChannel } from '@/modules/bots/channels/notify.service.js';
-import { verifyActionToken } from '@/modules/bots/channels/signed-links.js';
+import { describeActionBaseUrl, verifyActionToken } from '@/modules/bots/channels/signed-links.js';
 import { thread } from '@/modules/bots/channels/thread.service.js';
 
 const param = (value: unknown): string => (Array.isArray(value) ? String(value[0] ?? '') : String(value ?? ''));
@@ -102,6 +102,8 @@ botChannelsRouter.get('/channels', (req, res) => {
   res.json({
     channels: botId ? channelsService.list(botId) : channelsService.list(null),
     ...(botId ? { effective: channelsService.listEffective(botId) } : {}),
+    // Where approval links point, so the Channels page can say why a phone cannot open them.
+    public_base_url: describeActionBaseUrl(),
   });
 });
 

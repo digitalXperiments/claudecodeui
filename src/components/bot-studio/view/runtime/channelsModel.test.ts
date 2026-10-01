@@ -19,6 +19,8 @@ import {
   policyParts,
   policySummary,
   policyToDraft,
+  describePublicBaseUrl,
+  LOCAL_PUBLIC_URL_WARNING,
   publicUrlStatus,
   urgencyLabel,
   validateQuietHours,
@@ -169,4 +171,31 @@ test('publicUrlStatus reflects the host probe and tolerates missing data', () =>
   assert.match(publicUrlStatus({ publicUrlConfigured: false }).detail, /localhost/);
   assert.equal(publicUrlStatus(null).label, 'Unknown');
   assert.equal(publicUrlStatus({ publicUrlConfigured: 'yes' }).label, 'Unknown');
+});
+
+test('describePublicBaseUrl names the URL and where it came from, and warns for localhost', () => {
+  const phrases = {
+    override: 'set on this channel',
+    app_config: 'set in app settings',
+    env: 'from the CLOUDCLI_PUBLIC_URL environment variable',
+    default: 'default, this machine only',
+  } as const;
+  for (const [source, phrase] of Object.entries(phrases)) {
+    const described = describePublicBaseUrl({ value: 'https://cloudcli.insaneanalytics.co.in', source, is_local: false });
+    assert.deepEqual(described, { line: `Approval links use https://cloudcli.insaneanalytics.co.in (${phrase})`, warning: null });
+  }
+  const local = describePublicBaseUrl({ value: 'http://localhost:3001', source: 'default', is_local: true });
+  assert.equal(local?.line, 'Approval links use http://localhost:3001 (default, this machine only)');
+  assert.equal(local?.warning, LOCAL_PUBLIC_URL_WARNING);
+  assert.match(local?.warning ?? '', /^Approval links point to localhost, so they will not open from your phone\. Telegram and Slack will send approvals without link buttons\. Set a public https URL \(bots\.public_base_url\)\.$/);
+});
+
+test('describePublicBaseUrl renders nothing when an older server omits the field and tolerates odd values', () => {
+  assert.equal(describePublicBaseUrl(undefined), null);
+  assert.equal(describePublicBaseUrl(null), null);
+  assert.equal(describePublicBaseUrl('https://x.test'), null);
+  assert.equal(describePublicBaseUrl({}), null);
+  assert.equal(describePublicBaseUrl({ value: '  ', source: 'env', is_local: false }), null);
+  assert.deepEqual(describePublicBaseUrl({ value: 'https://x.test', source: 'mystery', is_local: false }), { line: 'Approval links use https://x.test', warning: null });
+  assert.equal(describePublicBaseUrl({ value: 'https://x.test', source: 'env' })?.warning, null, 'a missing is_local flag does not warn');
 });

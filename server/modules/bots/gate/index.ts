@@ -21,12 +21,28 @@ export {
   summarizeArgs,
   resolveBotGateDecision,
   setGateHumanPollInterval,
+  setHumanWaitHooks,
+  APPROVAL_FINISH_MARGIN_MS,
+  type HumanWaitHooks,
+  type HumanWaitInfo,
 } from '@/modules/bots/gate/action-gate.service.js';
+export { approvalCardTitle, describeGateAction, expiredApprovalMessage, formatWait, shortPath } from '@/modules/bots/gate/approval-text.js';
+export {
+  analyzeReadOnlyCall,
+  analyzeReadOnlyShell,
+  analyzeReadOnlyTool,
+  isSkillsReadOnly,
+  opaqueReadToolReason,
+  outsideReadIsSafe,
+  skillRoots,
+  type ReadOnlyCall,
+} from '@/modules/bots/gate/read-only.js';
 export {
   BUILTIN_GATE_SERVER,
   builtinDenylistReason,
   builtinCallRisk,
   builtinEscalationReason,
+  builtinScanEscalation,
   createBuiltinToolGate,
   protectedCommandReason,
   protectedPathReason,
@@ -34,7 +50,8 @@ export {
   type BuiltinToolGate,
   type BuiltinToolGateContext,
 } from '@/modules/bots/gate/builtin-tool-gate.js';
-export { riskFromScan, scanShellCommand, scanToolPaths, type CommandScan } from '@/modules/bots/gate/command-risk.js';
+export { destructiveCommandReason, purchaseCommandReason, riskFromScan, scanShellCommand, scanToolPaths, type CommandScan } from '@/modules/bots/gate/command-risk.js';
+export { PROTECTED_DIRS, PROTECTED_FILES, realPathProtectedReason } from '@/modules/bots/gate/protected-paths.js';
 export {
   assessFileTool,
   assessShellCommand,

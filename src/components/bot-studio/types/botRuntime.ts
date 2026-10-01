@@ -152,7 +152,20 @@ export type BotEpisodeDetail = {
 
 export type BotPhaseRoute = { provider: string; model?: string; effort?: string };
 
-export type BotAutonomy = 'careful' | 'trusted' | 'unrestricted';
+/** Ask (default): side effects ask first. Auto: acts alone, always asks for purchases, credentials and deleting. Bypass: no gate. */
+export type BotAutonomy = 'ask' | 'auto' | 'bypass';
+
+/**
+ * Reads any stored, drafted or server-sent autonomy value. Legacy names map across (careful to ask,
+ * trusted to auto, unrestricted to bypass); the new names pass through; anything else is 'ask'.
+ */
+export function normalizeAutonomy(value: unknown): BotAutonomy {
+  switch (value) {
+    case 'auto': case 'trusted': return 'auto';
+    case 'bypass': case 'unrestricted': return 'bypass';
+    default: return 'ask';
+  }
+}
 
 export type BotRuntimeConfig = {
   identity?: { persona?: string; avatar?: string };
@@ -166,7 +179,7 @@ export type BotRuntimeConfig = {
   backend_config?: Record<string, unknown>;
   gateway?: boolean;
   enforcement?: 'enforced' | 'advisory';
-  /** How much the bot may do without asking (the action gate's posture). Missing means 'careful'. */
+  /** How much the bot may do without asking (the action gate's posture). Missing means 'ask'. */
   autonomy?: BotAutonomy;
   learning?: { auto_promote_memory_min_confidence?: number };
 };
@@ -321,7 +334,7 @@ export type BotEnforcement = {
   phases: Array<{ phase: 'perceive' | 'act' | 'reflect'; provider: string; level: BotEnforcementLevel }>;
 };
 
-/** `off` appears only for an Unrestricted bot: there is no gate to enforce anything. */
+/** `off` appears only for a Bypass bot: there is no gate to enforce anything. */
 export type BotGateLevel = BotEnforcementLevel | 'off';
 
 /** GET /enforcement/preview?provider=&autonomy=: the level a bot would get on a provider (no bot needed). */
@@ -364,7 +377,13 @@ export type BotChannelInput = {
 
 export type BotChannelPatch = { config?: Record<string, unknown>; policy?: BotChannelPolicy; enabled?: boolean };
 
-export type BotChannelList = { channels: BotChannel[]; effective?: BotChannel[] };
+/** Where the base URL for approval links came from. */
+export type BotPublicBaseUrlSource = 'override' | 'app_config' | 'env' | 'default';
+
+/** The URL approval links are built on. Missing from older servers. */
+export type BotPublicBaseUrl = { value: string; source: BotPublicBaseUrlSource; is_local: boolean };
+
+export type BotChannelList = { channels: BotChannel[]; effective?: BotChannel[]; public_base_url?: BotPublicBaseUrl };
 
 export type BotOutboundLogEntry = {
   bot_id: string | null;

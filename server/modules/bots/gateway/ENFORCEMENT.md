@@ -252,6 +252,32 @@ Escalated (a human decides; auto-denied when nobody answers in time):
 - Tainted runs: on the auto-approve path every shell command other than a pure read (classifier category `read`, no
   redirects) escalates. `ctx.tainted()` is read per call.
 
+Real-path rules (read-bypass hardening, 2026-10-01; `gate/protected-paths.ts`, `gate/command-risk.ts`, `gate/read-only.ts`):
+
+- Every shell operand is judged where it REALLY is: symlinks are resolved (a path that does not exist yet through its nearest
+  existing parent) and the real path is checked against the protected list, so `lnk -> ~/.grok/auth.json` and `gl -> ~/.grok`
+  are hard-denied for `cat lnk`, `grep -r token gl`, `rg . gl`, `ls gl`. Read-only operands are re-checked in the gate itself.
+- Wildcards and braces (`~/.g?ok`, `~/.{grok,codex}`) are expanded against the file system (bounded: 5k directory entries, 2k
+  matches, 64 brace alternatives) and every match is checked; a protected match is a hard deny whatever the command (`ln`, `cp`,
+  `mv`, `rsync`, `tar`, `zip`, `install`, `ditto`, `cat` ...). A wildcard that leaves the workspace and was too big to expand is a
+  `credential` question (asked at every autonomy level below bypass).
+- Tools that follow symlinks inside the tree they walk (`grep -R`/`-S`, `rg -L`/`--follow`, `find -L`/`-follow`, `du -L`, `tree -l`,
+  `ls -RL`, `cp -L`, `rsync -L`, `tar -h`, `scp -r`, `zip -r` without `-y`) get a bounded walk (5k entries, `.git` and `node_modules`
+  skipped): a link that resolves into a protected location is a hard deny; a tree too big to check is a `credential` question.
+  Plain `grep -r`, `rg`, `find` and the Grep tool do not follow links inside a tree (verified), so they are not walked.
+- Recursive roots (`grep -r`, `rg`, `find`, `ls -R`, `du`, `tree`, the Grep tool) are checked with `directoryReachesProtected` on the
+  resolved root whether or not anything else escalated; a root that holds credential folders (`~`) is a `credential` question.
+- Provider path keys are read by the denylist and the escalation checks (`AbsolutePath`, `absolute_path`, `DirectoryPath`,
+  `SearchPath`, `SearchDirectory`, `TargetFile`, `FilePath`, `Path`, `directory`, `dir`, `root`, `TargetDirectories[]`, `paths[]`),
+  only for the bot gate (`extractPermissionRequestDetails(..., { extendedPathKeys: true })`); the relay classifier is unchanged. A
+  tool whose name looks like a read / search / list tool but names no path (`view_file {}`, `codebase_search { Query }`) is a
+  `credential` question: what it reads cannot be shown. The built-in Grep / Glob / LS default to the working directory and are exempt.
+- Spending money is its own risk (`purchase`, asked at Auto autonomy): payment CLIs and APIs (`stripe ... create|charge|pay`,
+  `paypal`, curl to `api.stripe.com/v1/(charges|payment_intents|invoices/*/pay ...)` and other payment APIs with a body),
+  `gh sponsors`, `aws ... purchase-*`, `gcloud billing`, `doctl ... create` and similar.
+- Left as designed: in Auto (untainted) `sed -n 'w file'` and `find -fprint file` write a file inside the machine; writes are not
+  denied by the read rules (the classifier / autonomy level decides them), only reads of credentials are.
+
 Known costs: a prose mention of a protected name inside a command (a commit message saying `.claude`, `grep auth.json`) is
 denied as written (bodies of quoted heredocs are data and are exempt); a project that really has `.claude/` or `.codex/` inside the
 workspace cannot be read or edited by a bot through the built-in tools.
@@ -309,41 +335,81 @@ rules and the classifier's `security` rule are what stop a bot shell from readin
 
 The old provider "permission mode" is no longer something an operator picks per bot for gated runs: on a gateway-bound run
 it is overridden anyway (claude-sdk forces default mode plus `canUseTool`; the grok, codex and antigravity adapters likewise).
-Each bot instead has one provider-agnostic **autonomy** level, stored as `runtime_json.autonomy` (`careful` by default) and
-edited with `PATCH /api/bots/:botId/runtime { autonomy }` (`null` resets to careful). `resolveBotAutonomy` /
+Each bot instead has one provider-agnostic **autonomy** level, stored as `runtime_json.autonomy` (`ask` by default) and
+edited with `PATCH /api/bots/:botId/runtime { autonomy }` (`null` resets to ask). `resolveBotAutonomy` /
 `readBotAutonomy` (bots-runtime-config.ts) are the only readers; everything below goes through them.
 
-| Level | Gateway | Floor risks (send / publish / delete / purchase / prod_change) | `credential` | Built-in tool escalations | Hard denies |
-|---|---|---|---|---|---|
-| `careful` (default) | on | ask a human | ask | ask a human | denied |
-| `trusted` | on | allowed, audited as `decidedBy: 'autonomy:trusted'`, unless the run is tainted | always ask | allowed unless the run is tainted | denied |
-| `unrestricted` | **off** | not gated | not gated | not gated | **not enforced** |
+The levels were first called `careful` / `trusted` / `unrestricted`. Those names are still accepted on read (a stored row, a
+version snapshot, `GET /enforcement/preview?autonomy=`) and on PATCH, and map to `ask` / `auto` / `bypass`
+(`parseBotAutonomy`); only the new names are ever written or returned.
 
-- **careful** is exactly the pre-autonomy behaviour.
-- **trusted** acts like an implicit bot-scoped allow for the floor risks, in `actionGate.evaluate` (action-gate.service.ts), step
-  3-4. It replaces only the bare floor `ask`. Everything around it still applies, in this order: dry run (deny), budget (deny),
-  explicit and section-policy `deny` / `ask` rules (they win, so a deny rule still blocks a floor risk), then the **taint**
-  rule (a tainted run's floor call goes to a human even though trusted would allow it). `credential` risk, `unknown` risk and
-  anything an explicit rule does not allow are unchanged. Because the built-in tool gate routes its escalations through the same
-  Action Gate (risk is computed from every reference in the call, not the first escalation reason: a shell command that names a
-  sensitive file anywhere, or a network command that names any file outside the workspace and bot home, is `credential`, which
-  trusted never auto-allows; other network commands are `send`; the rest `prod_change`. See gate/command-risk.ts), trusted also lets out-of-workspace paths, env refs, unresolved paths and risky shell commands run when the run
-  is not tainted, with a `bot_gate_decisions` row and an `executed` outcome. The hard denylist (protected credential names and
-  dirs, `~/.claude.json`, database files, env dumps, keychain, the CloudCLI API on localhost, MCP launches) is checked before
-  any of this and stays denied at every level, tainted or not. Trusted removes human review of destructive and outbound
-  actions; it is not a sandbox.
-- **unrestricted**: `shouldUseToolGateway(section)` returns false, so the run is built like a pre-v2 run: no
+| Level | Gateway | Reads | Writes inside the bot's folder / workspace | MCP floor risks and built-in side effects outside it | purchase / credential / delete | Hard denies |
+|---|---|---|---|---|---|---|
+| `ask` (default) | on | allowed everywhere except the protected list | allowed | ask a human | ask | denied |
+| `auto` | on | same | allowed | allowed (`decidedBy: 'autonomy:auto'`); once the run is tainted, the auto-reviewer decides (fail-closed, else ask) | always ask | denied |
+| `bypass` | **off** | not gated | not gated | not gated | not gated | **not enforced** |
+
+- **Reads are never a question** at any level (built-in gate, gateway-bound runs). A read-only built-in call (the Read /
+  view_file / read_file / Glob / Grep / LS / list_dir tools, or a pipeline of `cat head tail ls find grep rg sed -n wc stat file`
+  and a few filters, see gate/read-only.ts) is allowed anywhere on the machine except the protected list below, whether or
+  not the run is tainted, and an allowed read leaves no decision row (a denied one does). The analysis is deliberately small:
+  no `$`/backtick/`(`/redirect/heredoc, no `sed -i`, `find -exec/-delete/-fprint`, `grep -f/-R`, `rg --pre`, `sort -o`, no
+  wildcard that could match a credential file in a content read outside the workspace, and no recursive search (`grep -r`,
+  `rg`, the Grep tool) rooted at a folder that contains a protected location (`~`, `/`, `/Users`). Those stay escalations; the
+  recursive and wildcard ones are rated `credential` ("could read files that hold credentials") so even `auto` asks. Anything
+  the analysis cannot prove read-only (an expansion, `cd`, `awk`, ...) keeps the strict guard's escalation.
+- **Protected list** (hard deny, every level): `~/.claude.json`, provider auth (`~/.claude`, `~/.codex`, `~/.grok`, `~/.cursor`,
+  `~/.cloudcli` outside the bot home, `~/.config`), `~/.ssh` / `~/.aws` / keychain and the other credential names in
+  strict-guard.ts, `auth.json` and similar credential files, `*.db`, env dumps, the CloudCLI API on localhost, MCP launches.
+  **Exception: provider skill folders, read-only.** `~/.agents|.claude|.codex|.grok|.cursor|.cloudcli/skills/**` and the bot's
+  own `skills/` can be read (gate/read-only.ts `skillRoots`, `isSkillsReadOnly`); everything else under those directories stays
+  protected, including `~/.claude/settings.json`. Symlinks are resolved first and the real path must still be inside a skill
+  root (a skills entry that points at `~/.claude/settings.json` or `~/.grok/auth.json` is denied; a skills folder that is itself a
+  link to `~/.claude` is not a root), nothing below the root may carry a protected name (`auth.json`, `*.pem`, `.ssh` ...) or be
+  a database, `..` is refused, and a wildcard in a content read is refused. Writes to a skills folder are never carved out:
+  under a protected directory they are denied, under `~/.agents` (outside the workspace) they ask.
+- **ask** is the pre-autonomy behaviour plus the read rule: every MCP floor risk (send / publish / delete / purchase /
+  prod_change / credential) and unclassified tool asks; built-in writes and side-effecting shell outside the workspace and bot
+  home ask; a tainted run's workspace shell command that is not a pure read asks.
+- **auto** is an implicit bot-scoped allow in `actionGate.evaluate` (action-gate.service.ts), step 3-4. It replaces only the bare
+  floor (or unknown-tool) `ask`, and never for `purchase`, `credential` or `delete`, which always ask. When the run is tainted
+  (it read untrusted content) or the tool is `unknown`, the call goes to the **auto-reviewer** (gate/auto-reviewer.ts: tool-free,
+  single-turn, given the operator's brief and goals) instead of a human: `ok` -> allowed (`decidedBy: 'autonomy:auto+reviewer'`);
+  not ok, an error or a timeout -> ask the human (`decidedBy: 'reviewer'`, fail-closed). Everything around it still applies, in
+  this order: dry run (deny), budget (deny), explicit and section-policy `deny` / `ask` rules (they win), then this. The
+  built-in tool gate routes its escalations through the same Action Gate; the risk is computed from every reference in the
+  call, not the first escalation reason: a shell command that names a sensitive file anywhere, or a network command that
+  names any file outside the workspace and bot home, is `credential`; a destructive command (`rm`, `git push --force`,
+  `git reset --hard`, `DROP TABLE`, `curl -X DELETE`, `kubectl delete` ... see `destructiveCommandReason` in
+  gate/command-risk.ts) is `delete`, also when it uses the network; other network commands are `send`; the rest `prod_change`.
+  The hard denylist is checked before any of this and stays denied at every level, tainted or not. Auto removes human review of
+  outbound and live actions; it is not a sandbox.
+- **bypass**: `shouldUseToolGateway(section)` returns false, so the run is built like a pre-v2 run: no
   `cloudcli-tool-gateway`, no built-in tool gate, the section's own `tools` as MCP servers and the provider's own permission
   mode (`section.permission_mode`, default `bypassPermissions`, true bypass). Nothing is checked or held, none of the hard
   denies apply, and `getGatewayEnforcement` is replaced by level **`off`** in the enforcement routes
   (`GET /api/bots/:botId/enforcement`, `GET /api/bots/enforcement/preview?provider=&autonomy=`). The one remaining
   per-tool control is the section `tool_policy`, which the Claude options builder still turns into allow/deny lists. A bot that
-  reaches the Action Gate anyway (a direct call) is treated as careful.
+  reaches the Action Gate anyway (a direct call) is treated as ask.
 - **Fails closed**: `shouldUseToolGateway` returns true (gateway on) when the runtime config cannot be read, and a missing bot
-  or unreadable config reads as `careful`. Only an explicit `unrestricted` switches the gateway off.
-- **Legacy `gateway: false`** is still accepted and migrates on read to `autonomy: 'unrestricted'`; an explicit `autonomy`
-  wins over it, and patching `autonomy` drops the stale flag. `gateway: true` on a migrated bot returns it to careful.
-- **Audit**: a change is recorded as a section version (the version snapshot carries `autonomy` when it is not `careful`, so
-  existing snapshots still match) and as a system message in the bot's thread ("Autonomy changed to Trusted by you").
+  or unreadable config reads as `ask`. Only an explicit `bypass` switches the gateway off.
+- **Legacy `gateway: false`** is still accepted and migrates on read to `autonomy: 'bypass'`; an explicit `autonomy`
+  wins over it, and patching `autonomy` drops the stale flag. `gateway: true` on a migrated bot returns it to ask.
+- **Waiting on a human** (`actionGate.awaitHuman`, shared by the tool gateway and the built-in gate):
+  - The wait defaults to **30 minutes** and is set per bot with `runtime_json.approval_timeout_minutes` (1 to 240). A caller
+    can still pass `timeoutMs`.
+  - While it waits, the episode is kept alive: the gate asks the kernel (`extendEpisodeDeadline`, wired by `installKernel` through
+    `setHumanWaitHooks`) for the wait plus a 2 minute margin. The kernel caps the total stretch at `episodeMaxMs` + 35 minutes;
+    when the cap cuts the request short the wait is clamped to what is left so the approval expires before the episode would
+    be aborted.
+  - Half-way through, if the card is still open, `onReminder` re-sends it on every channel. On expiry the decision and the card
+    are marked expired, the run's tool call is denied ("carry on without it or stop"; the episode is not failed by the
+    gate), and `onExpired` has the bot post "I needed your OK to <action> but didn't hear back in 30 min, so I stopped. Reply
+    'retry' or press Wake now." in its thread and notify the operator (channels/approvals.ts).
+  - The card title names the action ("Personal Gmail wants to change ~/Documents/report.md", "... to run: rm -rf build"),
+    and the body's "Why" line carries the reason a human was asked.
+- **Audit**: a change is recorded as a section version (the version snapshot carries `autonomy` when it is not `ask`, so
+  existing snapshots still match; snapshots written with the old names are read under the new ones) and as a system message
+  in the bot's thread ("Autonomy changed to Auto by you").
 - **Browser**: while the operator is signed in to a bot's browser profile ("Sign in as this bot"), kernel wakes for that bot
   defer with `reason: 'browser_in_use'` (events stay queued, retried every `browserRetryMs`, and immediately on finish).

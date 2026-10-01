@@ -49,7 +49,7 @@ export interface GatewayCallOutcome {
  */
 export interface GatewayGate {
   evaluate(ctx: GatewayGateContext, req: GatewayGateRequest): Promise<GatewayGateVerdict>;
-  awaitHuman(decisionId: string, opts: { timeoutMs: number }): Promise<'approved' | 'rejected' | 'expired'>;
+  awaitHuman(decisionId: string, opts: { timeoutMs?: number }): Promise<'approved' | 'rejected' | 'expired'>;
   recordOutcome(decisionId: string, outcome: GatewayCallOutcome): void | Promise<void>;
 }
 

@@ -3,45 +3,61 @@ import test from 'node:test';
 
 import {
   AUTONOMY_CHOICES, UNKNOWN_VIEW_INSTRUCTIONS, abilitiesChips, appsHeadline, autonomyLabel, autonomySummary, browserErrorMessage,
-  browserStatusLine, countLabel, enforcementLine, formatBytes, isUnrestrictedConfirmation, mergeToolPolicy, needsTypedConfirmation,
+  browserStatusLine, countLabel, enforcementLine, formatBytes, isBypassConfirmation, mergeToolPolicy, needsTypedConfirmation,
   normalizeAutonomy, normalizePlain, normalizeSignInUrl, parseAbilitiesFocus, pendingSignIn, permissionModeReason, permissionModeWords,
   plainSections, prettyServerName, resolveViewHint, showProviderPermissionMode, toolCountsLabel,
   SIGN_IN_EXPIRED_MESSAGE, SIGN_IN_WARN_MS, signInCountdown,
 } from './abilitiesModel';
 
 test('the three autonomy levels carry the exact plain-language meaning', () => {
-  assert.deepEqual(AUTONOMY_CHOICES.map((choice) => choice.value), ['careful', 'trusted', 'unrestricted']);
-  const [careful, trusted, unrestricted] = AUTONOMY_CHOICES;
-  assert.match(careful.meaning, /Reads, drafts and works in its own folder/);
-  assert.match(careful.meaning, /Asks you before sending, publishing, deleting, buying or working outside its folder/);
-  assert.match(trusted.meaning, /Also sends, publishes, deletes and works outside its folder on its own/);
-  assert.match(trusted.meaning, /still asks right after it has read outside content \(emails, web pages\)/);
-  assert.match(trusted.meaning, /never touches your passwords or login files/);
-  assert.match(unrestricted.meaning, /No gate at all/);
-  assert.match(unrestricted.meaning, /"bypass"/);
-  assert.match(unrestricted.meaning, /read nothing from outside/);
-  assert.equal(unrestricted.tone, 'danger');
+  assert.deepEqual(AUTONOMY_CHOICES.map((choice) => choice.value), ['ask', 'auto', 'bypass']);
+  assert.deepEqual(AUTONOMY_CHOICES.map((choice) => choice.label), ['Ask', 'Auto', 'Bypass']);
+  const [ask, auto, bypass] = AUTONOMY_CHOICES;
+  assert.match(ask.meaning, /Reads anything except password and login files, and writes inside its own folder/);
+  assert.match(ask.meaning, /Asks you first before sending, publishing, deleting, buying, logging in/);
+  assert.match(ask.meaning, /outside its folder/);
+  assert.match(ask.meaning, /Tools it does not recognise ask too/);
+  assert.match(auto.meaning, /Does everything on its own, except it always asks before purchases, credentials/);
+  assert.match(auto.meaning, /passwords, logins, tokens, security settings/);
+  assert.match(auto.meaning, /deleting, including destructive commands/);
+  assert.match(auto.meaning, /automatic reviewer checks any send, publish or production change against your brief and goals/);
+  assert.match(auto.meaning, /if the reviewer is not sure, or fails, it asks you/);
+  assert.match(auto.meaning, /budgets and dry run still apply/);
+  assert.match(auto.meaning, /passwords and login files stay off limits/);
+  assert.match(bypass.meaning, /No gate and no questions/);
+  assert.match(bypass.meaning, /provider's own permission setting applies/);
+  assert.match(bypass.meaning, /fully trust/);
+  assert.equal(bypass.tone, 'danger');
 });
 
-test('only Unrestricted needs the word typed, and the check is forgiving about case and spaces', () => {
-  assert.equal(needsTypedConfirmation('careful'), false);
-  assert.equal(needsTypedConfirmation('trusted'), false);
-  assert.equal(needsTypedConfirmation('unrestricted'), true);
-  assert.equal(isUnrestrictedConfirmation('unrestricted'), true);
-  assert.equal(isUnrestrictedConfirmation('  Unrestricted '), true);
-  assert.equal(isUnrestrictedConfirmation('unrestrict'), false);
-  assert.equal(isUnrestrictedConfirmation(''), false);
+test('only Bypass needs the word typed, and the check is forgiving about case and spaces', () => {
+  assert.equal(needsTypedConfirmation('ask'), false);
+  assert.equal(needsTypedConfirmation('auto'), false);
+  assert.equal(needsTypedConfirmation('bypass'), true);
+  assert.equal(isBypassConfirmation('bypass'), true);
+  assert.equal(isBypassConfirmation('  Bypass '), true);
+  assert.equal(isBypassConfirmation('bypas'), false);
+  assert.equal(isBypassConfirmation('unrestricted'), false);
+  assert.equal(isBypassConfirmation(''), false);
 });
 
-test('normalizeAutonomy falls back to Careful and the summary matches the level', () => {
-  assert.equal(normalizeAutonomy(undefined), 'careful');
-  assert.equal(normalizeAutonomy('nonsense'), 'careful');
-  assert.equal(normalizeAutonomy('trusted'), 'trusted');
-  assert.equal(autonomySummary('careful'), 'This bot can read and draft on its own; it will ask before sending, deleting or buying.');
-  assert.match(autonomySummary('trusted'), /still ask right after it has read outside content/);
-  assert.match(autonomySummary('unrestricted'), /Nothing will check this bot/);
-  assert.match(autonomyLabel('careful'), /^Careful/);
-  assert.match(autonomyLabel('unrestricted'), /no gate/);
+test('normalizeAutonomy maps legacy names, passes new names through and falls back to Ask', () => {
+  assert.equal(normalizeAutonomy('careful'), 'ask');
+  assert.equal(normalizeAutonomy('trusted'), 'auto');
+  assert.equal(normalizeAutonomy('unrestricted'), 'bypass');
+  for (const value of ['ask', 'auto', 'bypass'] as const) assert.equal(normalizeAutonomy(value), value);
+  for (const garbage of [undefined, null, 7, {}, [], 'nonsense', '', 'ASK', 'Careful']) assert.equal(normalizeAutonomy(garbage), 'ask');
+});
+
+test('the summary and label match the level', () => {
+  assert.match(autonomySummary('ask'), /^This bot can read anything and work in its own folder; it asks before sending, publishing, deleting, buying, logging in/);
+  assert.match(autonomySummary('auto'), /always asks before purchases, credentials and deleting/);
+  assert.match(autonomySummary('auto'), /automatic reviewer/);
+  assert.match(autonomySummary('bypass'), /Nothing checks this bot and it never asks/);
+  assert.match(autonomySummary('careful' as never), /^This bot can read anything/, 'a legacy value is mapped first');
+  assert.match(autonomyLabel('ask'), /^Ask/);
+  assert.match(autonomyLabel('auto'), /^Auto/);
+  assert.match(autonomyLabel('bypass'), /^Bypass \(no gate\)/);
 });
 
 test('enforcement is one friendly line per level', () => {
@@ -52,16 +68,16 @@ test('enforcement is one friendly line per level', () => {
 });
 
 test('the raw provider permission mode shows only when it matters', () => {
-  assert.equal(showProviderPermissionMode('careful', 'enforced'), false);
-  assert.equal(showProviderPermissionMode('trusted', 'enforced'), false);
-  assert.equal(showProviderPermissionMode('careful', null), false);
-  assert.equal(showProviderPermissionMode('careful', 'advisory'), true);
-  assert.equal(showProviderPermissionMode('unrestricted', 'enforced'), true);
-  assert.equal(showProviderPermissionMode('unrestricted', null), true);
-  assert.equal(showProviderPermissionMode('careful', 'off'), true);
-  assert.equal(permissionModeReason('careful', 'enforced', 'claude'), null);
-  assert.match(permissionModeReason('unrestricted', 'off', 'claude') ?? '', /no gate/);
-  assert.match(permissionModeReason('careful', 'advisory', 'codex') ?? '', /Codex can use tools the gate cannot see/);
+  assert.equal(showProviderPermissionMode('ask', 'enforced'), false);
+  assert.equal(showProviderPermissionMode('auto', 'enforced'), false);
+  assert.equal(showProviderPermissionMode('ask', null), false);
+  assert.equal(showProviderPermissionMode('ask', 'advisory'), true);
+  assert.equal(showProviderPermissionMode('bypass', 'enforced'), true);
+  assert.equal(showProviderPermissionMode('bypass', null), true);
+  assert.equal(showProviderPermissionMode('ask', 'off'), true);
+  assert.equal(permissionModeReason('ask', 'enforced', 'claude'), null);
+  assert.match(permissionModeReason('bypass', 'off', 'claude') ?? '', /no gate/);
+  assert.match(permissionModeReason('ask', 'advisory', 'codex') ?? '', /Codex can use tools the gate cannot see/);
   assert.match(permissionModeWords('bypassPermissions'), /skips its own questions/);
   assert.match(permissionModeWords('plan'), /Read-only/);
   assert.equal(permissionModeWords('weird'), 'Set to weird.');
@@ -98,8 +114,8 @@ test('merging a tool policy keeps unrelated servers, drops removed ones and take
 });
 
 test('summary chips use live counts and say plainly when there are no logins', () => {
-  assert.deepEqual(abilitiesChips({ autonomy: 'trusted', apps: 1, skills: 2, spaces: 0, logins: 0, browserProfile: false }), ['Autonomy: Trusted', '1 app', '2 skills', '0 spaces', 'No logins yet']);
-  assert.equal(abilitiesChips({ autonomy: 'careful', apps: 0, skills: 0, spaces: 1, logins: 2, browserProfile: true })[4], '2 saved keys · browser logins');
+  assert.deepEqual(abilitiesChips({ autonomy: 'auto', apps: 1, skills: 2, spaces: 0, logins: 0, browserProfile: false }), ['Autonomy: Auto', '1 app', '2 skills', '0 spaces', 'No logins yet']);
+  assert.equal(abilitiesChips({ autonomy: 'ask', apps: 0, skills: 0, spaces: 1, logins: 2, browserProfile: true })[4], '2 saved keys · browser logins');
   assert.equal(countLabel(1, 'space'), '1 space');
 });
 

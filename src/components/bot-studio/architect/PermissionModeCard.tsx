@@ -3,7 +3,7 @@ import { permissionModeReason, permissionModeWords } from '../view/tabs/runtime/
 
 /**
  * The provider's own permission setting, shown only when it actually decides something: the bot is
- * Unrestricted (no gate), or its provider is one the gate can only advise. Otherwise it renders nothing,
+ * Bypass (no gate), or its provider is one the gate can only advise. Otherwise it renders nothing,
  * because the action gate is in charge and this setting would only be noise.
  */
 export default function PermissionModeCard({ provider, autonomy, level, value, onChange }: {
@@ -15,7 +15,7 @@ export default function PermissionModeCard({ provider, autonomy, level, value, o
 }) {
   const reason = permissionModeReason(autonomy, level, provider);
   if (!reason) return null;
-  const strong = autonomy === 'unrestricted';
+  const strong = autonomy === 'bypass';
   return (
     <div className={`rounded-xl border p-4 ${strong ? 'border-red-500/40 bg-red-500/[0.06]' : 'border-amber-500/30 bg-amber-500/[0.06]'}`}>
       <p className="text-xs font-semibold text-foreground">What {provider} may do on its own</p>

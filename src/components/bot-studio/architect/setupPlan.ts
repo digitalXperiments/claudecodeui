@@ -84,11 +84,11 @@ export function buildSetupPlan(input: SetupPlanInput): SetupPlan {
   const { runtime } = input;
   const errors = validateRuntimeDraft(runtime).map((problem) => problem.message);
   const tasks: SetupTask[] = [];
-  const unrestricted = runtime.autonomy === 'unrestricted';
+  const bypass = runtime.autonomy === 'bypass';
 
-  // Careful is the server default, so it needs no call. Anything else is saved before rules, budget or wake-ups exist.
-  if (runtime.autonomy !== 'careful') {
-    tasks.push({ id: 'autonomy', group: 'autonomy', label: runtime.autonomy === 'trusted' ? 'Let it act on its own (Trusted)' : 'Remove the action gate (Unrestricted)', call: { type: 'autonomy', autonomy: runtime.autonomy } });
+  // Ask is the server default, so it needs no call. Anything else is saved before rules, budget or wake-ups exist.
+  if (runtime.autonomy !== 'ask') {
+    tasks.push({ id: 'autonomy', group: 'autonomy', label: runtime.autonomy === 'auto' ? 'Let it act on its own (Auto)' : 'Remove the action gate (Bypass)', call: { type: 'autonomy', autonomy: runtime.autonomy } });
   }
 
   if (runtime.budget.enabled) {
@@ -96,8 +96,8 @@ export function buildSetupPlan(input: SetupPlanInput): SetupPlan {
     if (!('error' in budget)) tasks.push({ id: 'budget', group: 'budget', label: 'Set spending and wake-up limits', call: { type: 'budget', input: budget } });
   }
 
-  // With no gate (Unrestricted) rules would never be consulted, so none are created.
-  if (!unrestricted) {
+  // With no gate (Bypass) rules would never be consulted, so none are created.
+  if (!bypass) {
     runtime.rules.allow.forEach((choice, index) => {
       tasks.push({ id: `rule-allow-${index}`, group: 'rules', label: `Let it run ${choice.tool} without asking`, call: { type: 'rule', input: allowRuleInput(choice) } });
     });

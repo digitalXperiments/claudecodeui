@@ -42,28 +42,28 @@ export function describeGatewayEnforcement(provider: string, run: { builtinToolG
   return `Gateway attached, but ${provider} can still load its own MCP servers and use built-in tools outside the gate.`;
 }
 
-/** 'off' = the bot is Unrestricted: no gateway, nothing checked. */
+/** 'off' = the bot is Bypass: no gateway, nothing checked. */
 export type EnforcementLevel = GatewayEnforcement | 'off';
 
-/** Plain-English reason enforcement is 'off' for an Unrestricted bot. */
-export function describeUnrestrictedEnforcement(provider: string, permissionMode?: string | null): string {
+/** Plain-English reason enforcement is 'off' for a Bypass bot. */
+export function describeBypassEnforcement(provider: string, permissionMode?: string | null): string {
   return (
-    'Autonomy is Unrestricted: this bot does not use the CloudCLI tool gateway, so nothing it does is checked or held for approval. ' +
+    'Autonomy is Bypass: this bot does not use the CloudCLI tool gateway, so nothing it does is checked or held for approval. ' +
     `${provider} runs it under its own permission mode (${permissionMode?.trim() || 'bypassPermissions'}).`
   );
 }
 
 /**
- * How firmly the gate governs a run on `provider` at the given autonomy. Unrestricted bots skip the
- * gateway entirely, so their level is 'off'; careful and trusted both run through the gate.
+ * How firmly the gate governs a run on `provider` at the given autonomy. Bypass bots skip the
+ * gateway entirely, so their level is 'off'; ask and auto both run through the gate.
  */
 export function enforcementForAutonomy(
   provider: string,
   autonomy: BotAutonomy,
   options: { permissionMode?: string | null } = {},
 ): { level: EnforcementLevel; detail: string; builtin_tool_gate: boolean } {
-  if (autonomy === 'unrestricted') {
-    return { level: 'off', detail: describeUnrestrictedEnforcement(provider, options.permissionMode), builtin_tool_gate: false };
+  if (autonomy === 'bypass') {
+    return { level: 'off', detail: describeBypassEnforcement(provider, options.permissionMode), builtin_tool_gate: false };
   }
   const run = { builtinToolGate: true } as const;
   const level = getGatewayEnforcement(provider, run);

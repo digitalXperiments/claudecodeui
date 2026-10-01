@@ -16,11 +16,10 @@ import { gatewaySessions } from './sessions.js';
 import { buildToolNameMap, FIRST_PARTY_PREFIX, type ToolNameMap } from './tool-names.js';
 import { gatewayUpstreamPool, type UpstreamPool } from './upstream-pool.js';
 
-export const DEFAULT_ASK_TIMEOUT_MS = 10 * 60_000;
-
 let gate: GatewayGate | null = null;
 let pool: UpstreamPool = gatewayUpstreamPool;
-let askTimeoutMs = DEFAULT_ASK_TIMEOUT_MS;
+/** Test/ops override of how long a gate ask waits; unset means each bot's own setting (default 30 minutes). */
+let askTimeoutMs: number | undefined;
 
 /** The lead wires the real Action Gate here. With no gate every upstream call is refused. */
 export function setGatewayGate(next: GatewayGate | null): void {

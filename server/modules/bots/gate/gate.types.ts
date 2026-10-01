@@ -31,11 +31,13 @@ export interface GateRequest {
   description?: string;
   /** Caller-classified risk (built-in tools); skips name/annotation inference. */
   riskOverride?: Risk;
+  /** Why the caller wants a human to look at this (built-in tools); shown on the approval card. */
+  why?: string;
 }
 
 export interface GateVerdict {
   decision: 'allow' | 'ask' | 'deny';
-  /** rule:<id> | floor | taint | reviewer | budget | dry_run | default | autonomy:trusted */
+  /** rule:<id> | floor | taint | reviewer | budget | dry_run | default | autonomy:auto | autonomy:auto+reviewer */
   decidedBy: string;
   reason: string;
   risk: Risk;

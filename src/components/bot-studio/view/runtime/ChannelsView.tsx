@@ -3,11 +3,11 @@ import { useCallback, useMemo, useState } from 'react';
 
 import { botRuntimeApi } from '../../api/botRuntimeApi';
 import type { Bot } from '../../types';
-import type { BotChannel, BotOutboundLogEntry } from '../../types/botRuntime';
+import type { BotChannel, BotOutboundLogEntry, BotPublicBaseUrl } from '../../types/botRuntime';
 import Toggle from '../../ui/Toggle';
 
 import ChannelEditor from './ChannelEditor';
-import { CHANNEL_KIND_META, channelMeta, groupChannels, outboundReasonLabel, policySummary, publicUrlStatus } from './channelsModel';
+import { CHANNEL_KIND_META, channelMeta, describePublicBaseUrl, groupChannels, outboundReasonLabel, policySummary, publicUrlStatus } from './channelsModel';
 import { titleLookup } from './briefModel';
 import { mapLimit } from './concurrency';
 import { EmptyLine, ErrorBanner, LoadingLine, Pill, RuntimeCard, RuntimePage } from './RuntimePage';
@@ -89,8 +89,10 @@ export default function ChannelsView({ bots, onNotice }: {
 }) {
   const titleOf = useMemo(() => titleLookup(bots), [bots]);
   const botKey = bots.map((bot) => bot.section_id).join(',');
+  const [publicBaseUrl, setPublicBaseUrl] = useState<BotPublicBaseUrl | null>(null);
   const fetchAll = useCallback(async (): Promise<BotChannel[]> => {
     const global = await botRuntimeApi.channels.list();
+    setPublicBaseUrl(global.public_base_url ?? null);
     const perBot = await mapLimit(bots, FETCH_CONCURRENCY, async (bot) => {
       try { return (await botRuntimeApi.channels.list(bot.section_id)).channels; } catch { return []; }
     });
@@ -102,6 +104,7 @@ export default function ChannelsView({ bots, onNotice }: {
   const fetchHost = useCallback(() => botRuntimeApi.exec.host().catch(() => null), []);
   const { data: host } = useLoad(fetchHost, 'host');
   const urlStatus = publicUrlStatus(host);
+  const baseUrl = describePublicBaseUrl(publicBaseUrl);
   const [adding, setAdding] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [testingId, setTestingId] = useState<string | null>(null);
@@ -161,8 +164,14 @@ export default function ChannelsView({ bots, onNotice }: {
 
       <RuntimeCard title="Public base URL for action links" subtitle="Approve and reject buttons in Slack and Telegram are signed links back to this server">
         <div className="flex items-start gap-3 px-4 py-3"><Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" /><div className="space-y-1.5 text-[11px] text-muted-foreground">
-          <p className="flex flex-wrap items-center gap-2"><Pill tone={urlStatus.tone}>{urlStatus.label}</Pill><span>{urlStatus.detail}</span></p>
-          <p>The server reports only whether an app-wide URL is set, not which one. Links use the first of these that is set:</p>
+          {baseUrl ? <>
+            <p>{baseUrl.line}</p>
+            {baseUrl.warning ? <p role="alert" className="text-amber-700 dark:text-amber-300">{baseUrl.warning}</p> : null}
+          </> : <>
+            <p className="flex flex-wrap items-center gap-2"><Pill tone={urlStatus.tone}>{urlStatus.label}</Pill><span>{urlStatus.detail}</span></p>
+            <p>The server reports only whether an app-wide URL is set, not which one. Links use the first of these that is set:</p>
+          </>}
+          {baseUrl ? <p>Links use the first of these that is set:</p> : null}
           <ol className="list-decimal space-y-0.5 pl-4"><li>The channel&apos;s own <code>action_base_url</code> (set it in a Slack or Telegram channel&apos;s editor).</li><li>The app setting <code>bots.public_base_url</code>.</li><li>The <code>CLOUDCLI_PUBLIC_URL</code> environment variable.</li><li>Otherwise <code>http://localhost:&lt;port&gt;</code>.</li></ol>
           <p>If links open &quot;localhost&quot; on your phone, set one of the first three to the address you reach CloudCLI at.</p>
         </div></div>

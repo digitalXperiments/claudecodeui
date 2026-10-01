@@ -143,28 +143,29 @@ test('with nothing to do the message says so, and a fresh state is all pending',
   assert.equal(summarizeSetup([], {}).allDone, false, 'an empty plan is not "all done" progress');
 });
 
-test('Careful needs no call; Trusted and Unrestricted are saved first, before limits, rules or wake-ups', async () => {
-  const careful = buildSetupPlan({ runtime: emptyRuntimeDraft(), globalChannels: [], enableAfter: false });
-  assert.equal(careful.tasks.some((task) => task.group === 'autonomy'), false);
+test('Ask needs no call; Auto and Bypass are saved first, before limits, rules or wake-ups', async () => {
+  const ask = buildSetupPlan({ runtime: emptyRuntimeDraft(), globalChannels: [], enableAfter: false });
+  assert.equal(ask.tasks.some((task) => task.group === 'autonomy'), false);
 
-  const trusted = fullDraft();
-  trusted.autonomy = 'trusted';
-  const plan = buildSetupPlan({ runtime: trusted, globalChannels: [slack], enableAfter: true });
+  const auto = fullDraft();
+  auto.autonomy = 'auto';
+  const plan = buildSetupPlan({ runtime: auto, globalChannels: [slack], enableAfter: true });
   assert.equal(plan.tasks[0].id, 'autonomy');
-  assert.deepEqual(plan.tasks[0].call, { type: 'autonomy', autonomy: 'trusted' });
-  assert.match(plan.tasks[0].label, /Trusted/);
+  assert.deepEqual(plan.tasks[0].call, { type: 'autonomy', autonomy: 'auto' });
+  assert.match(plan.tasks[0].label, /Let it act on its own \(Auto\)/);
 
   const { api, calls } = fakeApi();
   await runSetup({ botId: 'bot-1', tasks: plan.tasks, api });
-  assert.deepEqual(calls[0], { type: 'autonomy', botId: 'bot-1', input: 'trusted' });
+  assert.deepEqual(calls[0], { type: 'autonomy', botId: 'bot-1', input: 'auto' });
   assert.equal(calls.at(-1)?.type, 'enable');
 });
 
-test('Unrestricted saves autonomy and drops rule tasks, which would never be consulted', () => {
+test('Bypass saves autonomy and drops rule tasks, which would never be consulted', () => {
   const runtime = fullDraft();
-  runtime.autonomy = 'unrestricted';
+  runtime.autonomy = 'bypass';
   const plan = buildSetupPlan({ runtime, globalChannels: [slack], enableAfter: false });
-  assert.deepEqual(plan.tasks[0].call, { type: 'autonomy', autonomy: 'unrestricted' });
+  assert.deepEqual(plan.tasks[0].call, { type: 'autonomy', autonomy: 'bypass' });
+  assert.equal(plan.tasks[0].label, 'Remove the action gate (Bypass)');
   assert.equal(plan.tasks.some((task) => task.group === 'rules'), false);
   assert.equal(plan.tasks.some((task) => task.id === 'budget'), true, 'a budget is still created');
 });

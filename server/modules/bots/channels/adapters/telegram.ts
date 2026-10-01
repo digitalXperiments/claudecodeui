@@ -1,9 +1,22 @@
-/** Telegram: sendMessage with inline keyboard URL buttons (signed links). Inbound lives in telegram-inbound.ts. */
+/**
+ * Telegram: sendMessage with an inline keyboard. Telegram rejects the whole message when a URL
+ * button points at localhost ("Bad Request: inline keyboard button URL ... localhost"), so the
+ * buttons depend on what can actually work:
+ *  - inbound polling is on, or the action base URL is not public https: `callback_data` buttons
+ *    (`a:<shortid>`), answered by the poller in telegram-inbound.ts;
+ *  - a public https base URL and no polling: URL buttons (the signed links);
+ *  - otherwise the message goes out WITHOUT buttons plus a line "Open CloudCLI to approve".
+ * A failed send with buttons is retried once without them, so a message is never dropped.
+ */
 
+import { interruptsService } from '@/modules/interrupt-queue/index.js';
+import { createCallbackData, DEFAULT_CALLBACK_TTL_MS } from '@/modules/bots/channels/callback-ids.js';
 import {
   checkBaseUrl,
   checkKeys,
   checkSecretRef,
+  isPublicHttpsUrl,
+  OPEN_CLOUDCLI_LINE,
   truncate,
   type AdapterContext,
   type ChannelAdapter,
@@ -13,16 +26,48 @@ import {
 
 export const TELEGRAM_CONFIG_KEYS = ['token_ref', 'chat_id', 'inbound', 'poll_timeout_s', 'inbound_offset', 'action_base_url'] as const;
 
-export function buildTelegramPayload(chatId: string | number, message: OutboundMessage): Record<string, unknown> {
-  const text = `${message.title}\n${message.botTitle}\n\n${truncate(message.body, 3500)}`;
-  return {
-    chat_id: chatId,
-    text,
-    disable_web_page_preview: true,
-    ...(message.actions.length > 0
-      ? { reply_markup: { inline_keyboard: message.actions.slice(0, 6).map((action) => [{ text: truncate(action.label, 60), url: action.url }]) } }
-      : {}),
-  };
+export type TelegramButtonMode = 'callback' | 'url' | 'none';
+
+/** Which kind of approval buttons this message can carry on this channel. */
+export function telegramButtonMode(config: Record<string, unknown>, message: OutboundMessage): TelegramButtonMode {
+  if (message.actions.length === 0) return 'none';
+  if (config.inbound === true && message.interruptId) return 'callback';
+  if (message.actions.every((action) => isPublicHttpsUrl(action.url))) return 'url';
+  return 'none';
+}
+
+function callbackTtlMs(interruptId: string | undefined): number {
+  try {
+    const expires = interruptId ? interruptsService.get(interruptId)?.expires_at : null;
+    const left = expires ? Date.parse(expires) - Date.now() : NaN;
+    // Outlive the approval a little so a late tap still gets an answer ("expired") rather than silence.
+    if (Number.isFinite(left) && left > 0) return left + 5 * 60_000;
+  } catch {
+    // Fall through to the default.
+  }
+  return DEFAULT_CALLBACK_TTL_MS;
+}
+
+export function buildTelegramPayload(
+  chatId: string | number,
+  message: OutboundMessage,
+  mode: TelegramButtonMode = message.actions.every((action) => isPublicHttpsUrl(action.url)) ? 'url' : 'none',
+): Record<string, unknown> {
+  const buttonless = message.actions.length > 0 && mode === 'none';
+  const text = `${message.title}\n${message.botTitle}\n\n${truncate(message.body, 3500)}${buttonless ? `\n\n${OPEN_CLOUDCLI_LINE}` : ''}`;
+  const payload: Record<string, unknown> = { chat_id: chatId, text, disable_web_page_preview: true };
+  if (mode === 'url') {
+    payload.reply_markup = { inline_keyboard: message.actions.slice(0, 6).map((action) => [{ text: truncate(action.label, 60), url: action.url }]) };
+  } else if (mode === 'callback' && message.interruptId) {
+    const interruptId = message.interruptId;
+    const ttlMs = callbackTtlMs(interruptId);
+    payload.reply_markup = {
+      inline_keyboard: message.actions.slice(0, 6).map((action) => [
+        { text: truncate(action.label, 60), callback_data: createCallbackData(interruptId, action.key, { ttlMs }) },
+      ]),
+    };
+  }
+  return payload;
 }
 
 export async function telegramCall(
@@ -48,8 +93,22 @@ export async function sendTelegramText(
   message: OutboundMessage,
   ctx: AdapterContext,
 ): Promise<SendResult> {
-  const result = await telegramCall(ctx, String(config.token_ref), 'sendMessage', buildTelegramPayload(config.chat_id as string | number, message));
-  return result.ok ? { ok: true } : { ok: false, detail: `telegram error: ${result.description ?? `http ${result.status}`}` };
+  const tokenRef = String(config.token_ref);
+  const chatId = config.chat_id as string | number;
+  const mode = telegramButtonMode(config, message);
+  const attempt = async (buttons: TelegramButtonMode): Promise<{ ok: boolean; detail?: string }> => {
+    try {
+      const result = await telegramCall(ctx, tokenRef, 'sendMessage', buildTelegramPayload(chatId, message, buttons));
+      return result.ok ? { ok: true } : { ok: false, detail: `telegram error: ${result.description ?? `http ${result.status}`}` };
+    } catch (error) {
+      return { ok: false, detail: `telegram error: ${error instanceof Error ? error.message : String(error)}` };
+    }
+  };
+  const first = await attempt(mode);
+  if (first.ok || mode === 'none') return first;
+  // Any failure with buttons: say the same thing once more without them, never drop the message.
+  const retry = await attempt('none');
+  return retry.ok ? { ok: true, detail: `sent without buttons after: ${first.detail}` } : { ok: false, detail: `${first.detail}; retry without buttons: ${retry.detail}` };
 }
 
 export const telegramAdapter: ChannelAdapter = {
