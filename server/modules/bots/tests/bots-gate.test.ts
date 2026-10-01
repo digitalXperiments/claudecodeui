@@ -750,7 +750,7 @@ test('low: a failing dry-run lookup is treated as a dry run (fail closed)', asyn
 test('soft budget: past the soft ratio the kernel acts on a cheaper model; under it, unchanged', async () => {
   const { softCapRoute } = await import('@/modules/bots/kernel/kernel.service.js');
   await withDatabase(async (botId) => {
-    const section = { ...missionControlDb.getSection(botId)!, provider: 'claude', model: 'opus' };
+    const section = { ...missionControlDb.getSection(botId)!, provider: 'claude' as const, model: 'opus' };
     budgets.put(botId, { dailyUsd: 10, softRatio: 0.5 });
     assert.equal(softCapRoute(section).model, 'opus', 'no spend yet: keep the configured model');
     const created = runsDb.create({ source: 'mission_control', meta: { section_id: botId } });
