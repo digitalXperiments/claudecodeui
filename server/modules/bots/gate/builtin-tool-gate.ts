@@ -3,12 +3,13 @@ import path from 'node:path';
 import { realpathSync } from 'node:fs';
 
 import { missionControlDb } from '@/modules/mission-control/index.js';
-import { classifyCommand, classifyPermissionRequest, extractPermissionRequestDetails } from '@/modules/permissions/index.js';
+import { classifyCommand, classifyPermissionRequest, extractPermissionRequestDetails, stripHeredocBodies } from '@/modules/permissions/index.js';
 import { botGoalsDb } from '@/modules/bots/kernel/bot-goals.repository.js';
 import { actionGate, recordGateDenial } from '@/modules/bots/gate/action-gate.service.js';
 import type { GateContext, GateRequest, Risk } from '@/modules/bots/gate/gate.types.js';
 import { botGateDecisionsDb } from '@/modules/bots/gate/bot-gate-decisions.repository.js';
 import { assessFileTool, assessShellCommand, type StrictFinding } from '@/modules/bots/gate/strict-guard.js';
+import { riskFromScan, scanShellCommand, scanToolPaths } from '@/modules/bots/gate/command-risk.js';
 
 export const BUILTIN_GATE_SERVER = 'builtin';
 const GATEWAY_TOOL_PREFIX = 'mcp__cloudcli-tool-gateway__';
@@ -185,6 +186,10 @@ export function builtinDenylistReason(
   if (details.command) {
     const reason = protectedCommandReason(details.command, scope.botHome);
     if (reason) return reason;
+    // Every word, including `@file` / `-F f=@file` / `< file` / `scp` sources the shell model above
+    // does not read as paths. Heredoc bodies are data, not references.
+    const hit = scanShellCommand(stripHeredocBodies(details.command), scope).protectedHit;
+    if (hit) return hit;
   }
   const url = typeof record.url === 'string' ? record.url : '';
   if (url && new RegExp(LOCAL_HOST, 'i').test(url)) return 'the CloudCLI API on localhost is off-limits';
@@ -213,6 +218,22 @@ function mapRisk(toolName: string, reason: string): Risk {
   if (/webfetch|websearch|fetch|http|browser|download/.test(lowered)) return 'send';
   if (/sensitive path/.test(reason)) return 'credential';
   return 'prod_change';
+}
+
+/**
+ * Risk of an escalated call, computed from everything the call references rather than from the
+ * first escalation reason: a credential read bundled in a shell command (`curl -d @~/.npmrc`) must
+ * never be rated as an ordinary `prod_change` / `send` that Trusted autonomy lets through.
+ */
+export function builtinCallRisk(
+  toolName: string,
+  details: { command: string | null; paths: string[] },
+  scope: { workspaceRoot: string; botHome: string },
+  reason: string,
+): Risk {
+  const base = mapRisk(toolName, reason);
+  const scan = details.command ? scanShellCommand(details.command, scope) : scanToolPaths(details.paths, scope);
+  return riskFromScan(scan, base);
 }
 
 function buildGateContext(ctx: BuiltinToolGateContext, tainted: boolean): GateContext {
@@ -300,7 +321,7 @@ export function createBuiltinToolGate(ctx: BuiltinToolGateContext): BuiltinToolG
       return { behavior: 'allow' };
     }
 
-    const risk = mapRisk(toolName, escalationReason);
+    const risk = builtinCallRisk(toolName, details, ctx, escalationReason);
     const verdict = await actionGate.evaluate(gateCtx, { ...gateRequest, riskOverride: risk, description: escalationReason });
     if (verdict.decision === 'deny') return deny(`Blocked by the action gate (${verdict.risk}): ${verdict.reason}`);
     if (verdict.decision === 'ask') {

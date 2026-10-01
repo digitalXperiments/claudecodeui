@@ -8,6 +8,19 @@ export interface BotPhaseRoute {
   effort?: string;
 }
 
+/**
+ * How much a bot may do without asking, whatever provider runs it:
+ *  - careful: the safety floor asks a human for send / publish / delete / purchase / prod_change / credential.
+ *  - trusted: the floor risks (except credential) run without asking, unless the run read untrusted content.
+ *  - unrestricted: the bot does not use the tool gateway; the provider's own permission mode applies.
+ */
+export type BotAutonomy = 'careful' | 'trusted' | 'unrestricted';
+export const BOT_AUTONOMY_LEVELS: readonly BotAutonomy[] = ['careful', 'trusted', 'unrestricted'];
+export const DEFAULT_BOT_AUTONOMY: BotAutonomy = 'careful';
+
+export const isBotAutonomy = (value: unknown): value is BotAutonomy =>
+  typeof value === 'string' && (BOT_AUTONOMY_LEVELS as readonly string[]).includes(value);
+
 export interface BotRuntimeConfig {
   identity?: { persona?: string; avatar?: string };
   routing?: {
@@ -22,8 +35,13 @@ export interface BotRuntimeConfig {
   };
   backend?: 'local' | 'docker' | 'ssh';
   backend_config?: Record<string, unknown>;
-  /** Route tool calls through the bot tool gateway (default true when the runtime flag is on). */
+  /**
+   * Legacy: `false` meant "no tool gateway". Still accepted; on read it is migrated to
+   * `autonomy: 'unrestricted'` (an explicit `autonomy` always wins).
+   */
   gateway?: boolean;
+  /** Per-bot autonomy level; absent means 'careful' (see `resolveBotAutonomy`). */
+  autonomy?: BotAutonomy;
   enforcement?: 'enforced' | 'advisory';
   /** Learning loop settings. Only memory proposals can ever auto-promote. */
   learning?: { auto_promote_memory_min_confidence?: number };
@@ -97,6 +115,9 @@ export function normalizeBotRuntimeConfig(raw: unknown): BotRuntimeConfig {
   }
   if (isObject(source.backend_config)) config.backend_config = source.backend_config;
   if (typeof source.gateway === 'boolean') config.gateway = source.gateway;
+  if (isBotAutonomy(source.autonomy)) config.autonomy = source.autonomy;
+  // Legacy `gateway: false` migrates to 'unrestricted' (true bypass, as before) unless autonomy is explicit.
+  else if (source.gateway === false) config.autonomy = 'unrestricted';
   if (typeof source.enforcement === 'string' && ENFORCEMENT.has(source.enforcement)) {
     config.enforcement = source.enforcement as BotRuntimeConfig['enforcement'];
   }
@@ -107,6 +128,25 @@ export function normalizeBotRuntimeConfig(raw: unknown): BotRuntimeConfig {
     config.learning = learning;
   }
   return config;
+}
+
+/** The effective autonomy of a config (null config = bot without runtime settings = careful). */
+export function resolveBotAutonomy(config: BotRuntimeConfig | null | undefined): BotAutonomy {
+  if (!config) return DEFAULT_BOT_AUTONOMY;
+  if (isBotAutonomy(config.autonomy)) return config.autonomy;
+  return config.gateway === false ? 'unrestricted' : DEFAULT_BOT_AUTONOMY;
+}
+
+/**
+ * The bot's autonomy, failing CLOSED: a missing bot or an unreadable config is 'careful', never
+ * 'unrestricted' (an error must not switch the gate off).
+ */
+export function readBotAutonomy(botId: string): BotAutonomy {
+  try {
+    return resolveBotAutonomy(readBotRuntimeConfig(botId));
+  } catch {
+    return DEFAULT_BOT_AUTONOMY;
+  }
 }
 
 export function readBotRuntimeConfig(botId: string): BotRuntimeConfig | null {
@@ -128,10 +168,17 @@ export function patchBotRuntimeConfig(
   const current = readBotRuntimeConfig(botId);
   if (!current) return null;
   const merged: Record<string, unknown> = { ...current };
+  // Legacy `gateway` patches keep working: `false` means unrestricted, `true` undoes a migrated unrestricted.
+  if (patch.gateway !== undefined && patch.autonomy === undefined) {
+    if (patch.gateway === false) merged.autonomy = 'unrestricted';
+    else if (patch.gateway === true && current.autonomy === 'unrestricted') delete merged.autonomy;
+  }
   for (const [key, value] of Object.entries(patch)) {
     if (value === null) delete merged[key];
     else if (value !== undefined) merged[key] = value;
   }
+  // An explicit autonomy supersedes the legacy flag; drop it so removing autonomy later cannot resurrect it.
+  if (patch.autonomy !== undefined && merged.gateway === false) delete merged.gateway;
   const next = normalizeBotRuntimeConfig(merged);
   getConnection().prepare('UPDATE mc_sections SET runtime_json = ? WHERE section_id = ?').run(JSON.stringify(next), botId);
   return next;

@@ -35,7 +35,7 @@ export interface GateRequest {
 
 export interface GateVerdict {
   decision: 'allow' | 'ask' | 'deny';
-  /** rule:<id> | floor | taint | reviewer | budget | dry_run | default */
+  /** rule:<id> | floor | taint | reviewer | budget | dry_run | default | autonomy:trusted */
   decidedBy: string;
   reason: string;
   risk: Risk;

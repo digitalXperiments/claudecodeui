@@ -30,6 +30,7 @@ import { autoApproveLabel, pipelineLabel, pipelineStages, pipelineSummary } from
 import AgentExtras from './AgentExtras';
 import GoalsStep from './GoalsStep';
 import GuardrailsPanel from './GuardrailsPanel';
+import PermissionModeCard from './PermissionModeCard';
 import { isPristineDraft, parseDraft, serializeDraft } from './draftStorage';
 import { useEnforcementPreview, useGlobalChannels } from './hooks';
 import { Callout, FieldLabel, StepPanel } from './parts';
@@ -227,8 +228,10 @@ export default function BotArchitect({ mode, initialSection, projects, onSaved, 
   const initialFormRef = useRef(form);
   const restorePendingRef = useRef(false);
   const { items: catalogItems } = useMcpCatalog();
-  const enforcement = useEnforcementPreview(form.provider ?? 'claude', runtimeV2);
+  const enforcement = useEnforcementPreview(form.provider ?? 'claude', runtimeV2, runtime.autonomy);
   const globalChannels = useGlobalChannels(runtimeWizard);
+  /** What the gate can do for this provider; a failed check counts as advisory so the setting stays reachable. */
+  const gateLevel = enforcement.data?.level ?? (enforcement.error ? 'advisory' : null);
 
   useEffect(() => {
     setInventory(catalogItems);
@@ -495,13 +498,8 @@ export default function BotArchitect({ mode, initialSection, projects, onSaved, 
     const classicPermissionMode = (
       <div><FieldLabel>Permission mode</FieldLabel><select className="field" value={form.permission_mode ?? 'bypassPermissions'} onChange={(event) => updateForm({ permission_mode: event.target.value })}><option value="default">Default · ask when needed</option><option value="acceptEdits">Accept edits · no destructive approval</option><option value="bypassPermissions">Bypass permissions · MCP policy still applies</option><option value="plan">Plan · read-only agent</option></select><p className="mt-2 flex items-start gap-2 text-xs leading-relaxed text-muted-foreground"><ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-primary" />The per-tool policy in Tools is the final boundary. Start with Propose or Dry run while you learn the bot’s behavior.</p></div>
     );
-    const permissionModeAdvanced = (
-      <details className="rounded-xl border border-border/60 bg-muted/20 p-4">
-        <summary className="cursor-pointer select-none text-xs font-semibold text-foreground">Advanced: provider permission mode</summary>
-        <p className="mt-2 text-xs leading-relaxed text-muted-foreground">This is the provider's own permission setting. With runtime v2 the action gate decides which tools can run (reads go through, risky actions ask), so it mostly matters where the gate can only advise. Bots have nobody to answer a provider prompt, so most keep the default.</p>
-        <select aria-label="Provider permission mode" className="field mt-3" value={form.permission_mode ?? 'bypassPermissions'} onChange={(event) => updateForm({ permission_mode: event.target.value })}><option value="default">Ask when needed (the provider prompts)</option><option value="acceptEdits">Accept file edits without asking</option><option value="bypassPermissions">Skip the provider's prompts (the action gate still applies)</option><option value="plan">Plan only, read-only agent</option></select>
-      </details>
-    );
+    // With the action gate in charge the provider's own setting is noise: it appears only for Unrestricted bots or providers the gate can only advise.
+    const permissionModeAdvanced = <PermissionModeCard provider={form.provider ?? 'claude'} autonomy={runtime.autonomy} level={gateLevel} value={form.permission_mode ?? 'bypassPermissions'} onChange={(permission_mode) => updateForm({ permission_mode })} />;
     return (
     <StepPanel eyebrow={stepEyebrow(steps, 'agent')} title="Choose the mind and the safety boundary" description="Provider and model are loaded from the same model registry used by Mission Control.">
       <div className="grid gap-4 md:grid-cols-2"><div><FieldLabel>Provider</FieldLabel><select className="field" value={form.provider ?? 'claude'} onChange={(event) => updateForm({ provider: event.target.value, model: null, effort: null })}>{MC_PROVIDERS.map((provider) => <option key={provider} value={provider}>{provider}</option>)}</select></div><div><FieldLabel detail={modelsLoading ? 'loading…' : undefined}>Model</FieldLabel><select className="field" value={form.model ?? ''} onChange={(event) => updateForm({ model: event.target.value || null, effort: event.target.value === (form.model ?? '') ? form.effort ?? null : null })}><option value="">Provider default</option>{models.map((modelOption) => <option key={modelOption.value} value={modelOption.value}>{modelOption.label}</option>)}</select></div></div>
@@ -544,18 +542,18 @@ export default function BotArchitect({ mode, initialSection, projects, onSaved, 
     <div className="space-y-2"><div className="flex items-center justify-between"><FieldLabel>Action set</FieldLabel><button type="button" className="button min-h-8 px-2.5 text-[11px]" onClick={() => updateForm({ actions: [...(form.actions ?? []), { id: `action-${Date.now()}`, label: 'New action', kind: 'approve', style: 'secondary', terminal: true }] })}><Plus className="h-3.5 w-3.5" />Add action</button></div>{(form.actions ?? []).map((action, index) => <div key={action.id} className="grid gap-2 rounded-xl border border-border/60 bg-muted/15 p-3 sm:grid-cols-[1fr_1fr_120px_28px]"><input className="field h-9" value={action.label} aria-label="Action label" onChange={(event) => updateAction(index, { label: event.target.value })} /><input className="field h-9" value={action.kind} aria-label="Action kind" onChange={(event) => updateAction(index, { kind: event.target.value })} /><select className="field h-9" aria-label="Action style" value={action.style} onChange={(event) => updateAction(index, { style: event.target.value as McAction['style'] })}><option value="primary">Primary</option><option value="secondary">Secondary</option><option value="destructive">Destructive</option></select><button type="button" aria-label={`Remove ${action.label}`} className="flex h-9 items-center justify-center rounded-lg text-muted-foreground hover:bg-red-500/10 hover:text-red-600" onClick={() => updateForm({ actions: (form.actions ?? []).filter((_, actionIndex) => actionIndex !== index) })}><Trash2 className="h-4 w-4" /></button><label className="flex items-center gap-2 text-[10px] text-muted-foreground sm:col-span-4"><input type="checkbox" checked={Boolean(action.terminal)} onChange={(event) => updateAction(index, { terminal: event.target.checked })} />Terminal action</label></div>)}</div>
   </StepPanel>;
 
-  const renderGuardrails = () => <StepPanel eyebrow={stepEyebrow(steps, 'guardrails')} title="Make the safe path visible" description={runtimeV2 ? 'Risky actions always ask first. Decide what this bot may do on its own, how much it may spend, and how to test it safely.' : 'These are the guardrails supported by the section model today; no hidden budgets or phantom controls.'}>
+  const renderGuardrails = () => <StepPanel eyebrow={stepEyebrow(steps, 'guardrails')} title="Make the safe path visible" description={runtimeV2 ? 'Decide how much this bot may do on its own, how much it may spend, and how to test it safely.' : 'These are the guardrails supported by the section model today; no hidden budgets or phantom controls.'}>
     {runtimeV2 ? (
-      <GuardrailsPanel provider={form.provider ?? 'claude'} enforcement={enforcement} servers={attachedServers} runtime={runtime} onChange={updateRuntime} dryRun={Boolean(form.dry_run)} onDryRun={(dry_run) => updateForm({ dry_run })} permissionMode={form.permission_mode ?? 'bypassPermissions'} configurable={runtimeWizard} />
+      <GuardrailsPanel provider={form.provider ?? 'claude'} enforcement={enforcement} servers={attachedServers} runtime={runtime} onChange={updateRuntime} dryRun={Boolean(form.dry_run)} onDryRun={(dry_run) => updateForm({ dry_run })} permissionMode={form.permission_mode ?? 'bypassPermissions'} onPermissionMode={(permission_mode) => updateForm({ permission_mode })} configurable={runtimeWizard} />
     ) : (
     <div className="grid gap-3 sm:grid-cols-2"><div className="rounded-xl border border-border/60 p-4"><p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">Permission mode</p><p className="mt-2 text-sm font-semibold">{form.permission_mode || 'default'}</p><p className="mt-1 text-xs leading-relaxed text-muted-foreground">The model can only use attached MCP capabilities, each with its own allow / ask / deny policy.</p></div><div className="rounded-xl border border-border/60 p-4"><p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">Dry-run-first recommendation</p><p className="mt-2 text-sm font-semibold">{form.dry_run ? 'Enabled' : 'Recommended before automatic stages'}</p><p className="mt-1 text-xs leading-relaxed text-muted-foreground">Preview a few ticks before letting Resolve or Work run automatically. Dry run is a switch; the brief stays the same.</p></div></div>
     )}
     {stages.resolve === 'auto' || (autoApprove && form.auto_approve) ? <div className="rounded-xl border border-amber-500/30 bg-amber-500/[0.08] p-4"><p className="flex items-center gap-2 text-sm font-semibold text-amber-800 dark:text-amber-200"><CircleHelp className="h-4 w-4" />Automatic approval risks to check</p><ul className="mt-2 space-y-1.5 text-xs leading-relaxed text-amber-800/80 dark:text-amber-100/80"><li>• Write-like tools may change external systems.</li><li>• Auto-approve skips the inbox review gate.</li><li>• A broad brief can create noisy or duplicate items.</li></ul></div> : null}
-    <div className="rounded-xl border border-border/60 bg-muted/20 p-4"><p className="text-xs font-semibold">Current policy summary</p><p className="mt-1 text-xs text-muted-foreground">{attachedServers.length} MCP server{attachedServers.length === 1 ? '' : 's'} attached · {Object.values(form.tool_policy ?? {}).reduce((count, server) => count + Object.keys(server).length, 0)} tool decisions loaded · {form.dry_run ? 'no external actions' : form.auto_approve && autoApprove ? 'approve actions run automatically' : 'actions held for approval'}</p></div>
+    {!runtimeV2 ? <div className="rounded-xl border border-border/60 bg-muted/20 p-4"><p className="text-xs font-semibold">Current policy summary</p><p className="mt-1 text-xs text-muted-foreground">{attachedServers.length} MCP server{attachedServers.length === 1 ? '' : 's'} attached · {Object.values(form.tool_policy ?? {}).reduce((count, server) => count + Object.keys(server).length, 0)} tool decisions loaded · {form.dry_run ? 'no external actions' : form.auto_approve && autoApprove ? 'approve actions run automatically' : 'actions held for approval'}</p></div> : null}
   </StepPanel>;
 
   const reviewRuntimeRows: Array<[string, string]> = runtimeWizard
-    ? runtimeReviewRows({ runtime: effectiveRuntime, cron: form.schedule_cron, manualSchedule: Boolean(form.manual_schedule), provider: form.provider ?? 'claude', enforcement: enforcement.data?.level ?? null, globalChannels: globalChannels.data ?? [] })
+    ? runtimeReviewRows({ runtime: effectiveRuntime, cron: form.schedule_cron, manualSchedule: Boolean(form.manual_schedule), provider: form.provider ?? 'claude', enforcement: enforcement.data?.level ?? null, permissionMode: form.permission_mode ?? 'bypassPermissions', globalChannels: globalChannels.data ?? [] })
     : [];
   const reviewPlan = runtimeWizard ? buildSetupPlan({ runtime: effectiveRuntime, globalChannels: globalChannels.data ?? [], enableAfter: Boolean(form.enabled) }) : null;
 

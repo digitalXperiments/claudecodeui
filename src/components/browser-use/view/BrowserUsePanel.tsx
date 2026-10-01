@@ -68,6 +68,8 @@ type BrowserHumanPrompt = {
 type BrowserUsePanelProps = {
   isVisible: boolean;
   onShowSettings?: (tab?: SettingsMainTab) => void;
+  /** Pin the panel to one session (e.g. a bot's sign-in browser embedded in Bot Studio). */
+  sessionId?: string;
 };
 
 async function readJson<T>(response: Response): Promise<T> {
@@ -149,10 +151,10 @@ export function viewportPointFromClient(clientX: number, clientY: number, rect: 
   return { x, y };
 }
 
-export default function BrowserUsePanel({ isVisible, onShowSettings }: BrowserUsePanelProps) {
+export default function BrowserUsePanel({ isVisible, onShowSettings, sessionId: pinnedSessionId }: BrowserUsePanelProps) {
   const [status, setStatus] = useState<BrowserUseStatus | null>(null);
   const [sessions, setSessions] = useState<BrowserUseSession[]>([]);
-  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(pinnedSessionId ?? null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isBusy, setIsBusy] = useState(false);
   const [isInstalling, setIsInstalling] = useState(false);
@@ -164,8 +166,10 @@ export default function BrowserUsePanel({ isVisible, onShowSettings }: BrowserUs
   const surfaceRef = useRef<HTMLDivElement>(null);
 
   const selectedSession = useMemo(
-    () => sessions.find((session) => session.id === selectedSessionId) || sessions[0] || null,
-    [selectedSessionId, sessions],
+    () => (pinnedSessionId
+      ? sessions.find((session) => session.id === pinnedSessionId) || null
+      : sessions.find((session) => session.id === selectedSessionId) || sessions[0] || null),
+    [pinnedSessionId, selectedSessionId, sessions],
   );
 
   const activeSessions = sessions.filter((session) => session.status === 'ready');

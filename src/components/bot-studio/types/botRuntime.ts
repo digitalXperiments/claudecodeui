@@ -152,6 +152,8 @@ export type BotEpisodeDetail = {
 
 export type BotPhaseRoute = { provider: string; model?: string; effort?: string };
 
+export type BotAutonomy = 'careful' | 'trusted' | 'unrestricted';
+
 export type BotRuntimeConfig = {
   identity?: { persona?: string; avatar?: string };
   routing?: {
@@ -164,6 +166,8 @@ export type BotRuntimeConfig = {
   backend_config?: Record<string, unknown>;
   gateway?: boolean;
   enforcement?: 'enforced' | 'advisory';
+  /** How much the bot may do without asking (the action gate's posture). Missing means 'careful'. */
+  autonomy?: BotAutonomy;
   learning?: { auto_promote_memory_min_confidence?: number };
 };
 
@@ -317,10 +321,13 @@ export type BotEnforcement = {
   phases: Array<{ phase: 'perceive' | 'act' | 'reflect'; provider: string; level: BotEnforcementLevel }>;
 };
 
-/** GET /enforcement/preview?provider=: the level a bot would get on a provider (no bot needed). */
+/** `off` appears only for an Unrestricted bot: there is no gate to enforce anything. */
+export type BotGateLevel = BotEnforcementLevel | 'off';
+
+/** GET /enforcement/preview?provider=&autonomy=: the level a bot would get on a provider (no bot needed). */
 export type BotEnforcementPreview = {
   provider: string;
-  level: BotEnforcementLevel;
+  level: BotGateLevel;
   /** Server-written technical explanation; the wizard shows its own plain sentence and keeps this as detail. */
   detail: string;
   builtin_tool_gate: boolean;
@@ -624,3 +631,63 @@ export type BotRuntimeEvent =
   | { kind: 'bot_thread_message'; bot_id: string; message: unknown }
   | { kind: 'bot_proposal_updated'; bot_id: string; proposal_id: string; status: string }
   | { kind: 'bot_goal_updated'; bot_id: string; goal_id: string };
+
+/** `PATCH /:botId/runtime` when the autonomy changed: when it takes effect, and what happened to the run in progress. */
+export type BotAutonomyChange = {
+  runtime: BotRuntimeConfig;
+  applied?: 'now' | 'next_run';
+  stopped_run?: boolean;
+  /** Plain-English result for the operator. */
+  message?: string;
+};
+
+// ---- abilities (GET /:botId/abilities) and the bot's own browser login --------------------------
+
+/** The plain-language lists the server writes for the bot's current autonomy. */
+export type BotAbilitiesPlain = { canDoAlone: string[]; asksFirst: string[]; neverDoes: string[] };
+
+export type BotAbilitiesApp = {
+  server: string;
+  connected: boolean;
+  tools_policy_counts: { allow: number; ask: number; deny: number };
+};
+
+export type BotBrowserStatus = {
+  profile_exists: boolean;
+  size_bytes?: number | null;
+  last_used_at?: string | null;
+  /** Sites the bot is signed in to, when the server can tell. */
+  signed_in_sites?: string[];
+  /** True while a sign-in session is open (when the server reports it). */
+  signing_in?: boolean;
+  /** Something is holding the profile (a sign-in window, a teach session, a run). */
+  in_use?: boolean;
+  in_use_by?: string | null;
+  /** The open sign-in window and when the server will close it. */
+  sign_in?: { session_id: string; started_at: string; expires_at: string } | null;
+  /** The last sign-in window the server closed because it ran out of time. */
+  sign_in_expired?: { session_id: string; expired_at: string } | null;
+};
+
+export type BotAbilities = {
+  autonomy: BotAutonomy;
+  provider: string;
+  enforcement: { level: BotGateLevel; detail?: string };
+  apps: BotAbilitiesApp[];
+  plain: BotAbilitiesPlain;
+  skills_count: number;
+  spaces_count: number;
+  credentials: Array<{ server: string; key: string }>;
+  browser: BotBrowserStatus;
+};
+
+/**
+ * Where the client should show the sign-in browser session. The server decides; the client follows a
+ * route or an event it recognises and otherwise falls back to plain instructions (see abilitiesModel).
+ */
+export type BotBrowserViewHint = string | { route?: string; path?: string; event?: string; detail?: unknown; type?: string; message?: string; instructions?: string; panel?: string; [key: string]: unknown };
+
+export type BotBrowserSignIn = { sessionId: string; viewHint?: BotBrowserViewHint | null; expiresAt?: string | null };
+
+/** `POST .../sign-in/:sessionId/extend`. */
+export type BotBrowserExtend = { extended: true; expiresAt: string; atLimit: boolean };

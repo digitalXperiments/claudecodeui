@@ -9,7 +9,7 @@
  */
 
 import type {
-  BotBudgetInput, BotChannel, BotChannelInput, BotGoalInput, BotPhaseRoute, BotRuleInput,
+  BotAutonomy, BotBudgetInput, BotChannel, BotChannelInput, BotGoalInput, BotPhaseRoute, BotRuleInput,
 } from '../types/botRuntime';
 import { botRuntimeApi } from '../api/botRuntimeApi';
 import { budgetInputFromDraft } from '../view/tabs/runtime/rules/ruleHelpers';
@@ -23,9 +23,10 @@ import {
 } from './runtimeDraft';
 import { allowRuleInput, denyRiskRuleInput } from './toolRisk';
 
-export type SetupGroup = 'triggers' | 'goals' | 'rules' | 'budget' | 'routing' | 'learning' | 'channels' | 'enable';
+export type SetupGroup = 'autonomy' | 'triggers' | 'goals' | 'rules' | 'budget' | 'routing' | 'learning' | 'channels' | 'enable';
 
 export type SetupCall =
+  | { type: 'autonomy'; autonomy: BotAutonomy }
   | { type: 'trigger'; input: { kind: string; config: Record<string, unknown>; enabled: boolean } }
   | { type: 'goal'; input: BotGoalInput }
   | { type: 'rule'; input: BotRuleInput }
@@ -46,6 +47,7 @@ export type SetupState = Record<string, SetupTaskState>;
 
 /** What the executor needs from the outside world; the real one is `defaultSetupApi`. */
 export interface SetupApi {
+  setAutonomy(botId: string, autonomy: BotAutonomy): Promise<unknown>;
   createTrigger(botId: string, input: { kind: string; config: Record<string, unknown>; enabled: boolean }): Promise<unknown>;
   createGoal(botId: string, input: BotGoalInput): Promise<unknown>;
   createRule(botId: string, input: BotRuleInput): Promise<unknown>;
@@ -82,17 +84,26 @@ export function buildSetupPlan(input: SetupPlanInput): SetupPlan {
   const { runtime } = input;
   const errors = validateRuntimeDraft(runtime).map((problem) => problem.message);
   const tasks: SetupTask[] = [];
+  const unrestricted = runtime.autonomy === 'unrestricted';
+
+  // Careful is the server default, so it needs no call. Anything else is saved before rules, budget or wake-ups exist.
+  if (runtime.autonomy !== 'careful') {
+    tasks.push({ id: 'autonomy', group: 'autonomy', label: runtime.autonomy === 'trusted' ? 'Let it act on its own (Trusted)' : 'Remove the action gate (Unrestricted)', call: { type: 'autonomy', autonomy: runtime.autonomy } });
+  }
 
   if (runtime.budget.enabled) {
     const budget = budgetInputFromDraft(runtime.budget.draft);
     if (!('error' in budget)) tasks.push({ id: 'budget', group: 'budget', label: 'Set spending and wake-up limits', call: { type: 'budget', input: budget } });
   }
 
-  runtime.rules.allow.forEach((choice, index) => {
-    tasks.push({ id: `rule-allow-${index}`, group: 'rules', label: `Let it run ${choice.tool} without asking`, call: { type: 'rule', input: allowRuleInput(choice) } });
-  });
-  if (runtime.rules.neverDelete) tasks.push({ id: 'rule-deny-delete', group: 'rules', label: 'Never allow deleting', call: { type: 'rule', input: denyRiskRuleInput('delete') } });
-  if (runtime.rules.neverPurchase) tasks.push({ id: 'rule-deny-purchase', group: 'rules', label: 'Never allow purchases', call: { type: 'rule', input: denyRiskRuleInput('purchase') } });
+  // With no gate (Unrestricted) rules would never be consulted, so none are created.
+  if (!unrestricted) {
+    runtime.rules.allow.forEach((choice, index) => {
+      tasks.push({ id: `rule-allow-${index}`, group: 'rules', label: `Let it run ${choice.tool} without asking`, call: { type: 'rule', input: allowRuleInput(choice) } });
+    });
+    if (runtime.rules.neverDelete) tasks.push({ id: 'rule-deny-delete', group: 'rules', label: 'Never allow deleting', call: { type: 'rule', input: denyRiskRuleInput('delete') } });
+    if (runtime.rules.neverPurchase) tasks.push({ id: 'rule-deny-purchase', group: 'rules', label: 'Never allow purchases', call: { type: 'rule', input: denyRiskRuleInput('purchase') } });
+  }
 
   if (runtime.watcher.enabled && runtime.watcher.route.provider) {
     const { provider, model, effort } = runtime.watcher.route;
@@ -146,6 +157,7 @@ const errorMessage = (caught: unknown): string => (caught instanceof Error && ca
 
 function dispatch(api: SetupApi, botId: string, call: SetupCall): Promise<unknown> {
   switch (call.type) {
+    case 'autonomy': return api.setAutonomy(botId, call.autonomy);
     case 'trigger': return api.createTrigger(botId, call.input);
     case 'goal': return api.createGoal(botId, call.input);
     case 'rule': return api.createRule(botId, call.input);
@@ -241,6 +253,7 @@ export function setupMessage(tasks: SetupTask[], state: SetupState, botEnabled: 
 
 export function createSetupApi(deps: { enableBot: (botId: string) => Promise<unknown> }): SetupApi {
   return {
+    setAutonomy: (botId, autonomy) => botRuntimeApi.runtime.setAutonomy(botId, autonomy),
     createTrigger: (botId, input) => botRuntimeApi.triggers.create(botId, input),
     createGoal: (botId, input) => botRuntimeApi.goals.create(botId, input),
     createRule: (botId, input) => botRuntimeApi.gate.createRule({ ...input, botId }),

@@ -115,3 +115,13 @@ test('validation points at the step that fixes each problem', () => {
   runtime.budget.enabled = false;
   assert.equal(validateRuntimeDraft(runtime).some((problem) => problem.step === 'guardrails'), false, 'a disabled budget is not validated');
 });
+
+test('autonomy defaults to Careful and a stored draft can only restore a valid level', () => {
+  assert.equal(emptyRuntimeDraft().autonomy, 'careful');
+  assert.equal(normalizeRuntimeDraft(null).autonomy, 'careful');
+  assert.equal(normalizeRuntimeDraft({ autonomy: 'trusted' }).autonomy, 'trusted');
+  assert.equal(normalizeRuntimeDraft({ autonomy: 'unrestricted' }).autonomy, 'unrestricted');
+  assert.equal(normalizeRuntimeDraft({ autonomy: 'yolo' }).autonomy, 'careful');
+  assert.equal(normalizeRuntimeDraft({ autonomy: 7 }).autonomy, 'careful');
+  assert.equal(normalizeRuntimeDraft({ rules: { neverDelete: true } }).autonomy, 'careful', 'drafts saved before autonomy existed restore as Careful');
+});

@@ -7,7 +7,8 @@ import express from 'express';
 
 import { missionControlDb, MC_PROVIDERS } from '@/modules/mission-control/index.js';
 import { AppError, asyncHandler } from '@/shared/utils.js';
-import { normalizeBotRuntimeConfig, patchBotRuntimeConfig, readBotRuntimeConfig, type BotRuntimeConfig } from '@/modules/bots/bots-runtime-config.js';
+import { normalizeBotRuntimeConfig, patchBotRuntimeConfig, readBotAutonomy, readBotRuntimeConfig, type BotRuntimeConfig } from '@/modules/bots/bots-runtime-config.js';
+import { AUTONOMY_TIGHTENED_REASON, describeAutonomyChange, recordAutonomyBaseline, recordAutonomyChange } from '@/modules/bots/autonomy.js';
 import type { BotCommitmentStatus, BotGoalStatus } from '@/modules/bots/bots.types.js';
 import { botGateDecisionsDb } from '@/modules/bots/gate/bot-gate-decisions.repository.js';
 import { redactValue, toGateDecisionView } from '@/modules/bots/gate/gate.routes.js';
@@ -282,12 +283,29 @@ botKernelRouter.patch(
     for (const key of Object.keys(normalized) as (keyof BotRuntimeConfig)[]) {
       (patch as Record<string, unknown>)[key] = normalized[key];
     }
-    for (const key of ['identity', 'routing', 'backend', 'backend_config', 'gateway', 'enforcement'] as const) {
+    // `autonomy` derived from a legacy `gateway: false` is patchBotRuntimeConfig's job, not a stored choice.
+    if (input.autonomy === undefined) delete patch.autonomy;
+    for (const key of ['identity', 'routing', 'backend', 'backend_config', 'gateway', 'enforcement', 'autonomy'] as const) {
       if (input[key] === null) (patch as Record<string, unknown>)[key] = null;
       else if (input[key] !== undefined && !(key in normalized)) throw invalid(`Invalid value for ${key}`);
     }
+    const autonomyBefore = readBotAutonomy(botId);
+    if (patch.autonomy !== undefined || patch.gateway !== undefined) recordAutonomyBaseline(botId);
     const runtime = patchBotRuntimeConfig(botId, patch);
     if (!runtime) throw notFound('Bot');
-    res.json({ runtime });
+    const autonomyAfter = readBotAutonomy(botId);
+    if (autonomyBefore === autonomyAfter) {
+      res.json({ runtime });
+      return;
+    }
+    // A run built as `unrestricted` has no tool gates and cannot be tightened in place: stop it.
+    const runActive = kernel.hasActiveEpisode(botId);
+    const stoppedRun =
+      runActive && autonomyBefore === 'unrestricted' && autonomyAfter !== 'unrestricted'
+        ? await kernel.abortActiveEpisode(botId, AUTONOMY_TIGHTENED_REASON)
+        : false;
+    const effect = describeAutonomyChange(autonomyBefore, autonomyAfter, { runActive, stoppedRun });
+    recordAutonomyChange(botId, autonomyBefore, autonomyAfter, effect);
+    res.json({ runtime, applied: effect.applied, stopped_run: effect.stopped_run, message: effect.message });
   }),
 );

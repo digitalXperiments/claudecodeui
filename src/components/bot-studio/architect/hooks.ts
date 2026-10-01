@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 
 import { botStudioApi } from '../api/botStudioApi';
 import { botRuntimeApi } from '../api/botRuntimeApi';
-import type { BotChannel, BotEnforcementPreview } from '../types/botRuntime';
+import type { BotAutonomy, BotChannel, BotEnforcementPreview } from '../types/botRuntime';
 
 import { isObviouslyReadTool, toRiskItem, type ToolRiskItem } from './toolRisk';
 
@@ -10,18 +10,18 @@ type Remote<T> = { data: T | null; loading: boolean; error: string | null };
 
 const messageOf = (caught: unknown, fallback: string): string => (caught instanceof Error && caught.message ? caught.message : fallback);
 
-/** Enforcement level for the chosen provider, refetched when the provider changes. */
-export function useEnforcementPreview(provider: string | undefined, enabled: boolean): Remote<BotEnforcementPreview> {
+/** Enforcement level for the chosen provider (and autonomy), refetched when either changes. */
+export function useEnforcementPreview(provider: string | undefined, enabled: boolean, autonomy?: BotAutonomy): Remote<BotEnforcementPreview> {
   const [state, setState] = useState<Remote<BotEnforcementPreview>>({ data: null, loading: false, error: null });
   useEffect(() => {
     if (!enabled || !provider) return undefined;
     let cancelled = false;
     setState((current) => ({ data: current.data?.provider === provider ? current.data : null, loading: true, error: null }));
-    botRuntimeApi.runtime.enforcementPreview(provider)
+    botRuntimeApi.runtime.enforcementPreview(provider, autonomy)
       .then((data) => { if (!cancelled) setState({ data, loading: false, error: null }); })
       .catch((caught: unknown) => { if (!cancelled) setState({ data: null, loading: false, error: messageOf(caught, 'Could not check enforcement.') }); });
     return () => { cancelled = true; };
-  }, [enabled, provider]);
+  }, [enabled, provider, autonomy]);
   return state;
 }
 

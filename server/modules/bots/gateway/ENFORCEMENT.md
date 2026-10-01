@@ -304,3 +304,46 @@ rules and the classifier's `security` rule are what stop a bot shell from readin
 (`cat "$GEMINI_HOME/antigravity-acp/acp_token.json"`) is hard-denied by the variable rule, the `antigravity-acp` and
 `acp_token.json` name rules.
 
+
+## Autonomy levels
+
+The old provider "permission mode" is no longer something an operator picks per bot for gated runs: on a gateway-bound run
+it is overridden anyway (claude-sdk forces default mode plus `canUseTool`; the grok, codex and antigravity adapters likewise).
+Each bot instead has one provider-agnostic **autonomy** level, stored as `runtime_json.autonomy` (`careful` by default) and
+edited with `PATCH /api/bots/:botId/runtime { autonomy }` (`null` resets to careful). `resolveBotAutonomy` /
+`readBotAutonomy` (bots-runtime-config.ts) are the only readers; everything below goes through them.
+
+| Level | Gateway | Floor risks (send / publish / delete / purchase / prod_change) | `credential` | Built-in tool escalations | Hard denies |
+|---|---|---|---|---|---|
+| `careful` (default) | on | ask a human | ask | ask a human | denied |
+| `trusted` | on | allowed, audited as `decidedBy: 'autonomy:trusted'`, unless the run is tainted | always ask | allowed unless the run is tainted | denied |
+| `unrestricted` | **off** | not gated | not gated | not gated | **not enforced** |
+
+- **careful** is exactly the pre-autonomy behaviour.
+- **trusted** acts like an implicit bot-scoped allow for the floor risks, in `actionGate.evaluate` (action-gate.service.ts), step
+  3-4. It replaces only the bare floor `ask`. Everything around it still applies, in this order: dry run (deny), budget (deny),
+  explicit and section-policy `deny` / `ask` rules (they win, so a deny rule still blocks a floor risk), then the **taint**
+  rule (a tainted run's floor call goes to a human even though trusted would allow it). `credential` risk, `unknown` risk and
+  anything an explicit rule does not allow are unchanged. Because the built-in tool gate routes its escalations through the same
+  Action Gate (risk is computed from every reference in the call, not the first escalation reason: a shell command that names a
+  sensitive file anywhere, or a network command that names any file outside the workspace and bot home, is `credential`, which
+  trusted never auto-allows; other network commands are `send`; the rest `prod_change`. See gate/command-risk.ts), trusted also lets out-of-workspace paths, env refs, unresolved paths and risky shell commands run when the run
+  is not tainted, with a `bot_gate_decisions` row and an `executed` outcome. The hard denylist (protected credential names and
+  dirs, `~/.claude.json`, database files, env dumps, keychain, the CloudCLI API on localhost, MCP launches) is checked before
+  any of this and stays denied at every level, tainted or not. Trusted removes human review of destructive and outbound
+  actions; it is not a sandbox.
+- **unrestricted**: `shouldUseToolGateway(section)` returns false, so the run is built like a pre-v2 run: no
+  `cloudcli-tool-gateway`, no built-in tool gate, the section's own `tools` as MCP servers and the provider's own permission
+  mode (`section.permission_mode`, default `bypassPermissions`, true bypass). Nothing is checked or held, none of the hard
+  denies apply, and `getGatewayEnforcement` is replaced by level **`off`** in the enforcement routes
+  (`GET /api/bots/:botId/enforcement`, `GET /api/bots/enforcement/preview?provider=&autonomy=`). The one remaining
+  per-tool control is the section `tool_policy`, which the Claude options builder still turns into allow/deny lists. A bot that
+  reaches the Action Gate anyway (a direct call) is treated as careful.
+- **Fails closed**: `shouldUseToolGateway` returns true (gateway on) when the runtime config cannot be read, and a missing bot
+  or unreadable config reads as `careful`. Only an explicit `unrestricted` switches the gateway off.
+- **Legacy `gateway: false`** is still accepted and migrates on read to `autonomy: 'unrestricted'`; an explicit `autonomy`
+  wins over it, and patching `autonomy` drops the stale flag. `gateway: true` on a migrated bot returns it to careful.
+- **Audit**: a change is recorded as a section version (the version snapshot carries `autonomy` when it is not `careful`, so
+  existing snapshots still match) and as a system message in the bot's thread ("Autonomy changed to Trusted by you").
+- **Browser**: while the operator is signed in to a bot's browser profile ("Sign in as this bot"), kernel wakes for that bot
+  defer with `reason: 'browser_in_use'` (events stay queued, retried every `browserRetryMs`, and immediately on finish).

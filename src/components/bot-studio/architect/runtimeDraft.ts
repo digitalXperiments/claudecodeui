@@ -5,7 +5,8 @@
  * partial drafts must keep restoring), the goal suggestion and validation.
  */
 
-import type { BotPhaseRoute } from '../types/botRuntime';
+import type { BotAutonomy, BotPhaseRoute } from '../types/botRuntime';
+import { DEFAULT_AUTONOMY, normalizeAutonomy } from '../view/tabs/runtime/abilities/abilitiesModel';
 import { emptyDraft, validateDraft, type TriggerDraft } from '../view/tabs/runtime/triggers/triggerForm';
 import { budgetInputFromDraft, cleanRoutes, validateRoutes, type BudgetDraft } from '../view/tabs/runtime/rules/ruleHelpers';
 import { validateQuietHours, type ConfigDraft } from '../view/runtime/channelsModel';
@@ -29,6 +30,8 @@ export type OwnChannelDraft = { enabled: boolean; config: ConfigDraft };
 export type QuietHoursDraft = { enabled: boolean; start: string; end: string; tz: string };
 
 export type RuntimeDraft = {
+  /** How much the bot may do without asking. New bots start Careful. */
+  autonomy: BotAutonomy;
   /** Wake-up triggers beyond the section's schedule (which keeps using `schedule_cron`). */
   triggers: TriggerDraft[];
   goals: GoalDraftItem[];
@@ -59,6 +62,7 @@ export const EMPTY_CHANNEL_CONFIG: ConfigDraft = {
 
 export function emptyRuntimeDraft(): RuntimeDraft {
   return {
+    autonomy: DEFAULT_AUTONOMY,
     triggers: [],
     goals: [],
     goalSuggestionDismissed: false,
@@ -149,6 +153,7 @@ export function normalizeRuntimeDraft(raw: unknown): RuntimeDraft {
   const confidence = typeof learning.minConfidence === 'number' && Number.isFinite(learning.minConfidence) ? learning.minConfidence : DEFAULT_AUTO_APPLY_CONFIDENCE;
 
   return {
+    autonomy: normalizeAutonomy(raw.autonomy),
     triggers,
     goals,
     goalSuggestionDismissed: bool(raw.goalSuggestionDismissed, false),

@@ -7,9 +7,9 @@ import express from 'express';
 
 import { missionControlDb } from '@/modules/mission-control/index.js';
 import { AppError, asyncHandler } from '@/shared/utils.js';
-import { readBotRuntimeConfig } from '@/modules/bots/bots-runtime-config.js';
+import { isBotAutonomy, readBotRuntimeConfig, resolveBotAutonomy, BOT_AUTONOMY_LEVELS } from '@/modules/bots/bots-runtime-config.js';
 import type { BotGateDecision, BotRuleDecision, BotRuleMatch, BotRuleScope } from '@/modules/bots/bots.types.js';
-import { describeGatewayEnforcement, getGatewayEnforcement } from '@/modules/bots/gateway/enforcement.js';
+import { enforcementForAutonomy } from '@/modules/bots/gateway/enforcement.js';
 import { botGateDecisionsDb } from '@/modules/bots/gate/bot-gate-decisions.repository.js';
 import { botSpendDb } from '@/modules/bots/gate/bot-spend.repository.js';
 import { summarizeArgs } from '@/modules/bots/gate/action-gate.service.js';
@@ -30,9 +30,6 @@ const SCOPES: BotRuleScope[] = ['global', 'bot'];
 const OPS = ['eq', 'contains', 'regex', 'in'] as const;
 const OUTCOMES = ['executed', 'denied', 'approved', 'rejected', 'expired', 'error', 'pending'];
 const FLOOR_LIST = SAFETY_FLOOR.join(', ');
-
-/** Every gateway-bound run carries the built-in tool gate; the provider adapter decides whether it can honour it. */
-const GATED_RUN = { builtinToolGate: true } as const;
 
 const MAX_PATTERN = 200;
 const MAX_PREDICATES = 10;
@@ -259,22 +256,18 @@ botGateRouter.get(
 
 /**
  * How firmly the gate would govern a bot running on `provider`. Needs no bot, so the wizard can show it
- * before the bot exists. Same adapters and the same GATED_RUN options as /:botId/enforcement below.
+ * before the bot exists. Same adapters and the same autonomy-aware view as /:botId/enforcement below.
  */
 botGateRouter.get(
   '/enforcement/preview',
   asyncHandler(async (req, res) => {
     const provider = queryText(req.query.provider).trim();
     if (!provider) throw invalid('provider is required');
-    const level = getGatewayEnforcement(provider, GATED_RUN);
-    res.json({
-      enforcement: {
-        provider,
-        level,
-        detail: describeGatewayEnforcement(provider, GATED_RUN),
-        builtin_tool_gate: level === 'enforced',
-      },
-    });
+    const rawAutonomy = queryText(req.query.autonomy).trim();
+    if (rawAutonomy && !isBotAutonomy(rawAutonomy)) throw invalid(`autonomy must be one of ${BOT_AUTONOMY_LEVELS.join(', ')}`);
+    const autonomy = isBotAutonomy(rawAutonomy) ? rawAutonomy : 'careful';
+    const view = enforcementForAutonomy(provider, autonomy);
+    res.json({ enforcement: { provider, autonomy, level: view.level, detail: view.detail, builtin_tool_gate: view.builtin_tool_gate } });
   }),
 );
 
@@ -403,21 +396,26 @@ botGateRouter.get(
     const botId = requireBot(req);
     const section = missionControlDb.getSection(botId)!;
     const runtime = readBotRuntimeConfig(botId) ?? {};
+    const autonomy = resolveBotAutonomy(runtime);
     const phaseProvider = (phase: 'perceive' | 'act' | 'reflect'): string => runtime.routing?.[phase]?.provider ?? section.provider;
+    const view = (provider: string) => enforcementForAutonomy(provider, autonomy, { permissionMode: section.permission_mode });
     const phases = (['perceive', 'act', 'reflect'] as const).map((phase) => {
       const provider = phaseProvider(phase);
       // Every gateway-bound run carries the built-in tool gate; the provider adapter decides
-      // whether that provider can actually honour it.
-      return { phase, provider, level: getGatewayEnforcement(provider, GATED_RUN), detail: describeGatewayEnforcement(provider, GATED_RUN) };
+      // whether that provider can actually honour it. An Unrestricted bot has no gate at all ('off').
+      const { level, detail } = view(provider);
+      return { phase, provider, level, detail };
     });
     const provider = phaseProvider('act');
+    const actView = view(provider);
     res.json({
       enforcement: {
         provider,
-        level: getGatewayEnforcement(provider, GATED_RUN),
-        detail: describeGatewayEnforcement(provider, GATED_RUN),
-        builtin_tool_gate: getGatewayEnforcement(provider, GATED_RUN) === 'enforced',
-        gateway: runtime.gateway ?? true,
+        autonomy,
+        level: actView.level,
+        detail: actView.detail,
+        builtin_tool_gate: actView.builtin_tool_gate,
+        gateway: autonomy !== 'unrestricted',
         configured: runtime.enforcement ?? null,
         phases,
       },

@@ -1,4 +1,4 @@
-export type RuntimeDetailTab = 'activity' | 'thread' | 'goals' | 'triggers' | 'rules' | 'learning';
+export type RuntimeDetailTab = 'abilities' | 'activity' | 'thread' | 'goals' | 'triggers' | 'rules' | 'learning';
 export type DetailTab = 'overview' | 'pipeline' | 'test' | 'history' | 'settings' | RuntimeDetailTab;
 
 export type DetailTabOptions = {
@@ -7,7 +7,11 @@ export type DetailTabOptions = {
 };
 
 /** Where to land inside a tab: a Pipeline stage, the Architect drawer, or a sub-section. */
-export type DetailFocus = 'propose' | 'resolve' | 'work' | 'architect' | 'versions' | null;
+export type DetailFocus =
+  | 'propose' | 'resolve' | 'work' | 'architect' | 'versions'
+  /** Abilities sections; `skill:<name>` also opens that skill. */
+  | 'autonomy' | 'apps' | 'skills' | 'spaces' | 'accounts' | `skill:${string}`
+  | null;
 
 export const DETAIL_TABS: Array<{ value: DetailTab; label: string }> = [
   { value: 'overview', label: 'Overview' },
@@ -19,6 +23,7 @@ export const DETAIL_TABS: Array<{ value: DetailTab; label: string }> = [
 
 /** Tabs that only exist while the Bot Runtime v2 flag is on, in display order (after Overview). */
 export const RUNTIME_TABS: Array<{ value: RuntimeDetailTab; label: string }> = [
+  { value: 'abilities', label: 'Abilities' },
   { value: 'activity', label: 'Activity' },
   { value: 'thread', label: 'Thread' },
   { value: 'goals', label: 'Goals' },

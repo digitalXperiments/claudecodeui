@@ -1,6 +1,7 @@
 /** One-line summaries of the runtime v2 choices, for the Review step and the live preview card. */
 
-import type { BotChannel, BotEnforcementLevel } from '../types/botRuntime';
+import type { BotChannel, BotGateLevel } from '../types/botRuntime';
+import { autonomyLabel, permissionModeWords, showProviderPermissionMode } from '../view/tabs/runtime/abilities/abilitiesModel';
 import { budgetInputFromDraft, formatUsd, routeLabel } from '../view/tabs/runtime/rules/ruleHelpers';
 import { KIND_LABELS, configFromDraft, summarizeTrigger } from '../view/tabs/runtime/triggers/triggerForm';
 
@@ -35,11 +36,15 @@ export function budgetSummary(runtime: RuntimeDraft): string {
 }
 
 export function rulesSummary(runtime: RuntimeDraft): string {
+  if (runtime.autonomy === 'unrestricted') return 'None: with no gate, rules are never checked';
   const parts: string[] = [];
   if (runtime.rules.allow.length) parts.push(`${runtime.rules.allow.length} tool${runtime.rules.allow.length === 1 ? '' : 's'} allowed without asking (${runtime.rules.allow.map((choice) => choice.tool).join(', ')})`);
   if (runtime.rules.neverDelete) parts.push('never delete');
   if (runtime.rules.neverPurchase) parts.push('never purchase');
-  return parts.length ? parts.join(' · ') : 'Safety floor only: sending, publishing, deleting, buying, credentials and production changes always ask';
+  if (parts.length) return parts.join(' · ');
+  return runtime.autonomy === 'trusted'
+    ? 'Trusted: it acts on its own; credentials and login files stay off limits'
+    : 'Safety floor only: sending, publishing, deleting, buying, credentials and production changes always ask';
 }
 
 export function goalsSummary(runtime: RuntimeDraft): string {
@@ -53,8 +58,9 @@ export function learningSummary(runtime: RuntimeDraft): string {
     : 'Suggests memories, rules and skills; nothing applies until you approve it';
 }
 
-export function enforcementSummary(provider: string, level: BotEnforcementLevel | null): string {
+export function enforcementSummary(provider: string, level: BotGateLevel | null): string {
   if (!level) return 'Checking…';
+  if (level === 'off') return 'No gate (Unrestricted): nothing is checked';
   return level === 'enforced' ? `Enforced on ${provider}` : `Advisory on ${provider} (the gate cannot see everything it does)`;
 }
 
@@ -64,7 +70,9 @@ export function runtimeReviewRows(input: {
   cron: string | null | undefined;
   manualSchedule: boolean;
   provider: string;
-  enforcement: BotEnforcementLevel | null;
+  enforcement: BotGateLevel | null;
+  /** The provider permission mode; shown only when it matters (Unrestricted, or a provider the gate can only advise). */
+  permissionMode?: string;
   globalChannels: BotChannel[];
 }): Array<[string, string]> {
   const { runtime } = input;
@@ -72,12 +80,17 @@ export function runtimeReviewRows(input: {
   const watcher = runtime.watcher.enabled && runtime.watcher.route.provider
     ? routeLabel({ provider: runtime.watcher.route.provider, model: runtime.watcher.route.model ?? undefined, effort: runtime.watcher.route.effort ?? undefined })
     : null;
+  const permissionRow: Array<[string, string]> = input.permissionMode !== undefined && showProviderPermissionMode(runtime.autonomy, input.enforcement)
+    ? [['Provider permission', `${input.permissionMode || 'default'}: ${permissionModeWords(input.permissionMode)}`]]
+    : [];
   return [
+    ['Autonomy', autonomyLabel(runtime.autonomy)],
     ['More wake-ups', extraWakeSummary(runtime).join(' · ') || 'None (the schedule above, and when you message it)'],
     ['Goals', goalsSummary(runtime)],
     ['Rules', rulesSummary(runtime)],
     ['Budget', budgetSummary(runtime)],
     ['Enforcement', enforcementSummary(input.provider, input.enforcement)],
+    ...permissionRow,
     ['Backup providers', fallback.length ? [input.provider, ...fallback.map(routeLabel)].join(' → ') : 'None'],
     ['Triage model', watcher ?? 'Off (the main model reads every signal)'],
     ['Reaches you on', describeChannelChoices(runtime.channels, input.globalChannels).join(' · ')],

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import type { BotBudgetInput, BotChannel, BotGoalInput, BotPhaseRoute, BotRuleInput } from '../types/botRuntime';
+import type { BotAutonomy, BotBudgetInput, BotChannel, BotGoalInput, BotPhaseRoute, BotRuleInput } from '../types/botRuntime';
 import { emptyDraft } from '../view/tabs/runtime/triggers/triggerForm';
 
 import { emptyRuntimeDraft } from './runtimeDraft';
@@ -22,6 +22,7 @@ function fakeApi(failOn: (call: Call) => string | null = () => null): { api: Set
     return { trigger_id: `t-${calls.length}`, input };
   };
   const api: SetupApi = {
+    setAutonomy: make('autonomy', (botId: string, input: BotAutonomy) => ({ botId, input })),
     createTrigger: make('trigger', (botId: string, input: unknown) => ({ botId, input })),
     createGoal: make('goal', (botId: string, input: BotGoalInput) => ({ botId, input })),
     createRule: make('rule', (botId: string, input: BotRuleInput) => ({ botId, input })),
@@ -140,4 +141,30 @@ test('with nothing to do the message says so, and a fresh state is all pending',
   assert.deepEqual(initialSetupState(tasks), { budget: { status: 'pending' } });
   assert.equal(summarizeSetup(tasks, initialSetupState(tasks)).allDone, false);
   assert.equal(summarizeSetup([], {}).allDone, false, 'an empty plan is not "all done" progress');
+});
+
+test('Careful needs no call; Trusted and Unrestricted are saved first, before limits, rules or wake-ups', async () => {
+  const careful = buildSetupPlan({ runtime: emptyRuntimeDraft(), globalChannels: [], enableAfter: false });
+  assert.equal(careful.tasks.some((task) => task.group === 'autonomy'), false);
+
+  const trusted = fullDraft();
+  trusted.autonomy = 'trusted';
+  const plan = buildSetupPlan({ runtime: trusted, globalChannels: [slack], enableAfter: true });
+  assert.equal(plan.tasks[0].id, 'autonomy');
+  assert.deepEqual(plan.tasks[0].call, { type: 'autonomy', autonomy: 'trusted' });
+  assert.match(plan.tasks[0].label, /Trusted/);
+
+  const { api, calls } = fakeApi();
+  await runSetup({ botId: 'bot-1', tasks: plan.tasks, api });
+  assert.deepEqual(calls[0], { type: 'autonomy', botId: 'bot-1', input: 'trusted' });
+  assert.equal(calls.at(-1)?.type, 'enable');
+});
+
+test('Unrestricted saves autonomy and drops rule tasks, which would never be consulted', () => {
+  const runtime = fullDraft();
+  runtime.autonomy = 'unrestricted';
+  const plan = buildSetupPlan({ runtime, globalChannels: [slack], enableAfter: false });
+  assert.deepEqual(plan.tasks[0].call, { type: 'autonomy', autonomy: 'unrestricted' });
+  assert.equal(plan.tasks.some((task) => task.group === 'rules'), false);
+  assert.equal(plan.tasks.some((task) => task.id === 'budget'), true, 'a budget is still created');
 });

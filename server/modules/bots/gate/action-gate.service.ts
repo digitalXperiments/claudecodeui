@@ -4,6 +4,7 @@ import { secretsService } from '@/modules/secrets/index.js';
 import { broadcastSystemEvent } from '@/modules/websocket/index.js';
 import { botGateDecisionsDb } from '@/modules/bots/gate/bot-gate-decisions.repository.js';
 import { runAutoReviewer } from '@/modules/bots/gate/auto-reviewer.js';
+import { readBotAutonomy } from '@/modules/bots/bots-runtime-config.js';
 import { budgets } from '@/modules/bots/gate/budgets.service.js';
 import {
   SAFETY_FLOOR,
@@ -135,7 +136,21 @@ async function evaluate(ctx: GateContext, req: GateRequest): Promise<GateVerdict
   const soft = budget.soft;
 
   // 3-4. Rules and the safety floor.
-  const { verdict: provisional, rule } = provisionalDecision(risk, rules.match(ctx.botId, req, risk));
+  let { verdict: provisional, rule } = provisionalDecision(risk, rules.match(ctx.botId, req, risk));
+  // Trusted autonomy acts like an implicit bot-scoped allow for floor risks (never credential). It
+  // only replaces the bare floor `ask`: deny/ask rules, budgets and dry run were decided above or
+  // are kept, and step 5 (taint) still sends a tainted run's floor call to a human. 'unrestricted'
+  // bots do not use the gate; if one reaches it anyway it is treated as careful.
+  if (
+    provisional.decision === 'ask' &&
+    provisional.decidedBy === 'floor' &&
+    isFloor(risk) &&
+    risk !== 'credential' &&
+    readBotAutonomy(ctx.botId) === 'trusted'
+  ) {
+    provisional = { decision: 'allow', decidedBy: 'autonomy:trusted', reason: `Trusted autonomy: "${risk}" runs without asking` };
+    rule = null;
+  }
   if (provisional.decision !== 'allow') return finish(provisional, soft);
 
   // 5. Taint: untrusted content read earlier cannot authorize a consequential call.

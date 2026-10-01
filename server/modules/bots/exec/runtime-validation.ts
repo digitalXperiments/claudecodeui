@@ -1,5 +1,5 @@
 /** Input validation for the parts of `runtime_json` the execution substrate owns. */
-import { isKnownRouteProvider, MAX_FALLBACK_ROUTES, type BotPhaseRoute } from '../bots-runtime-config.js';
+import { BOT_AUTONOMY_LEVELS, isBotAutonomy, isKnownRouteProvider, MAX_FALLBACK_ROUTES, type BotPhaseRoute } from '../bots-runtime-config.js';
 
 export const BACKEND_NOT_IMPLEMENTED = 'not implemented — run the whole server on a remote box (see HEADLESS.md)';
 
@@ -26,12 +26,21 @@ export function validateFallbackRoutes(value: unknown): string | null {
   return null;
 }
 
-/** First validation error across backend and routing.fallback, or null. */
+/** Null when `value` is a valid `autonomy` (absent, null to reset, or one of the three levels). */
+export function validateAutonomy(value: unknown): string | null {
+  if (value === undefined || value === null || isBotAutonomy(value)) return null;
+  return `autonomy must be one of ${BOT_AUTONOMY_LEVELS.join(', ')}`;
+}
+
+/** First validation error across backend, autonomy and routing.fallback, or null. */
 export function validateRuntimeConfigInput(input: unknown): string | null {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return null;
   const body = input as Record<string, unknown>;
   const backend = validateBackend(body.backend);
   if (backend) return backend;
+  const autonomy = validateAutonomy(body.autonomy);
+  if (autonomy) return autonomy;
+  if (body.gateway !== undefined && body.gateway !== null && typeof body.gateway !== 'boolean') return 'gateway must be a boolean';
   const routing = body.routing;
   if (routing && typeof routing === 'object' && !Array.isArray(routing)) {
     return validateFallbackRoutes((routing as Record<string, unknown>).fallback);

@@ -198,6 +198,7 @@ export default function TeamsView({ bots, onNavigate, onNotice }: { bots: Bot[];
       {list.map((team) => <TeamCard key={team.team_id} team={team} bots={bots} titleOf={titleOf} otherNames={list.filter((entry) => entry.team_id !== team.team_id).map((entry) => entry.name)} onTeam={replaceTeam} onDeleted={(teamId) => setData((current) => (current ?? []).filter((entry) => entry.team_id !== teamId))} onNavigate={onNavigate} onNotice={onNotice} />)}
     </div> : <div className="space-y-4">
       {bots.length ? <Field label="Bot" className="max-w-xs"><select className="field" value={selectedBotId} onChange={(event) => setBotId(event.target.value)}>{bots.map((bot) => <option key={bot.section_id} value={bot.section_id}>{bot.title}</option>)}</select></Field> : <RuntimeCard title="No bots" subtitle="Create a bot first"><EmptyLine>Spaces and peer traffic belong to a bot.</EmptyLine></RuntimeCard>}
+      {selectedBotId && tab === 'spaces' ? <p className="text-[11px] text-muted-foreground">Spaces are easier to manage on the bot itself. <button type="button" className="underline hover:text-foreground" onClick={() => onNavigate(`/bots/b/${encodeURIComponent(selectedBotId)}/abilities`)}>Manage in the bot's Abilities tab</button>.</p> : null}
       {selectedBotId && tab === 'spaces' ? <SpacesPanel key={selectedBotId} botId={selectedBotId} onNotice={onNotice} /> : null}
       {selectedBotId && tab === 'peers' ? <PeerTraffic key={selectedBotId} botId={selectedBotId} bots={bots} /> : null}
     </div>}

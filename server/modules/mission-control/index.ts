@@ -5,6 +5,7 @@ export { approvedMemoryContext, deleteBotMemories, listBotMemories, MAX_APPROVED
 export type { BotMemory } from '@/modules/mission-control/mission-control-memory.service.js';
 export {
   buildRuntimeOptions,
+  shouldUseToolGateway,
   abortMissionControlRun,
   buildProducePrompt,
   configureMissionControlRuntimes,
@@ -99,7 +100,7 @@ export {
   WORK_GMAIL_SECTION_TITLE,
 } from '@/modules/mission-control/action-centre-seed.js';
 export * from '@/modules/mission-control/mission-control.types.js';
-export { recordSectionVersion } from '@/modules/mission-control/mission-control-versions.service.js';
+export { getSectionVersionHistory, recordSectionVersion } from '@/modules/mission-control/mission-control-versions.service.js';
 export { emitItemFeedback, onItemFeedback, summarizeBodyEdit } from '@/modules/mission-control/mission-control-feedback.service.js';
 export type { ItemFeedbackEvent, ItemFeedbackKind, ItemFeedbackListener } from '@/modules/mission-control/mission-control-feedback.service.js';
 export { acceptWorkItem, followUpWorkItem } from '@/modules/mission-control/mission-control-dispatch.service.js';

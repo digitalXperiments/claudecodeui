@@ -54,6 +54,28 @@ test('budget, rules, goals, learning and enforcement read as sentences', () => {
   assert.equal(enforcementSummary('claude', null), 'Checking…');
   assert.equal(enforcementSummary('claude', 'enforced'), 'Enforced on claude');
   assert.match(enforcementSummary('codex', 'advisory'), /^Advisory on codex/);
+  assert.match(enforcementSummary('claude', 'off'), /No gate/);
+});
+
+test('autonomy shows in the review, and the raw permission mode only when it matters', () => {
+  const base = { cron: '0 * * * *', manualSchedule: false, provider: 'claude', globalChannels: [] };
+  const careful = Object.fromEntries(runtimeReviewRows({ ...base, runtime: emptyRuntimeDraft(), enforcement: 'enforced', permissionMode: 'bypassPermissions' }));
+  assert.match(careful.Autonomy, /^Careful/);
+  assert.equal('Provider permission' in careful, false, 'an enforced provider hides the raw mode');
+  const advisory = Object.fromEntries(runtimeReviewRows({ ...base, runtime: emptyRuntimeDraft(), enforcement: 'advisory', permissionMode: 'default' }));
+  assert.match(advisory['Provider permission'], /^default: The provider asks before acting/);
+  const loose = emptyRuntimeDraft();
+  loose.autonomy = 'unrestricted';
+  const unrestricted = Object.fromEntries(runtimeReviewRows({ ...base, runtime: loose, enforcement: 'off', permissionMode: 'bypassPermissions' }));
+  assert.match(unrestricted.Autonomy, /no gate/);
+  assert.match(unrestricted['Provider permission'], /bypassPermissions: The provider skips its own questions/);
+  assert.match(unrestricted.Rules, /rules are never checked/);
+  assert.match(unrestricted.Enforcement, /No gate/);
+  const trusted = emptyRuntimeDraft();
+  trusted.autonomy = 'trusted';
+  assert.match(rulesSummary(trusted), /^Trusted: it acts on its own/);
+  const unknown = Object.fromEntries(runtimeReviewRows({ ...base, runtime: emptyRuntimeDraft(), enforcement: null, permissionMode: 'default' }));
+  assert.equal('Provider permission' in unknown, false);
 });
 
 test('the review rows cover every runtime choice', () => {
@@ -62,7 +84,7 @@ test('the review rows cover every runtime choice', () => {
   runtime.watcher = { enabled: true, route: { provider: 'claude', model: 'haiku', effort: null } };
   const rows = runtimeReviewRows({ runtime, cron: '0 * * * *', manualSchedule: false, provider: 'claude', enforcement: 'advisory', globalChannels: [] });
   const byLabel = Object.fromEntries(rows);
-  assert.deepEqual(rows.map(([label]) => label), ['More wake-ups', 'Goals', 'Rules', 'Budget', 'Enforcement', 'Backup providers', 'Triage model', 'Reaches you on', 'Learning']);
+  assert.deepEqual(rows.map(([label]) => label), ['Autonomy', 'More wake-ups', 'Goals', 'Rules', 'Budget', 'Enforcement', 'Backup providers', 'Triage model', 'Reaches you on', 'Learning']);
   assert.match(byLabel['More wake-ups'], /^None/);
   runtime.triggers = [{ ...emptyDraft('run_completed'), status: 'failed', enabled: false }];
   assert.equal(Object.fromEntries(runtimeReviewRows({ runtime, cron: '0 * * * *', manualSchedule: false, provider: 'claude', enforcement: 'advisory', globalChannels: [] }))['More wake-ups'], 'Run completed (off): Any run completes · status failed');

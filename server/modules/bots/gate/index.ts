@@ -25,6 +25,7 @@ export {
 export {
   BUILTIN_GATE_SERVER,
   builtinDenylistReason,
+  builtinCallRisk,
   builtinEscalationReason,
   createBuiltinToolGate,
   protectedCommandReason,
@@ -33,6 +34,7 @@ export {
   type BuiltinToolGate,
   type BuiltinToolGateContext,
 } from '@/modules/bots/gate/builtin-tool-gate.js';
+export { riskFromScan, scanShellCommand, scanToolPaths, type CommandScan } from '@/modules/bots/gate/command-risk.js';
 export {
   assessFileTool,
   assessShellCommand,

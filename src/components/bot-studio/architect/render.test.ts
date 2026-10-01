@@ -19,6 +19,7 @@ const { default: BotArchitect } = await import('./BotArchitect');
 const { default: WakeUps } = await import('./WakeUps');
 const { default: GoalsStep } = await import('./GoalsStep');
 const { default: GuardrailsPanel } = await import('./GuardrailsPanel');
+const { default: AutonomyPicker } = await import('../view/tabs/runtime/abilities/AutonomyPicker');
 const { default: ReachStep } = await import('./ReachStep');
 const { default: AgentExtras } = await import('./AgentExtras');
 const { default: EnforcementNotice } = await import('./EnforcementNotice');
@@ -90,9 +91,13 @@ test('goals: a suggestion from the purpose is offered once, and empty state expl
   assert.match(withGoal, /value="Ship it"/);
 });
 
-test('guardrails: the new copy replaces the outdated claim and explains the floor, budget and dry run', () => {
-  const props = { provider: 'claude', enforcement: idle, servers: [], runtime: emptyRuntimeDraft(), onChange: noop, dryRun: false, onDryRun: noop, permissionMode: 'bypassPermissions' };
+test('guardrails: autonomy replaces the provider card, and the floor, budget and dry run stay', () => {
+  const props = { provider: 'claude', enforcement: idle, servers: [], runtime: emptyRuntimeDraft(), onChange: noop, dryRun: false, onDryRun: noop, permissionMode: 'bypassPermissions', onPermissionMode: noop };
   const page = html(createElement(GuardrailsPanel, { ...props, configurable: true }));
+  assert.match(page, /How much can this bot do on its own\?/);
+  for (const label of ['Careful', 'Trusted', 'Unrestricted']) assert.match(page, new RegExp(`>${label}<`));
+  assert.match(page, /aria-checked="true"[^>]*>(?:(?!<button).)*Careful/, 'Careful is the default');
+  assert.match(page, /This bot can read and draft on its own; it will ask before sending, deleting or buying\./);
   assert.match(page, /The safety floor/);
   for (const risk of ['send', 'publish', 'delete', 'purchase', 'credential', 'prod change']) assert.match(page, new RegExp(risk));
   assert.match(page, /always ask you first/);
@@ -102,11 +107,59 @@ test('guardrails: the new copy replaces the outdated claim and explains the floo
   assert.match(page, /value="12"/);
   assert.match(page, /Start with a dry run \(recommended\)/);
   assert.doesNotMatch(page, /phantom controls/);
+  assert.doesNotMatch(page, /Provider permission mode/, 'an unknown or enforced provider hides the raw mode');
+  assert.doesNotMatch(page, /action gate, not this setting/, 'the old card is gone');
   assert.doesNotMatch(page, />bypassPermissions</, 'the raw mode is never the headline');
-  assert.match(page, /action gate, not this setting, decides which tools can run/);
   const editing = html(createElement(GuardrailsPanel, { ...props, configurable: false }));
   assert.match(editing, /managed on its Rules tab/);
+  assert.match(editing, /Abilities tab/);
   assert.doesNotMatch(editing, /Daily spend limit/);
+  assert.doesNotMatch(editing, /How much can this bot do on its own\?/);
+});
+
+test('guardrails: Trusted and Unrestricted change the copy, and the raw permission mode appears only when it matters', () => {
+  const base = { provider: 'claude', enforcement: idle, servers: [], onChange: noop, dryRun: false, onDryRun: noop, permissionMode: 'bypassPermissions', onPermissionMode: noop, configurable: true };
+  const trusted = emptyRuntimeDraft();
+  trusted.autonomy = 'trusted';
+  const trustedPage = html(createElement(GuardrailsPanel, { ...base, runtime: trusted }));
+  assert.match(trustedPage, /can read, draft, send, publish and delete on its own/);
+  assert.match(trustedPage, /never touches your passwords or login files/);
+  assert.doesNotMatch(trustedPage, /The safety floor/, 'the floor only describes Careful bots');
+  assert.match(trustedPage, /What should this bot never do\?/);
+  assert.match(trustedPage, /Never allow deleting/);
+  assert.doesNotMatch(trustedPage, /Provider permission mode/);
+
+  const loose = emptyRuntimeDraft();
+  loose.autonomy = 'unrestricted';
+  const loosePage = html(createElement(GuardrailsPanel, { ...base, runtime: loose }));
+  assert.match(loosePage, /This bot is Unrestricted/);
+  assert.match(loosePage, /Rules do not apply/);
+  assert.doesNotMatch(loosePage, /Never allow deleting/);
+  assert.match(loosePage, /Provider permission mode/, 'with no gate the raw mode is the only control');
+  assert.match(loosePage, /no gate/);
+  assert.match(loosePage, /skips its own questions/);
+  assert.match(loosePage, /Daily spend limit/, 'a budget still applies');
+
+  const advisory = html(createElement(GuardrailsPanel, { ...base, runtime: emptyRuntimeDraft(), provider: 'codex', enforcement: { data: { provider: 'codex', level: 'advisory', detail: 'x', builtin_tool_gate: false }, loading: false, error: null } }));
+  assert.match(advisory, /Provider permission mode/);
+  assert.match(advisory, /Codex can use tools the gate cannot see/);
+  const failedCheck = html(createElement(GuardrailsPanel, { ...base, runtime: emptyRuntimeDraft(), enforcement: { data: null, loading: false, error: 'boom' } }));
+  assert.match(failedCheck, /Provider permission mode/, 'if the check fails the setting stays reachable');
+  const enforced = html(createElement(GuardrailsPanel, { ...base, runtime: emptyRuntimeDraft(), enforcement: { data: { provider: 'claude', level: 'enforced', detail: 'x', builtin_tool_gate: true }, loading: false, error: null } }));
+  assert.doesNotMatch(enforced, /Provider permission mode/);
+});
+
+test('the autonomy picker shows three radio cards with the exact meanings and a warning once Unrestricted', () => {
+  const page = html(createElement(AutonomyPicker, { value: 'trusted', onChange: noop }));
+  assert.equal((page.match(/role="radio"/g) ?? []).length, 3);
+  assert.match(page, /role="radiogroup"/);
+  assert.match(page, /Reads, drafts and works in its own folder/);
+  assert.match(page, /Also sends, publishes, deletes and works outside its folder on its own/);
+  assert.match(page, /No gate at all/);
+  assert.doesNotMatch(page, /Type <strong>unrestricted/);
+  const loose = html(createElement(AutonomyPicker, { value: 'unrestricted', onChange: noop }));
+  assert.match(loose, /This bot is Unrestricted\. Nothing checks what it does\./);
+  assert.match(html(createElement(AutonomyPicker, { value: 'careful', onChange: noop, disabled: true })), /disabled=""/);
 });
 
 test('enforcement is explained in plain words for both levels, and a failed check does not block', () => {
@@ -116,6 +169,9 @@ test('enforcement is explained in plain words for both levels, and a failed chec
   const advisory = html(createElement(EnforcementNotice, { provider: 'codex', state: { data: { provider: 'codex', level: 'advisory', detail: 'x', builtin_tool_gate: false }, loading: false, error: null } }));
   assert.match(advisory, /Action gate: Advisory/);
   assert.match(advisory, /cannot see/);
+  const off = html(createElement(EnforcementNotice, { provider: 'claude', state: { data: { provider: 'claude', level: 'off', detail: 'x', builtin_tool_gate: true }, loading: false, error: null } }));
+  assert.match(off, /Action gate: Off/);
+  assert.match(off, /nothing it does on claude is checked/);
   assert.match(html(createElement(EnforcementNotice, { provider: 'codex', state: { data: null, loading: false, error: 'boom' } })), /Could not check enforcement for codex \(boom\)/);
   assert.match(html(createElement(EnforcementNotice, { provider: 'codex', state: { data: null, loading: true, error: null } })), /Checking/);
 });
@@ -203,15 +259,20 @@ test('flag on, new bot: every step renders with its v2 content', () => {
   const guardrails = stepPage('guardrails', true);
   assert.doesNotMatch(guardrails, /phantom controls/);
   assert.match(guardrails, /The safety floor/);
-  assert.match(guardrails, /Current policy summary/);
+  assert.match(guardrails, /How much can this bot do on its own\?/);
+  assert.match(guardrails, /it will ask before sending, deleting or buying/);
+  assert.doesNotMatch(guardrails, /Current policy summary/);
+  assert.doesNotMatch(guardrails, /tool decisions loaded/);
+  assert.doesNotMatch(guardrails, /Provider permission mode/);
   const agent = stepPage('agent', true);
-  assert.match(agent, /Advanced: provider permission mode/);
+  assert.doesNotMatch(agent, /Advanced: provider permission mode/);
+  assert.doesNotMatch(agent, /Provider permission mode/, 'an enforced (or not yet checked) provider hides the raw mode');
   assert.doesNotMatch(agent, />Permission mode</);
   assert.match(agent, /Use a cheaper model to screen signals first/);
   assert.match(stepPage('goals', true), /What does good look like\?/);
   assert.match(stepPage('reach', true), /Where should it reach you\?/);
   const review = stepPage('review', true);
-  for (const label of ['Schedule', 'More wake-ups', 'Goals', 'Rules', 'Budget', 'Enforcement', 'Backup providers', 'Triage model', 'Reaches you on', 'Learning']) assert.match(review, new RegExp(`>${label}<`));
+  for (const label of ['Schedule', 'Autonomy', 'More wake-ups', 'Goals', 'Rules', 'Budget', 'Enforcement', 'Backup providers', 'Triage model', 'Reaches you on', 'Learning']) assert.match(review, new RegExp(`>${label}<`));
   assert.match(review, /\$5\.00\/day/);
   assert.match(review, /12 wake-ups\/hour/);
   assert.match(review, /setup step/);
@@ -219,8 +280,8 @@ test('flag on, new bot: every step renders with its v2 content', () => {
 
 test('flag on, editing: new guardrails copy but no create-only inputs', () => {
   const guardrails = stepPage('guardrails', true, 'edit');
-  assert.match(guardrails, /The safety floor/);
   assert.match(guardrails, /managed on its Rules tab/);
+  assert.match(guardrails, /changed on its Abilities tab/);
   assert.doesNotMatch(guardrails, /Daily spend limit/);
   assert.match(stepPage('triggers', true, 'edit'), /managed on the bot(?:'|&#x27;)s Triggers tab/);
   assert.doesNotMatch(stepPage('triggers', true, 'edit'), /More ways to wake it up/);

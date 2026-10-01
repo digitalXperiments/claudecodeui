@@ -224,7 +224,7 @@ function isInsideWorkspace(candidate: string, workspaceRoot: string, cwd: string
 const SENSITIVE_PATH_PATTERN =
   /(^|[\\/.])(\.env(\.[\w-]+)?|\.ssh|\.aws|\.gnupg|\.netrc|\.npmrc|\.pypirc|id_rsa|id_ed25519|credentials|\.kube)([\\/]|$)/i;
 
-function isSensitivePath(candidate: string): boolean {
+export function isSensitivePath(candidate: string): boolean {
   return SENSITIVE_PATH_PATTERN.test(candidate);
 }
 
