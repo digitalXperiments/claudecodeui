@@ -4,7 +4,8 @@ import { secretsService } from '@/modules/secrets/index.js';
 import { broadcastSystemEvent } from '@/modules/websocket/index.js';
 import { botGateDecisionsDb } from '@/modules/bots/gate/bot-gate-decisions.repository.js';
 import { runAutoReviewer } from '@/modules/bots/gate/auto-reviewer.js';
-import { readBotAutonomy } from '@/modules/bots/bots-runtime-config.js';
+import { readApprovalTimeoutMs, readBotAutonomy } from '@/modules/bots/bots-runtime-config.js';
+import { approvalCardTitle, describeGateAction } from '@/modules/bots/gate/approval-text.js';
 import { budgets } from '@/modules/bots/gate/budgets.service.js';
 import {
   SAFETY_FLOOR,
@@ -41,6 +42,8 @@ function argsLookActionable(value: unknown, depth = 0): boolean {
 const ALWAYS_ALLOW_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 const isFloor = (risk: Risk): boolean => SAFETY_FLOOR.includes(risk);
+/** Risks no autonomy level lets through unasked (bypass aside, which never reaches the gate). */
+const AUTO_ALWAYS_ASK: Risk[] = ['purchase', 'credential', 'delete'];
 const isSafe = (risk: Risk): boolean => risk === 'read' || risk === 'draft';
 
 /** Only the operator's own bot-scoped rules may loosen a floor risk to allow. */
@@ -87,7 +90,8 @@ function persistAndBroadcast(ctx: GateContext, req: GateRequest, risk: Risk, ver
     args: req.args ?? {},
     decision: verdict.decision,
     decidedBy: verdict.decidedBy,
-    reason: verdict.reason,
+    // A built-in call says why a human must look at it, so the card does not just read "needs approval".
+    reason: verdict.decision === 'ask' && req.why ? `${verdict.reason}. ${req.why}` : verdict.reason,
   });
   if (verdict.decision === 'deny') botGateDecisionsDb.recordOutcome(row.decision_id, 'denied');
   broadcastSystemEvent({
@@ -137,18 +141,30 @@ async function evaluate(ctx: GateContext, req: GateRequest): Promise<GateVerdict
 
   // 3-4. Rules and the safety floor.
   let { verdict: provisional, rule } = provisionalDecision(risk, rules.match(ctx.botId, req, risk));
-  // Trusted autonomy acts like an implicit bot-scoped allow for floor risks (never credential). It
-  // only replaces the bare floor `ask`: deny/ask rules, budgets and dry run were decided above or
-  // are kept, and step 5 (taint) still sends a tainted run's floor call to a human. 'unrestricted'
-  // bots do not use the gate; if one reaches it anyway it is treated as careful.
+  // Auto autonomy acts like an implicit bot-scoped allow for everything but purchase / credential /
+  // delete, which always ask. It only replaces the bare floor (or unknown-tool) `ask`: deny and ask
+  // RULES, budgets and dry run were decided above or are kept. A call that could have been caused by
+  // content the run read (tainted) or that nothing classifies (unknown) goes to the auto-reviewer
+  // instead of a human; the reviewer fails closed (anything but an explicit ok asks the human).
+  // 'bypass' bots do not use the gate; if one reaches it anyway it is treated as ask.
   if (
     provisional.decision === 'ask' &&
-    provisional.decidedBy === 'floor' &&
-    isFloor(risk) &&
-    risk !== 'credential' &&
-    readBotAutonomy(ctx.botId) === 'trusted'
+    (provisional.decidedBy === 'floor' || provisional.decidedBy === 'default') &&
+    (isFloor(risk) || risk === 'unknown') &&
+    !AUTO_ALWAYS_ASK.includes(risk) &&
+    readBotAutonomy(ctx.botId) === 'auto'
   ) {
-    provisional = { decision: 'allow', decidedBy: 'autonomy:trusted', reason: `Trusted autonomy: "${risk}" runs without asking` };
+    if (ctx.tainted || risk === 'unknown') {
+      const review = await runAutoReviewer(ctx, req, risk);
+      if (review.ok) {
+        return finish({ decision: 'allow', decidedBy: 'autonomy:auto+reviewer', reason: review.reason || 'Auto autonomy: the reviewer approved' }, soft);
+      }
+      return finish(
+        { decision: 'ask', decidedBy: 'reviewer', reason: `The automatic reviewer did not approve "${req.tool}" (${risk}): ${review.reason || 'not sure'}` },
+        soft,
+      );
+    }
+    provisional = { decision: 'allow', decidedBy: 'autonomy:auto', reason: `Auto autonomy: "${risk}" runs without asking` };
     rule = null;
   }
   if (provisional.decision !== 'allow') return finish(provisional, soft);
@@ -189,6 +205,49 @@ let pollIntervalMs = 1_000;
 /** Test hook: how often awaitHuman re-reads the DB when no resolver fired. */
 export function setGateHumanPollInterval(ms: number | null): void {
   pollIntervalMs = ms ?? 1_000;
+}
+
+/** What a pending human approval tells the rest of the runtime. */
+export interface HumanWaitInfo {
+  botId: string;
+  episodeId: string | null;
+  decisionId: string;
+  interruptId: string;
+  server: string;
+  tool: string;
+  risk: string;
+  /** A verb phrase for the call: "change ~/x/y.md", "run: rm -r build". */
+  action: string;
+  waitedMs: number;
+  timeoutMs: number;
+}
+
+export interface HumanWaitHooks {
+  /** Keep the running episode alive while a human decides (kernel: `extendEpisodeDeadline`). */
+  extendDeadline?: (episodeId: string, atLeastMs: number) => { remainingMs: number; capped: boolean } | null;
+  /** Half the wait has passed and the card is still open. */
+  onReminder?: (info: HumanWaitInfo) => unknown;
+  /** Nobody answered in time; the call is skipped. */
+  onExpired?: (info: HumanWaitInfo) => unknown;
+}
+
+let humanWaitHooks: HumanWaitHooks = {};
+
+/** Register (merge) hooks. Pass null to clear them all (tests). */
+export function setHumanWaitHooks(next: HumanWaitHooks | null): void {
+  humanWaitHooks = next ? { ...humanWaitHooks, ...next } : {};
+}
+
+/** After the wait the episode still needs this long to finish its turn. */
+export const APPROVAL_FINISH_MARGIN_MS = 2 * 60_000;
+
+function runHook(hook: ((info: HumanWaitInfo) => unknown) | undefined, info: HumanWaitInfo): void {
+  if (!hook) return;
+  try {
+    void Promise.resolve(hook(info)).catch((error) => console.warn('[BotGate] approval hook failed', error instanceof Error ? error.message : error));
+  } catch (error) {
+    console.warn('[BotGate] approval hook failed', error instanceof Error ? error.message : error);
+  }
 }
 
 const ARG_VALUE_LIMIT = 300;
@@ -270,7 +329,7 @@ function outcomeFromInterrupt(interruptId: string): { outcome: HumanGateOutcome;
   return null;
 }
 
-async function awaitHuman(decisionId: string, options: { timeoutMs: number }): Promise<HumanGateOutcome> {
+async function awaitHuman(decisionId: string, options: { timeoutMs?: number } = {}): Promise<HumanGateOutcome> {
   const row = botGateDecisionsDb.get(decisionId);
   if (!row) throw new Error(`Unknown gate decision: ${decisionId}`);
   const existing = row.outcome;
@@ -284,10 +343,26 @@ async function awaitHuman(decisionId: string, options: { timeoutMs: number }): P
     }
   })();
   const botTitle = bot?.title?.trim() || 'Bot';
+
+  // How long to wait: the caller's choice, else the bot's setting (default 30 minutes). While a human
+  // decides, the episode must not hit its own timeout, so ask the kernel to keep it alive for the wait
+  // plus a margin to finish the turn; the kernel caps the total stretch, and the wait is clamped to
+  // what is left so the approval expires before the episode would be aborted.
+  let timeoutMs = options.timeoutMs !== undefined && options.timeoutMs > 0 ? options.timeoutMs : readApprovalTimeoutMs(row.bot_id);
+  if (row.episode_id && humanWaitHooks.extendDeadline) {
+    try {
+      const extension = humanWaitHooks.extendDeadline(row.episode_id, timeoutMs + APPROVAL_FINISH_MARGIN_MS);
+      if (extension?.capped) timeoutMs = Math.max(1_000, Math.min(timeoutMs, extension.remainingMs - APPROVAL_FINISH_MARGIN_MS));
+    } catch (error) {
+      console.warn('[BotGate] could not extend the episode deadline', error instanceof Error ? error.message : error);
+    }
+  }
+  const waitStartedAt = Date.now();
+
   const interrupt = interruptsService.create({
     kind: 'bot_gate',
     severity: 'warning',
-    title: `${botTitle} wants to ${row.tool}`,
+    title: approvalCardTitle(botTitle, row),
     body: [
       `Server: ${row.server}`,
       `Tool: ${row.tool}`,
@@ -305,16 +380,31 @@ async function awaitHuman(decisionId: string, options: { timeoutMs: number }): P
     ],
     dedupeKey: `bot_gate:${decisionId}`,
     meta: { botId: row.bot_id, decisionId },
-    expiresAt: new Date(Date.now() + Math.max(options.timeoutMs, 1_000)).toISOString(),
+    expiresAt: new Date(waitStartedAt + Math.max(timeoutMs, 1_000)).toISOString(),
   });
   botGateDecisionsDb.setInterrupt(decisionId, interrupt.interrupt_id);
+
+  const waitInfo = (): HumanWaitInfo => ({
+    botId: row.bot_id,
+    episodeId: row.episode_id,
+    decisionId,
+    interruptId: interrupt.interrupt_id,
+    server: row.server,
+    tool: row.tool,
+    risk: row.risk,
+    action: describeGateAction(row),
+    waitedMs: Date.now() - waitStartedAt,
+    timeoutMs,
+  });
 
   return new Promise<HumanGateOutcome>((resolve) => {
     let poll: NodeJS.Timeout | undefined;
     let timer: NodeJS.Timeout | undefined;
+    let reminder: NodeJS.Timeout | undefined;
     const finish = (outcome: HumanGateOutcome) => {
       if (poll) clearInterval(poll);
       if (timer) clearTimeout(timer);
+      if (reminder) clearTimeout(reminder);
       waiters.delete(decisionId);
       resolve(outcome);
     };
@@ -329,8 +419,17 @@ async function awaitHuman(decisionId: string, options: { timeoutMs: number }): P
       botGateDecisionsDb.recordOutcome(decisionId, 'expired');
       const expired = interruptsDb.expire(interrupt.interrupt_id, 'bot_gate_timeout');
       if (expired) broadcastSystemEvent({ kind: 'interrupt_updated', interrupt: expired });
+      runHook(humanWaitHooks.onExpired, waitInfo());
       finish('expired');
     };
+
+    // One reminder at half the wait, if the card is still open.
+    reminder = setTimeout(() => {
+      const current = botGateDecisionsDb.get(decisionId);
+      if (current?.outcome === 'approved' || current?.outcome === 'rejected' || current?.outcome === 'expired') return;
+      if (interruptsDb.get(interrupt.interrupt_id)?.status !== 'open') return;
+      runHook(humanWaitHooks.onReminder, waitInfo());
+    }, Math.floor(timeoutMs / 2));
 
     // Fallback: resolution through any path (HTTP act without a configured resolver, direct DB).
     poll = setInterval(() => {
@@ -349,7 +448,7 @@ async function awaitHuman(decisionId: string, options: { timeoutMs: number }): P
       resolveBotGateDecision(decisionId, fromInterrupt.outcome, { alwaysAllow: fromInterrupt.alwaysAllow });
       finish(fromInterrupt.outcome);
     }, pollIntervalMs);
-    timer = setTimeout(expire, Math.max(options.timeoutMs, 0));
+    timer = setTimeout(expire, timeoutMs);
   });
 }
 

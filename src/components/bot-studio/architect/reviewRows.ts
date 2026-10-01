@@ -36,15 +36,15 @@ export function budgetSummary(runtime: RuntimeDraft): string {
 }
 
 export function rulesSummary(runtime: RuntimeDraft): string {
-  if (runtime.autonomy === 'unrestricted') return 'None: with no gate, rules are never checked';
+  if (runtime.autonomy === 'bypass') return 'None: with no gate, rules are never checked';
   const parts: string[] = [];
   if (runtime.rules.allow.length) parts.push(`${runtime.rules.allow.length} tool${runtime.rules.allow.length === 1 ? '' : 's'} allowed without asking (${runtime.rules.allow.map((choice) => choice.tool).join(', ')})`);
   if (runtime.rules.neverDelete) parts.push('never delete');
   if (runtime.rules.neverPurchase) parts.push('never purchase');
   if (parts.length) return parts.join(' · ');
-  return runtime.autonomy === 'trusted'
-    ? 'Trusted: it acts on its own; credentials and login files stay off limits'
-    : 'Safety floor only: sending, publishing, deleting, buying, credentials and production changes always ask';
+  return runtime.autonomy === 'auto'
+    ? 'Auto: it acts on its own but always asks before purchases, credentials and deleting; after reading outside content a reviewer checks what it sends or publishes'
+    : 'Ask: reads and its own folder are free; sending, publishing, deleting, buying, logins and changes outside its folder ask first';
 }
 
 export function goalsSummary(runtime: RuntimeDraft): string {
@@ -60,7 +60,7 @@ export function learningSummary(runtime: RuntimeDraft): string {
 
 export function enforcementSummary(provider: string, level: BotGateLevel | null): string {
   if (!level) return 'Checking…';
-  if (level === 'off') return 'No gate (Unrestricted): nothing is checked';
+  if (level === 'off') return 'No gate (Bypass): nothing is checked';
   return level === 'enforced' ? `Enforced on ${provider}` : `Advisory on ${provider} (the gate cannot see everything it does)`;
 }
 
@@ -71,7 +71,7 @@ export function runtimeReviewRows(input: {
   manualSchedule: boolean;
   provider: string;
   enforcement: BotGateLevel | null;
-  /** The provider permission mode; shown only when it matters (Unrestricted, or a provider the gate can only advise). */
+  /** The provider permission mode; shown only when it matters (Bypass, or a provider the gate can only advise). */
   permissionMode?: string;
   globalChannels: BotChannel[];
 }): Array<[string, string]> {

@@ -48,7 +48,7 @@ export default function GuardrailsPanel({ provider, enforcement, servers, runtim
         <section className="space-y-3" aria-labelledby="architect-autonomy-heading">
           <div>
             <h3 id="architect-autonomy-heading" className="text-sm font-semibold text-foreground">How much can this bot do on its own?</h3>
-            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">Start Careful. You can change this later on the bot's Abilities tab.</p>
+            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">Start on Ask. You can change this later on the bot's Abilities tab.</p>
           </div>
           <AutonomyPicker value={autonomy} onChange={(next) => onChange({ autonomy: next })} />
           <p className="rounded-xl border border-border/60 bg-muted/20 px-4 py-3 text-xs font-medium text-foreground" role="status">{autonomySummary(autonomy)}</p>
@@ -57,10 +57,10 @@ export default function GuardrailsPanel({ provider, enforcement, servers, runtim
         <Callout>How much this bot can do on its own is changed on its Abilities tab, along with its apps, skills, spaces and logins.</Callout>
       )}
 
-      {configurable && autonomy === 'careful' ? (
+      {configurable && autonomy === 'ask' ? (
         <div className="rounded-xl border border-border/60 p-4">
           <p className="text-xs font-semibold text-foreground">The safety floor</p>
-          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">These actions always ask you first, no matter what a rule or the model says, unless you allow them for this one bot below. Everything else follows your rules, then sensible defaults (reads and drafts go ahead; unclassified tools ask).</p>
+          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">On Ask, reading is never a question: the bot can read anything except password and login files, and write inside its own folder. These actions always ask you first, no matter what a rule or the model says, unless you allow them for this one bot below. Changing files or running commands with side effects outside its own folder asks too, and so do tools it does not recognise.</p>
           <ul className="mt-3 grid gap-2 sm:grid-cols-2">
             {BOT_SAFETY_FLOOR.map((risk) => (
               <li key={risk} className="flex items-start gap-2 rounded-lg border border-border/50 bg-background px-3 py-2 text-[11px]">
@@ -71,24 +71,24 @@ export default function GuardrailsPanel({ provider, enforcement, servers, runtim
           </ul>
         </div>
       ) : null}
-      {configurable && autonomy === 'trusted' ? <Callout tone="warn" title="Trusted bots act without waiting for you">Sending, publishing, deleting and working outside its folder go ahead on their own. It still asks right after it has read outside content such as emails or web pages, and it never touches your passwords or login files. Anything you mark "never" below still applies.</Callout> : null}
+      {configurable && autonomy === 'auto' ? <Callout tone="warn" title="Auto bots act without waiting for you">Auto does everything on its own except it always asks before purchases, credentials (passwords, logins, tokens, security settings) and deleting, including destructive commands such as rm -r, force-push and dropping data. After it has read outside content such as emails or web pages and wants to send, publish or change production, an automatic reviewer checks the action against your brief and goals; if the reviewer is not sure, or fails, it asks you. Anything you mark "never" below, your budget and the dry run still apply, and passwords and login files stay off limits.</Callout> : null}
 
       <EnforcementNotice provider={provider} state={enforcement} />
 
       {onPermissionMode ? <PermissionModeCard provider={provider} autonomy={autonomy} level={gateLevel} value={permissionMode} onChange={onPermissionMode} /> : null}
 
-      {configurable && autonomy === 'unrestricted' ? <Callout tone="warn" title="Rules do not apply">With no gate, nothing checks the rules, so there is nothing to set up here. Use a budget below to limit spending.</Callout> : null}
+      {configurable && autonomy === 'bypass' ? <Callout tone="warn" title="Rules do not apply">With no gate, nothing checks the rules and the bot never asks, so there is nothing to set up here. Only the provider's own permission setting applies. Use a budget below to limit spending.</Callout> : null}
 
-      {configurable && autonomy !== 'unrestricted' ? (
+      {configurable && autonomy !== 'bypass' ? (
         <section className="space-y-3" aria-labelledby="architect-rules-heading">
           <div>
-            <h3 id="architect-rules-heading" className="text-sm font-semibold text-foreground">{autonomy === 'careful' ? 'What may this bot do without asking?' : 'What should this bot never do?'}</h3>
-            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{autonomy === 'careful' ? 'Nothing is allowed by default. Each choice below becomes a rule for this bot only; you can change or remove it later on the Rules tab.' : 'Each switch below becomes a rule for this bot only; you can change or remove it later on the Rules tab.'}</p>
+            <h3 id="architect-rules-heading" className="text-sm font-semibold text-foreground">{autonomy === 'ask' ? 'What may this bot do without asking?' : 'What should this bot never do?'}</h3>
+            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{autonomy === 'ask' ? 'Nothing risky is allowed by default. Each choice below becomes a rule for this bot only; you can change or remove it later on the Rules tab.' : 'Each switch below becomes a rule for this bot only; you can change or remove it later on the Rules tab.'}</p>
           </div>
           <SwitchRow title="Never allow deleting" description="A rule that denies anything classified as delete, even if you approve other things later." checked={runtime.rules.neverDelete} onChange={(neverDelete) => onChange({ rules: { ...runtime.rules, neverDelete } })} />
           <SwitchRow title="Never allow purchases" description="A rule that denies anything that spends money." checked={runtime.rules.neverPurchase} onChange={(neverPurchase) => onChange({ rules: { ...runtime.rules, neverPurchase } })} />
 
-          {autonomy === 'careful' ? (
+          {autonomy === 'ask' ? (
             <>
               {servers.length === 0 ? <Callout>Attach MCP servers in the Tools step and the actions each one can take will appear here, so you can allow specific ones without asking.</Callout> : null}
               {risks.loading ? <p className="flex items-center gap-2 text-xs text-muted-foreground" role="status"><Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />Checking what the attached tools can do…</p> : null}

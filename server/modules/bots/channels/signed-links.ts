@@ -12,6 +12,7 @@ import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 
 import { appConfigDb } from '@/modules/database/index.js';
 import { interruptsService, type Interrupt } from '@/modules/interrupt-queue/index.js';
+import { isLocalUrl } from '@/modules/bots/channels/adapters/types.js';
 
 export const ACTION_LINK_KEY_CONFIG = 'bots.action_link_key';
 export const PUBLIC_BASE_URL_CONFIG = 'bots.public_base_url';
@@ -98,6 +99,26 @@ export function resolveActionBaseUrl(override?: unknown): string {
     || process.env.CLOUDCLI_PUBLIC_URL
     || `http://localhost:${process.env.SERVER_PORT || process.env.PORT || 3001}`;
   return String(candidate).replace(/\/+$/, '');
+}
+
+export type PublicBaseUrlSource = 'override' | 'app_config' | 'env' | 'default';
+
+export interface PublicBaseUrlInfo {
+  value: string;
+  /** Where the value came from: a channel override, app_config 'bots.public_base_url', CLOUDCLI_PUBLIC_URL, or the local default. */
+  source: PublicBaseUrlSource;
+  /** Localhost or a private address: approval links will not open from a phone. */
+  is_local: boolean;
+}
+
+/** The base URL approval links use, where it came from, and whether it is only reachable on this machine. */
+export function describeActionBaseUrl(override?: unknown): PublicBaseUrlInfo {
+  const fromOverride = typeof override === 'string' && override.trim() ? override.trim() : '';
+  const fromConfig = appConfigDb.get(PUBLIC_BASE_URL_CONFIG)?.trim() ?? '';
+  const fromEnv = process.env.CLOUDCLI_PUBLIC_URL?.trim() ?? '';
+  const source: PublicBaseUrlSource = fromOverride ? 'override' : fromConfig ? 'app_config' : fromEnv ? 'env' : 'default';
+  const value = resolveActionBaseUrl(override);
+  return { value, source, is_local: isLocalUrl(value) };
 }
 
 export function buildActionUrl(token: string, baseUrl?: unknown): string {

@@ -9,7 +9,6 @@ export {
 } from './gateway.routes.js';
 export {
   callGatewayTool,
-  DEFAULT_ASK_TIMEOUT_MS,
   isSessionTainted,
   markSessionTainted,
   listGatewayToolsForSession,
@@ -18,7 +17,7 @@ export {
   setGatewayUpstreamPool,
 } from './gateway.service.js';
 export { buildGatewayRunGuards, type GatewayRunGuards } from './run-guards.js';
-export { describeGatewayEnforcement, describeUnrestrictedEnforcement, enforcementForAutonomy, getGatewayEnforcement } from './enforcement.js';
+export { describeGatewayEnforcement, describeBypassEnforcement, enforcementForAutonomy, getGatewayEnforcement } from './enforcement.js';
 export { applyProviderGatewayRunOptions, getProviderGatewayAdapter, type ProviderGatewayAdapter } from './providers/index.js';
 export type { EnforcementLevel, GatewayEnforcement } from './enforcement.js';
 export {

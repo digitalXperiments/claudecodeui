@@ -143,17 +143,17 @@ test('enforcement preview needs no bot and unwraps the envelope', async () => {
 
 test('enforcement preview can ask about an autonomy, and setAutonomy patches the runtime config', async () => {
   reset(() => ({ body: { enforcement: { provider: 'claude', level: 'off', detail: 'no gate', builtin_tool_gate: true } } }));
-  assert.equal((await botRuntimeApi.runtime.enforcementPreview('claude', 'unrestricted')).level, 'off');
-  assert.equal(calls.at(-1)?.url, '/api/bots/enforcement/preview?provider=claude&autonomy=unrestricted');
-  reset(() => ({ body: { runtime: { autonomy: 'trusted' } } }));
-  assert.equal((await botRuntimeApi.runtime.setAutonomy('b 1', 'trusted')).autonomy, 'trusted');
-  assert.deepEqual(calls.at(-1), { url: '/api/bots/b%201/runtime', method: 'PATCH', body: { autonomy: 'trusted' } });
+  assert.equal((await botRuntimeApi.runtime.enforcementPreview('claude', 'bypass')).level, 'off');
+  assert.equal(calls.at(-1)?.url, '/api/bots/enforcement/preview?provider=claude&autonomy=bypass');
+  reset(() => ({ body: { runtime: { autonomy: 'auto' } } }));
+  assert.equal((await botRuntimeApi.runtime.setAutonomy('b 1', 'auto')).autonomy, 'auto');
+  assert.deepEqual(calls.at(-1), { url: '/api/bots/b%201/runtime', method: 'PATCH', body: { autonomy: 'auto' } });
 });
 
 test('abilities unwraps a wrapped or a bare payload', async () => {
-  const abilities = { autonomy: 'careful', provider: 'claude', enforcement: { level: 'enforced' }, apps: [], plain: { canDoAlone: [], asksFirst: [], neverDoes: [] }, skills_count: 0, spaces_count: 0, credentials: [], browser: { profile_exists: false } };
+  const abilities = { autonomy: 'ask', provider: 'claude', enforcement: { level: 'enforced' }, apps: [], plain: { canDoAlone: [], asksFirst: [], neverDoes: [] }, skills_count: 0, spaces_count: 0, credentials: [], browser: { profile_exists: false } };
   reset(() => ({ body: abilities }));
-  assert.equal((await botRuntimeApi.abilities.get('b1')).autonomy, 'careful');
+  assert.equal((await botRuntimeApi.abilities.get('b1')).autonomy, 'ask');
   assert.deepEqual(calls.at(-1), { url: '/api/bots/b1/abilities', method: 'GET', body: undefined });
   reset(() => ({ body: { abilities } }));
   assert.equal((await botRuntimeApi.abilities.get('b1')).provider, 'claude');
@@ -184,9 +184,9 @@ test('extendSignIn posts to the extend path; changeAutonomy returns the server m
   reset(() => ({ status: 409, body: { success: false, error: { code: 'SIGNIN_EXTEND_LIMIT', message: 'limit' } } }));
   await assert.rejects(() => botRuntimeApi.browser.extendSignIn('b1', 's1'), (error: unknown) => error instanceof BotApiError && error.status === 409);
 
-  reset(() => ({ body: { runtime: { autonomy: 'careful' }, applied: 'now', stopped_run: true, message: 'Saved. Stopped.' } }));
-  const change = await botRuntimeApi.runtime.changeAutonomy('b1', 'careful');
+  reset(() => ({ body: { runtime: { autonomy: 'ask' }, applied: 'now', stopped_run: true, message: 'Saved. Stopped.' } }));
+  const change = await botRuntimeApi.runtime.changeAutonomy('b1', 'ask');
   assert.deepEqual([change.applied, change.stopped_run, change.message], ['now', true, 'Saved. Stopped.']);
-  assert.deepEqual(calls.at(-1), { url: '/api/bots/b1/runtime', method: 'PATCH', body: { autonomy: 'careful' } });
-  assert.equal((await botRuntimeApi.runtime.setAutonomy('b1', 'careful')).autonomy, 'careful');
+  assert.deepEqual(calls.at(-1), { url: '/api/bots/b1/runtime', method: 'PATCH', body: { autonomy: 'ask' } });
+  assert.equal((await botRuntimeApi.runtime.setAutonomy('b1', 'ask')).autonomy, 'ask');
 });

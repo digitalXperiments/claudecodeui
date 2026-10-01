@@ -136,7 +136,23 @@ function toolNameLooksLikeCommandLine(toolName: string | null): boolean {
   return /\s/.test(trimmed) || trimmed.includes('/') || trimmed.includes('\\');
 }
 
-export function extractPermissionRequestDetails(message: AnyRecord): PermissionRequestDetails {
+/**
+ * Extra path-carrying input keys providers use (Antigravity `view_file { AbsolutePath }`, `list_dir
+ * { DirectoryPath }`, `grep_search { SearchPath }`, `codebase_search { TargetDirectories: [...] }` ...).
+ * Only collected when `extendedPathKeys` is set (the bot gate's denylist / read analysis): the shared
+ * relay classifier keeps its original key set so its approve / escalate outcomes do not move.
+ */
+export const EXTENDED_PATH_KEYS = [
+  'AbsolutePath', 'absolute_path', 'DirectoryPath', 'directory_path', 'SearchPath', 'search_path',
+  'SearchDirectory', 'search_directory', 'TargetFile', 'FilePath', 'Path', 'TargetDirectory', 'target_directory',
+  'directory', 'Directory', 'dir', 'root',
+] as const;
+export const EXTENDED_PATH_LIST_KEYS = ['TargetDirectories', 'target_directories', 'Paths', 'SearchPaths', 'search_paths'] as const;
+
+export function extractPermissionRequestDetails(
+  message: AnyRecord,
+  options: { extendedPathKeys?: boolean } = {},
+): PermissionRequestDetails {
   const rawInput = message.input ?? message.toolInput ?? null;
   const inputObj =
     rawInput && typeof rawInput === 'object' && !Array.isArray(rawInput)
@@ -176,6 +192,14 @@ export function extractPermissionRequestDetails(message: AnyRecord): PermissionR
     for (const key of ['paths', 'files', 'file_paths']) {
       const entry = inputObj[key];
       if (Array.isArray(entry)) for (const value of entry as unknown[]) pushPath(paths, value);
+    }
+    if (options.extendedPathKeys) {
+      for (const key of EXTENDED_PATH_KEYS) pushPath(paths, inputObj[key]);
+      for (const key of EXTENDED_PATH_LIST_KEYS) {
+        const entry = inputObj[key];
+        if (Array.isArray(entry)) for (const value of entry as unknown[]) pushPath(paths, value);
+        else pushPath(paths, entry);
+      }
     }
     if (Array.isArray(inputObj.edits)) {
       for (const edit of inputObj.edits as unknown[]) {

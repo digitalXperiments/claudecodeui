@@ -36,7 +36,7 @@ test('budget, rules, goals, learning and enforcement read as sentences', () => {
   runtime.budget.enabled = false;
   assert.equal(budgetSummary(runtime), 'No limits set');
 
-  assert.match(rulesSummary(emptyRuntimeDraft()), /^Safety floor only/);
+  assert.match(rulesSummary(emptyRuntimeDraft()), /^Ask: reads and its own folder are free/);
   const rules = emptyRuntimeDraft();
   rules.rules = { allow: [{ server: 'mail', tool: 'reply', risk: 'send' }], neverDelete: true, neverPurchase: true };
   assert.equal(rulesSummary(rules), '1 tool allowed without asking (reply) · never delete · never purchase');
@@ -59,21 +59,23 @@ test('budget, rules, goals, learning and enforcement read as sentences', () => {
 
 test('autonomy shows in the review, and the raw permission mode only when it matters', () => {
   const base = { cron: '0 * * * *', manualSchedule: false, provider: 'claude', globalChannels: [] };
-  const careful = Object.fromEntries(runtimeReviewRows({ ...base, runtime: emptyRuntimeDraft(), enforcement: 'enforced', permissionMode: 'bypassPermissions' }));
-  assert.match(careful.Autonomy, /^Careful/);
-  assert.equal('Provider permission' in careful, false, 'an enforced provider hides the raw mode');
+  const ask = Object.fromEntries(runtimeReviewRows({ ...base, runtime: emptyRuntimeDraft(), enforcement: 'enforced', permissionMode: 'bypassPermissions' }));
+  assert.match(ask.Autonomy, /^Ask/);
+  assert.equal('Provider permission' in ask, false, 'an enforced provider hides the raw mode');
   const advisory = Object.fromEntries(runtimeReviewRows({ ...base, runtime: emptyRuntimeDraft(), enforcement: 'advisory', permissionMode: 'default' }));
   assert.match(advisory['Provider permission'], /^default: The provider asks before acting/);
   const loose = emptyRuntimeDraft();
-  loose.autonomy = 'unrestricted';
-  const unrestricted = Object.fromEntries(runtimeReviewRows({ ...base, runtime: loose, enforcement: 'off', permissionMode: 'bypassPermissions' }));
-  assert.match(unrestricted.Autonomy, /no gate/);
-  assert.match(unrestricted['Provider permission'], /bypassPermissions: The provider skips its own questions/);
-  assert.match(unrestricted.Rules, /rules are never checked/);
-  assert.match(unrestricted.Enforcement, /No gate/);
-  const trusted = emptyRuntimeDraft();
-  trusted.autonomy = 'trusted';
-  assert.match(rulesSummary(trusted), /^Trusted: it acts on its own/);
+  loose.autonomy = 'bypass';
+  const bypass = Object.fromEntries(runtimeReviewRows({ ...base, runtime: loose, enforcement: 'off', permissionMode: 'bypassPermissions' }));
+  assert.match(bypass.Autonomy, /no gate/);
+  assert.match(bypass['Provider permission'], /bypassPermissions: The provider skips its own questions/);
+  assert.match(bypass.Rules, /rules are never checked/);
+  assert.match(bypass.Enforcement, /No gate/);
+  const auto = emptyRuntimeDraft();
+  auto.autonomy = 'auto';
+  assert.match(rulesSummary(auto), /^Auto: it acts on its own but always asks before purchases, credentials and deleting/);
+  assert.match(rulesSummary(emptyRuntimeDraft()), /^Ask: reads and its own folder are free/);
+  assert.match(enforcementSummary('claude', 'off'), /No gate \(Bypass\)/);
   const unknown = Object.fromEntries(runtimeReviewRows({ ...base, runtime: emptyRuntimeDraft(), enforcement: null, permissionMode: 'default' }));
   assert.equal('Provider permission' in unknown, false);
 });

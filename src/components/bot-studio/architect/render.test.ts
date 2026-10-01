@@ -95,9 +95,9 @@ test('guardrails: autonomy replaces the provider card, and the floor, budget and
   const props = { provider: 'claude', enforcement: idle, servers: [], runtime: emptyRuntimeDraft(), onChange: noop, dryRun: false, onDryRun: noop, permissionMode: 'bypassPermissions', onPermissionMode: noop };
   const page = html(createElement(GuardrailsPanel, { ...props, configurable: true }));
   assert.match(page, /How much can this bot do on its own\?/);
-  for (const label of ['Careful', 'Trusted', 'Unrestricted']) assert.match(page, new RegExp(`>${label}<`));
-  assert.match(page, /aria-checked="true"[^>]*>(?:(?!<button).)*Careful/, 'Careful is the default');
-  assert.match(page, /This bot can read and draft on its own; it will ask before sending, deleting or buying\./);
+  for (const label of ['Ask', 'Auto', 'Bypass']) assert.match(page, new RegExp(`>${label}<`));
+  assert.match(page, /aria-checked="true"[^>]*>(?:(?!<button).)*Ask/, 'Ask is the default');
+  assert.match(page, /This bot can read anything and work in its own folder; it asks before sending, publishing, deleting, buying, logging in/);
   assert.match(page, /The safety floor/);
   for (const risk of ['send', 'publish', 'delete', 'purchase', 'credential', 'prod change']) assert.match(page, new RegExp(risk));
   assert.match(page, /always ask you first/);
@@ -117,22 +117,23 @@ test('guardrails: autonomy replaces the provider card, and the floor, budget and
   assert.doesNotMatch(editing, /How much can this bot do on its own\?/);
 });
 
-test('guardrails: Trusted and Unrestricted change the copy, and the raw permission mode appears only when it matters', () => {
+test('guardrails: Auto and Bypass change the copy, and the raw permission mode appears only when it matters', () => {
   const base = { provider: 'claude', enforcement: idle, servers: [], onChange: noop, dryRun: false, onDryRun: noop, permissionMode: 'bypassPermissions', onPermissionMode: noop, configurable: true };
-  const trusted = emptyRuntimeDraft();
-  trusted.autonomy = 'trusted';
-  const trustedPage = html(createElement(GuardrailsPanel, { ...base, runtime: trusted }));
-  assert.match(trustedPage, /can read, draft, send, publish and delete on its own/);
-  assert.match(trustedPage, /never touches your passwords or login files/);
-  assert.doesNotMatch(trustedPage, /The safety floor/, 'the floor only describes Careful bots');
-  assert.match(trustedPage, /What should this bot never do\?/);
-  assert.match(trustedPage, /Never allow deleting/);
-  assert.doesNotMatch(trustedPage, /Provider permission mode/);
+  const auto = emptyRuntimeDraft();
+  auto.autonomy = 'auto';
+  const autoPage = html(createElement(GuardrailsPanel, { ...base, runtime: auto }));
+  assert.match(autoPage, /Auto does everything on its own except it always asks before purchases, credentials/);
+  assert.match(autoPage, /automatic reviewer checks the action against your brief and goals/);
+  assert.match(autoPage, /passwords and login files stay off limits/);
+  assert.doesNotMatch(autoPage, /The safety floor/, 'the floor only describes Ask bots');
+  assert.match(autoPage, /What should this bot never do\?/);
+  assert.match(autoPage, /Never allow deleting/);
+  assert.doesNotMatch(autoPage, /Provider permission mode/);
 
   const loose = emptyRuntimeDraft();
-  loose.autonomy = 'unrestricted';
+  loose.autonomy = 'bypass';
   const loosePage = html(createElement(GuardrailsPanel, { ...base, runtime: loose }));
-  assert.match(loosePage, /This bot is Unrestricted/);
+  assert.match(loosePage, /This bot is Bypass/);
   assert.match(loosePage, /Rules do not apply/);
   assert.doesNotMatch(loosePage, /Never allow deleting/);
   assert.match(loosePage, /Provider permission mode/, 'with no gate the raw mode is the only control');
@@ -149,17 +150,31 @@ test('guardrails: Trusted and Unrestricted change the copy, and the raw permissi
   assert.doesNotMatch(enforced, /Provider permission mode/);
 });
 
-test('the autonomy picker shows three radio cards with the exact meanings and a warning once Unrestricted', () => {
-  const page = html(createElement(AutonomyPicker, { value: 'trusted', onChange: noop }));
+test('the autonomy picker shows three radio cards with the exact meanings and a warning once Bypass', () => {
+  const page = html(createElement(AutonomyPicker, { value: 'auto', onChange: noop }));
   assert.equal((page.match(/role="radio"/g) ?? []).length, 3);
   assert.match(page, /role="radiogroup"/);
-  assert.match(page, /Reads, drafts and works in its own folder/);
-  assert.match(page, /Also sends, publishes, deletes and works outside its folder on its own/);
-  assert.match(page, /No gate at all/);
-  assert.doesNotMatch(page, /Type <strong>unrestricted/);
-  const loose = html(createElement(AutonomyPicker, { value: 'unrestricted', onChange: noop }));
-  assert.match(loose, /This bot is Unrestricted\. Nothing checks what it does\./);
-  assert.match(html(createElement(AutonomyPicker, { value: 'careful', onChange: noop, disabled: true })), /disabled=""/);
+  assert.match(page, /Reads anything except password and login files, and writes inside its own folder/);
+  assert.match(page, /Does everything on its own, except it always asks before purchases, credentials/);
+  assert.match(page, /No gate and no questions/);
+  assert.doesNotMatch(page, /Type <strong>bypass/);
+  assert.doesNotMatch(page, /This bot is Bypass/);
+  const loose = html(createElement(AutonomyPicker, { value: 'bypass', onChange: noop }));
+  assert.match(loose, /This bot is Bypass\. Nothing checks what it does\./);
+  assert.match(html(createElement(AutonomyPicker, { value: 'ask', onChange: noop, disabled: true })), /disabled=""/);
+});
+
+test('the autonomy picker offers Ask, Auto and Bypass as radio cards with Ask selected by default', () => {
+  const page = html(createElement(AutonomyPicker, { value: emptyRuntimeDraft().autonomy, onChange: noop }));
+  const cards = page.match(/<button[^>]*role="radio"[^>]*>/g) ?? [];
+  assert.equal(cards.length, 3);
+  for (const label of ['Ask', 'Auto', 'Bypass']) assert.match(page, new RegExp(`>${label}</span>`));
+  assert.deepEqual(cards.map((card) => /aria-checked="true"/.test(card)), [true, false, false], 'Ask is the default');
+  assert.doesNotMatch(page, /Careful|Trusted|Unrestricted/);
+  assert.doesNotMatch(page, /Nothing checks what it does/, 'no Bypass warning unless Bypass is selected');
+  const bypass = html(createElement(AutonomyPicker, { value: 'bypass', onChange: noop }));
+  assert.deepEqual((bypass.match(/<button[^>]*role="radio"[^>]*>/g) ?? []).map((card) => /aria-checked="true"/.test(card)), [false, false, true]);
+  assert.match(bypass, /role="alert"[^>]*>(?:(?!<\/p>).)*This bot is Bypass\. Nothing checks what it does\./);
 });
 
 test('enforcement is explained in plain words for both levels, and a failed check does not block', () => {
@@ -260,7 +275,7 @@ test('flag on, new bot: every step renders with its v2 content', () => {
   assert.doesNotMatch(guardrails, /phantom controls/);
   assert.match(guardrails, /The safety floor/);
   assert.match(guardrails, /How much can this bot do on its own\?/);
-  assert.match(guardrails, /it will ask before sending, deleting or buying/);
+  assert.match(guardrails, /it asks before sending, publishing, deleting, buying, logging in/);
   assert.doesNotMatch(guardrails, /Current policy summary/);
   assert.doesNotMatch(guardrails, /tool decisions loaded/);
   assert.doesNotMatch(guardrails, /Provider permission mode/);

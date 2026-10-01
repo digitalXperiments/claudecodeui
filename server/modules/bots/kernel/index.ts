@@ -12,6 +12,7 @@ export {
   runBotNow,
   setKernelOptions,
   syncBotScheduleTrigger,
+  trackedEpisodeRunIds,
 } from '@/modules/bots/kernel/kernel.service.js';
 export type {
   EpisodeListener,

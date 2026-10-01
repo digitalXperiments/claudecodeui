@@ -116,12 +116,20 @@ test('validation points at the step that fixes each problem', () => {
   assert.equal(validateRuntimeDraft(runtime).some((problem) => problem.step === 'guardrails'), false, 'a disabled budget is not validated');
 });
 
-test('autonomy defaults to Careful and a stored draft can only restore a valid level', () => {
-  assert.equal(emptyRuntimeDraft().autonomy, 'careful');
-  assert.equal(normalizeRuntimeDraft(null).autonomy, 'careful');
-  assert.equal(normalizeRuntimeDraft({ autonomy: 'trusted' }).autonomy, 'trusted');
-  assert.equal(normalizeRuntimeDraft({ autonomy: 'unrestricted' }).autonomy, 'unrestricted');
-  assert.equal(normalizeRuntimeDraft({ autonomy: 'yolo' }).autonomy, 'careful');
-  assert.equal(normalizeRuntimeDraft({ autonomy: 7 }).autonomy, 'careful');
-  assert.equal(normalizeRuntimeDraft({ rules: { neverDelete: true } }).autonomy, 'careful', 'drafts saved before autonomy existed restore as Careful');
+test('autonomy defaults to Ask and a stored draft can only restore a valid level', () => {
+  assert.equal(emptyRuntimeDraft().autonomy, 'ask');
+  assert.equal(normalizeRuntimeDraft(null).autonomy, 'ask');
+  assert.equal(normalizeRuntimeDraft({ autonomy: 'ask' }).autonomy, 'ask');
+  assert.equal(normalizeRuntimeDraft({ autonomy: 'auto' }).autonomy, 'auto');
+  assert.equal(normalizeRuntimeDraft({ autonomy: 'bypass' }).autonomy, 'bypass');
+  assert.equal(normalizeRuntimeDraft({ autonomy: 'yolo' }).autonomy, 'ask');
+  assert.equal(normalizeRuntimeDraft({ autonomy: 7 }).autonomy, 'ask');
+  assert.equal(normalizeRuntimeDraft({ rules: { neverDelete: true } }).autonomy, 'ask', 'drafts saved before autonomy existed restore as Ask');
+});
+
+test('drafts stored with the old autonomy names restore as the new ones', () => {
+  assert.equal(normalizeRuntimeDraft({ autonomy: 'careful' }).autonomy, 'ask');
+  assert.equal(normalizeRuntimeDraft({ autonomy: 'trusted' }).autonomy, 'auto');
+  assert.equal(normalizeRuntimeDraft({ autonomy: 'unrestricted' }).autonomy, 'bypass');
+  assert.equal(normalizeRuntimeDraft({ autonomy: 'Unrestricted ' }).autonomy, 'ask', 'only the exact legacy names map; anything else is Ask');
 });

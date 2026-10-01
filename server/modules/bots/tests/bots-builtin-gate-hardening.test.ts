@@ -187,7 +187,7 @@ test('escalate: absolute / tilde paths, "..", cd, other variables and substituti
     ['echo $FOO', undefined], ['cat ${DIR}/x', undefined], ['ls "$PWD"', undefined], ['echo $PATH', undefined],
     ['echo $USER', undefined], ['cat $(echo x)', undefined], ['cat `echo x`', undefined], ["echo $'\\x2e'grok", undefined],
     ['diff <(ls) <(ls src)', undefined], ['cat $(printf "/etc/pas%s" swd)', undefined],
-    ['cat ~/*', undefined], ['cat ../*', undefined], ['cat /etc/*', undefined], ['cat src/../../*', undefined],
+    ['cat ../*', undefined], ['cat src/../../*', undefined],
     ['cat src/*/../../..', undefined],
     ['curl -o /Users/x/out https://example.com', undefined], ['git -C ../other status', undefined], ['ls --color=/etc', undefined],
     ['ls -I/etc', undefined], ['FOO=/etc/passwd cat $FOO', undefined],
@@ -198,6 +198,10 @@ test('escalate: absolute / tilde paths, "..", cd, other variables and substituti
   for (const [command, cwd] of escalated) {
     assert.equal(verdictOf('Bash', bash(command, cwd)), 'escalate', `${JSON.stringify(command)} (cwd ${cwd}) must escalate, not pass`);
   }
+  // `~/*` is expanded against the real home folder: a hard deny when a match is a database / credential file
+  // (a developer's home often holds one), a question otherwise. Never allowed.
+  assert.notEqual(verdictOf('Bash', bash('cat ~/*')), 'pass');
+  assert.notEqual(verdictOf('Bash', bash('cat /etc/*')), 'pass'); // /etc/aliases.db on macOS
 });
 
 test('escalate: reads outside the workspace, bot home and temp (Read, view_file, Glob, Grep)', () => {
@@ -300,7 +304,7 @@ test('gate: the exact reported attacks are never allowed (denied outright, no ap
   });
 });
 
-test('gate: reads outside the workspace and unprovable shell paths go to a human (and are denied when nobody answers)', async () => {
+test('gate: reads outside the workspace run without a question; shell paths the gate cannot prove still go to a human', async () => {
   await withGate(async ({ botId, gate }) => {
     for (const [tool, input] of [
       ['Read', { file_path: '/etc/hosts' }],
@@ -310,6 +314,11 @@ test('gate: reads outside the workspace and unprovable shell paths go to a human
       ['Bash', { command: 'cat /etc/hosts' }],
       ['Bash', { command: 'ls ~' }],
       ['Bash', { command: 'cat ../x' }],
+    ] as Array<[string, Record<string, unknown>]>) {
+      assert.deepEqual(await gate(tool, input), { behavior: 'allow' }, `${tool} ${JSON.stringify(input)} is a plain read`);
+    }
+    assert.equal(botGateDecisionsDb.listForBot(botId).length, 0, 'allowed reads leave no decision rows');
+    for (const [tool, input] of [
       ['Bash', { command: 'cd /etc && ls' }],
       ['Bash', { command: 'echo $FOO' }],
     ] as Array<[string, Record<string, unknown>]>) {
@@ -317,7 +326,7 @@ test('gate: reads outside the workspace and unprovable shell paths go to a human
       assert.equal(decision.behavior, 'deny', `${tool} ${JSON.stringify(input)} must not be auto-approved`);
     }
     const rows = botGateDecisionsDb.listForBot(botId).filter((row) => row.server === 'builtin');
-    assert.equal(rows.length, 9, 'every one of them asked the Action Gate');
+    assert.equal(rows.length, 2, 'both asked the Action Gate');
     for (const row of rows) assert.deepEqual([row.decision, row.outcome], ['ask', 'expired']);
     assert.deepEqual(await gate('Read', { file_path: path.join(workspace, 'src', 'a.ts') }), { behavior: 'allow' });
     assert.deepEqual(await gate('Bash', { command: 'git status' }), { behavior: 'allow' });
@@ -345,11 +354,12 @@ test('gate: a tainted run auto-approves only pure reads inside the workspace and
   });
 });
 
-test('gate: Codex-style calls carry their cwd, and an outside cwd is escalated', async () => {
+test('gate: Codex-style calls carry their cwd, and a side effect from an outside cwd is escalated', async () => {
   await withGate(async ({ gate }) => {
     assert.deepEqual(await gate('Bash', { command: 'git status', cwd: workspace }), { behavior: 'allow' });
     assert.deepEqual(await gate('Bash', { command: 'ls', cwd: botHome }), { behavior: 'allow' });
-    assert.equal((await gate('Bash', { command: 'ls', cwd: '/etc' })).behavior, 'deny');
+    assert.deepEqual(await gate('Bash', { command: 'ls', cwd: '/etc' }), { behavior: 'allow' }, 'listing names outside is a plain read');
+    assert.equal((await gate('Bash', { command: 'touch x', cwd: '/etc' })).behavior, 'deny', 'a side effect from an outside cwd still asks');
     assert.equal((await gate('Bash', { command: 'cat auth.json', cwd: botHome })).behavior, 'deny');
   });
 });
@@ -360,7 +370,7 @@ test('non-bot callers are untouched: the shared classifier still approves what t
   assert.equal(approve({ seatKind: 'worker', workspaceRoot: workspace, toolName: 'Read', paths: ['/etc/hosts'], cwd: workspace }), 'approve');
   assert.equal(approve({ seatKind: 'worker', workspaceRoot: workspace, toolName: 'Bash', command: 'cat /etc/hosts', cwd: workspace }), 'approve');
   assert.equal(approve({ seatKind: 'worker', workspaceRoot: workspace, toolName: 'Bash', command: 'echo $FOO', cwd: workspace }), 'approve');
-  assert.equal(verdictOf('Read', { file_path: '/etc/hosts' }), 'escalate', 'while the bot gate escalates the same read');
+  assert.equal(verdictOf('Read', { file_path: '/etc/hosts' }), 'escalate', 'while the strict guard still flags the same read (the gate lets a read through)');
   assert.equal(verdictOf('Bash', bash('echo $FOO')), 'escalate');
 });
 

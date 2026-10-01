@@ -17,7 +17,8 @@ import { botCommitmentsDb } from '@/modules/bots/kernel/bot-commitments.reposito
 import { botEpisodesDb } from '@/modules/bots/kernel/bot-episodes.repository.js';
 import { botGoalsDb } from '@/modules/bots/kernel/bot-goals.repository.js';
 import { createCommitmentChecked } from '@/modules/bots/kernel/kernel-actions.js';
-import { kernel } from '@/modules/bots/kernel/kernel.service.js';
+import { kernel, trackedEpisodeRunIds } from '@/modules/bots/kernel/kernel.service.js';
+import { getConnection } from '@/modules/database/index.js';
 import { isBotsRuntimeForcedOff, isBotsRuntimeRunning } from '@/modules/bots/bots-runtime.boot.js';
 import { validateFallbackRoutes } from '@/modules/bots/exec/runtime-validation.js';
 import { runsDb } from '@/modules/runs/index.js';
@@ -207,7 +208,17 @@ botKernelRouter.get(
     const botId = requireBot(req);
     const episode = botEpisodesDb.get(param(req.params.episodeId));
     if (!episode || episode.bot_id !== botId) throw notFound('Episode');
-    const runs = episode.run_ids
+    // While the episode runs its row may lag: add the live tracked set and every run tagged with the episode.
+    const runIds = new Set<string>(episode.run_ids);
+    for (const runId of trackedEpisodeRunIds(episode.episode_id)) runIds.add(runId);
+    const tagged = getConnection()
+      .prepare(
+        `SELECT run_id FROM agent_runs
+         WHERE created_at >= ? AND json_extract(meta_json, '$.episode_id') = ? ORDER BY created_at ASC`,
+      )
+      .all(episode.started_at, episode.episode_id) as { run_id: string }[];
+    for (const row of tagged) runIds.add(row.run_id);
+    const runs = [...runIds]
       .map((runId) => runsDb.getById(runId))
       .filter((run): run is NonNullable<typeof run> => Boolean(run))
       .map((run) => ({
@@ -285,7 +296,7 @@ botKernelRouter.patch(
     }
     // `autonomy` derived from a legacy `gateway: false` is patchBotRuntimeConfig's job, not a stored choice.
     if (input.autonomy === undefined) delete patch.autonomy;
-    for (const key of ['identity', 'routing', 'backend', 'backend_config', 'gateway', 'enforcement', 'autonomy'] as const) {
+    for (const key of ['identity', 'routing', 'backend', 'backend_config', 'gateway', 'enforcement', 'autonomy', 'approval_timeout_minutes'] as const) {
       if (input[key] === null) (patch as Record<string, unknown>)[key] = null;
       else if (input[key] !== undefined && !(key in normalized)) throw invalid(`Invalid value for ${key}`);
     }
@@ -298,10 +309,10 @@ botKernelRouter.patch(
       res.json({ runtime });
       return;
     }
-    // A run built as `unrestricted` has no tool gates and cannot be tightened in place: stop it.
+    // A run built as `bypass` has no tool gates and cannot be tightened in place: stop it.
     const runActive = kernel.hasActiveEpisode(botId);
     const stoppedRun =
-      runActive && autonomyBefore === 'unrestricted' && autonomyAfter !== 'unrestricted'
+      runActive && autonomyBefore === 'bypass' && autonomyAfter !== 'bypass'
         ? await kernel.abortActiveEpisode(botId, AUTONOMY_TIGHTENED_REASON)
         : false;
     const effect = describeAutonomyChange(autonomyBefore, autonomyAfter, { runActive, stoppedRun });

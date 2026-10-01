@@ -1,6 +1,7 @@
 import { registerBotsRuntimeHook } from '@/modules/bots/bots-runtime.boot.js';
 import { setKernelNotifier } from '@/modules/bots/kernel/kernel-notifier.js';
-import { startApprovalFanout, stopApprovalFanout } from '@/modules/bots/channels/approvals.js';
+import { setHumanWaitHooks } from '@/modules/bots/gate/action-gate.service.js';
+import { announceApprovalExpired, announceApprovalReminder, startApprovalFanout, stopApprovalFanout } from '@/modules/bots/channels/approvals.js';
 import { startBriefScheduler, stopBriefScheduler } from '@/modules/bots/channels/brief.service.js';
 import { notifyOperator } from '@/modules/bots/channels/notify.service.js';
 import { startEpisodeReplies } from '@/modules/bots/channels/replies.js';
@@ -17,6 +18,9 @@ let stopReplies: (() => void) | null = null;
 export function installChannels(): void {
   if (installed) return;
   installed = true;
+  // A pending approval: remind the operator once at half the wait, and tell them (thread + channels)
+  // when it timed out and the bot stopped waiting.
+  setHumanWaitHooks({ onReminder: announceApprovalReminder, onExpired: announceApprovalExpired });
   setKernelNotifier(async (notification) => {
     await notifyOperator({
       botId: notification.botId,

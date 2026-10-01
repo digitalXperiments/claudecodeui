@@ -9,7 +9,7 @@ export function enforcementCopy(provider: string, level: BotGateLevel): Enforcem
     return {
       level,
       headline: 'Off',
-      detail: `There is no action gate on this bot (Unrestricted), so nothing it does on ${provider} is checked. Only ${provider}'s own permission setting applies.`,
+      detail: `There is no action gate on this bot (Bypass), so nothing it does on ${provider} is checked. Only ${provider}'s own permission setting applies.`,
     };
   }
   if (level === 'enforced') {

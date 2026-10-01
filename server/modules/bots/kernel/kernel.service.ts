@@ -112,6 +112,14 @@ export function extendEpisodeDeadline(episodeId: string, atLeastMs: number): Dea
 }
 
 
+/** Run ids the live episode has created so far (empty once it finished; the episode row has them then). */
+export function trackedEpisodeRunIds(episodeId: string): string[] {
+  for (const ctx of contexts.values()) {
+    if (ctx.episodeId === episodeId) return [...ctx.runIds];
+  }
+  return [];
+}
+
 let options: KernelOptions = { ...DEFAULT_OPTIONS };
 
 /** Override tunables (tests, ops). Pass null to restore the defaults. */
@@ -233,6 +241,12 @@ export function deriveTrigger(events: BotEvent[], reason: string): string {
 function trackRun(ctx: EpisodeContext): (run: { runId: string }) => void {
   return ({ runId }) => {
     ctx.runIds.add(runId);
+    // Persist now, not only at finish: the episode detail lists its runs while it is still running.
+    try {
+      botEpisodesDb.update(ctx.episodeId, { runIds: [...ctx.runIds] });
+    } catch (error) {
+      console.warn('[BotKernel] could not record the run on its episode', errorText(error));
+    }
     if (ctx.aborted) void abortMissionControlRun(runId);
   };
 }
@@ -959,7 +973,7 @@ export const kernel = {
   /**
    * Stop the bot's in-progress episode: its runs are aborted and its claimed events go back to the
    * queue (the episode finishes as `interrupted`). Used when the bot is tightened from
-   * `unrestricted`, whose run was built without CloudCLI's tool gates. Resolves false when nothing
+   * `bypass`, whose run was built without CloudCLI's tool gates. Resolves false when nothing
    * was running.
    */
   async abortActiveEpisode(botId: string, reason: string): Promise<boolean> {

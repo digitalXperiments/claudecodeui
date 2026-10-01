@@ -5,7 +5,7 @@
  * problem before the request is sent (the server remains the authority).
  */
 
-import type { BotChannel, BotChannelPolicy } from '../../types/botRuntime';
+import type { BotChannel, BotChannelPolicy, BotPublicBaseUrlSource } from '../../types/botRuntime';
 
 export type ChannelKind = 'inapp' | 'webpush' | 'slack' | 'telegram' | 'email';
 
@@ -333,4 +333,30 @@ export function publicUrlStatus(host: { publicUrlConfigured?: unknown } | null |
   return host.publicUrlConfigured
     ? { label: 'App-wide URL configured', tone: 'success', detail: 'Action links use it unless a channel sets its own base URL.' }
     : { label: 'No app-wide URL', tone: 'warning', detail: 'Action links fall back to http://localhost, which only works from this machine, unless a channel sets its own base URL.' };
+}
+
+const PUBLIC_BASE_URL_SOURCES: Record<BotPublicBaseUrlSource, string> = {
+  override: 'set on this channel',
+  app_config: 'set in app settings',
+  env: 'from the CLOUDCLI_PUBLIC_URL environment variable',
+  default: 'default, this machine only',
+};
+
+export const LOCAL_PUBLIC_URL_WARNING = 'Approval links point to localhost, so they will not open from your phone. Telegram and Slack will send approvals without link buttons. Set a public https URL (bots.public_base_url).';
+
+/**
+ * The line (and, for a localhost URL, the warning) shown for `public_base_url` in the channels response.
+ * Returns null when an older server did not send it or sent something unusable, so the UI renders nothing.
+ */
+export function describePublicBaseUrl(info: unknown): { line: string; warning: string | null } | null {
+  if (!info || typeof info !== 'object') return null;
+  const { value, source, is_local: isLocal } = info as Record<string, unknown>;
+  if (typeof value !== 'string' || !value.trim()) return null;
+  const where = typeof source === 'string' && Object.prototype.hasOwnProperty.call(PUBLIC_BASE_URL_SOURCES, source)
+    ? PUBLIC_BASE_URL_SOURCES[source as BotPublicBaseUrlSource]
+    : null;
+  return {
+    line: `Approval links use ${value.trim()}${where ? ` (${where})` : ''}`,
+    warning: isLocal === true ? LOCAL_PUBLIC_URL_WARNING : null,
+  };
 }

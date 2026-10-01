@@ -34,12 +34,19 @@ export interface NotifyOperatorInput {
   href?: string;
   /** A scheduled digest (the morning brief): bypasses `digest` and `min_urgency`. */
   scheduled?: boolean;
+  /**
+   * The operator must see this (an approval, a reminder, an expiry): every enabled channel is tried
+   * whatever its quiet hours, digest, minimum urgency or daily cap say.
+   */
+  critical?: boolean;
 }
 
 export interface NotifyResult {
   delivered: string[];
   suppressed: string[];
   failed: string[];
+  /** Why each failed channel failed (the adapter's detail), in the order they were tried. */
+  failures: Array<{ kind: string; detail: string }>;
 }
 
 // ---- policy -----------------------------------------------------------------
@@ -156,7 +163,7 @@ export async function notifyOperator(input: NotifyOperatorInput, options: { now?
     ...input,
     urgency: Number.isFinite(input.urgency) ? Math.min(1, Math.max(0, input.urgency)) : 0.5,
   };
-  const result: NotifyResult = { delivered: [], suppressed: [], failed: [] };
+  const result: NotifyResult = { delivered: [], suppressed: [], failed: [], failures: [] };
 
   // In-app always records, whatever the policy says.
   try {
@@ -166,12 +173,13 @@ export async function notifyOperator(input: NotifyOperatorInput, options: { now?
   } catch (error) {
     botOutboundLogDb.record({ botId: normalized.botId, channelKind: 'inapp', urgency: normalized.urgency, delivered: false, reason: `error: ${errorText(error)}`.slice(0, 200) });
     result.failed.push('inapp');
+    result.failures.push({ kind: 'inapp', detail: errorText(error) });
   }
 
   const channels = (normalized.botId ? botChannelsDb.listEffective(normalized.botId) : botChannelsDb.list(null))
     .filter((channel) => channel.enabled && channel.kind !== 'inapp');
   for (const channel of channels) {
-    const reason = evaluatePolicy(channel.policy as ChannelPolicy, {
+    const reason = normalized.critical ? null : evaluatePolicy(channel.policy as ChannelPolicy, {
       botId: normalized.botId,
       kind: channel.kind,
       urgency: normalized.urgency,
@@ -192,6 +200,7 @@ export async function notifyOperator(input: NotifyOperatorInput, options: { now?
     }
     const sent = await deliverOnChannel(channel, normalized);
     (sent.ok ? result.delivered : result.failed).push(channel.kind);
+    if (!sent.ok) result.failures.push({ kind: channel.kind, detail: sent.detail ?? 'send failed' });
   }
   return result;
 }

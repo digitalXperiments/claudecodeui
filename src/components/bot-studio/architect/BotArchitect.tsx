@@ -498,7 +498,7 @@ export default function BotArchitect({ mode, initialSection, projects, onSaved, 
     const classicPermissionMode = (
       <div><FieldLabel>Permission mode</FieldLabel><select className="field" value={form.permission_mode ?? 'bypassPermissions'} onChange={(event) => updateForm({ permission_mode: event.target.value })}><option value="default">Default · ask when needed</option><option value="acceptEdits">Accept edits · no destructive approval</option><option value="bypassPermissions">Bypass permissions · MCP policy still applies</option><option value="plan">Plan · read-only agent</option></select><p className="mt-2 flex items-start gap-2 text-xs leading-relaxed text-muted-foreground"><ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-primary" />The per-tool policy in Tools is the final boundary. Start with Propose or Dry run while you learn the bot’s behavior.</p></div>
     );
-    // With the action gate in charge the provider's own setting is noise: it appears only for Unrestricted bots or providers the gate can only advise.
+    // With the action gate in charge the provider's own setting is noise: it appears only for Bypass bots or providers the gate can only advise.
     const permissionModeAdvanced = <PermissionModeCard provider={form.provider ?? 'claude'} autonomy={runtime.autonomy} level={gateLevel} value={form.permission_mode ?? 'bypassPermissions'} onChange={(permission_mode) => updateForm({ permission_mode })} />;
     return (
     <StepPanel eyebrow={stepEyebrow(steps, 'agent')} title="Choose the mind and the safety boundary" description="Provider and model are loaded from the same model registry used by Mission Control.">

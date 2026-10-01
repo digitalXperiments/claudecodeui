@@ -440,13 +440,13 @@ export const BOT_GATEWAY_SERVER_NAME = 'cloudcli-tool-gateway';
 
 /**
  * Bot runtime v2 routes a section's MCP tools through the Tool Gateway unless the bot's autonomy is
- * 'unrestricted' (legacy `gateway: false` reads as unrestricted). Fails CLOSED: when the runtime
+ * 'bypass' (legacy `gateway: false` reads as bypass). Fails CLOSED: when the runtime
  * config cannot be read the gateway stays on, so an error never switches governance off.
  */
 export function shouldUseToolGateway(section: McSection): boolean {
   if (!isBotsRuntimeV2Enabled()) return false;
   try {
-    return resolveBotAutonomy(readBotRuntimeConfig(section.section_id)) !== 'unrestricted';
+    return resolveBotAutonomy(readBotRuntimeConfig(section.section_id)) !== 'bypass';
   } catch {
     return true;
   }

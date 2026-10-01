@@ -2,14 +2,14 @@ import { Check, ShieldAlert, ShieldCheck } from 'lucide-react';
 import { useState } from 'react';
 
 import { botRuntimeApi } from '../../../../api/botRuntimeApi';
-import type { BotAbilities, BotAutonomy } from '../../../../types/botRuntime';
+import { normalizeAutonomy, type BotAbilities, type BotAutonomy } from '../../../../types/botRuntime';
 import { cn } from '../../../../../../lib/utils';
 import { ErrorLine, SkeletonRows, WarnLine } from '../panel/Panel';
 import { useAsyncAction } from '../panel/useAsyncAction';
 
 import AbilityCard from './AbilityCard';
 import AutonomyPicker from './AutonomyPicker';
-import { enforcementLine, permissionModeReason, permissionModeWords, plainSections, type PlainSection } from './abilitiesModel';
+import { autonomyChoice, enforcementLine, permissionModeReason, permissionModeWords, plainSections, type PlainSection } from './abilitiesModel';
 
 const LIST_TONES: Record<PlainSection['tone'], { box: string; dot: string }> = {
   ok: { box: 'border-emerald-500/25 bg-emerald-500/[0.05]', dot: 'bg-emerald-500' },
@@ -50,16 +50,17 @@ export default function AutonomySection({ botId, abilities, permissionMode, onCh
     setSaved(null);
     let message: string | undefined;
     const ok = await action.run('autonomy', async () => { message = (await botRuntimeApi.runtime.changeAutonomy(botId, next)).message; });
-    if (ok) { setSaved(message || `Saved. This bot is now ${next}.`); onChanged(); }
+    if (ok) { setSaved(message || `Saved. This bot is now ${autonomyChoice(next).label}.`); onChanged(); }
   };
   const level = abilities?.enforcement.level ?? null;
   const enforced = level === 'enforced';
-  const reason = abilities ? permissionModeReason(abilities.autonomy, level, abilities.provider) : null;
+  const autonomy = normalizeAutonomy(abilities?.autonomy);
+  const reason = abilities ? permissionModeReason(autonomy, level, abilities.provider) : null;
   return (
     <AbilityCard id="autonomy" number={1} title="How much it can do alone" description="Pick how far this bot may go before it has to stop and ask you. You can change this at any time.">
       {!abilities ? <SkeletonRows count={2} /> : (
         <>
-          <AutonomyPicker value={abilities.autonomy} onChange={(next) => void change(next)} disabled={action.busy} />
+          <AutonomyPicker value={autonomy} onChange={(next) => void change(next)} disabled={action.busy} />
           <ErrorLine message={action.error} />
           {saved ? <p role="status" className="flex items-center gap-1.5 text-[11px] text-emerald-700 dark:text-emerald-300"><Check className="h-3.5 w-3.5" aria-hidden="true" />{saved}</p> : null}
           <div>
@@ -71,7 +72,7 @@ export default function AutonomySection({ botId, abilities, permissionMode, onCh
             <span>{enforcementLine(abilities.provider, level)}{abilities.enforcement.detail ? <span className="mt-0.5 block text-[10px] opacity-80">{abilities.enforcement.detail}</span> : null}</span>
           </p>
           {reason ? (
-            <WarnLine strong={abilities.autonomy === 'unrestricted'}>
+            <WarnLine strong={autonomy === 'bypass'}>
               {reason} Right now the provider setting is <strong>{permissionMode || 'default'}</strong>: {permissionModeWords(permissionMode)}{' '}
               <button type="button" className="underline" onClick={onOpenPipeline}>Change it on the Pipeline tab</button>.
             </WarnLine>

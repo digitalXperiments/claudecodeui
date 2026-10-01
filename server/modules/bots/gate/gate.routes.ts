@@ -7,7 +7,7 @@ import express from 'express';
 
 import { missionControlDb } from '@/modules/mission-control/index.js';
 import { AppError, asyncHandler } from '@/shared/utils.js';
-import { isBotAutonomy, readBotRuntimeConfig, resolveBotAutonomy, BOT_AUTONOMY_LEVELS } from '@/modules/bots/bots-runtime-config.js';
+import { parseBotAutonomy, readBotRuntimeConfig, resolveBotAutonomy, BOT_AUTONOMY_LEVELS } from '@/modules/bots/bots-runtime-config.js';
 import type { BotGateDecision, BotRuleDecision, BotRuleMatch, BotRuleScope } from '@/modules/bots/bots.types.js';
 import { enforcementForAutonomy } from '@/modules/bots/gateway/enforcement.js';
 import { botGateDecisionsDb } from '@/modules/bots/gate/bot-gate-decisions.repository.js';
@@ -264,8 +264,9 @@ botGateRouter.get(
     const provider = queryText(req.query.provider).trim();
     if (!provider) throw invalid('provider is required');
     const rawAutonomy = queryText(req.query.autonomy).trim();
-    if (rawAutonomy && !isBotAutonomy(rawAutonomy)) throw invalid(`autonomy must be one of ${BOT_AUTONOMY_LEVELS.join(', ')}`);
-    const autonomy = isBotAutonomy(rawAutonomy) ? rawAutonomy : 'careful';
+    const parsedAutonomy = parseBotAutonomy(rawAutonomy);
+    if (rawAutonomy && !parsedAutonomy) throw invalid(`autonomy must be one of ${BOT_AUTONOMY_LEVELS.join(', ')}`);
+    const autonomy = parsedAutonomy ?? 'ask';
     const view = enforcementForAutonomy(provider, autonomy);
     res.json({ enforcement: { provider, autonomy, level: view.level, detail: view.detail, builtin_tool_gate: view.builtin_tool_gate } });
   }),
@@ -402,7 +403,7 @@ botGateRouter.get(
     const phases = (['perceive', 'act', 'reflect'] as const).map((phase) => {
       const provider = phaseProvider(phase);
       // Every gateway-bound run carries the built-in tool gate; the provider adapter decides
-      // whether that provider can actually honour it. An Unrestricted bot has no gate at all ('off').
+      // whether that provider can actually honour it. A Bypass bot has no gate at all ('off').
       const { level, detail } = view(provider);
       return { phase, provider, level, detail };
     });
@@ -415,7 +416,7 @@ botGateRouter.get(
         level: actView.level,
         detail: actView.detail,
         builtin_tool_gate: actView.builtin_tool_gate,
-        gateway: autonomy !== 'unrestricted',
+        gateway: autonomy !== 'bypass',
         configured: runtime.enforcement ?? null,
         phases,
       },

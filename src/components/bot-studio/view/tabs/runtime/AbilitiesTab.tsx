@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo } from 'react';
 import type { CreateMcSectionInput, McSection } from '../../../../mission-control/api/missionControlApi';
 import { botRuntimeApi } from '../../../api/botRuntimeApi';
 import { useBotRuntime } from '../../../hooks/useBotRuntime';
-import type { BotSkill } from '../../../types/botRuntime';
+import { normalizeAutonomy, type BotSkill } from '../../../types/botRuntime';
 import type { DetailFocus, DetailTab } from '../../detail/detailTabs';
 
 import AccountsSection from './abilities/AccountsSection';
@@ -47,7 +47,7 @@ export function AbilitiesTab({ botId, section, focus = null, onSave, onOpenTab }
 
   const serverSuggestions = useMemo(() => [...new Set([...(data?.apps.map((app) => app.server) ?? []), ...(section.produce_tools ?? []), ...(section.resolve_tools ?? [])])], [data, section.produce_tools, section.resolve_tools]);
   const chips = data ? abilitiesChips({
-    autonomy: data.autonomy,
+    autonomy: normalizeAutonomy(data.autonomy),
     apps: data.apps.length,
     skills: runtime.skills.length || data.skills_count,
     spaces: data.spaces_count,

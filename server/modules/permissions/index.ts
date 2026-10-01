@@ -1,4 +1,6 @@
 export {
+  EXTENDED_PATH_KEYS,
+  EXTENDED_PATH_LIST_KEYS,
   classifyCommand,
   classifyPermissionRequest,
   extractPermissionRequestDetails,

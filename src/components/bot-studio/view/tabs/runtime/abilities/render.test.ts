@@ -22,7 +22,7 @@ const html = (node: Parameters<typeof renderToStaticMarkup>[0]): string => rende
 const noop = () => undefined;
 
 const abilities = (overrides: Partial<BotAbilities> = {}): BotAbilities => ({
-  autonomy: 'careful',
+  autonomy: 'ask',
   provider: 'claude',
   enforcement: { level: 'enforced', detail: 'Built-in tools are gated.' },
   apps: [
@@ -53,13 +53,13 @@ test('the autonomy section shows the picker, the three plain lists and the enfor
   for (const text of ['Can do alone', 'Asks you first', 'Never does', 'Read your inbox', 'Send an email', 'Open password files']) assert.match(page, new RegExp(text));
   assert.match(page, /Claude is fully controlled by the gate\./);
   assert.match(page, /Built-in tools are gated\./);
-  assert.doesNotMatch(page, /Change it on the Pipeline tab/, 'the raw provider mode stays hidden for a Careful bot on an enforced provider');
+  assert.doesNotMatch(page, /Change it on the Pipeline tab/, 'the raw provider mode stays hidden for an Ask bot on an enforced provider');
   assert.doesNotMatch(page, />bypassPermissions</);
 });
 
 test('the autonomy section explains the raw provider mode only when it matters', () => {
-  const loose = html(createElement(AutonomySection, { botId: 'b1', abilities: abilities({ autonomy: 'unrestricted', enforcement: { level: 'off' } }), permissionMode: 'bypassPermissions', onChanged: noop, onOpenPipeline: noop }));
-  assert.match(loose, /This bot is Unrestricted/);
+  const loose = html(createElement(AutonomySection, { botId: 'b1', abilities: abilities({ autonomy: 'bypass', enforcement: { level: 'off' } }), permissionMode: 'bypassPermissions', onChanged: noop, onOpenPipeline: noop }));
+  assert.match(loose, /This bot is Bypass\. Nothing checks what it does/);
   assert.match(loose, /There is no gate on this bot/);
   assert.match(loose, /<strong>bypassPermissions<\/strong>: The provider skips its own questions/);
   assert.match(loose, /Change it on the Pipeline tab/);

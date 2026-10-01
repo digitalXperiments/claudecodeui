@@ -10,16 +10,43 @@ export interface BotPhaseRoute {
 
 /**
  * How much a bot may do without asking, whatever provider runs it:
- *  - careful: the safety floor asks a human for send / publish / delete / purchase / prod_change / credential.
- *  - trusted: the floor risks (except credential) run without asking, unless the run read untrusted content.
- *  - unrestricted: the bot does not use the tool gateway; the provider's own permission mode applies.
+ *  - ask: reads are never a question; anything with side effects (MCP send / publish / delete / purchase /
+ *    prod_change / credential, built-in writes and side-effecting shell outside the bot's own folder, unknown
+ *    tools) asks a human.
+ *  - auto: everything runs without asking EXCEPT purchase, credential and delete, which always ask. After the
+ *    run read untrusted content, send / publish / prod_change go to the auto-reviewer first (fail-closed:
+ *    anything but an explicit ok asks the human).
+ *  - bypass: the bot does not use the tool gateway; the provider's own permission mode applies.
+ *
+ * Stored values used to be careful / trusted / unrestricted. Those are still accepted everywhere they are
+ * read or patched and map to ask / auto / bypass; only the new names are ever written.
  */
-export type BotAutonomy = 'careful' | 'trusted' | 'unrestricted';
-export const BOT_AUTONOMY_LEVELS: readonly BotAutonomy[] = ['careful', 'trusted', 'unrestricted'];
-export const DEFAULT_BOT_AUTONOMY: BotAutonomy = 'careful';
+export type BotAutonomy = 'ask' | 'auto' | 'bypass';
+export const BOT_AUTONOMY_LEVELS: readonly BotAutonomy[] = ['ask', 'auto', 'bypass'];
+export const DEFAULT_BOT_AUTONOMY: BotAutonomy = 'ask';
 
+/** Old stored value -> current level. */
+export const LEGACY_AUTONOMY: Readonly<Record<string, BotAutonomy>> = {
+  careful: 'ask',
+  trusted: 'auto',
+  unrestricted: 'bypass',
+};
+
+/** Strictly one of the current levels (what is stored and returned). */
 export const isBotAutonomy = (value: unknown): value is BotAutonomy =>
   typeof value === 'string' && (BOT_AUTONOMY_LEVELS as readonly string[]).includes(value);
+
+/** A current level or a legacy name -> the current level; anything else -> null. */
+export function parseBotAutonomy(value: unknown): BotAutonomy | null {
+  if (isBotAutonomy(value)) return value;
+  if (typeof value === 'string' && Object.prototype.hasOwnProperty.call(LEGACY_AUTONOMY, value)) return LEGACY_AUTONOMY[value];
+  return null;
+}
+
+/** How long a bot's gate ask waits for the operator before the action is skipped. */
+export const DEFAULT_APPROVAL_TIMEOUT_MINUTES = 30;
+export const MIN_APPROVAL_TIMEOUT_MINUTES = 1;
+export const MAX_APPROVAL_TIMEOUT_MINUTES = 240;
 
 export interface BotRuntimeConfig {
   identity?: { persona?: string; avatar?: string };
@@ -37,12 +64,14 @@ export interface BotRuntimeConfig {
   backend_config?: Record<string, unknown>;
   /**
    * Legacy: `false` meant "no tool gateway". Still accepted; on read it is migrated to
-   * `autonomy: 'unrestricted'` (an explicit `autonomy` always wins).
+   * `autonomy: 'bypass'` (an explicit `autonomy` always wins).
    */
   gateway?: boolean;
-  /** Per-bot autonomy level; absent means 'careful' (see `resolveBotAutonomy`). */
+  /** Per-bot autonomy level; absent means 'ask' (see `resolveBotAutonomy`). */
   autonomy?: BotAutonomy;
   enforcement?: 'enforced' | 'advisory';
+  /** How long a gate ask waits for a human, in minutes (1..240). Absent means `DEFAULT_APPROVAL_TIMEOUT_MINUTES`. */
+  approval_timeout_minutes?: number;
   /** Learning loop settings. Only memory proposals can ever auto-promote. */
   learning?: { auto_promote_memory_min_confidence?: number };
 }
@@ -115,11 +144,21 @@ export function normalizeBotRuntimeConfig(raw: unknown): BotRuntimeConfig {
   }
   if (isObject(source.backend_config)) config.backend_config = source.backend_config;
   if (typeof source.gateway === 'boolean') config.gateway = source.gateway;
-  if (isBotAutonomy(source.autonomy)) config.autonomy = source.autonomy;
-  // Legacy `gateway: false` migrates to 'unrestricted' (true bypass, as before) unless autonomy is explicit.
-  else if (source.gateway === false) config.autonomy = 'unrestricted';
+  const parsedAutonomy = parseBotAutonomy(source.autonomy);
+  if (parsedAutonomy) config.autonomy = parsedAutonomy;
+  // Legacy `gateway: false` migrates to 'bypass' (true bypass, as before) unless autonomy is explicit.
+  else if (source.gateway === false) config.autonomy = 'bypass';
   if (typeof source.enforcement === 'string' && ENFORCEMENT.has(source.enforcement)) {
     config.enforcement = source.enforcement as BotRuntimeConfig['enforcement'];
+  }
+  const waitMinutes = source.approval_timeout_minutes;
+  if (
+    typeof waitMinutes === 'number'
+    && Number.isInteger(waitMinutes)
+    && waitMinutes >= MIN_APPROVAL_TIMEOUT_MINUTES
+    && waitMinutes <= MAX_APPROVAL_TIMEOUT_MINUTES
+  ) {
+    config.approval_timeout_minutes = waitMinutes;
   }
   if (isObject(source.learning)) {
     const learning: NonNullable<BotRuntimeConfig['learning']> = {};
@@ -130,16 +169,17 @@ export function normalizeBotRuntimeConfig(raw: unknown): BotRuntimeConfig {
   return config;
 }
 
-/** The effective autonomy of a config (null config = bot without runtime settings = careful). */
+/** The effective autonomy of a config (null config = bot without runtime settings = ask). */
 export function resolveBotAutonomy(config: BotRuntimeConfig | null | undefined): BotAutonomy {
   if (!config) return DEFAULT_BOT_AUTONOMY;
-  if (isBotAutonomy(config.autonomy)) return config.autonomy;
-  return config.gateway === false ? 'unrestricted' : DEFAULT_BOT_AUTONOMY;
+  const parsed = parseBotAutonomy(config.autonomy);
+  if (parsed) return parsed;
+  return config.gateway === false ? 'bypass' : DEFAULT_BOT_AUTONOMY;
 }
 
 /**
- * The bot's autonomy, failing CLOSED: a missing bot or an unreadable config is 'careful', never
- * 'unrestricted' (an error must not switch the gate off).
+ * The bot's autonomy, failing CLOSED: a missing bot or an unreadable config is 'ask', never
+ * 'bypass' (an error must not switch the gate off).
  */
 export function readBotAutonomy(botId: string): BotAutonomy {
   try {
@@ -147,6 +187,17 @@ export function readBotAutonomy(botId: string): BotAutonomy {
   } catch {
     return DEFAULT_BOT_AUTONOMY;
   }
+}
+
+/** How long a gate ask for this bot waits for a human (milliseconds); a bad or missing setting is the default. */
+export function readApprovalTimeoutMs(botId: string): number {
+  let minutes = DEFAULT_APPROVAL_TIMEOUT_MINUTES;
+  try {
+    minutes = readBotRuntimeConfig(botId)?.approval_timeout_minutes ?? DEFAULT_APPROVAL_TIMEOUT_MINUTES;
+  } catch {
+    // An unreadable config waits the default, never forever.
+  }
+  return minutes * 60_000;
 }
 
 export function readBotRuntimeConfig(botId: string): BotRuntimeConfig | null {
@@ -168,10 +219,10 @@ export function patchBotRuntimeConfig(
   const current = readBotRuntimeConfig(botId);
   if (!current) return null;
   const merged: Record<string, unknown> = { ...current };
-  // Legacy `gateway` patches keep working: `false` means unrestricted, `true` undoes a migrated unrestricted.
+  // Legacy `gateway` patches keep working: `false` means bypass, `true` undoes a migrated bypass.
   if (patch.gateway !== undefined && patch.autonomy === undefined) {
-    if (patch.gateway === false) merged.autonomy = 'unrestricted';
-    else if (patch.gateway === true && current.autonomy === 'unrestricted') delete merged.autonomy;
+    if (patch.gateway === false) merged.autonomy = 'bypass';
+    else if (patch.gateway === true && current.autonomy === 'bypass') delete merged.autonomy;
   }
   for (const [key, value] of Object.entries(patch)) {
     if (value === null) delete merged[key];

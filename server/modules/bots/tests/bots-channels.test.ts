@@ -260,11 +260,11 @@ test('slack webhook variant posts blocks to the secret-resolved URL', async () =
   });
 });
 
-test('telegram: sendMessage with inline keyboard URL buttons', async () => {
+test('telegram: sendMessage with inline keyboard URL buttons (public https base URL)', async () => {
   await withDb(async ({ botId }) => {
     const { fetch, calls } = fakeFetch();
     setChannelsFetch(fetch);
-    channelsService.create({ botId, kind: 'telegram', config: { token_ref: '${secret:TG_TOKEN}', chat_id: '4242' } });
+    channelsService.create({ botId, kind: 'telegram', config: { token_ref: '${secret:TG_TOKEN}', chat_id: '4242', action_base_url: 'https://bots.example.com' } });
     const interrupt = makeApproval(botId, 'bot_gate', [
       { id: 'approve_once', label: 'Approve once', style: 'primary' },
       { id: 'always_allow', label: 'Always allow', style: 'secondary' },
@@ -473,7 +473,7 @@ test('interrupt_created for bot_gate and approval_pending fans out through the a
   await withDb(async ({ botId }) => {
     const { fetch, calls } = fakeFetch();
     setChannelsFetch(fetch);
-    channelsService.create({ botId: null, kind: 'telegram', config: { token_ref: '${secret:TG_TOKEN}', chat_id: '1' } });
+    channelsService.create({ botId: null, kind: 'telegram', config: { token_ref: '${secret:TG_TOKEN}', chat_id: '1', action_base_url: 'https://bots.example.com' } });
     startApprovalFanout();
 
     const gate = makeApproval(botId, 'bot_gate', [

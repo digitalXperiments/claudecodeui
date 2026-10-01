@@ -12,8 +12,8 @@ export type BotVersionConfig = Pick<McSection,
   | 'resolve_prompt' | 'resolve_tools' | 'tool_policy' | 'actions'
 > & {
   approved_memory: string[];
-  /** Autonomy level when it is not the default 'careful' (absent = careful, so old snapshots still match). */
-  autonomy?: 'trusted' | 'unrestricted';
+  /** Autonomy level when it is not the default 'ask' (absent = ask, so old snapshots still match). */
+  autonomy?: 'auto' | 'bypass';
 };
 
 export type BotVersion = {
@@ -67,15 +67,24 @@ type ScoreRow = {
   latest_run_at: string | null;
 };
 
+/** Old autonomy names (careful / trusted / unrestricted) that may sit in stored runtime blobs and snapshots. */
+function currentAutonomyName(value: unknown): 'ask' | 'auto' | 'bypass' | null {
+  if (value === 'ask' || value === 'careful') return 'ask';
+  if (value === 'auto' || value === 'trusted') return 'auto';
+  if (value === 'bypass' || value === 'unrestricted') return 'bypass';
+  return null;
+}
+
 /** The bot's non-default autonomy from `runtime_json` (read directly: the bots module imports this one). */
-function snapshotAutonomy(sectionId: string): 'trusted' | 'unrestricted' | null {
+function snapshotAutonomy(sectionId: string): 'auto' | 'bypass' | null {
   try {
     const row = getConnection().prepare('SELECT runtime_json FROM mc_sections WHERE section_id = ?').get(sectionId) as
       | { runtime_json: string | null }
       | undefined;
     const runtime = row?.runtime_json ? (JSON.parse(row.runtime_json) as Record<string, unknown>) : {};
-    if (runtime.autonomy === 'trusted' || runtime.autonomy === 'unrestricted') return runtime.autonomy;
-    if (runtime.autonomy === undefined && runtime.gateway === false) return 'unrestricted';
+    const named = currentAutonomyName(runtime.autonomy);
+    if (named === 'auto' || named === 'bypass') return named;
+    if (named === null && runtime.gateway === false) return 'bypass';
   } catch {
     // A malformed runtime blob reads as the default.
   }
@@ -115,6 +124,10 @@ function snapshotSection(section: McSection): BotVersionConfig {
 
 function mapVersion(row: VersionRow): BotVersion {
   const parsed = JSON.parse(row.snapshot_json) as Partial<BotVersionConfig>;
+  // Snapshots written before the rename carry trusted / unrestricted: read them under the new names.
+  const stored = currentAutonomyName(parsed.autonomy);
+  if (stored === 'auto' || stored === 'bypass') parsed.autonomy = stored;
+  else delete parsed.autonomy;
   return {
     version: row.version,
     origin: row.origin,

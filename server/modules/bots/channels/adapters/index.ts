@@ -23,4 +23,5 @@ export { recordInAppNotification } from '@/modules/bots/channels/adapters/inapp.
 export { setWebPushSender } from '@/modules/bots/channels/adapters/webpush.js';
 export { buildSlackPayload } from '@/modules/bots/channels/adapters/slack.js';
 export { buildTelegramPayload } from '@/modules/bots/channels/adapters/telegram.js';
+export { isLocalUrl, isPublicHttpsUrl, OPEN_CLOUDCLI_LINE } from '@/modules/bots/channels/adapters/types.js';
 export type { AdapterContext, ChannelAdapter, FetchLike, OutboundAction, OutboundMessage } from '@/modules/bots/channels/adapters/types.js';
