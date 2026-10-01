@@ -489,7 +489,7 @@ test('M5: each binding has its own random secret, required only for providers th
   await withDatabase(async (botId) => {
     const a = gatewaySessions.bind('s-a', { botId, servers: [], provider: 'claude' });
     const b = gatewaySessions.bind('s-b', { botId, servers: [], provider: 'claude' });
-    const other = gatewaySessions.bind('s-c', { botId, servers: [], provider: 'codex' });
+    const other = gatewaySessions.bind('s-c', { botId, servers: [], provider: 'cursor' });
     assert.match(a.secret, /^[0-9a-f]{48}$/);
     assert.notEqual(a.secret, b.secret);
     assert.equal(gatewaySessions.get('s-a')?.secret, a.secret);

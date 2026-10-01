@@ -30,6 +30,7 @@ import { resolveProviderAuthFailure } from '@/shared/provider-auth-failure.js';
 import { broadcastSystemEvent } from '@/modules/websocket/index.js';
 import { readBotRuntimeConfig, type BotPhaseRoute } from '@/modules/bots/bots-runtime-config.js';
 import type { BotEpisode, BotEpisodeStatus, BotEvent } from '@/modules/bots/bots.types.js';
+import { downgradeModelForSoftCap } from '@/modules/runs/index.js';
 import { budgets } from '@/modules/bots/gate/budgets.service.js';
 import { botSpendDb } from '@/modules/bots/gate/bot-spend.repository.js';
 import { botEventsDb } from '@/modules/bots/signals/bot-events.repository.js';
@@ -328,13 +329,23 @@ function applyEnvelope(
   return { commitments, commitmentErrors, goalUpdates, goalErrors, goalNotes };
 }
 
+/**
+ * Past the budget's soft ratio (default 80%), act on a cheaper model of the same provider so the
+ * bot keeps working while spending less; the hard cap still stops it. No cheaper model → unchanged.
+ */
+export function softCapRoute(section: McSection): McSection {
+  if (!budgets.check(section.section_id).soft) return section;
+  const cheaper = downgradeModelForSoftCap(section.model, { provider: section.provider });
+  return cheaper && cheaper !== section.model ? { ...section, model: cheaper } : section;
+}
+
 async function act(ctx: EpisodeContext, section: McSection, events: BotEvent[], reason: string): Promise<WorkOutcome> {
   const botId = section.section_id;
   const runtime = readBotRuntimeConfig(botId);
   const trigger = deriveTrigger(events, reason);
   const { prompt } = await buildKernelPromptAsync({ section, events, reason });
   const result = await runAgentTracked(ctx, {
-    section: applyRoute(section, runtime?.routing?.act),
+    section: softCapRoute(applyRoute(section, runtime?.routing?.act)),
     prompt,
     tools: section.produce_tools,
     sourceRef: botId,

@@ -3,11 +3,12 @@ import path from 'node:path';
 import { realpathSync } from 'node:fs';
 
 import { missionControlDb } from '@/modules/mission-control/index.js';
-import { classifyPermissionRequest, extractPermissionRequestDetails } from '@/modules/permissions/index.js';
+import { classifyCommand, classifyPermissionRequest, extractPermissionRequestDetails } from '@/modules/permissions/index.js';
 import { botGoalsDb } from '@/modules/bots/kernel/bot-goals.repository.js';
 import { actionGate, recordGateDenial } from '@/modules/bots/gate/action-gate.service.js';
 import type { GateContext, GateRequest, Risk } from '@/modules/bots/gate/gate.types.js';
 import { botGateDecisionsDb } from '@/modules/bots/gate/bot-gate-decisions.repository.js';
+import { assessFileTool, assessShellCommand, type StrictFinding } from '@/modules/bots/gate/strict-guard.js';
 
 export const BUILTIN_GATE_SERVER = 'builtin';
 const GATEWAY_TOOL_PREFIX = 'mcp__cloudcli-tool-gateway__';
@@ -91,7 +92,13 @@ const COMMAND_RULES: Array<{ pattern: RegExp; reason: string }> = [
   { pattern: /(?:^|[;&|`(]\s*|\n\s*|\bsudo\s+)env\s*(?:$|[|;&>)`]|-0\b|-i\b)/m, reason: 'environment dumps are off-limits' },
   { pattern: /(?:^|[;&|`(]\s*|\n\s*)(?:export|declare|typeset)\s*(?:-[px]+\s*)?(?:$|[|;&>)`])/m, reason: 'environment dumps are off-limits' },
   { pattern: /\/proc\/[^\s/]*\/environ/, reason: 'reading process environments is off-limits' },
+  // `ps eww <pid>` / `ps auxe` / `ps -E` print another process's environment (the server's secrets).
+  { pattern: /(?:^|[;&|`(]\s*|\n\s*|\bsudo\s+)ps\s+(?:-[A-Za-z]+(?:\s+\d+)?\s+)*[A-Za-z]*e[A-Za-z]*(?:\s|$)/m, reason: 'reading process environments is off-limits' },
+  { pattern: /(?:^|[;&|`(]\s*|\n\s*|\bsudo\s+)ps(?:\s[^\n;|&]*)?\s-[A-Za-z]*E/m, reason: 'reading process environments is off-limits' },
   { pattern: /\bprocess\.env\b|\bos\.environ\b|\bENV\[/, reason: 'reading the process environment is off-limits' },
+  // awk/gawk/mawk expose the environment as ENVIRON[]; jq exposes it as `env` / `$ENV`.
+  { pattern: /\bENVIRON\b/, reason: 'reading the process environment is off-limits' },
+  { pattern: /\bjq\b[^\n;|&]*(?:\$ENV\b|\benv\b)/, reason: 'reading the process environment is off-limits' },
   {
     pattern: new RegExp(String.raw`\b(?:curl|wget|nc|ncat|netcat|socat|http|https|xh)\b[^\n;|&]*${LOCAL_HOST}`, 'i'),
     reason: 'the CloudCLI API on localhost is off-limits',
@@ -138,13 +145,38 @@ function collectPaths(input: Record<string, unknown>, details: { paths: string[]
   return paths;
 }
 
+/**
+ * Strict (gateway-bound run) findings: credential stores in any spelling, protected env vars, and
+ * anything that cannot be shown to stay inside the workspace / bot home / temp. See strict-guard.ts.
+ * This gate only ever serves gateway-bound bot runs, so none of it reaches interactive sessions.
+ */
+function assessStrictCall(
+  toolName: string,
+  record: Record<string, unknown>,
+  details: { command: string | null; paths: string[] },
+  scope: { workspaceRoot: string; botHome: string },
+): StrictFinding {
+  const cwd = typeof record.cwd === 'string' && record.cwd.trim() ? record.cwd : null;
+  const findings: StrictFinding[] = [];
+  if (details.command) findings.push(assessShellCommand(details.command, { ...scope, cwd }));
+  findings.push(assessFileTool(toolName, record, details.paths, scope));
+  return {
+    deny: findings.find((finding) => finding.deny)?.deny ?? null,
+    escalate: findings.find((finding) => finding.escalate)?.escalate ?? null,
+  };
+}
+
+function recordOf(input: unknown): Record<string, unknown> {
+  return input && typeof input === 'object' && !Array.isArray(input) ? (input as Record<string, unknown>) : {};
+}
+
 /** Hard denylist for a built-in tool call; returns the reason, or null when nothing matches. */
 export function builtinDenylistReason(
   toolName: string,
   input: unknown,
   scope: { workspaceRoot: string; botHome: string },
 ): string | null {
-  const record = input && typeof input === 'object' && !Array.isArray(input) ? (input as Record<string, unknown>) : {};
+  const record = recordOf(input);
   const details = extractPermissionRequestDetails({ toolName, input });
   for (const candidate of collectPaths(record, details)) {
     const reason = protectedPathReason(candidate, scope.workspaceRoot, scope.botHome);
@@ -156,7 +188,22 @@ export function builtinDenylistReason(
   }
   const url = typeof record.url === 'string' ? record.url : '';
   if (url && new RegExp(LOCAL_HOST, 'i').test(url)) return 'the CloudCLI API on localhost is off-limits';
-  return null;
+  return assessStrictCall(toolName, record, details, scope).deny;
+}
+
+/**
+ * Reason a gateway-bound call must be decided by a human even though the classifier would approve
+ * it (reads outside the workspace, shell paths that cannot be proven local, other `$VAR`s ...), or
+ * null. Evaluated after `builtinDenylistReason` found nothing to hard-deny.
+ */
+export function builtinEscalationReason(
+  toolName: string,
+  input: unknown,
+  scope: { workspaceRoot: string; botHome: string },
+): string | null {
+  const record = recordOf(input);
+  const details = extractPermissionRequestDetails({ toolName, input });
+  return assessStrictCall(toolName, record, details, scope).escalate;
 }
 
 // ---------------------------------------------------------------------------
@@ -232,13 +279,29 @@ export function createBuiltinToolGate(ctx: BuiltinToolGateContext): BuiltinToolG
     });
 
     if (classification.tier === 'deny') return deny(classification.reason);
-    if (classification.tier === 'approve') return { behavior: 'allow' };
 
-    // Escalated. File tools confined to the bot's own home are fine.
-    if (!details.command && allInside(details.paths, ctx.botHome, ctx.workspaceRoot)) return { behavior: 'allow' };
+    // The classifier alone would approve reads anywhere and shell paths it cannot see through.
+    // A gateway-bound run adds: strict path/shell findings, and no unattended mutation once tainted.
+    let escalationReason: string | null = null;
+    let fromClassifier = false;
+    const strictEscalation = builtinEscalationReason(toolName, input, ctx);
+    if (classification.tier === 'escalate') {
+      escalationReason = classification.reason;
+      fromClassifier = true;
+    } else if (strictEscalation) {
+      escalationReason = `Gateway-bound run: ${strictEscalation}`;
+    } else if (tainted && details.command && classifyCommand(details.command, ctx.workspaceRoot, ctx.workspaceRoot).category !== 'read') {
+      escalationReason = 'The run read untrusted content; only pure reads inside the workspace and bot home run without a human';
+    }
+    if (!escalationReason) return { behavior: 'allow' };
 
-    const risk = mapRisk(toolName, classification.reason);
-    const verdict = await actionGate.evaluate(gateCtx, { ...gateRequest, riskOverride: risk, description: classification.reason });
+    // Escalated by the classifier alone. File tools confined to the bot's own home are fine.
+    if (fromClassifier && !strictEscalation && !details.command && allInside(details.paths, ctx.botHome, ctx.workspaceRoot)) {
+      return { behavior: 'allow' };
+    }
+
+    const risk = mapRisk(toolName, escalationReason);
+    const verdict = await actionGate.evaluate(gateCtx, { ...gateRequest, riskOverride: risk, description: escalationReason });
     if (verdict.decision === 'deny') return deny(`Blocked by the action gate (${verdict.risk}): ${verdict.reason}`);
     if (verdict.decision === 'ask') {
       const answer = await actionGate.awaitHuman(verdict.decisionId, { timeoutMs: ctx.approvalTimeoutMs ?? APPROVAL_TIMEOUT_MS });

@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  buildGrokChildEnv,
+  buildSpawnArgs,
   createTurnStallWatchdog,
   describeGrokPermissionDenial,
   emitGrokPromptCompletion,
@@ -164,4 +166,30 @@ test('a disposed Grok turn watchdog never fires after the turn ends', (t) => {
 
 test('a permission-mode change with no live Grok turn defers to the next turn', async () => {
   assert.equal(await updateGrokPermissionMode('missing-grok-session', 'bypassPermissions', 'missing-app-session'), false);
+});
+
+test('strict bot runs start grok with --no-leader and never --always-approve', () => {
+  assert.deepEqual(buildSpawnArgs({ model: 'grok-4.5', effort: 'low', alwaysApprove: false, noLeader: true }), [
+    'agent', '--no-leader', '-m', 'grok-4.5', '--reasoning-effort', 'low', 'stdio',
+  ]);
+  // Unchanged for everything else.
+  assert.deepEqual(buildSpawnArgs({ model: undefined, effort: undefined, alwaysApprove: true }), ['agent', '--always-approve', 'stdio']);
+});
+
+test('a strict child env drops inherited overlays that could reopen MCP or trust; other runs keep them', () => {
+  const previous = { trust: process.env.GROK_FOLDER_TRUST, config: process.env.GROK_CONFIG };
+  process.env.GROK_FOLDER_TRUST = '0';
+  process.env.GROK_CONFIG = '{"x":1}';
+  try {
+    const strict = buildGrokChildEnv({ GROK_HOME: '/run/home' }, { strictMcp: true });
+    assert.equal(strict.GROK_FOLDER_TRUST, undefined);
+    assert.equal(strict.GROK_CONFIG, undefined);
+    assert.equal(strict.GROK_HOME, '/run/home');
+    const normal = buildGrokChildEnv({ GROK_HOME: '/managed' }, {});
+    assert.equal(normal.GROK_FOLDER_TRUST, '0');
+    assert.equal(normal.GROK_CONFIG, '{"x":1}');
+  } finally {
+    if (previous.trust === undefined) delete process.env.GROK_FOLDER_TRUST; else process.env.GROK_FOLDER_TRUST = previous.trust;
+    if (previous.config === undefined) delete process.env.GROK_CONFIG; else process.env.GROK_CONFIG = previous.config;
+  }
 });

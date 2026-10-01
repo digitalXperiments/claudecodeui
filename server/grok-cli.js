@@ -23,6 +23,17 @@ import {
   shouldPreferGrokAcpSessionLoad,
   toGrokAcpMcpServers,
 } from './modules/providers/list/grok/grok-acp-managed-mcp.js';
+import {
+  GROK_GATEWAY_SERVER_NAME,
+  buildGrokPermissionOutcome,
+  buildStrictAcpMcpServers,
+  buildStrictGrokEnv,
+  createStrictGrokHome,
+  withStrictGrokAuthLock,
+  decideGrokToolPermission,
+  findProjectMcpConfigs,
+  stripStrictGrokEnv,
+} from './modules/providers/list/grok/grok-strict-run.js';
 import { createCompleteMessage, createNormalizedMessage } from './shared/utils.js';
 import { ensureManagedGrokHome } from './shared/grok-home.js';
 import { leadSessionEnv } from './shared/lead-session-env.js';
@@ -57,6 +68,13 @@ const spawnFunction = crossSpawn;
 //     optionId } } using one of the offered optionIds. Fires when the effective
 //     permission mode is not always-approve / bypassPermissions (verified live
 //     with a CloudCLI-managed GROK_HOME that sets [ui] permission_mode).
+//
+// Bot Runtime v2 (options.botGatewayStrict): the run gets a one-run GROK_HOME built from scratch
+// (login only; see modules/providers/list/grok/grok-strict-run.ts), `--no-leader`, env that
+// disables the ~/.claude.json / Cursor / Codex / grok.com-connector MCP sources, and ONLY
+// cloudcli-tool-gateway in session/new mcpServers. With options.builtinToolGate the config sets
+// `[permission] ask = ["*"]` so grok asks for EVERY tool call, and each
+// session/request_permission is answered by the gate (never auto-approved).
 //
 // Why ACP and not the old `-p --output-format streaming-json` path: that
 // headless wire only ever emitted `text`/`thought`/`end` (no tool events at
@@ -109,8 +127,12 @@ function resolveGrokPermissionRuntime(permissionMode) {
 // Permission mode is applied via managed GROK_HOME + optional --always-approve
 // (see resolveGrokPermissionRuntime). The ACP permission bridge answers
 // session/request_permission for non-bypass modes.
-const buildSpawnArgs = ({ model, effort, alwaysApprove }) => {
+const buildSpawnArgs = ({ model, effort, alwaysApprove, noLeader = false }) => {
   const args = ['agent'];
+  if (noLeader) {
+    // A shared leader process would serve this run from ITS config and GROK_HOME.
+    args.push('--no-leader');
+  }
   if (model) {
     args.push('-m', model);
   }
@@ -590,6 +612,22 @@ async function waitForToolApprovalPaused(watchdog, requestId, options) {
   }
 }
 
+/**
+ * Env for the `grok agent` child. Strict bot runs drop the inherited variables that could
+ * re-open config or MCP sources the managed strict home closed.
+ */
+function buildGrokChildEnv(envOverrides, sessionOptions = {}) {
+  const env = {
+    ...process.env,
+    ...envOverrides,
+    ...(sessionOptions.relayWorker ? workerGitGuardEnv({ ...process.env, ...envOverrides }) : {}),
+  };
+  if (sessionOptions.strictMcp === true) {
+    stripStrictGrokEnv(env);
+  }
+  return env;
+}
+
 async function createAcpSession(workingDir, resumeSessionId, spawnArgs, envOverrides = {}, mcpServers = [], sessionOptions = {}) {
   // Relay workers run the whole CLI under the OS sandbox; every tool process
   // Grok spawns inherits it.
@@ -597,11 +635,7 @@ async function createAcpSession(workingDir, resumeSessionId, spawnArgs, envOverr
   const child = spawnFunction(launch.command, launch.args, {
     cwd: workingDir,
     stdio: ['pipe', 'pipe', 'pipe'],
-    env: {
-      ...process.env,
-      ...envOverrides,
-      ...(sessionOptions.relayWorker ? workerGitGuardEnv({ ...process.env, ...envOverrides }) : {}),
-    },
+    env: buildGrokChildEnv(envOverrides, sessionOptions),
   });
 
   const rpc = createJsonRpcClient(child);
@@ -613,7 +647,9 @@ async function createAcpSession(workingDir, resumeSessionId, spawnArgs, envOverr
 
   let sessionResult;
   let injectManagedMcpHint = false;
-  const skipManagedGateway = grokRelayWorkerSkipsManagedGateway(sessionOptions.relayWorker);
+  // Strict bot runs have grok.com connectors switched off, so there is no catalog to wait for.
+  const skipManagedGateway = grokRelayWorkerSkipsManagedGateway(sessionOptions.relayWorker)
+    || sessionOptions.strictMcp === true;
   /** @type {string} */
   let injectPriorContextHint = '';
   try {
@@ -825,6 +861,30 @@ function closeHandle(handle) {
   }
 }
 
+/**
+ * Ends a strict run: removes its handle from the process map, stops the child, waits for it to
+ * exit so its last writes land, then writes back the login/transcripts and deletes the home.
+ */
+async function disposeStrictGrokRun(handle, strictHome) {
+  for (const [key, value] of [...acpSessions.entries()]) {
+    if (value === handle) acpSessions.delete(key);
+  }
+  const child = handle.child;
+  if (child.exitCode === null && child.signalCode === null) {
+    const exited = new Promise((resolve) => {
+      child.once('exit', resolve);
+      setTimeout(resolve, 6000).unref?.();
+    });
+    closeHandle(handle);
+    await exited;
+  }
+  try {
+    await strictHome.cleanupLocked();
+  } catch (cleanupError) {
+    console.warn('[grok-cli] strict run home cleanup failed:', cleanupError?.message || cleanupError);
+  }
+}
+
 function readGrokConfigValue(option) {
   if (!option || typeof option !== 'object') {
     return '';
@@ -922,6 +982,11 @@ async function spawnGrok(command, options = {}, ws) {
     appSessionId,
   } = options;
 
+  // Bot Runtime v2 gateway-bound run. `strictMcp` isolates grok from every MCP source but the
+  // gateway; the built-in tool gate (when installed) then decides every tool call.
+  const strictMcp = options.botGatewayStrict === true;
+  const builtinToolGate = strictMcp && typeof options.builtinToolGate === 'function' ? options.builtinToolGate : null;
+
   const workingDir = cwd || projectPath || process.cwd();
 
   const resolvedModel = await providerModelsService.resolveResumeModel('grok', sessionId, model);
@@ -936,13 +1001,20 @@ async function spawnGrok(command, options = {}, ws) {
   // defs (command/args/env or url/headers), gated by the same per-provider
   // catalog binding fan-out uses, so ACP session/new can attach them directly
   // instead of relying solely on whatever's in config.toml.
-  const resolvedMcpServers = Array.isArray(requestedMcpServerNames) && requestedMcpServerNames.length > 0
-    ? await mcpCatalogService.resolveForProvider('grok', requestedMcpServerNames)
-    : [];
+  if (strictMcp && Array.isArray(requestedMcpServerNames)
+    && requestedMcpServerNames.some((name) => name !== GROK_GATEWAY_SERVER_NAME)) {
+    console.warn('[grok-cli] strict bot run: ignoring MCP servers other than the tool gateway:',
+      requestedMcpServerNames.filter((name) => name !== GROK_GATEWAY_SERVER_NAME).join(', '));
+  }
+  const resolvedMcpServers = strictMcp
+    ? await mcpCatalogService.resolveForProvider('grok', [GROK_GATEWAY_SERVER_NAME])
+    : Array.isArray(requestedMcpServerNames) && requestedMcpServerNames.length > 0
+      ? await mcpCatalogService.resolveForProvider('grok', requestedMcpServerNames)
+      : [];
 
-  const permissionRuntime = resolveGrokPermissionRuntime(permissionMode);
-  const managedGrokHome = ensureManagedGrokHome(permissionRuntime.configPermissionMode, { relayWorker });
-  const spawnEnv = { GROK_HOME: managedGrokHome, ...leadSessionEnv(options.appSessionId) };
+  // A gated run never runs in always-approve: the gate answers each ask instead.
+  const permissionRuntime = resolveGrokPermissionRuntime(builtinToolGate ? 'default' : permissionMode);
+  const spawnEnv = { ...leadSessionEnv(options.appSessionId) };
   // Peer mailbox identity: the grok CLI inherits this into any MCP server it
   // spawns from its own config (including cloudcli-session-mailbox).
   if (appSessionId) {
@@ -952,11 +1024,55 @@ async function spawnGrok(command, options = {}, ws) {
   }
   // ACP-attached stdio MCPs get their own env array; stamp session identity
   // there the same way OpenCode does (process inherit is not enough).
-  const acpMcpServers = toGrokAcpMcpServers(resolvedMcpServers, spawnEnv);
+  let acpMcpServers;
+  if (strictMcp) {
+    try {
+      // Only the gateway, with this run's identity and binding secret on its stdio env.
+      acpMcpServers = buildStrictAcpMcpServers(resolvedMcpServers, {
+        spawnEnv,
+        bindingSecret: options.botGatewaySecret,
+      });
+    } catch (strictError) {
+      ws.send(createNormalizedMessage({
+        kind: 'error',
+        content: strictError?.message || String(strictError),
+        sessionId: sessionId || null,
+        provider: 'grok',
+      }));
+      ws.send(createCompleteMessage({ provider: 'grok', sessionId: sessionId || null, exitCode: 1 }));
+      throw strictError;
+    }
+  } else {
+    acpMcpServers = toGrokAcpMcpServers(resolvedMcpServers, spawnEnv);
+  }
+
+  let strictHome = null;
+  let managedGrokHome;
+  if (strictMcp) {
+    // Built from scratch: login only, no user config, no MCP, no remembered grants.
+    // Under the login lock: copying the real auth.json and writing a refreshed one back never interleave.
+    strictHome = await withStrictGrokAuthLock(() => createStrictGrokHome({
+      gated: Boolean(builtinToolGate),
+      configPermissionMode: permissionRuntime.configPermissionMode,
+    }));
+    managedGrokHome = strictHome.dir;
+    Object.assign(spawnEnv, buildStrictGrokEnv(managedGrokHome));
+    const projectMcpConfigs = findProjectMcpConfigs(workingDir);
+    if (projectMcpConfigs.length > 0) {
+      console.warn(
+        '[grok-cli] strict bot run: project MCP config found; grok only starts repo-local MCP servers for a trusted folder and this run trusts none:',
+        projectMcpConfigs.join(', '),
+      );
+    }
+  } else {
+    managedGrokHome = ensureManagedGrokHome(permissionRuntime.configPermissionMode, { relayWorker });
+    spawnEnv.GROK_HOME = managedGrokHome;
+  }
   const spawnArgs = buildSpawnArgs({
     model: resolvedModel,
     effort: resolvedEffort,
     alwaysApprove: permissionRuntime.alwaysApprove,
+    noLeader: strictMcp,
   });
   // Permission mode and MCP servers are fixed at spawn. Model and reasoning
   // effort are also passed as spawn flags, then applied again with
@@ -973,8 +1089,10 @@ async function spawnGrok(command, options = {}, ws) {
   let handle = acpSessions.get(processKey);
   let capturedSessionId = sessionId;
 
+  // A strict run owns a one-run GROK_HOME and is never reused: it is torn down when its turn ends.
   const needsNewChild =
-    !handle
+    strictMcp
+    || !handle
     || handle.child.exitCode !== null
     || handle.child.killed
     || handle.spawnSignature !== spawnSignature;
@@ -986,9 +1104,11 @@ async function spawnGrok(command, options = {}, ws) {
     }
 
     try {
-      handle = await createAcpSession(workingDir, sessionId, spawnArgs, spawnEnv, acpMcpServers, { relayWorker, relaySandbox });
+      handle = await createAcpSession(workingDir, sessionId, spawnArgs, spawnEnv, acpMcpServers, { relayWorker, relaySandbox, strictMcp });
       await applyGrokSessionRuntime(handle, resolvedModel, resolvedEffort);
     } catch (setupError) {
+      // The child (if any) was already killed by createAcpSession; drop the one-run home.
+      try { await strictHome?.cleanupLocked(); } catch { /* best effort */ }
       // createAcpSession runs before the prompt try/catch below — without this
       // the failure only hits startProviderRun's safety-net complete (exit 1)
       // with no error event, so Mission Control shows the opaque
@@ -1025,6 +1145,7 @@ async function spawnGrok(command, options = {}, ws) {
       throw setupError;
     }
     handle.spawnSignature = spawnSignature;
+    handle.strictHome = strictHome;
     acpSessions.set(processKey, handle);
 
     // session/load keeps the same Grok id (no-op below); session/new forks a
@@ -1084,6 +1205,8 @@ async function spawnGrok(command, options = {}, ws) {
   // switch to Bypass is honoured by the ACP bridge below until the next turn
   // respawns the child with --always-approve.
   if (appSessionId) handle.appSessionId = appSessionId;
+  // Gated runs answer every ask through the built-in tool gate; a live switch to Bypass is refused.
+  handle.enforcedGate = Boolean(builtinToolGate);
   handle.spawnPermissionMode = permissionRuntime.mode;
   handle.livePermissionMode = permissionRuntime.mode;
   handle.pendingPermissionRequests ??= new Map();
@@ -1298,6 +1421,30 @@ async function spawnGrok(command, options = {}, ws) {
         || options_[0]?.optionId
         || 'approve_once';
       const interactiveTool = uiToolName === 'AskUserQuestion' || uiToolName === 'ExitPlanMode';
+      if (!interactiveTool && builtinToolGate) {
+        // Bot Runtime v2: the gate, not a person or a mode, answers built-in tool asks. Never
+        // auto-approve, never pick an "always allow" row; any failure is a deny.
+        stallWatchdog.hold();
+        let gateDecision;
+        try {
+          gateDecision = await decideGrokToolPermission(builtinToolGate, toolCall, workingDir);
+        } finally {
+          stallWatchdog.release();
+        }
+        if (!gateDecision.allow) {
+          lastPermissionDenial = describeGrokPermissionDenial(gateDecision.call.grokTool, {
+            allow: false,
+            message: gateDecision.message,
+          });
+          console.warn(`[grok-cli] session=${finalSessionId} bot gate denied "${gateDecision.call.grokTool}": ${gateDecision.message}`);
+        }
+        try {
+          handle.rpc.respond(message.id, buildGrokPermissionOutcome(options_, gateDecision.allow));
+        } catch {
+          // The turn was torn down while the gate was deciding.
+        }
+        return;
+      }
       if (!interactiveTool && handle.livePermissionMode === 'bypassPermissions') {
         handle.rpc.respond(message.id, { outcome: { outcome: 'selected', optionId: allowOnceOptionId } });
         return;
@@ -1453,7 +1600,12 @@ async function spawnGrok(command, options = {}, ws) {
     const result = await promptRequest;
     handle.inFlightPrompt = false;
     stallWatchdog.dispose();
-    scheduleIdleCleanup(handle, capturedSessionId || processKey);
+    if (strictHome) {
+      // One run, one home: stop the child and delete the home (after writing back the login and transcripts).
+      await disposeStrictGrokRun(handle, strictHome);
+    } else {
+      scheduleIdleCleanup(handle, capturedSessionId || processKey);
+    }
 
     // Push live context occupancy (matches Grok /context) so the composer
     // badge does not keep showing stale or cumulative-only spend. Sent BEFORE
@@ -1512,9 +1664,11 @@ async function spawnGrok(command, options = {}, ws) {
   } catch (error) {
     handle.inFlightPrompt = false;
     stallWatchdog.dispose();
-    // A stalled turn already killed this child and dropped it from the process
-    // map; re-arming idle cleanup on it would only kill it a second time.
-    if (!stallError) {
+    if (strictHome) {
+      await disposeStrictGrokRun(handle, strictHome);
+    } else if (!stallError) {
+      // A stalled turn already killed this child and dropped it from the process
+      // map; re-arming idle cleanup on it would only kill it a second time.
       scheduleIdleCleanup(handle, capturedSessionId || processKey);
     }
 
@@ -1592,6 +1746,8 @@ async function updateGrokPermissionMode(sessionId, mode, appSessionId) {
   const handle = acpSessions.get(sessionId)
     || [...acpSessions.values()].find((entry) => appSessionId && entry.appSessionId === appSessionId);
   if (!handle?.inFlightPrompt || handle.child.killed || handle.child.exitCode !== null) return false;
+  // A gated bot run must never be loosened mid-turn.
+  if (handle.enforcedGate) return false;
   if (mode !== 'bypassPermissions' && mode !== handle.spawnPermissionMode) return false;
   handle.livePermissionMode = mode;
   if (mode === 'bypassPermissions') {
@@ -1607,6 +1763,14 @@ async function updateGrokPermissionMode(sessionId, mode, appSessionId) {
   return true;
 }
 
+/** Stops every live ACP child and forgets it (tests and shutdown). */
+function closeAllGrokSessions() {
+  for (const handle of new Set(acpSessions.values())) {
+    closeHandle(handle);
+  }
+  acpSessions.clear();
+}
+
 function isGrokSessionActive(sessionId) {
   return acpSessions.has(sessionId);
 }
@@ -1616,8 +1780,11 @@ function getActiveGrokSessions() {
 }
 
 export {
+  buildGrokChildEnv,
+  buildSpawnArgs,
   spawnGrok,
   abortGrokSession,
+  closeAllGrokSessions,
   updateGrokPermissionMode,
   isGrokSessionActive,
   getActiveGrokSessions,

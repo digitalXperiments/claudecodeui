@@ -43,6 +43,17 @@ import { leadSessionEnv } from './shared/lead-session-env.js';
 import { mapPermissionModeToCodexOptions } from './modules/providers/list/codex/codex-permission-mode.js';
 import { codexSandboxConfig, workerGitGuardEnv } from './shared/worker-sandbox.js';
 import { appServerItemToLegacy } from './modules/providers/list/codex/codex-app-server-items.js';
+import {
+  CODEX_STRICT_PROFILE,
+  assertStrictRunInputs,
+  buildStrictCodexConfig,
+  buildStrictCodexEnv,
+  decideStrictApproval,
+  prepareStrictCodexHome,
+  resolveStrictPolicy,
+  strictAllowReadPaths,
+  strictDenyReadPaths,
+} from './modules/providers/list/codex/codex-gateway-strict.js';
 
 const activeCodexSessions = new Map();
 
@@ -132,6 +143,8 @@ function isCodexWarmEligible(options = {}) {
     && Boolean(options.appSessionId)
     && !options.relayWorker
     && !options.unattended
+    // A gateway-bound run owns a throwaway CODEX_HOME that is deleted when the run ends.
+    && !options.botGatewayStrict
     && options.warmSession !== false;
 }
 
@@ -612,7 +625,16 @@ export async function queryCodex(command, options = {}, ws) {
     relayWorker = false,
     relaySandbox = null,
     appSessionId,
+    botGatewayStrict = false,
+    botGatewaySecret,
+    codexGatewayMcp,
   } = options;
+  // Enforced Tool Gateway run (bots/gateway/providers/codex.ts): the gateway is the only MCP
+  // server, Codex asks for every command/patch, and the built-in gate answers each request.
+  const gatewayStrict = botGatewayStrict === true;
+  const builtinToolGate = gatewayStrict && typeof options.builtinToolGate === 'function'
+    ? options.builtinToolGate
+    : null;
 
   const resolveResumeModel = codexTestOverrides.resolveResumeModel
     || ((id, requested) => providerModelsService.resolveResumeModel('codex', id, requested));
@@ -621,18 +643,26 @@ export async function queryCodex(command, options = {}, ws) {
   const workingDirectory = cwd || projectPath || process.cwd();
   // Bounded approval wait for unattended (swarm) runs; 0 = wait forever (chat).
   const approvalWaitMs = resolveApprovalTimeoutMs({ unattended, approvalTimeoutMs });
-  const mapped = mapPermissionModeToCodexOptions(permissionMode, { unattended });
+  const strictPolicy = gatewayStrict ? resolveStrictPolicy(permissionMode) : null;
+  const mapped = strictPolicy
+    ? {
+      // The strict permission profile (below) replaces the thread's sandbox mode.
+      sandbox: strictPolicy.baseProfile === ':read-only' ? 'read-only' : 'workspace-write',
+      approvalPolicy: strictPolicy.approvalPolicy,
+      approvalsReviewer: strictPolicy.approvalsReviewer,
+    }
+    : mapPermissionModeToCodexOptions(permissionMode, { unattended });
   const { sandbox, approvalsReviewer } = mapped;
   // A sandboxed relay writer runs everything inside workspace-write without
   // asking ("on-request": Codex only asks to *leave* the sandbox), instead of
   // "untrusted", which asked about nearly every command.
   const relaySandboxedWriter = Boolean(relayWorker && relaySandbox?.mode === 'isolated_write' && sandbox === 'workspace-write');
-  const approvalPolicy = relaySandboxedWriter ? 'on-request' : mapped.approvalPolicy;
+  const approvalPolicy = relaySandboxedWriter && !gatewayStrict ? 'on-request' : mapped.approvalPolicy;
   // Codex does not support per-task MCP grants on this app-server path. A
   // relay worker therefore gets no managed or inherited CloudCLI MCPs; the
   // lead can select a provider with explicit grant support when MCP is needed.
   const loadObsidianRuntime = codexTestOverrides.loadManagedObsidianCodexRuntime || loadManagedObsidianCodexRuntime;
-  const managedObsidianRuntime = relayWorker ? null : loadObsidianRuntime();
+  const managedObsidianRuntime = relayWorker || gatewayStrict ? null : loadObsidianRuntime();
   const getProviderModels = codexTestOverrides.getProviderModels
     || (() => providerModelsService.getProviderModels('codex'));
   const catalog = (await getProviderModels()).models;
@@ -650,6 +680,7 @@ export async function queryCodex(command, options = {}, ws) {
 
   const warmEligible = isCodexWarmEligible(options);
   let appServer;
+  let managedHomeCleanup = null;
   let live = null;
   let reusedWarm = false;
   let rpcUnsubscribe;
@@ -691,6 +722,62 @@ export async function queryCodex(command, options = {}, ws) {
     }
   };
 
+  // v2 file-change approvals carry no paths; they arrive on the preceding item/started
+  // (and item/fileChange/patchUpdated) notifications, keyed by item id.
+  const fileChangeItems = new Map();
+  const trackFileChanges = (itemId, changes) => {
+    if (typeof itemId === 'string' && Array.isArray(changes)) {
+      fileChangeItems.set(itemId, changes);
+    }
+  };
+
+  /**
+   * Gateway-bound runs: every capability request is answered by the built-in tool gate (or
+   * declined). Never auto-approves. Returns false when the request is not one of ours to answer
+   * (it then follows the normal human-approval flow).
+   */
+  const answerStrictRequest = async (request) => {
+    const { method } = request;
+    const legacy = method === 'execCommandApproval' || method === 'applyPatchApproval';
+    const gated = legacy
+      || method === 'item/commandExecution/requestApproval'
+      || method === 'item/fileChange/requestApproval';
+    if (gated && builtinToolGate) {
+      const verdict = await decideStrictApproval({
+        method,
+        params: request.params || {},
+        gate: builtinToolGate,
+        fileChangeItems,
+        cwd: workingDirectory,
+      });
+      if (!verdict.allow) {
+        console.warn(`[Codex] gateway-bound run declined ${method}: ${verdict.message}`);
+      }
+      const decision = legacy
+        ? (verdict.allow ? 'approved' : 'denied')
+        : (verdict.allow ? 'accept' : 'decline');
+      appServer.respond(request.id, { decision });
+      return true;
+    }
+    if (method === 'item/permissions/requestApproval') {
+      // Broader sandbox permissions are never granted to a gateway-bound run.
+      appServer.respond(request.id, { permissions: {}, scope: 'turn', strictAutoReview: false });
+      return true;
+    }
+    if (method === 'mcpServer/elicitation/request') {
+      appServer.respond(request.id, { action: 'decline' });
+      return true;
+    }
+    if (method === 'item/tool/call') {
+      appServer.respond(request.id, {
+        success: false,
+        contentItems: [{ type: 'inputText', text: 'This tool is not available on a gateway-bound run.' }],
+      });
+      return true;
+    }
+    return false;
+  };
+
   const handleApprovalRequest = async (request) => {
     const params = request.params || {};
     const requestSessionId = params.threadId
@@ -698,6 +785,13 @@ export async function queryCodex(command, options = {}, ws) {
       || capturedSessionId
       || sessionId
       || null;
+
+    if (gatewayStrict) {
+      const handled = await answerStrictRequest(request);
+      if (handled) {
+        return;
+      }
+    }
 
     if (request.method === 'execCommandApproval') {
       await waitForCodexApproval({
@@ -894,8 +988,14 @@ export async function queryCodex(command, options = {}, ws) {
         if (item?.type === 'agentMessage' && typeof item.id === 'string') {
           agentMessagePhases.set(item.id, item.phase || null);
         }
+        if (item?.type === 'fileChange') {
+          trackFileChanges(item.id, item.changes);
+        }
         break;
       }
+      case 'item/fileChange/patchUpdated':
+        trackFileChanges(params.itemId, params.changes);
+        break;
       case 'item/agentMessage/delta':
         if (params.itemId && params.delta) {
           streamedMessageItems.add(params.itemId);
@@ -1000,7 +1100,23 @@ export async function queryCodex(command, options = {}, ws) {
   };
 
   try {
-    const managedConfig = relayWorker
+    let strictHome = null;
+    if (gatewayStrict) {
+      assertStrictRunInputs({ gateway: codexGatewayMcp, appSessionId, bindingSecret: botGatewaySecret });
+      strictHome = prepareStrictCodexHome({ appSessionId });
+      managedHomeCleanup = strictHome.cleanup;
+    }
+    const strictDeny = strictPolicy ? strictDenyReadPaths() : [];
+    const managedConfig = strictPolicy
+      ? buildStrictCodexConfig({
+        gateway: codexGatewayMcp,
+        appSessionId,
+        policy: strictPolicy,
+        cwd: workingDirectory,
+        denyReadPaths: strictDeny,
+        allowReadPaths: strictAllowReadPaths({ launcherCommand: resolveCodexLauncher().command, denyReadPaths: strictDeny }),
+      })
+      : relayWorker
       ? { mcp_servers: {}, ...(relaySandboxedWriter ? codexSandboxConfig(relaySandbox) : {}) }
       : managedObsidianRuntime?.config
       ? {
@@ -1021,9 +1137,18 @@ export async function queryCodex(command, options = {}, ws) {
         CLOUDCLI_PROJECT_PATH: workingDirectory,
       }
       : {};
+    const strictEnv = strictHome
+      ? buildStrictCodexEnv({
+        baseEnv: process.env,
+        home: strictHome.home,
+        appSessionId,
+        bindingSecret: botGatewaySecret,
+        gateway: codexGatewayMcp,
+      })
+      : null;
     const spawnOptions = {
       cwd: workingDirectory,
-      env: {
+      env: strictEnv ?? {
         ...(managedObsidianRuntime?.env ?? process.env),
         ...identityEnv,
         ...leadSessionEnv(options.appSessionId),
@@ -1068,6 +1193,9 @@ export async function queryCodex(command, options = {}, ws) {
       appServer.notify('initialized');
 
       const threadMethod = sessionId ? 'thread/resume' : 'thread/start';
+      // A gateway-bound thread names the strict permission profile instead of a sandbox mode
+      // (the two cannot be combined).
+      const sandboxParams = gatewayStrict ? { permissions: CODEX_STRICT_PROFILE } : { sandbox };
       const threadParams = sessionId
         ? {
           threadId: sessionId,
@@ -1075,7 +1203,7 @@ export async function queryCodex(command, options = {}, ws) {
           model: resolvedModel,
           approvalPolicy,
           approvalsReviewer,
-          sandbox,
+          ...sandboxParams,
           ...serviceTierOverride,
         }
         : {
@@ -1083,7 +1211,7 @@ export async function queryCodex(command, options = {}, ws) {
           model: resolvedModel,
           approvalPolicy,
           approvalsReviewer,
-          sandbox,
+          ...sandboxParams,
           ...serviceTierOverride,
         };
       const threadResult = await appServer.request(threadMethod, threadParams);
@@ -1272,6 +1400,11 @@ export async function queryCodex(command, options = {}, ws) {
       }
     } else {
       appServer?.close();
+    }
+    if (managedHomeCleanup) {
+      // The managed CODEX_HOME can only go once the app-server is gone.
+      await waitForCodexExit(live || { rpc: appServer });
+      managedHomeCleanup();
     }
     // Update session status (a parked process is never shown as processing).
     if (record) {

@@ -22,6 +22,7 @@ import type {
   BotCommitmentStatus,
   BotCredentialName,
   BotEnforcement,
+  BotEnforcementPreview,
   BotEpisode,
   BotEpisodeDetail,
   BotEpisodeSearchHit,
@@ -126,6 +127,10 @@ export const botRuntimeApi = {
     },
     async enforcement(botId: string): Promise<BotEnforcement> {
       return (await get<{ enforcement: BotEnforcement }>(`${bot(botId)}/enforcement`)).enforcement;
+    },
+    /** Enforcement level for a provider before any bot exists (Bot Architect). */
+    async enforcementPreview(provider: string): Promise<BotEnforcementPreview> {
+      return (await get<{ enforcement: BotEnforcementPreview }>(`/enforcement/preview${buildQuery({ provider })}`)).enforcement;
     },
   },
 

@@ -1,6 +1,7 @@
 export { default as botGatewayMcpRoutes } from './gateway.routes.js';
 export {
   BOT_GATEWAY_MCP_SERVER_NAME,
+  getBotGatewayMcpLaunchSpec,
   getBotGatewayMcpToken,
   isIsolatedServer,
   registerBotGatewayMcp,
@@ -17,7 +18,8 @@ export {
   setGatewayUpstreamPool,
 } from './gateway.service.js';
 export { buildGatewayRunGuards, type GatewayRunGuards } from './run-guards.js';
-export { getGatewayEnforcement } from './enforcement.js';
+export { describeGatewayEnforcement, getGatewayEnforcement } from './enforcement.js';
+export { applyProviderGatewayRunOptions, getProviderGatewayAdapter, type ProviderGatewayAdapter } from './providers/index.js';
 export type { GatewayEnforcement } from './enforcement.js';
 export {
   getGatewayTool,

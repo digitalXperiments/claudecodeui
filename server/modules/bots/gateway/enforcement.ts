@@ -1,3 +1,5 @@
+import { getProviderGatewayAdapter } from './providers/index.js';
+
 export type GatewayEnforcement = 'enforced' | 'advisory';
 
 /**
@@ -26,6 +28,14 @@ export function getGatewayEnforcement(
   provider: string,
   run: { builtinToolGate?: boolean } = {},
 ): GatewayEnforcement {
-  if (provider === 'claude' && run.builtinToolGate === true) return 'enforced';
+  const adapter = getProviderGatewayAdapter(provider);
+  if (adapter) return adapter.enforced(run) ? 'enforced' : 'advisory';
   return ENFORCEMENT[provider] ?? 'advisory';
+}
+
+/** Human-readable explanation of a provider's enforcement for the UI. */
+export function describeGatewayEnforcement(provider: string, run: { builtinToolGate?: boolean } = {}): string {
+  const adapter = getProviderGatewayAdapter(provider);
+  if (adapter) return adapter.describe(run);
+  return `Gateway attached, but ${provider} can still load its own MCP servers and use built-in tools outside the gate.`;
 }
