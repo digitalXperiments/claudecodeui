@@ -81,7 +81,7 @@ Replace "currently only `claude`" with the current list (now including `codex`).
 
 #### Assumed / not verified
 
-1. Token refresh behaviour with the symlinked `auth.json` (no network refresh was triggered): write-through if Codex truncates in place; if it replaces the link, `cleanup()` copies a newer regular file back to the real `auth.json` (tested with a fake). Two concurrent strict runs plus the operator's own Codex share one refresh token.
+1. Token refresh behaviour with the symlinked `auth.json` (no network refresh was triggered): write-through if Codex truncates in place; if it replaces the link, `cleanup()` considers copying the regular file back, but only through `guardedLoginWriteBack` (see "Login write-back" below): the real login is fingerprinted at run start and is replaced only if it is still exactly that and the run's file is newer. Two concurrent strict runs plus the operator's own Codex share one refresh token; whether OpenAI rotates refresh tokens with reuse detection is not verified.
 2. `apply_patch` as a *model tool* (freeform) was not offered by the mock model's catalog; the patch path was exercised through the shell interception and a fake app-server (v2 and legacy requests).
 3. Linux sandbox (`bwrap`) honouring the same `filesystem` deny entries; only macOS Seatbelt was exercised.
 4. Network is off in the `:workspace` profile (a loopback `curl` exited 7), but that was not separated from "connection refused" by the probe.
@@ -90,7 +90,7 @@ Replace "currently only `claude`" with the current list (now including `codex`).
 #### Residual bypasses
 
 - The gate's decision is text/path based, as for Claude. A command the gate approves can still read indirectly any path the sandbox allows (everything outside the denied credential stores), and anything the operator approves runs with the sandbox's reach.
-- `ls ~/Library/Application Support/...`, browser profiles and other credential stores not in the deny list are readable.
+- Credential stores outside the deny list are readable by an approved command (the list is `strictDenyReadPaths`; since 2026-10-01 it includes `~/.gemini`, `~/.docker`, `~/.zsh_history`, `~/.bash_history` and `~/Library/Application Support`, with the codex install dir re-allowed). Anything the operator approves at the Action Gate still runs with the sandbox's reach.
 - Model-visible skills and `AGENTS.md` from the project still load (instructions only; their scripts run through the gated shell).
 - Codex's own startup traffic (rate limits, model catalog, analytics) uses the login and is not a bot action; it is not gated.
 - A run that crashes the server mid-flight leaves its managed home (no secrets, a link to `auth.json`) until the next strict run starts, which sweeps homes older than 24 h.
@@ -124,7 +124,7 @@ Replace "currently only `claude`" with "currently `claude` and `grok`" (plus wha
 3. `GROK_MANAGED_MCPS_ENABLED=false` / `GROK_MANAGED_MCP_GATEWAY_TOOLS_ENABLED=false` stop the grok.com connector catalog. `inspect` does not show connectors. Backstop if this is wrong: connector tools are `use_tool` calls, which `ask = ["*"]` sends to the gate, and the gate denies every non-gateway MCP tool.
 4. The gateway's tool arrives as `use_tool {tool_name: "cloudcli-tool-gateway__<tool>"}` (observed for other servers). If a request is not recognised it reaches the gate under grok's own name, which the gate classifies as unknown/risky and escalates to a human: noisy, not open.
 5. Subagent (`spawn_subagent`) tool asks reach the same ACP client. The spawn itself is unknown to the gate and escalates.
-6. Concurrent strict runs each start from the same refresh token. If two refresh at once the loser may see a logout; the newest login wins at write-back.
+6. Concurrent strict runs each start from the same refresh token. A run that starts while a sibling is active first flushes the sibling's already-refreshed login to the real home and copies that, so runs started one after another see the newest login; runs that start at the same instant still share a token. Whether xAI rotates refresh tokens with reuse detection (which would log a loser out) is NOT verified. At write-back the run's copy is applied only if the real login is unchanged since the run started (see "Login write-back" below); otherwise it is discarded and logged.
 
 #### Residual bypasses
 
@@ -210,3 +210,97 @@ matched with `-` or `_`), and that the `_meta` key reaches us as `_meta`.
 - Shell commands are judged by the same classifier and denylist as Claude (cannot see through arbitrary scripts).
 - If the operator's Antigravity auth were an enterprise (oauth-business) session, admin controls could auto-proceed terminal commands
   without asking. `prepareAntigravityProfile` pins `auth.type = oauth-personal` on every launch, so this does not apply today.
+
+
+## Credential-exposure hardening (2026-10-01)
+
+Security review of gateway-bound runs found that shell reads of the per-run login copies were auto-approved. Everything below
+applies only to gateway-bound bot runs: it lives in the built-in gate (`gate/builtin-tool-gate.ts`, `gate/strict-guard.ts`) and the
+`botGatewayStrict` branches of the Codex / Grok / Antigravity runners. The shared permission classifier is unchanged, so Relay
+workers and every interactive (non-bot) session of any provider behave exactly as before (asserted in
+`bots-builtin-gate-hardening.test.ts`, last test).
+
+### Built-in gate (all providers that use `options.builtinToolGate`)
+
+Order is now: MCP pass-through, hard denylist (old list **plus** the strict name/variable rules), classifier, then **escalation**
+(strict escalations, tainted-run rule, classifier escalations) through the Action Gate.
+
+Hard deny (never asked, recorded as `denylist`):
+
+- Any path segment or shell word naming `.cloudcli .grok .codex .gemini .claude .claude.json .cursor .docker .ssh .aws .azure
+  .kube .gnupg .netrc .git-credentials .zsh_history .bash_history`, `Library/Keychains`, `Library/Application Support`, the
+  credential files `auth.json acp_token.json acp_business_token.json oauth_creds.json credentials.json mcp_credentials.json`,
+  `*.pem`, `id_rsa*`, `id_ed25519*`, and the copies of logins under `~/.cloudcli`: `grok-strict-runs`, `codex-bot-homes`,
+  `grok-runtime`, `antigravity-acp`. Case-insensitive (APFS is). Checked on the decoded word (quotes, backslashes and `""`
+  splicing removed), on the resolved path (symlinks followed, `..` after a symlink resolved the way the shell does), on the raw
+  command text (so names inside `python -c`/`node -e`/`sh -c` payloads and `file://` URLs count), and on glob patterns.
+  Names are judged relative to the workspace root when the path is inside it. Exempt: anything that resolves inside the bot's own
+  home (`~/.cloudcli/bots/<id>/home`), and nothing else (siblings and parents of it are protected).
+- Any reference to `HOME`, `GROK_HOME`, `CODEX_HOME`, `GEMINI_HOME`, `CLOUDCLI_*`, `XDG_*` (`$X`, `${X}`, `${!X}`, inside
+  `$(...)`, backticks, double or single quotes, unquoted heredoc bodies).
+- `ps eww` / `ps auxe` / `ps -E` (another process's environment).
+
+Escalated (a human decides; auto-denied when nobody answers in time):
+
+- Shell paths outside workspace, bot home and OS temp: absolute and `~` paths, `~user`, `..` that leaves, `cd` elsewhere
+  (`cd`, `cd -`, `pushd`, `popd`, cd to a missing directory followed by `..`), globs whose static prefix is outside, an input
+  `cwd` outside. Absolute system executables (`/bin/ls`) and `/dev/null|stdin|stdout|stderr` are not counted.
+- Any other `$VAR`/`${VAR}`, command substitution (except `$(pwd)`, `$(date ...)`, `$(cat <<'EOF' ... EOF)` data), process
+  substitution, ANSI-C quoting, indirect expansion, an unterminated quote, a `<<` the classifier would misread (the classifier
+  drops "heredoc bodies" with a line scan, so `echo "<<EOF"` + newline + a real command would hide that command from it).
+- Read/view_file/Glob/Grep (and other path tools, `file://` fetches) outside workspace, bot home and OS temp.
+- Tainted runs: on the auto-approve path every shell command other than a pure read (classifier category `read`, no
+  redirects) escalates. `ctx.tainted()` is read per call.
+
+Known costs: a prose mention of a protected name inside a command (a commit message saying `.claude`, `grep auth.json`) is
+denied as written (bodies of quoted heredocs are data and are exempt); a project that really has `.claude/` or `.codex/` inside the
+workspace cannot be read or edited by a bot through the built-in tools.
+
+Residual (best-effort token-level model, not a shell): the Claude Bash tool keeps its working directory between calls, so after an
+operator-approved `cd` somewhere else, later relative commands are still judged against the workspace; variable-indirect paths
+(`eval`, scripts the bot wrote and then runs) are only as safe as the classifier's view of the script, which is why running
+project code still goes through the classifier and, for bots, the escalation of anything it cannot call a read; a command an
+operator approves runs with the process's full reach.
+
+### Codex OS sandbox
+
+`strictDenyReadPaths` also denies `~/.gemini`, `~/.docker`, `~/.zsh_history`, `~/.bash_history` and `~/Library/Application
+Support`. A codex binary installed under a denied directory stays readable: `strictAllowReadPaths` adds its install root as the
+more specific `read` entry (tested with a launcher under `Library/Application Support`).
+
+### Login write-back (Codex and Grok)
+
+Both use `providers/shared/login/login-writeback.ts`: the real `auth.json` is fingerprinted (mtime, size, sha256) when the run
+starts; at the end the run's file replaces it only if the real file still matches that fingerprint AND the run's file is newer
+AND it still parses as JSON (if the original did); the new content goes to a temp file (0600) in the real file's directory, the
+fingerprint is re-checked immediately before the atomic `rename`, and any mismatch discards the run's copy with a log line. No
+login is ever created from a run copy and a logout is never undone.
+
+- Codex keeps the symlink design on purpose: an in-place refresh then reaches the real file directly and can never be lost to a
+  discard. The guarded path only handles Codex replacing the link with a regular file.
+- Grok copies the login, so it has the guard at both ends: `createStrictGrokHome` first flushes (same guards) the refreshed login of
+  any strict run still active in the process, then copies the latest real `auth.json` fresh at every start; all of that and every
+  write-back run inside `withStrictGrokAuthLock`, a process-wide async mutex (`grok-cli.js` creates and disposes homes through
+  it). The critical sections are synchronous, so within one process they were already atomic; the mutex enforces that as an
+  invariant. Across processes (a second server, the operator's own `grok login`) only the fingerprint re-check protects the real
+  file.
+- Not verified, on either provider: whether the provider rotates refresh tokens with reuse detection. If it does, two runs that
+  refresh from the same token at the same moment can still log each other (or the operator) out; the guards make sure the real
+  file is never clobbered by a stale copy, they cannot prevent the provider revoking a session.
+
+### Antigravity
+
+Verified from the bundled ACP server source (`FileCredentialStore.write`): the token is written to a temp file in the same
+directory and `os.replace`d onto `acp_token.json`. In a run home that path is a symlink, and a rename over a symlink replaces the
+symlink itself: the real token is never written, truncated or unlinked by a run, and a refresh made inside the run lands as a
+regular file in the run home. Nothing copies it back (there is no write-back code for Antigravity); the file goes away with the run
+home when it is pruned, and the prune logs `acp_token.json was replaced by a regular file ... discarded`. `clear()` unlinks only the
+link. Test: `antigravity-gateway.test.ts` ("never writes the real token back"). Consequence to be aware of: an in-run refresh is
+lost, which is harmless as long as Google's refresh token does not rotate on refresh (not verified).
+
+On macOS the ACP server prefers the OS keychain (service `gemini`, account `antigravity-acp`) over the token file unless
+`AGY_ACP_FORCE_FILE_STORAGE` is set. The relocated `GEMINI_HOME` does not isolate the keychain; the gate's `security`/`keychain`
+rules and the classifier's `security` rule are what stop a bot shell from reading it. The shell-read attack on the file
+(`cat "$GEMINI_HOME/antigravity-acp/acp_token.json"`) is hard-denied by the variable rule, the `antigravity-acp` and
+`acp_token.json` name rules.
+

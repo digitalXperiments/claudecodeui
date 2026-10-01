@@ -291,4 +291,51 @@ describe('prepareAntigravityStrictHome', () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it('never writes the real token back: a login the ACP server replaced in the run home is discarded', async () => {
+    const root = await makeScratchDir('agy-strict-replaced-');
+    try {
+      const env = { CLOUDCLI_ANTIGRAVITY_DIR: root } as NodeJS.ProcessEnv;
+      const profileAcp = path.join(root, 'profile', 'antigravity-acp');
+      fs.mkdirSync(profileAcp, { recursive: true });
+      const realToken = path.join(profileAcp, 'acp_token.json');
+      fs.writeFileSync(realToken, '{"refresh_token":"real"}', { mode: 0o600 });
+      const pinned = new Date(Date.now() - 60_000);
+      fs.utimesSync(realToken, pinned, pinned);
+      const before = fs.statSync(realToken);
+
+      const run = prepareAntigravityStrictHome('replaced-run', env);
+      const linked = path.join(run.home, 'antigravity-acp', 'acp_token.json');
+      // What the ACP server does on refresh: temp file next to the target, then os.replace over the link.
+      const temp = `${linked}.abc123.tmp`;
+      fs.writeFileSync(temp, '{"refresh_token":"rotated-in-run"}', { mode: 0o600 });
+      fs.renameSync(temp, linked);
+      assert.equal(fs.lstatSync(linked).isSymbolicLink(), false, 'the link was replaced by a regular file');
+      assert.equal(fs.readFileSync(realToken, 'utf8'), '{"refresh_token":"real"}', 'the real token was not written through');
+
+      // Re-preparing the same run key and pruning the home never copy the replaced file back.
+      prepareAntigravityStrictHome('replaced-run', env);
+      assert.equal(fs.lstatSync(linked).isSymbolicLink(), true, 'the run home is re-linked, the regular file dropped');
+      fs.rmSync(linked);
+      fs.writeFileSync(linked, '{"refresh_token":"rotated-in-run"}');
+      const longAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
+      fs.utimesSync(run.home, longAgo, longAgo);
+      const warnings: string[] = [];
+      const originalWarn = console.warn;
+      console.warn = (...args: unknown[]) => { warnings.push(args.join(' ')); };
+      try {
+        prepareAntigravityStrictHome('another-run', env);
+      } finally {
+        console.warn = originalWarn;
+      }
+      assert.equal(fs.existsSync(run.home), false, 'pruned');
+      assert.ok(warnings.some((line) => /acp_token\.json was replaced by a regular file/.test(line)), 'the discard is visible');
+      const after = fs.statSync(realToken);
+      assert.equal(fs.readFileSync(realToken, 'utf8'), '{"refresh_token":"real"}');
+      assert.equal(after.mtimeMs, before.mtimeMs, 'the real token file was never rewritten');
+      assert.equal(after.ino, before.ino);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });

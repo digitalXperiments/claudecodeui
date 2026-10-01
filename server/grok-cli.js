@@ -29,6 +29,7 @@ import {
   buildStrictAcpMcpServers,
   buildStrictGrokEnv,
   createStrictGrokHome,
+  withStrictGrokAuthLock,
   decideGrokToolPermission,
   findProjectMcpConfigs,
   stripStrictGrokEnv,
@@ -878,7 +879,7 @@ async function disposeStrictGrokRun(handle, strictHome) {
     await exited;
   }
   try {
-    strictHome.cleanup();
+    await strictHome.cleanupLocked();
   } catch (cleanupError) {
     console.warn('[grok-cli] strict run home cleanup failed:', cleanupError?.message || cleanupError);
   }
@@ -1049,10 +1050,11 @@ async function spawnGrok(command, options = {}, ws) {
   let managedGrokHome;
   if (strictMcp) {
     // Built from scratch: login only, no user config, no MCP, no remembered grants.
-    strictHome = createStrictGrokHome({
+    // Under the login lock: copying the real auth.json and writing a refreshed one back never interleave.
+    strictHome = await withStrictGrokAuthLock(() => createStrictGrokHome({
       gated: Boolean(builtinToolGate),
       configPermissionMode: permissionRuntime.configPermissionMode,
-    });
+    }));
     managedGrokHome = strictHome.dir;
     Object.assign(spawnEnv, buildStrictGrokEnv(managedGrokHome));
     const projectMcpConfigs = findProjectMcpConfigs(workingDir);
@@ -1106,7 +1108,7 @@ async function spawnGrok(command, options = {}, ws) {
       await applyGrokSessionRuntime(handle, resolvedModel, resolvedEffort);
     } catch (setupError) {
       // The child (if any) was already killed by createAcpSession; drop the one-run home.
-      try { strictHome?.cleanup(); } catch { /* best effort */ }
+      try { await strictHome?.cleanupLocked(); } catch { /* best effort */ }
       // createAcpSession runs before the prompt try/catch below — without this
       // the failure only hits startProviderRun's safety-net complete (exit 1)
       // with no error event, so Mission Control shows the opaque

@@ -38,6 +38,7 @@ import {
   resolveGrokToolName,
   STRICT_GROK_STRIPPED_ENV,
   stripStrictGrokEnv,
+  withStrictGrokAuthLock,
 } from '@/modules/providers/list/grok/grok-strict-run.js';
 /* eslint-enable boundaries/dependencies */
 import { makeScratchDir } from '@/shared/scratch.js';
@@ -322,6 +323,109 @@ test('strict home: sync-back writes a rotated login and transcripts, never grant
   fs.rmSync(path.join(sourceHome, 'auth.json'));
   second.cleanup();
   assert.equal(fs.existsSync(path.join(sourceHome, 'auth.json')), false);
+});
+
+test('strict home: write-back is skipped (and logged) when the real login changed during the run; the real file is never clobbered', () => {
+  seedSourceGrokHome();
+  const root = path.join(scratch, 'strict-root-race');
+  const warnings: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => { warnings.push(args.join(' ')); };
+  try {
+    // 1. The operator logs in again (or another run writes back) while this run is active.
+    const run = createStrictGrokHome({ gated: true, sourceHome, root });
+    fs.writeFileSync(path.join(run.dir, 'auth.json'), '{"token":"run-refresh"}');
+    fs.writeFileSync(path.join(sourceHome, 'auth.json'), '{"token":"operator-login"}', { mode: 0o600 });
+    run.cleanup();
+    assert.equal(fs.readFileSync(path.join(sourceHome, 'auth.json'), 'utf8'), '{"token":"operator-login"}');
+    assert.ok(warnings.some((line) => /grok-strict\] login write-back skipped: the real login changed/.test(line)));
+
+    // 2. Same size and mtime but different bytes still counts as changed.
+    seedSourceGrokHome();
+    const pinned = fs.statSync(path.join(sourceHome, 'auth.json'));
+    const sneaky = createStrictGrokHome({ gated: true, sourceHome, root });
+    fs.writeFileSync(path.join(sneaky.dir, 'auth.json'), '{"token":"run-new"}');
+    fs.writeFileSync(path.join(sourceHome, 'auth.json'), '{"token":"xxx"}');
+    fs.utimesSync(path.join(sourceHome, 'auth.json'), pinned.atime, pinned.mtime);
+    sneaky.cleanup();
+    assert.equal(fs.readFileSync(path.join(sourceHome, 'auth.json'), 'utf8'), '{"token":"xxx"}');
+
+    // 3. A truncated run login never replaces a JSON login; no staging file is left in the real home.
+    seedSourceGrokHome();
+    const broken = createStrictGrokHome({ gated: true, sourceHome, root });
+    fs.writeFileSync(path.join(broken.dir, 'auth.json'), '{"token":');
+    broken.cleanup();
+    assert.equal(fs.readFileSync(path.join(sourceHome, 'auth.json'), 'utf8'), '{"token":"old"}');
+    assert.equal(fs.readdirSync(sourceHome).some((name) => name.includes('.tmp')), false);
+
+    // 4. A login that did not exist at run start is never created from the run.
+    seedSourceGrokHome();
+    fs.rmSync(path.join(sourceHome, 'auth.json'));
+    const bare = createStrictGrokHome({ gated: true, sourceHome, root });
+    fs.writeFileSync(path.join(bare.dir, 'auth.json'), '{"token":"made-up"}');
+    bare.cleanup();
+    assert.equal(fs.existsSync(path.join(sourceHome, 'auth.json')), false);
+  } finally {
+    console.warn = originalWarn;
+  }
+});
+
+test('strict home: a run that starts while a sibling is active copies the newest login (the sibling\'s refresh is flushed first)', () => {
+  seedSourceGrokHome();
+  const root = path.join(scratch, 'strict-root-concurrent');
+  const first = createStrictGrokHome({ gated: true, sourceHome, root });
+  fs.writeFileSync(path.join(first.dir, 'auth.json'), '{"token":"refreshed-by-first"}');
+
+  const second = createStrictGrokHome({ gated: true, sourceHome, root });
+  assert.equal(fs.readFileSync(path.join(second.dir, 'auth.json'), 'utf8'), '{"token":"refreshed-by-first"}', 'the second run starts from the newest login');
+  assert.equal(fs.readFileSync(path.join(sourceHome, 'auth.json'), 'utf8'), '{"token":"refreshed-by-first"}', 'and the real login already holds it');
+
+  // The first run refreshes again later; it still writes back because its baseline moved with the flush.
+  fs.writeFileSync(path.join(first.dir, 'auth.json'), '{"token":"refreshed-again"}');
+  const later = new Date(Date.now() + 5_000);
+  fs.utimesSync(path.join(first.dir, 'auth.json'), later, later);
+  first.cleanup();
+  assert.equal(fs.readFileSync(path.join(sourceHome, 'auth.json'), 'utf8'), '{"token":"refreshed-again"}');
+
+  // The second run did not change its copy and must not undo the first run's newer login.
+  second.cleanup();
+  assert.equal(fs.readFileSync(path.join(sourceHome, 'auth.json'), 'utf8'), '{"token":"refreshed-again"}');
+});
+
+test('strict home: each start re-copies the latest real login, not a cached one', () => {
+  seedSourceGrokHome();
+  const root = path.join(scratch, 'strict-root-latest');
+  const first = createStrictGrokHome({ gated: true, sourceHome, root });
+  first.cleanup();
+  fs.writeFileSync(path.join(sourceHome, 'auth.json'), '{"token":"operator-relogin"}', { mode: 0o600 });
+  const second = createStrictGrokHome({ gated: true, sourceHome, root });
+  try {
+    assert.equal(fs.readFileSync(path.join(second.dir, 'auth.json'), 'utf8'), '{"token":"operator-relogin"}');
+  } finally {
+    second.cleanup();
+  }
+});
+
+test('withStrictGrokAuthLock serialises async sections in call order and survives a failing one', async () => {
+  const events: string[] = [];
+  const slow = withStrictGrokAuthLock(async () => {
+    events.push('a:start');
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    events.push('a:end');
+    return 'a';
+  });
+  const failing = withStrictGrokAuthLock(() => {
+    events.push('b');
+    throw new Error('boom');
+  });
+  const last = withStrictGrokAuthLock(() => {
+    events.push('c');
+    return 'c';
+  });
+  assert.equal(await slow, 'a');
+  await assert.rejects(failing, /boom/);
+  assert.equal(await last, 'c');
+  assert.deepEqual(events, ['a:start', 'a:end', 'b', 'c']);
 });
 
 test('strict home: leftovers from a crashed server are swept on the next run', () => {

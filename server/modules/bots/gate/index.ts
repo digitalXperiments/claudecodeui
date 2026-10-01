@@ -25,6 +25,7 @@ export {
 export {
   BUILTIN_GATE_SERVER,
   builtinDenylistReason,
+  builtinEscalationReason,
   createBuiltinToolGate,
   protectedCommandReason,
   protectedPathReason,
@@ -32,3 +33,10 @@ export {
   type BuiltinToolGate,
   type BuiltinToolGateContext,
 } from '@/modules/bots/gate/builtin-tool-gate.js';
+export {
+  assessFileTool,
+  assessShellCommand,
+  protectedSegmentsReason,
+  type StrictFinding,
+  type StrictScope,
+} from '@/modules/bots/gate/strict-guard.js';

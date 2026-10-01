@@ -116,6 +116,34 @@ function sameLink(linkPath: string, target: string): boolean {
   }
 }
 
+/**
+ * The ACP server stores its token with "temp file in the same directory + os.replace" (read from
+ * `FileCredentialStore.write` in the bundled source). Renaming onto a symlink REPLACES the symlink,
+ * so a refresh inside a run lands as a regular file in the run home and never touches (writes,
+ * truncates or unlinks) the real token. Nothing copies such a file back, ever: the operator's
+ * login is only ever read through the link. This note makes a replaced login visible in the log
+ * when its run home is pruned; the refreshed copy is discarded with the directory.
+ */
+function noteReplacedLogins(runHome: string): void {
+  const acp = path.join(runHome, 'antigravity-acp');
+  let entries: string[] = [];
+  try {
+    entries = fs.readdirSync(acp);
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    if (SHARED_PROFILE_SKIP.has(entry)) continue;
+    try {
+      if (fs.lstatSync(path.join(acp, entry)).isFile()) {
+        console.warn(`[antigravity-strict] ${entry} was replaced by a regular file in ${path.basename(runHome)}; it is discarded, never copied over the real login.`);
+      }
+    } catch {
+      // Gone already.
+    }
+  }
+}
+
 function pruneStaleRunHomes(runsDir: string): void {
   let entries: string[] = [];
   try {
@@ -130,6 +158,7 @@ function pruneStaleRunHomes(runsDir: string): void {
       if (Date.now() - fs.statSync(candidate).mtimeMs < RUN_HOME_MAX_AGE_MS) continue;
       // fs.rmSync never follows symlinks, and the realpath check keeps it inside the runs directory.
       if (path.dirname(fs.realpathSync(candidate)) !== realRuns) continue;
+      noteReplacedLogins(candidate);
       fs.rmSync(candidate, { recursive: true, force: true });
     } catch {
       // Best effort; a stale directory of symlinks is harmless.

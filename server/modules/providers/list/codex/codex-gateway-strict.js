@@ -23,6 +23,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+import { guardedLoginWriteBack, snapshotFile } from '../../shared/login/login-writeback.js';
+
 export const CODEX_GATEWAY_SERVER_NAME = 'cloudcli-tool-gateway';
 /** Name of the permission profile written into the per-run config. */
 export const CODEX_STRICT_PROFILE = 'cloudcli_bot_gate';
@@ -80,7 +82,14 @@ const DENY_READ_HOME_PATHS = Object.freeze([
   '.kube',
   '.netrc',
   '.git-credentials',
+  '.gemini',
+  '.docker',
+  '.zsh_history',
+  '.bash_history',
   path.join('Library', 'Keychains'),
+  // Browser profiles, app tokens and other apps' stores. The codex binary's own install dir (which
+  // can live here) is re-allowed by strictAllowReadPaths: more specific entries win.
+  path.join('Library', 'Application Support'),
 ]);
 
 /**
@@ -313,14 +322,6 @@ function safeSegment(value) {
   return String(value || 'run').replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 64) || 'run';
 }
 
-function readFileOrNull(file) {
-  try {
-    return fs.readFileSync(file);
-  } catch {
-    return null;
-  }
-}
-
 /** Managed homes older than this belong to a run that never cleaned up (server crash). */
 const STALE_HOME_MS = 24 * 60 * 60 * 1000;
 
@@ -344,8 +345,13 @@ function sweepStaleHomes(root, now = Date.now()) {
 
 /**
  * Creates the per-run CODEX_HOME. auth.json is a symlink to the operator's login so a token
- * refresh writes through; if Codex replaced the link with a fresh file (atomic write), cleanup
- * copies the newer login back so the real one is never left holding a rotated-away refresh token.
+ * refresh that writes in place goes straight to the real file (never lost, never racing a copy).
+ * If Codex instead replaces the link with a fresh regular file (temp + rename, which is what most
+ * token writers do), cleanup considers copying that file back, but only through
+ * `guardedLoginWriteBack`: the real login is fingerprinted (mtime, size, sha256) when the run
+ * starts and the run's file is written back only if the real one is still exactly that AND the
+ * run's file is newer, via a temp file + atomic rename with the fingerprint re-checked just before.
+ * Anything else discards the run's copy with a log line; the real login is never overwritten blindly.
  *
  * @param {{ root?: string, appSessionId?: string, authHome?: string }} [options]
  * @returns {{ home: string, cleanup: () => void }}
@@ -359,6 +365,8 @@ export function prepareStrictCodexHome({ root = resolveStrictHomeRoot(), appSess
   const sourceHome = authHome || process.env.CODEX_HOME?.trim() || path.join(os.homedir(), '.codex');
   const realAuth = path.join(sourceHome, 'auth.json');
   const managedAuth = path.join(home, 'auth.json');
+  // Fingerprint BEFORE the run can touch it; null when there is no login (nothing is ever created from a run copy).
+  const startSnapshot = snapshotFile(realAuth);
   if (fs.existsSync(realAuth)) fs.symlinkSync(realAuth, managedAuth);
 
   let cleaned = false;
@@ -367,20 +375,7 @@ export function prepareStrictCodexHome({ root = resolveStrictHomeRoot(), appSess
     cleanup() {
       if (cleaned) return;
       cleaned = true;
-      try {
-        const stat = fs.lstatSync(managedAuth);
-        if (stat.isFile() && !stat.isSymbolicLink()) {
-          const fresh = readFileOrNull(managedAuth);
-          const current = readFileOrNull(realAuth);
-          if (fresh && fresh.length > 0 && (!current || !fresh.equals(current))) {
-            const staging = `${realAuth}.${randomBytes(4).toString('hex')}.tmp`;
-            fs.writeFileSync(staging, fresh, { mode: 0o600 });
-            fs.renameSync(staging, realAuth);
-          }
-        }
-      } catch {
-        // No managed login to sync back.
-      }
+      guardedLoginWriteBack({ realFile: realAuth, runFile: managedAuth, startSnapshot, label: 'Codex' });
       try {
         fs.rmSync(home, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
       } catch (error) {

@@ -225,7 +225,11 @@ test('buildStrictCodexEnv: gateway credentials and the managed home, nothing inh
 
 test('strict deny list covers the credential stores the gate protects; the codex binary stays readable', () => {
   const denied = strictDenyReadPaths({ home: '/home/u', codexHome: '/custom/codex' });
-  for (const entry of ['.codex', '.claude', '.claude.json', '.grok', '.cursor', '.config', '.cloudcli', '.ssh', '.aws']) {
+  for (const entry of [
+    '.codex', '.claude', '.claude.json', '.grok', '.cursor', '.config', '.cloudcli', '.ssh', '.aws',
+    '.gemini', '.docker', '.zsh_history', '.bash_history', '.gnupg', '.azure', '.kube', '.netrc', '.git-credentials',
+    path.join('Library', 'Keychains'), path.join('Library', 'Application Support'),
+  ]) {
     assert.ok(denied.includes(path.join('/home/u', entry)), entry);
   }
   assert.ok(denied.includes('/custom/codex'));
@@ -236,6 +240,28 @@ test('strict deny list covers the credential stores the gate protects; the codex
   });
   assert.ok(allowed.includes('/home/u/.local/bin/codex'));
   assert.deepEqual(strictAllowReadPaths({ launcherCommand: 'codex' }), [], 'a bare command name has nothing to allow');
+});
+
+test('the OS sandbox keeps a codex binary readable even when it lives under a denied Application Support', () => {
+  const home = '/home/u';
+  const launcher = '/home/u/Library/Application Support/codex/bin/codex';
+  const denyReadPaths = strictDenyReadPaths({ home, codexHome: '/home/u/.codex' });
+  const allowReadPaths = strictAllowReadPaths({ launcherCommand: launcher, denyReadPaths });
+  const config = buildStrictCodexConfig({
+    gateway: GATEWAY,
+    appSessionId: 's',
+    policy: resolveStrictPolicy('default'),
+    cwd: '/work/project',
+    denyReadPaths,
+    allowReadPaths,
+  });
+  const filesystem = config.permissions[Object.keys(config.permissions)[0]].filesystem;
+  assert.equal(filesystem['/home/u/Library/Application Support'], 'deny');
+  assert.equal(filesystem['/home/u/Library/Application Support/codex'], 'read', 'the install dir is the more specific entry and wins');
+  assert.equal(filesystem['/home/u/.gemini'], 'deny');
+  assert.equal(filesystem['/home/u/.docker'], 'deny');
+  assert.equal(filesystem['/home/u/.zsh_history'], 'deny');
+  assert.equal(filesystem['/home/u/.bash_history'], 'deny');
 });
 
 test('strictUntrustedProjectPaths pins the cwd, its ancestors and the main checkout of a linked worktree', async () => {
@@ -276,6 +302,8 @@ test('prepareStrictCodexHome: login linked in, nothing else of the user config, 
     const realHome = path.join(scratch, 'real');
     fs.mkdirSync(realHome, { recursive: true });
     fs.writeFileSync(path.join(realHome, 'auth.json'), '{"refresh":"old"}', { mode: 0o600 });
+    const anHourAgo = new Date(Date.now() - 3_600_000);
+    fs.utimesSync(path.join(realHome, 'auth.json'), anHourAgo, anHourAgo);
     fs.writeFileSync(path.join(realHome, 'config.toml'), '[mcp_servers.leak]\ncommand = "x"\n');
 
     // Untouched login: the link stays a link and the real file is not rewritten.
@@ -305,6 +333,91 @@ test('prepareStrictCodexHome: login linked in, nothing else of the user config, 
     assert.deepEqual(fs.readdirSync(bare.home), ['rules']);
     bare.cleanup();
   } finally {
+    fs.rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test('prepareStrictCodexHome write-back is guarded: only when the real login is unchanged since start and the run file is newer', async () => {
+  const scratch = await makeScratchDir('bots-codex-writeback-');
+  const warnings: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => { warnings.push(args.join(' ')); };
+  try {
+    const realHome = path.join(scratch, 'real');
+    const realAuth = path.join(realHome, 'auth.json');
+    fs.mkdirSync(realHome, { recursive: true });
+    const seed = (content: string, ageMs = 3_600_000) => {
+      fs.writeFileSync(realAuth, content, { mode: 0o600 });
+      const when = new Date(Date.now() - ageMs);
+      fs.utimesSync(realAuth, when, when);
+    };
+    const start = (id: string) => prepareStrictCodexHome({ root: path.join(scratch, 'homes'), appSessionId: id, authHome: realHome });
+    const replaceInRun = (home: string, content: string) => {
+      fs.rmSync(path.join(home, 'auth.json'));
+      fs.writeFileSync(path.join(home, 'auth.json'), content, { mode: 0o600 });
+    };
+
+    // 1. The real login changed during the run (the operator logged in again, or another run wrote back): discard.
+    seed('{"refresh":"v1"}');
+    const raced = start('raced');
+    replaceInRun(raced.home, '{"refresh":"from-the-run"}');
+    fs.writeFileSync(realAuth, '{"refresh":"operator-relogin"}', { mode: 0o600 });
+    raced.cleanup();
+    assert.equal(fs.readFileSync(realAuth, 'utf8'), '{"refresh":"operator-relogin"}', 'the newer real login wins');
+    assert.ok(warnings.some((line) => /Codex\] login write-back skipped: the real login changed/.test(line)), 'the discard is logged');
+    assert.deepEqual(fs.readdirSync(realHome), ['auth.json'], 'no staging file is left next to the real login');
+
+    // 2. Same size, same mtime, different bytes: the content hash still notices.
+    seed('{"refresh":"aaaa"}');
+    const pinned = fs.statSync(realAuth);
+    const sneaky = start('sneaky');
+    replaceInRun(sneaky.home, '{"refresh":"from-the-run"}');
+    fs.writeFileSync(realAuth, '{"refresh":"bbbb"}', { mode: 0o600 });
+    fs.utimesSync(realAuth, pinned.atime, pinned.mtime);
+    sneaky.cleanup();
+    assert.equal(fs.readFileSync(realAuth, 'utf8'), '{"refresh":"bbbb"}');
+
+    // 3. The run's file is not newer than the real one at start: nothing to write back.
+    seed('{"refresh":"v3"}', 0);
+    const stale = start('stale');
+    replaceInRun(stale.home, '{"refresh":"older-copy"}');
+    const longAgo = new Date(Date.now() - 86_400_000);
+    fs.utimesSync(path.join(stale.home, 'auth.json'), longAgo, longAgo);
+    stale.cleanup();
+    assert.equal(fs.readFileSync(realAuth, 'utf8'), '{"refresh":"v3"}');
+
+    // 4. A truncated / non-JSON run file never replaces a JSON login.
+    seed('{"refresh":"v4"}');
+    const broken = start('broken');
+    replaceInRun(broken.home, '{"refresh":');
+    broken.cleanup();
+    assert.equal(fs.readFileSync(realAuth, 'utf8'), '{"refresh":"v4"}');
+
+    // 5. No login at run start: a login that appears later is never overwritten from the run.
+    fs.rmSync(realAuth);
+    const none = start('none');
+    fs.writeFileSync(path.join(none.home, 'auth.json'), '{"refresh":"made-up"}');
+    fs.writeFileSync(realAuth, '{"refresh":"logged-in-meanwhile"}', { mode: 0o600 });
+    none.cleanup();
+    assert.equal(fs.readFileSync(realAuth, 'utf8'), '{"refresh":"logged-in-meanwhile"}');
+
+    // 6. The happy path still works: unchanged real login + newer run file -> atomic replace, mode 0600, no leftovers.
+    seed('{"refresh":"v6"}');
+    fs.chmodSync(realAuth, 0o644);
+    const happy = start('happy');
+    replaceInRun(happy.home, '{"refresh":"rotated"}');
+    happy.cleanup();
+    assert.equal(fs.readFileSync(realAuth, 'utf8'), '{"refresh":"rotated"}');
+    assert.equal((fs.statSync(realAuth).mode & 0o777).toString(8), '600', 'the replacement is written 0600');
+    assert.deepEqual(fs.readdirSync(realHome), ['auth.json']);
+
+    // 7. A run that kept the link (Codex wrote in place, or not at all) leaves the real login alone.
+    const linked = start('linked');
+    assert.ok(fs.lstatSync(path.join(linked.home, 'auth.json')).isSymbolicLink());
+    linked.cleanup();
+    assert.equal(fs.readFileSync(realAuth, 'utf8'), '{"refresh":"rotated"}');
+  } finally {
+    console.warn = originalWarn;
     fs.rmSync(scratch, { recursive: true, force: true });
   }
 });

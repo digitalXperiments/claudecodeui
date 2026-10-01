@@ -24,6 +24,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+import {
+  guardedLoginWriteBack,
+  snapshotFile,
+  type FileSnapshot,
+} from '../../shared/login/login-writeback.js';
+
 import { toGrokAcpMcpServers, type ResolvedMcpConnection } from './grok-acp-managed-mcp.js';
 
 type AnyRecord = Record<string, unknown>;
@@ -150,8 +156,37 @@ export interface StrictGrokHome {
    * One-shot: later calls do nothing.
    */
   syncBack(): void;
+  /**
+   * Writes a login this run already refreshed back to the real home now (same guards as syncBack),
+   * so a run that starts next copies the newest login. Does not end the run; the home's baseline
+   * moves to what was written. Used by createStrictGrokHome for the runs still active.
+   */
+  flushLogin(): void;
   /** syncBack() then deletes the directory. Idempotent. */
   cleanup(): void;
+  /** cleanup() inside the process-wide login lock (see withStrictGrokAuthLock). */
+  cleanupLocked(): Promise<void>;
+}
+
+// ---------------------------------------------------------------------------
+// Process-wide login lock
+
+let authLockChain: Promise<unknown> = Promise.resolve();
+
+/**
+ * Serialises every touch of the real `auth.json` by strict runs in this process: copying it at
+ * run start and writing a refreshed copy back. Callers `await` it and keep the critical section
+ * short. Note what it is and is not: the sections are synchronous file operations, so within one
+ * Node process they were already atomic; the lock makes that an explicit, enforced invariant for
+ * any future async step inside them. It does NOT protect against another process (a second
+ * CloudCLI server, the operator's own `grok login`): that is what the mtime/size/hash re-check in
+ * guardedLoginWriteBack is for. Rotation-with-reuse-detection on xAI's side is not verified: two
+ * runs that start from the same refresh token and both refresh can still log each other out.
+ */
+export function withStrictGrokAuthLock<T>(section: () => T | Promise<T>): Promise<T> {
+  const run = authLockChain.then(section, section);
+  authLockChain = run.then(() => undefined, () => undefined);
+  return run;
 }
 
 const activeHomes = new Set<StrictGrokHome>();
@@ -177,19 +212,23 @@ function writePrivateFile(target: string, content: Buffer | string): void {
   fs.chmodSync(target, 0o600);
 }
 
-function copyPrivateFile(source: string, target: string): boolean {
+/** Copies a file the run needs, keeping its age; returns the source's fingerprint (null when absent). */
+function copyPrivateFile(source: string, target: string): FileSnapshot | null {
+  const before = snapshotFile(source);
+  if (!before) return null;
   let content: Buffer;
-  let mtime: Date;
   try {
     content = fs.readFileSync(source);
-    mtime = fs.statSync(source).mtime;
   } catch {
-    return false;
+    return null;
   }
   writePrivateFile(target, content);
   // Keep the source's age so a refreshed copy (newer mtime) is recognisable at sync-back.
+  const mtime = new Date(before.mtimeMs);
   fs.utimesSync(target, mtime, mtime);
-  return true;
+  // The fingerprint must describe what was copied: if the source moved between the two reads, a
+  // later write-back sees a mismatch and discards, which is the safe direction.
+  return snapshotFile(source);
 }
 
 function sweepStaleRunHomes(root: string, now: number): void {
@@ -208,21 +247,6 @@ function sweepStaleRunHomes(root: string, now: number): void {
       // Vanished or unreadable: leave it.
     }
   }
-}
-
-function syncAuthBack(runDir: string, sourceHome: string): void {
-  const runAuth = path.join(runDir, 'auth.json');
-  const sourceAuth = path.join(sourceHome, 'auth.json');
-  // A source file that is gone means an explicit logout; never resurrect it from a run copy.
-  if (!fs.existsSync(runAuth) || !fs.existsSync(sourceAuth)) return;
-  const runStat = fs.statSync(runAuth);
-  if (runStat.mtimeMs <= fs.statSync(sourceAuth).mtimeMs) return;
-  const content = fs.readFileSync(runAuth);
-  if (content.equals(fs.readFileSync(sourceAuth))) return;
-  const tmp = `${sourceAuth}.cloudcli-strict-${process.pid}.tmp`;
-  writePrivateFile(tmp, content);
-  fs.renameSync(tmp, sourceAuth);
-  fs.utimesSync(sourceAuth, runStat.mtime, runStat.mtime);
 }
 
 function mergeSessionDir(source: string, target: string): void {
@@ -292,19 +316,38 @@ export function createStrictGrokHome(options: {
   }));
   // Login only. Nothing else from the real home is copied: no config.toml, no
   // mcp_credentials.json, no trusted_folders.toml, no plugins/skills, no permission grants.
-  copyPrivateFile(path.join(sourceHome, 'auth.json'), path.join(dir, 'auth.json'));
+  // First flush what runs still active in this process already refreshed, so this run starts from
+  // the newest real login instead of a refresh token a sibling has just rotated away.
+  for (const active of [...activeHomes]) active.flushLogin();
+  let loginBaseline = copyPrivateFile(path.join(sourceHome, 'auth.json'), path.join(dir, 'auth.json'));
   copyPrivateFile(path.join(sourceHome, 'models_cache.json'), path.join(dir, 'models_cache.json'));
   fs.mkdirSync(path.join(dir, 'sessions'), { recursive: true, mode: 0o700 });
 
   let synced = false;
   let removed = false;
+  const writeLoginBack = (): void => {
+    const realAuth = path.join(sourceHome, 'auth.json');
+    const result = guardedLoginWriteBack({
+      realFile: realAuth,
+      runFile: path.join(dir, 'auth.json'),
+      startSnapshot: loginBaseline,
+      label: 'grok-strict',
+      carryMtime: true,
+    });
+    // What is on disk now is this run's new baseline (also after a discard: the real file is what it is).
+    if (result.status === 'written') loginBaseline = snapshotFile(realAuth);
+  };
   const home: StrictGrokHome = {
     dir,
+    flushLogin() {
+      if (synced || removed) return;
+      writeLoginBack();
+    },
     syncBack() {
       if (synced || removed) return;
       synced = true;
       try {
-        syncAuthBack(dir, sourceHome);
+        writeLoginBack();
       } catch (error) {
         console.warn('[grok-strict] could not write the refreshed login back:', error instanceof Error ? error.message : error);
       }
@@ -320,6 +363,9 @@ export function createStrictGrokHome(options: {
       removed = true;
       activeHomes.delete(home);
       fs.rmSync(dir, { recursive: true, force: true });
+    },
+    cleanupLocked() {
+      return withStrictGrokAuthLock(() => home.cleanup());
     },
   };
   activeHomes.add(home);
