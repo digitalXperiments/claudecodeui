@@ -2,10 +2,17 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-/** Root of all bot homes: `$CLOUDCLI_BOTS_HOME` or `~/.cloudcli/bots`. */
+/**
+ * Root of all bot homes: `$CLOUDCLI_BOTS_HOME` or `~/.cloudcli/bots`.
+ * Under `node --test` (NODE_TEST_CONTEXT is set for test files) with no override, homes go to
+ * a temp folder instead, so a test that forgets to isolate can never write into the operator's
+ * real bots folder.
+ */
 export function resolveBotsRoot(): string {
   const override = process.env.CLOUDCLI_BOTS_HOME?.trim();
-  return override ? path.resolve(override) : path.join(os.homedir(), '.cloudcli', 'bots');
+  if (override) return path.resolve(override);
+  if (process.env.NODE_TEST_CONTEXT) return path.join(os.tmpdir(), 'cloudcli-test-bots');
+  return path.join(os.homedir(), '.cloudcli', 'bots');
 }
 
 /** Subfolders every bot home starts with. `browser-profile/` is created lazily by the browser. */
