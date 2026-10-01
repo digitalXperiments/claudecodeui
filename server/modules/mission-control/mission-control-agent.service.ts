@@ -3,7 +3,7 @@ import os from 'node:os';
 import { jsonrepair } from 'jsonrepair';
 
 import { isBotsRuntimeV2Enabled } from '@/modules/app-features/index.js';
-import { botGateDecisionsDb, buildGatewayRunGuards, readBotRuntimeConfig, resolveBotHome } from '@/modules/bots/index.js';
+import { applyProviderGatewayRunOptions, botGateDecisionsDb, buildGatewayRunGuards, readBotRuntimeConfig, resolveBotHome } from '@/modules/bots/index.js';
 import { gatewaySessions } from '@/shared/bot-gateway-sessions.js';
 import { projectsDb } from '@/modules/database/index.js';
 import { recordNormalizedRunEvent, runService } from '@/modules/runs/index.js';
@@ -529,6 +529,8 @@ export function buildRuntimeOptions(section: McSection, tools: string[]): AnyRec
     default:
       break;
   }
+  // Provider-specific wiring that keeps a gateway-bound run inside the gate (see gateway/providers).
+  if (useGateway) applyProviderGatewayRunOptions(provider, options);
   return options;
 }
 

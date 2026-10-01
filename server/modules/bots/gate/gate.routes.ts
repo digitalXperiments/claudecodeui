@@ -9,7 +9,7 @@ import { missionControlDb } from '@/modules/mission-control/index.js';
 import { AppError, asyncHandler } from '@/shared/utils.js';
 import { readBotRuntimeConfig } from '@/modules/bots/bots-runtime-config.js';
 import type { BotGateDecision, BotRuleDecision, BotRuleMatch, BotRuleScope } from '@/modules/bots/bots.types.js';
-import { getGatewayEnforcement } from '@/modules/bots/gateway/enforcement.js';
+import { describeGatewayEnforcement, getGatewayEnforcement } from '@/modules/bots/gateway/enforcement.js';
 import { botGateDecisionsDb } from '@/modules/bots/gate/bot-gate-decisions.repository.js';
 import { botSpendDb } from '@/modules/bots/gate/bot-spend.repository.js';
 import { summarizeArgs } from '@/modules/bots/gate/action-gate.service.js';
@@ -372,6 +372,8 @@ botGateRouter.get(
  * How strongly the gate governs this bot: 'enforced' only when every phase runs on a provider with
  * a full enforcement path (Claude with the built-in tool gate); otherwise 'advisory'.
  */
+const GATED_RUN = { builtinToolGate: true } as const;
+
 botGateRouter.get(
   '/:botId/enforcement',
   asyncHandler(async (req, res) => {
@@ -381,14 +383,17 @@ botGateRouter.get(
     const phaseProvider = (phase: 'perceive' | 'act' | 'reflect'): string => runtime.routing?.[phase]?.provider ?? section.provider;
     const phases = (['perceive', 'act', 'reflect'] as const).map((phase) => {
       const provider = phaseProvider(phase);
-      return { phase, provider, level: getGatewayEnforcement(provider, { builtinToolGate: provider === 'claude' }) };
+      // Every gateway-bound run carries the built-in tool gate; the provider adapter decides
+      // whether that provider can actually honour it.
+      return { phase, provider, level: getGatewayEnforcement(provider, GATED_RUN), detail: describeGatewayEnforcement(provider, GATED_RUN) };
     });
     const provider = phaseProvider('act');
     res.json({
       enforcement: {
         provider,
-        level: getGatewayEnforcement(provider, { builtinToolGate: provider === 'claude' }),
-        builtin_tool_gate: provider === 'claude',
+        level: getGatewayEnforcement(provider, GATED_RUN),
+        detail: describeGatewayEnforcement(provider, GATED_RUN),
+        builtin_tool_gate: getGatewayEnforcement(provider, GATED_RUN) === 'enforced',
         gateway: runtime.gateway ?? true,
         configured: runtime.enforcement ?? null,
         phases,
