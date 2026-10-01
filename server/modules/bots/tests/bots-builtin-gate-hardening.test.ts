@@ -363,3 +363,23 @@ test('non-bot callers are untouched: the shared classifier still approves what t
   assert.equal(verdictOf('Read', { file_path: '/etc/hosts' }), 'escalate', 'while the bot gate escalates the same read');
   assert.equal(verdictOf('Bash', bash('echo $FOO')), 'escalate');
 });
+
+test('jq and awk environment dumps are denied (bypass found in review)', async () => {
+  const { builtinDenylistReason } = await import('@/modules/bots/gate/builtin-tool-gate.js');
+  const scope = { workspaceRoot: '/tmp/ws-jq', botHome: '/tmp/home-jq/.cloudcli/bots/b1/home' };
+  const attacks = [
+    'jq -n env',
+    `jq -rn 'env|to_entries[]|.key+"="+.value'`,
+    'jq -n env > leak.txt',
+    'jq -n "$ENV.CLOUDCLI_API_TOKEN"',
+    `awk 'BEGIN{for(k in ENVIRON)print k"="ENVIRON[k]}'`,
+    `gawk 'BEGIN{print ENVIRON["CLOUDCLI_API_TOKEN"]}'`,
+    `mawk 'BEGIN{for(k in ENVIRON)print k}'`,
+  ];
+  for (const command of attacks) {
+    assert.ok(builtinDenylistReason('Bash', { command }, scope), `must be denied: ${command}`);
+  }
+  // Ordinary jq/awk use stays usable.
+  assert.equal(builtinDenylistReason('Bash', { command: `jq '.items | length' data.json` }, scope), null);
+  assert.equal(builtinDenylistReason('Bash', { command: `awk '{print $1}' report.txt` }, scope), null);
+});

@@ -96,6 +96,9 @@ const COMMAND_RULES: Array<{ pattern: RegExp; reason: string }> = [
   { pattern: /(?:^|[;&|`(]\s*|\n\s*|\bsudo\s+)ps\s+(?:-[A-Za-z]+(?:\s+\d+)?\s+)*[A-Za-z]*e[A-Za-z]*(?:\s|$)/m, reason: 'reading process environments is off-limits' },
   { pattern: /(?:^|[;&|`(]\s*|\n\s*|\bsudo\s+)ps(?:\s[^\n;|&]*)?\s-[A-Za-z]*E/m, reason: 'reading process environments is off-limits' },
   { pattern: /\bprocess\.env\b|\bos\.environ\b|\bENV\[/, reason: 'reading the process environment is off-limits' },
+  // awk/gawk/mawk expose the environment as ENVIRON[]; jq exposes it as `env` / `$ENV`.
+  { pattern: /\bENVIRON\b/, reason: 'reading the process environment is off-limits' },
+  { pattern: /\bjq\b[^\n;|&]*(?:\$ENV\b|\benv\b)/, reason: 'reading the process environment is off-limits' },
   {
     pattern: new RegExp(String.raw`\b(?:curl|wget|nc|ncat|netcat|socat|http|https|xh)\b[^\n;|&]*${LOCAL_HOST}`, 'i'),
     reason: 'the CloudCLI API on localhost is off-limits',
