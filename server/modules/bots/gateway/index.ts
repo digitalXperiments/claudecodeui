@@ -18,9 +18,9 @@ export {
   setGatewayUpstreamPool,
 } from './gateway.service.js';
 export { buildGatewayRunGuards, type GatewayRunGuards } from './run-guards.js';
-export { describeGatewayEnforcement, getGatewayEnforcement } from './enforcement.js';
+export { describeGatewayEnforcement, describeUnrestrictedEnforcement, enforcementForAutonomy, getGatewayEnforcement } from './enforcement.js';
 export { applyProviderGatewayRunOptions, getProviderGatewayAdapter, type ProviderGatewayAdapter } from './providers/index.js';
-export type { GatewayEnforcement } from './enforcement.js';
+export type { EnforcementLevel, GatewayEnforcement } from './enforcement.js';
 export {
   getGatewayTool,
   listGatewayTools,

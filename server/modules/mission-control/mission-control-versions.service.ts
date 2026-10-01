@@ -10,7 +10,11 @@ export type BotVersionConfig = Pick<McSection,
   | 'resolve_provider' | 'resolve_model' | 'resolve_effort' | 'permission_mode'
   | 'dry_run' | 'auto_approve' | 'produce_prompt' | 'produce_tools'
   | 'resolve_prompt' | 'resolve_tools' | 'tool_policy' | 'actions'
-> & { approved_memory: string[] };
+> & {
+  approved_memory: string[];
+  /** Autonomy level when it is not the default 'careful' (absent = careful, so old snapshots still match). */
+  autonomy?: 'trusted' | 'unrestricted';
+};
 
 export type BotVersion = {
   version: number;
@@ -63,7 +67,23 @@ type ScoreRow = {
   latest_run_at: string | null;
 };
 
+/** The bot's non-default autonomy from `runtime_json` (read directly: the bots module imports this one). */
+function snapshotAutonomy(sectionId: string): 'trusted' | 'unrestricted' | null {
+  try {
+    const row = getConnection().prepare('SELECT runtime_json FROM mc_sections WHERE section_id = ?').get(sectionId) as
+      | { runtime_json: string | null }
+      | undefined;
+    const runtime = row?.runtime_json ? (JSON.parse(row.runtime_json) as Record<string, unknown>) : {};
+    if (runtime.autonomy === 'trusted' || runtime.autonomy === 'unrestricted') return runtime.autonomy;
+    if (runtime.autonomy === undefined && runtime.gateway === false) return 'unrestricted';
+  } catch {
+    // A malformed runtime blob reads as the default.
+  }
+  return null;
+}
+
 function snapshotSection(section: McSection): BotVersionConfig {
+  const autonomy = snapshotAutonomy(section.section_id);
   return {
     title: section.title,
     icon: section.icon,
@@ -89,6 +109,7 @@ function snapshotSection(section: McSection): BotVersionConfig {
     actions: section.actions,
     work_profile: section.work_profile ?? null,
     approved_memory: listApprovedBotMemoryContents(section.section_id),
+    ...(autonomy ? { autonomy } : {}),
   };
 }
 

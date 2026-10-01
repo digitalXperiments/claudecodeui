@@ -15,6 +15,7 @@ import PipelineTab from './tabs/PipelineTab';
 import SimulatorTab from './tabs/SimulatorTab';
 import HistoryTab from './tabs/HistoryTab';
 import SettingsTab from './tabs/SettingsTab';
+import { AbilitiesTab } from './tabs/runtime/AbilitiesTab';
 import { ActivityTab } from './tabs/runtime/ActivityTab';
 import { GoalsTab } from './tabs/runtime/GoalsTab';
 import { LearningTab } from './tabs/runtime/LearningTab';
@@ -91,12 +92,13 @@ export default function BotDetailView({ workProjects = [], bot, projectName, wor
         {visibleTab === 'pipeline' ? <PipelineTab key={bot.section_id} bot={bot} projects={workProjects} onSave={update} onDirtyChange={setPipelineDirty} focus={focus} /> : null}
         {visibleTab === 'test' ? <SimulatorTab key={bot.section_id} bot={bot} items={items} /> : null}
         {visibleTab === 'history' ? <HistoryTab key={`${bot.section_id}-${focus ?? ''}`} bot={bot} runs={runs} initialView={focus === 'versions' ? 'versions' : 'ticks'} selectedRunId={selectedRunId} onSelectRun={(run) => { setSelectedRunId(run.run_id); onSelectRun?.(run); }} onRun={() => void run()} onCancelRun={onCancelRun} /> : null}
+        {runtimeV2 && visibleTab === 'abilities' ? <AbilitiesTab key={bot.section_id} botId={bot.section_id} section={bot} focus={focus} onSave={update} onOpenTab={changeTab} /> : null}
         {runtimeV2 && visibleTab === 'activity' ? <ActivityTab key={bot.section_id} botId={bot.section_id} section={bot} /> : null}
         {runtimeV2 && visibleTab === 'thread' ? <ThreadTab key={bot.section_id} botId={bot.section_id} section={bot} /> : null}
         {runtimeV2 && visibleTab === 'goals' ? <GoalsTab key={bot.section_id} botId={bot.section_id} section={bot} /> : null}
         {runtimeV2 && visibleTab === 'triggers' ? <TriggersTab key={bot.section_id} botId={bot.section_id} section={bot} /> : null}
-        {runtimeV2 && visibleTab === 'rules' ? <RulesTab key={bot.section_id} botId={bot.section_id} section={bot} /> : null}
-        {runtimeV2 && visibleTab === 'learning' ? <LearningTab key={bot.section_id} botId={bot.section_id} section={bot} /> : null}
+        {runtimeV2 && visibleTab === 'rules' ? <RulesTab key={bot.section_id} botId={bot.section_id} section={bot} onOpenTab={changeTab} /> : null}
+        {runtimeV2 && visibleTab === 'learning' ? <LearningTab key={bot.section_id} botId={bot.section_id} section={bot} onOpenTab={changeTab} /> : null}
         {visibleTab === 'settings' ? <SettingsTab bot={bot} items={items} onOpenPipeline={() => changeTab('pipeline', 'propose')} onDelete={onDelete} onResetPolicy={() => update({ tool_policy: {} })} /> : null}
       </div>
     </section>

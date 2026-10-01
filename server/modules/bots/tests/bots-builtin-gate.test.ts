@@ -125,7 +125,7 @@ test('H3 gate: MCP tools only via the gateway; denylist persists a denial and ca
   });
 });
 
-test('H3 gate: worker-seat approve runs free; escalations go through the Action Gate as builtin/prod_change', async () => {
+test('H3 gate: worker-seat approve runs free; escalations go through the Action Gate as builtin/prod_change or send', async () => {
   await withGate(async ({ botId, workspace, botHome }) => {
     const gate = createBuiltinToolGate({ botId, workspaceRoot: workspace, botHome, tainted: false, approvalTimeoutMs: 60 });
     assert.deepEqual(await gate('Read', { file_path: path.join(workspace, 'a.ts') }), { behavior: 'allow' });
@@ -146,7 +146,8 @@ test('H3 gate: worker-seat approve runs free; escalations go through the Action 
       assert.equal(row.decision, 'ask');
       assert.equal(row.outcome, 'expired');
     }
-    assert.ok(rows.some((row) => row.tool === 'Bash' && row.risk === 'prod_change'));
+    assert.ok(rows.some((row) => row.tool === 'Bash' && row.risk === 'send'), 'a network command is rated send');
+    assert.ok(rows.some((row) => row.tool === 'Write' && row.risk === 'prod_change'));
   });
 });
 

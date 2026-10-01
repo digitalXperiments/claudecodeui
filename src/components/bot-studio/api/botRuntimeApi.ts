@@ -9,7 +9,13 @@
 
 import { authenticatedFetch } from '../../../utils/api';
 import type {
+  BotAbilities,
+  BotAutonomy,
+  BotAutonomyChange,
   BotBrief,
+  BotBrowserExtend,
+  BotBrowserSignIn,
+  BotBrowserStatus,
   BotBudget,
   BotBudgetInput,
   BotBudgetStatus,
@@ -93,10 +99,28 @@ export function errorMessageFromPayload(payload: unknown, status: number): strin
   return error || record.message || `Request failed (${status})`;
 }
 
+/** A failed request. `status` lets callers treat 409 (busy / in use) differently from a real failure. */
+export class BotApiError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = 'BotApiError';
+    this.status = status;
+  }
+}
+
 async function readJson<T>(response: Response): Promise<T> {
   const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(errorMessageFromPayload(payload, response.status));
+  if (!response.ok) throw new BotApiError(errorMessageFromPayload(payload, response.status), response.status);
   return payload as T;
+}
+
+/** The server wraps most payloads in a key (`{ abilities }`); tolerate the bare object too. */
+export function unwrapKey<T>(payload: unknown, key: string): T {
+  const record = (payload && typeof payload === 'object' ? payload : {}) as Record<string, unknown>;
+  const inner = record[key];
+  return (inner && typeof inner === 'object' ? inner : payload) as T;
 }
 
 async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
@@ -128,9 +152,17 @@ export const botRuntimeApi = {
     async enforcement(botId: string): Promise<BotEnforcement> {
       return (await get<{ enforcement: BotEnforcement }>(`${bot(botId)}/enforcement`)).enforcement;
     },
-    /** Enforcement level for a provider before any bot exists (Bot Architect). */
-    async enforcementPreview(provider: string): Promise<BotEnforcementPreview> {
-      return (await get<{ enforcement: BotEnforcementPreview }>(`/enforcement/preview${buildQuery({ provider })}`)).enforcement;
+    /** Enforcement level for a provider (and optionally an autonomy) before any bot exists (Bot Architect). */
+    async enforcementPreview(provider: string, autonomy?: BotAutonomy): Promise<BotEnforcementPreview> {
+      return (await get<{ enforcement: BotEnforcementPreview }>(`/enforcement/preview${buildQuery({ provider, autonomy })}`)).enforcement;
+    },
+    /** How much the bot may do on its own, with what the change did to a run in progress. */
+    async changeAutonomy(botId: string, autonomy: BotAutonomy): Promise<BotAutonomyChange> {
+      return patch<BotAutonomyChange>(`${bot(botId)}/runtime`, { autonomy });
+    },
+    /** Same call, just the new runtime config. */
+    async setAutonomy(botId: string, autonomy: BotAutonomy): Promise<BotRuntimeConfig> {
+      return (await patch<BotAutonomyChange>(`${bot(botId)}/runtime`, { autonomy })).runtime;
     },
   },
 
@@ -417,6 +449,32 @@ export const botRuntimeApi = {
     async setFallback(botId: string, fallback: BotPhaseRoute[]): Promise<BotPhaseRoute[]> {
       return (await put<{ fallback: BotPhaseRoute[] }>(`${bot(botId)}/routing/fallback`, { fallback })).fallback;
     },
+  },
+
+  // ---- abilities: everything a bot can use, in one place ------------------------------------------
+  abilities: {
+    async get(botId: string): Promise<BotAbilities> {
+      return unwrapKey<BotAbilities>(await get<unknown>(`${bot(botId)}/abilities`), 'abilities');
+    },
+  },
+
+  // ---- the bot's own browser profile (its logins) -------------------------------------------------
+  browser: {
+    async status(botId: string): Promise<BotBrowserStatus> {
+      return unwrapKey<BotBrowserStatus>(await get<unknown>(`${bot(botId)}/browser`), 'browser');
+    },
+    /** Opens a browser session for the operator to sign in to a site as this bot. 409 while the bot is running. */
+    async signIn(botId: string, url: string): Promise<BotBrowserSignIn> {
+      return unwrapKey<BotBrowserSignIn>(await post<unknown>(`${bot(botId)}/browser/sign-in`, { url }), 'signIn');
+    },
+    finishSignIn: (botId: string, sessionId: string): Promise<Record<string, unknown>> =>
+      post(`${bot(botId)}/browser/sign-in/${seg(sessionId)}/finish`),
+    /** "I need more time": +30 minutes on the open sign-in window (2 hours in total). 409 at the limit. */
+    async extendSignIn(botId: string, sessionId: string): Promise<BotBrowserExtend> {
+      return post<BotBrowserExtend>(`${bot(botId)}/browser/sign-in/${seg(sessionId)}/extend`);
+    },
+    /** Deletes the bot's browser profile: it is signed out of every site. 409 while the bot is running. */
+    signOutEverywhere: (botId: string): Promise<Record<string, unknown>> => del(`${bot(botId)}/browser`),
   },
 
   // ---- privacy: export + purge ------------------------------------------------------------------

@@ -3,6 +3,7 @@ export {
   classifyPermissionRequest,
   extractPermissionRequestDetails,
   isReadOnlySeatKind,
+  isSensitivePath,
   stripHeredocBodies,
   type PermissionClassification,
   type PermissionRequestDetails,

@@ -19,8 +19,9 @@ export default function EnforcementNotice({ provider, state }: { provider: strin
   }
   const copy = enforcementCopy(provider, data.level);
   const enforced = data.level === 'enforced';
+  const off = data.level === 'off';
   return (
-    <div className={`rounded-xl border p-4 ${enforced ? 'border-emerald-500/25 bg-emerald-500/[0.07]' : 'border-amber-500/30 bg-amber-500/[0.08]'}`} role="status" aria-live="polite">
+    <div className={`rounded-xl border p-4 ${enforced ? 'border-emerald-500/25 bg-emerald-500/[0.07]' : off ? 'border-red-500/40 bg-red-500/[0.08]' : 'border-amber-500/30 bg-amber-500/[0.08]'}`} role="status" aria-live="polite">
       <p className="flex items-center gap-2 text-xs font-semibold text-foreground">
         {enforced ? <ShieldCheck className="h-4 w-4 text-emerald-600" aria-hidden="true" /> : <ShieldAlert className="h-4 w-4 text-amber-600" aria-hidden="true" />}
         Action gate: {copy.headline}

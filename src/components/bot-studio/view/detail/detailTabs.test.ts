@@ -17,7 +17,7 @@ test('keeps current tab ids and maps legacy deep links', () => {
   assert.deepEqual(resolveDetailTab(undefined), { tab: 'overview', focus: null, legacy: false });
 });
 
-const RUNTIME_IDS = ['activity', 'thread', 'goals', 'triggers', 'rules', 'learning'];
+const RUNTIME_IDS = ['abilities', 'activity', 'thread', 'goals', 'triggers', 'rules', 'learning'];
 
 test('flag off: tab list is exactly the classic five and runtime ids fall back', () => {
   assert.deepEqual(detailTabsFor(false).map((entry) => entry.value), ['overview', 'pipeline', 'test', 'history', 'settings']);
@@ -33,7 +33,7 @@ test('flag off: tab list is exactly the classic five and runtime ids fall back',
 test('flag on: runtime tabs follow Overview and triggers is a real tab', () => {
   assert.deepEqual(
     detailTabsFor(true).map((entry) => entry.value),
-    ['overview', 'activity', 'thread', 'goals', 'triggers', 'rules', 'learning', 'pipeline', 'test', 'history', 'settings'],
+    ['overview', 'abilities', 'activity', 'thread', 'goals', 'triggers', 'rules', 'learning', 'pipeline', 'test', 'history', 'settings'],
   );
   for (const id of RUNTIME_IDS) assert.deepEqual(resolveDetailTab(id, { runtimeV2: true }), { tab: id, focus: null, legacy: false });
   assert.deepEqual(resolveDetailTab(' Triggers ', { runtimeV2: true }), { tab: 'triggers', focus: null, legacy: false });
@@ -47,4 +47,12 @@ test('isRuntimeTabId flags ids whose resolution depends on the feature flag', ()
   for (const id of RUNTIME_IDS) assert.equal(isRuntimeTabId(id), true);
   assert.equal(isRuntimeTabId('pipeline'), false);
   assert.equal(isRuntimeTabId(undefined), false);
+});
+
+test('Abilities sits right after Overview and only exists with the flag on', () => {
+  assert.equal(detailTabsFor(true)[1].value, 'abilities');
+  assert.equal(detailTabsFor(true)[1].label, 'Abilities');
+  assert.equal(detailTabsFor(false).some((entry) => entry.value === 'abilities'), false);
+  assert.deepEqual(resolveDetailTab('abilities'), { tab: 'overview', focus: null, legacy: false });
+  assert.deepEqual(resolveDetailTab('abilities', { runtimeV2: true }), { tab: 'abilities', focus: null, legacy: false });
 });

@@ -11,12 +11,16 @@ import { AppError, asyncHandler } from '@/shared/utils.js';
 import { patchBotRuntimeConfig, readBotRuntimeConfig } from '../bots-runtime-config.js';
 import { gatewayUpstreamPool } from '../gateway/upstream-pool.js';
 
+import { botAbilitiesRouter } from './abilities.routes.js';
 import { botCredentials, isValidCredentialKey, normalizeServerKey } from './bot-credentials.js';
 import { readHostInfo } from './host.js';
 import { cleanFallbackRoutes, validateFallbackRoutes, validateRuntimeConfigInput } from './runtime-validation.js';
 import { activeTeachSession, startTeach, stopTeach } from './teach.js';
 
 export const botExecRouter = express.Router();
+
+// Per-bot abilities summary and browser sign-in (see abilities.routes.ts).
+botExecRouter.use(botAbilitiesRouter);
 
 const param = (value: unknown): string => (Array.isArray(value) ? String(value[0] ?? '') : String(value ?? ''));
 const invalid = (message: string): AppError => new AppError(message, { code: 'BOT_EXEC_INVALID', statusCode: 400 });

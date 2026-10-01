@@ -28,6 +28,7 @@ import {
 import { AppError } from '@/shared/utils.js';
 import { resolveProviderAuthFailure } from '@/shared/provider-auth-failure.js';
 import { broadcastSystemEvent } from '@/modules/websocket/index.js';
+import { isBotBrowserHeld, isBotBrowserInUse, onBotBrowserReleased } from '@/modules/bots/browser-lock.js';
 import { readBotRuntimeConfig, type BotPhaseRoute } from '@/modules/bots/bots-runtime-config.js';
 import type { BotEpisode, BotEpisodeStatus, BotEvent } from '@/modules/bots/bots.types.js';
 import { downgradeModelForSoftCap } from '@/modules/runs/index.js';
@@ -57,6 +58,8 @@ export interface KernelOptions {
   stopGraceMs: number;
   /** Delay before re-trying a bot that hit its wakes-per-hour limit. */
   rateLimitRetryMs: number;
+  /** Delay before re-trying a bot whose browser the operator is signing in to. */
+  browserRetryMs: number;
   /** Wakes per hour for a bot with no budget row, or a row without a wakes cap (a configured cap overrides this). */
   defaultWakesPerHour: number;
   /** Longest an episode-finished listener may run before the kernel stops waiting for it. */
@@ -74,6 +77,7 @@ const DEFAULT_OPTIONS: KernelOptions = {
   batchMax: 50,
   stopGraceMs: 10_000,
   rateLimitRetryMs: 5 * 60_000,
+  browserRetryMs: 30_000,
   defaultWakesPerHour: 12,
   listenerTimeoutMs: 30_000,
 };
@@ -176,6 +180,7 @@ const rewake = new Set<string>();
 const retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
 let accepting = true;
 let started = false;
+let stopBrowserListener: (() => void) | null = null;
 
 const errorText = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
@@ -579,12 +584,12 @@ function wakeAllowedNow(botId: string): boolean {
   return botSpendDb.episodesStartedSince(botId, since) < options.defaultWakesPerHour;
 }
 
-function scheduleRateLimitRetry(botId: string): void {
+function scheduleRateLimitRetry(botId: string, delayMs: number = options.rateLimitRetryMs): void {
   if (retryTimers.has(botId) || botEventsDb.countQueued(botId) === 0) return;
   const timer = setTimeout(() => {
     retryTimers.delete(botId);
     kernel.notify(botId);
-  }, options.rateLimitRetryMs);
+  }, delayMs);
   timer.unref?.();
   retryTimers.set(botId, timer);
 }
@@ -601,6 +606,12 @@ async function runEpisode(botId: string, wakeOptions: WakeOptions, handoff: Epis
   const section = missionControlDb.getSection(botId);
   if (!section) return skip('unknown_bot', 'Bot not found.');
   if (!section.enabled) return skip('bot_disabled', 'Bot is disabled. Enable it to run.');
+  // The operator is signed in to the bot's browser profile ("Sign in as this bot"); Chromium locks
+  // the profile, so wait for them to finish. Queued events stay put and the wake is retried.
+  if (await isBotBrowserInUse(botId)) {
+    scheduleRateLimitRetry(botId, options.browserRetryMs);
+    return skip('browser_in_use', "The bot's browser is open for sign-in; it will run once you finish.");
+  }
 
   const holder = `${process.pid}:${randomBytes(6).toString('hex')}`;
   if (!botLeasesDb.acquire(botId, holder, options.leaseTtlMs)) {
@@ -631,6 +642,12 @@ async function runEpisode(botId: string, wakeOptions: WakeOptions, handoff: Epis
 
   let timeoutTimer: ReturnType<typeof setTimeout> | null = null;
   try {
+    // Mirror of the sign-in start: it holds the profile and THEN reads the lease, we took the lease
+    // and now read the hold (both synchronous), so one of the two always sees the other.
+    if (isBotBrowserHeld(botId)) {
+      scheduleRateLimitRetry(botId, options.browserRetryMs);
+      return skip('browser_in_use', "The bot's browser is open for sign-in; it will run once you finish.");
+    }
     if (!wakeOptions.force && !wakeAllowedNow(botId)) {
       scheduleRateLimitRetry(botId);
       return skip('wake_rate_limit', 'This bot reached its wakes-per-hour limit; events stay queued.');
@@ -872,6 +889,8 @@ export const kernel = {
   start(): void {
     accepting = true;
     started = true;
+    stopBrowserListener?.();
+    stopBrowserListener = onBotBrowserReleased((botId) => kernel.notify(botId));
 
     const recovered = recoverAbandonedWork();
 
@@ -897,6 +916,8 @@ export const kernel = {
   async stop(): Promise<void> {
     accepting = false;
     started = false;
+    stopBrowserListener?.();
+    stopBrowserListener = null;
     queue.length = 0;
     queued.clear();
     rewake.clear();
@@ -928,6 +949,27 @@ export const kernel = {
       botLeasesDb.release(botId, holder);
       heldLeases.delete(botId);
     }
+  },
+
+  /** True while the bot has an episode in progress in this process. */
+  hasActiveEpisode(botId: string): boolean {
+    return contexts.has(botId);
+  },
+
+  /**
+   * Stop the bot's in-progress episode: its runs are aborted and its claimed events go back to the
+   * queue (the episode finishes as `interrupted`). Used when the bot is tightened from
+   * `unrestricted`, whose run was built without CloudCLI's tool gates. Resolves false when nothing
+   * was running.
+   */
+  async abortActiveEpisode(botId: string, reason: string): Promise<boolean> {
+    const ctx = contexts.get(botId);
+    if (!ctx || ctx.aborted) return false;
+    ctx.interrupted = true;
+    const aborting = abortEpisodeRuns(ctx, reason);
+    ctx.triggerInterrupt();
+    await aborting;
+    return true;
   },
 
   isStarted(): boolean {
@@ -983,6 +1025,9 @@ export async function runBotNow(botId: string): Promise<{
   const result = await kernel.wake(botId, { reason: 'manual', force: true });
   if (result.status === 'skipped' && result.reason === 'already_running') {
     return { created: 0, skipped: 0, items: [], message: 'The bot is already running; your request is queued for its next episode.' };
+  }
+  if (result.status === 'skipped' && result.reason === 'browser_in_use') {
+    return { created: 0, skipped: 0, items: [], message: "The bot's browser is open for sign-in; your request is queued and runs once you finish." };
   }
   return {
     created: result.created,

@@ -3,7 +3,7 @@ import os from 'node:os';
 import { jsonrepair } from 'jsonrepair';
 
 import { isBotsRuntimeV2Enabled } from '@/modules/app-features/index.js';
-import { applyProviderGatewayRunOptions, botGateDecisionsDb, buildGatewayRunGuards, readBotRuntimeConfig, resolveBotHome } from '@/modules/bots/index.js';
+import { applyProviderGatewayRunOptions, botGateDecisionsDb, buildGatewayRunGuards, readBotRuntimeConfig, resolveBotAutonomy, resolveBotHome } from '@/modules/bots/index.js';
 import { gatewaySessions } from '@/shared/bot-gateway-sessions.js';
 import { projectsDb } from '@/modules/database/index.js';
 import { recordNormalizedRunEvent, runService } from '@/modules/runs/index.js';
@@ -438,13 +438,17 @@ export function buildToolPolicyAdvisoryPrompt(section: McSection, tools: string[
 
 export const BOT_GATEWAY_SERVER_NAME = 'cloudcli-tool-gateway';
 
-/** Bot runtime v2 routes a section's MCP tools through the Tool Gateway unless the bot opted out. */
+/**
+ * Bot runtime v2 routes a section's MCP tools through the Tool Gateway unless the bot's autonomy is
+ * 'unrestricted' (legacy `gateway: false` reads as unrestricted). Fails CLOSED: when the runtime
+ * config cannot be read the gateway stays on, so an error never switches governance off.
+ */
 export function shouldUseToolGateway(section: McSection): boolean {
   if (!isBotsRuntimeV2Enabled()) return false;
   try {
-    return readBotRuntimeConfig(section.section_id)?.gateway !== false;
+    return resolveBotAutonomy(readBotRuntimeConfig(section.section_id)) !== 'unrestricted';
   } catch {
-    return false;
+    return true;
   }
 }
 

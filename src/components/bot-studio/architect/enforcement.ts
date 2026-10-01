@@ -1,10 +1,17 @@
 /** Plain-language wording for the enforcement level shown before a bot exists. */
 
-import type { BotEnforcementLevel } from '../types/botRuntime';
+import type { BotGateLevel } from '../types/botRuntime';
 
-export type EnforcementCopy = { level: BotEnforcementLevel; headline: string; detail: string };
+export type EnforcementCopy = { level: BotGateLevel; headline: string; detail: string };
 
-export function enforcementCopy(provider: string, level: BotEnforcementLevel): EnforcementCopy {
+export function enforcementCopy(provider: string, level: BotGateLevel): EnforcementCopy {
+  if (level === 'off') {
+    return {
+      level,
+      headline: 'Off',
+      detail: `There is no action gate on this bot (Unrestricted), so nothing it does on ${provider} is checked. Only ${provider}'s own permission setting applies.`,
+    };
+  }
   if (level === 'enforced') {
     return {
       level,

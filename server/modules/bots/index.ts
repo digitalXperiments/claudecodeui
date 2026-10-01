@@ -1,11 +1,17 @@
 export type * from '@/modules/bots/bots.types.js';
 export {
+  BOT_AUTONOMY_LEVELS,
+  isBotAutonomy,
   normalizeBotRuntimeConfig,
   patchBotRuntimeConfig,
+  readBotAutonomy,
   readBotRuntimeConfig,
+  resolveBotAutonomy,
 } from '@/modules/bots/bots-runtime-config.js';
-export type { BotPhaseRoute, BotRuntimeConfig } from '@/modules/bots/bots-runtime-config.js';
+export type { BotAutonomy, BotPhaseRoute, BotRuntimeConfig } from '@/modules/bots/bots-runtime-config.js';
 export { resolveBotHome, resolveBotsRoot } from '@/modules/bots/bots-home.js';
+export { AUTONOMY_LABELS, AUTONOMY_SUMMARIES } from '@/modules/bots/autonomy.js';
+export { isBotBrowserInUse } from '@/modules/bots/browser-lock.js';
 export { deleteBotRuntimeData } from '@/modules/bots/bots-runtime-data.js';
 
 export { botEventsDb } from '@/modules/bots/signals/bot-events.repository.js';

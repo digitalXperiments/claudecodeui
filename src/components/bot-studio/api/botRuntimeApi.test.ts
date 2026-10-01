@@ -26,7 +26,7 @@ globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 }) as typeof fetch;
 
-const { botRuntimeApi, buildQuery, errorMessageFromPayload } = await import('./botRuntimeApi');
+const { BotApiError, botRuntimeApi, buildQuery, errorMessageFromPayload } = await import('./botRuntimeApi');
 
 function reset(next: typeof respond = () => ({ body: {} })): void {
   calls.length = 0;
@@ -139,4 +139,54 @@ test('enforcement preview needs no bot and unwraps the envelope', async () => {
   reset(() => ({ body: { enforcement: { provider: 'codex', level: 'advisory', detail: 'd', builtin_tool_gate: false } } }));
   assert.equal((await botRuntimeApi.runtime.enforcementPreview('codex')).level, 'advisory');
   assert.deepEqual(calls.at(-1), { url: '/api/bots/enforcement/preview?provider=codex', method: 'GET', body: undefined });
+});
+
+test('enforcement preview can ask about an autonomy, and setAutonomy patches the runtime config', async () => {
+  reset(() => ({ body: { enforcement: { provider: 'claude', level: 'off', detail: 'no gate', builtin_tool_gate: true } } }));
+  assert.equal((await botRuntimeApi.runtime.enforcementPreview('claude', 'unrestricted')).level, 'off');
+  assert.equal(calls.at(-1)?.url, '/api/bots/enforcement/preview?provider=claude&autonomy=unrestricted');
+  reset(() => ({ body: { runtime: { autonomy: 'trusted' } } }));
+  assert.equal((await botRuntimeApi.runtime.setAutonomy('b 1', 'trusted')).autonomy, 'trusted');
+  assert.deepEqual(calls.at(-1), { url: '/api/bots/b%201/runtime', method: 'PATCH', body: { autonomy: 'trusted' } });
+});
+
+test('abilities unwraps a wrapped or a bare payload', async () => {
+  const abilities = { autonomy: 'careful', provider: 'claude', enforcement: { level: 'enforced' }, apps: [], plain: { canDoAlone: [], asksFirst: [], neverDoes: [] }, skills_count: 0, spaces_count: 0, credentials: [], browser: { profile_exists: false } };
+  reset(() => ({ body: abilities }));
+  assert.equal((await botRuntimeApi.abilities.get('b1')).autonomy, 'careful');
+  assert.deepEqual(calls.at(-1), { url: '/api/bots/b1/abilities', method: 'GET', body: undefined });
+  reset(() => ({ body: { abilities } }));
+  assert.equal((await botRuntimeApi.abilities.get('b1')).provider, 'claude');
+});
+
+test('browser sign-in hits the documented paths and a 409 keeps its status for friendly wording', async () => {
+  reset(() => ({ body: { sessionId: 's/1', viewHint: '/browser' } }));
+  const result = await botRuntimeApi.browser.signIn('b1', 'https://mail.example.com/');
+  assert.equal(result.sessionId, 's/1');
+  assert.deepEqual(calls.at(-1), { url: '/api/bots/b1/browser/sign-in', method: 'POST', body: { url: 'https://mail.example.com/' } });
+  reset();
+  await botRuntimeApi.browser.finishSignIn('b1', 's/1');
+  assert.deepEqual(calls.at(-1), { url: '/api/bots/b1/browser/sign-in/s%2F1/finish', method: 'POST', body: {} });
+  reset(() => ({ body: { browser: { profile_exists: true, size_bytes: 10 } } }));
+  assert.equal((await botRuntimeApi.browser.status('b1')).profile_exists, true);
+  reset();
+  await botRuntimeApi.browser.signOutEverywhere('b1');
+  assert.deepEqual(calls.at(-1), { url: '/api/bots/b1/browser', method: 'DELETE', body: undefined });
+  reset(() => ({ status: 409, body: { success: false, error: { code: 'BUSY', message: 'bot is running' } } }));
+  await assert.rejects(() => botRuntimeApi.browser.signIn('b1', 'https://a.b'), (error: unknown) => error instanceof BotApiError && error.status === 409 && /bot is running/.test(error.message));
+});
+
+test('extendSignIn posts to the extend path; changeAutonomy returns the server message and setAutonomy still returns the runtime', async () => {
+  reset(() => ({ body: { extended: true, expiresAt: '2026-10-01T10:30:00.000Z', atLimit: false } }));
+  const extended = await botRuntimeApi.browser.extendSignIn('b1', 's/1');
+  assert.equal(extended.extended, true);
+  assert.deepEqual(calls.at(-1), { url: '/api/bots/b1/browser/sign-in/s%2F1/extend', method: 'POST', body: {} });
+  reset(() => ({ status: 409, body: { success: false, error: { code: 'SIGNIN_EXTEND_LIMIT', message: 'limit' } } }));
+  await assert.rejects(() => botRuntimeApi.browser.extendSignIn('b1', 's1'), (error: unknown) => error instanceof BotApiError && error.status === 409);
+
+  reset(() => ({ body: { runtime: { autonomy: 'careful' }, applied: 'now', stopped_run: true, message: 'Saved. Stopped.' } }));
+  const change = await botRuntimeApi.runtime.changeAutonomy('b1', 'careful');
+  assert.deepEqual([change.applied, change.stopped_run, change.message], ['now', true, 'Saved. Stopped.']);
+  assert.deepEqual(calls.at(-1), { url: '/api/bots/b1/runtime', method: 'PATCH', body: { autonomy: 'careful' } });
+  assert.equal((await botRuntimeApi.runtime.setAutonomy('b1', 'careful')).autonomy, 'careful');
 });

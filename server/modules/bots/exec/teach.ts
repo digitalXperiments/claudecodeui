@@ -14,6 +14,15 @@ import { missionControlDb } from '@/modules/mission-control/index.js';
 import { AppError } from '@/shared/utils.js';
 
 import { resolveBotBrowserProfileDir } from '../bots-home.js';
+import {
+  beginProvisionalBrowserHold,
+  getBotBrowserHold,
+  isBotBrowserInUse,
+  promoteBrowserHold,
+  releaseBotBrowserHold,
+  type BrowserHold,
+} from '../browser-lock.js';
+import { botLeasesDb } from '../kernel/bot-leases.repository.js';
 import { skills } from '../learning/index.js';
 
 import { compileTeachSkill, type CompileOptions, type TeachInput, type TeachStep } from './teach-compile.js';
@@ -59,6 +68,15 @@ export function activeTeachSession(botId: string): { sessionId: string; startedA
   return active.get(botId) ?? null;
 }
 
+/** A teach demonstration on the bot profile never outlives this (the hold is the kernel's cue to wait). */
+const TEACH_HOLD_MAX_MS = 2 * 60 * 60_000;
+
+/** True when the bot holds a live (unexpired) episode lease: an episode may be using its browser. */
+function hasActiveEpisode(botId: string): boolean {
+  const lease = botLeasesDb.get(botId);
+  return Boolean(lease && Date.parse(lease.expires_at) > Date.now());
+}
+
 const teachError = (message: string, statusCode: number, code: string): AppError => new AppError(message, { code, statusCode });
 
 function requireBot(botId: string): void {
@@ -91,15 +109,47 @@ export async function startTeach(botId: string, input: { url?: unknown; useBotPr
   const { browser } = deps ?? defaultDeps();
   const useProfile = input.useBotProfile !== false;
 
+  // Teaching on the bot profile locks it like a sign-in does: hold it (before the lease check), so
+  // the kernel defers the bot's wakes, and refuse while a run or a sign-in already has the profile.
+  let placeholder: BrowserHold | null = null;
+  if (useProfile) {
+    if (await isBotBrowserInUse(botId)) {
+      const hold = getBotBrowserHold(botId);
+      throw teachError(
+        hold?.kind === 'teach' || hold?.state === 'starting'
+          ? 'A teach session is already starting for this bot. Stop it first.'
+          : 'A sign-in window is open for this bot. Finish it first.',
+        409,
+        'TEACH_BROWSER_BUSY',
+      );
+    }
+    const provisional = beginProvisionalBrowserHold({ botId, kind: 'teach', leaseActive: () => hasActiveEpisode(botId) });
+    if (!provisional.ok) {
+      throw teachError(
+        provisional.reason === 'episode'
+          ? 'The bot is running right now. Wait for it to finish, then teach.'
+          : 'The bot\'s browser is already in use. Finish that first.',
+        409,
+        provisional.reason === 'episode' ? 'TEACH_BOT_RUNNING' : 'TEACH_BROWSER_BUSY',
+      );
+    }
+    placeholder = provisional.hold;
+  }
+  const dropHold = (): void => {
+    if (placeholder) releaseBotBrowserHold(placeholder);
+  };
+
   let session: Awaited<ReturnType<TeachBrowser['createAgentSession']>>;
   try {
     session = await browser.createAgentSession({ profileDir: useProfile ? resolveBotBrowserProfileDir(botId) : null, recordNetwork: false });
   } catch (error) {
+    dropHold();
     const message = error instanceof Error ? error.message : String(error);
     // A profile in use by a running bot session is the usual cause; say so.
     throw teachError(`Could not open the browser: ${message}`, 409, 'TEACH_BROWSER_UNAVAILABLE');
   }
   if (session.status !== 'ready') {
+    dropHold();
     throw teachError(session.message || 'The browser runtime is not ready.', 503, 'TEACH_BROWSER_UNAVAILABLE');
   }
   try {
@@ -107,8 +157,26 @@ export async function startTeach(botId: string, input: { url?: unknown; useBotPr
     await browser.startActionRecording(session.id);
     await browser.takeHumanControl(session.id);
   } catch (error) {
+    dropHold();
     await browser.stopSession(session.id).catch(() => undefined);
     throw teachError(`Could not start teach mode: ${error instanceof Error ? error.message : String(error)}`, 500, 'TEACH_START_FAILED');
+  }
+  if (placeholder) {
+    const sessionId = session.id;
+    const startedMs = Date.now();
+    const open: BrowserHold = {
+      botId,
+      sessionId,
+      startedAt: new Date(startedMs).toISOString(),
+      expiresAt: startedMs + TEACH_HOLD_MAX_MS,
+      kind: 'teach',
+      isAlive: async () => activeTeachSession(botId)?.sessionId === sessionId,
+    };
+    if (!promoteBrowserHold(placeholder, open)) {
+      await browser.stopSession(sessionId).catch(() => undefined);
+      throw teachError('The teach session lost its browser hold; try again.', 409, 'TEACH_BROWSER_BUSY');
+    }
+    placeholder = open;
   }
   const startedAt = new Date().toISOString();
   active.set(botId, { sessionId: session.id, startedAt, startUrl: url });
@@ -167,6 +235,8 @@ export async function stopTeach(botId: string, input: TeachStopInput = {}): Prom
     await browser.returnAgentControl(current.sessionId).catch(() => undefined);
     // Close the session so the bot's profile is unlocked for its next run.
     await browser.stopSession(current.sessionId).catch(() => undefined);
+    const hold = getBotBrowserHold(botId);
+    if (hold?.kind === 'teach' && hold.sessionId === current.sessionId) releaseBotBrowserHold(hold);
   }
 
   const compileOptions: CompileOptions = {
