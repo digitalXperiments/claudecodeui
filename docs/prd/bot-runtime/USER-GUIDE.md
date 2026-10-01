@@ -160,9 +160,25 @@ memory settings, and delete.
 ---
 
 ## Creating a new bot
-**New bot** opens the Architect. It walks you through the purpose, the AI, the brief and tools, then
-triggers, goals, guardrails (safety floor, budget, quick rules), how it reaches you, and a review.
-The bot starts **paused**, so you can watch its first wake-up before letting it run on its own.
+**New bot** opens the Architect, ten short steps (skip any you like):
+
+1. **Purpose**: what the bot is for.
+2. **Agent**: which AI runs it (Claude, Codex, Grok, Antigravity, …), whether the gate fully
+   controls it, backup AIs if it's down, and an optional cheaper "watcher" AI for deciding whether
+   something is worth waking up for.
+3. **Brief**: the instructions.
+4. **Goals**: what it's working toward. The Architect suggests one from your purpose.
+5. **Tools**: which apps it can use (Gmail, Slack, Jira…).
+6. **Wake-ups**: a schedule, plain-English times, webhooks, watchers, or "only when I message it".
+7. **Outputs & actions**: what it produces and the buttons you get on each item.
+8. **Guardrails**: the safety floor explained, quick choices such as "never delete" or "allow
+   sending replies without asking", and a budget (defaults: $5/day, $100/month, 12 wake-ups/hour).
+9. **Reach me**: which channels it uses, quiet hours, and whether lessons may auto-apply.
+10. **Review**: check everything and create.
+
+When you press Create, Bot Studio sets up each piece and shows a tick for each. If something fails
+you'll see what, and **Retry remaining** finishes the rest. The bot stays **paused** until
+everything is in place, so it never runs without its limits.
 
 ---
 
