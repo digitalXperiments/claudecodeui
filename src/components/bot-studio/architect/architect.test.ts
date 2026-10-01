@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { validateDraft } from '../view/tabs/runtime/triggers/triggerForm';
+
 import {
   applyReadOnlyPreset,
   applyWorkshopDraft,
@@ -10,6 +12,7 @@ import {
   setToolDecision,
   type CreateMcSectionInput,
 } from './types';
+import { COALESCING_EXPLANATION, WAKE_PRESETS } from './wakePresets';
 
 const base: CreateMcSectionInput = {
   title: 'Inbox bot',
@@ -78,4 +81,28 @@ test('untouched tools are never persisted as allow; default clears an explicit d
   assert.deepEqual(allowed, { mail: { read: 'ask', send_message: 'allow' } });
   assert.deepEqual(setToolDecision(allowed, 'mail', 'send_message', 'default'), { mail: { read: 'ask' } });
   assert.deepEqual(setToolDecision({ mail: { send_message: 'deny' } }, 'mail', 'send_message', 'default'), {});
+});
+
+test('every wake-up preset starts from a draft that only needs the user to fill in the blanks', () => {
+  assert.deepEqual(WAKE_PRESETS.map((preset) => preset.id), ['plain', 'webhook', 'rss', 'folder', 'github', 'json', 'run', 'kanban', 'interrupt']);
+  for (const preset of WAKE_PRESETS) {
+    const draft = preset.make();
+    assert.ok(preset.kinds.includes(draft.kind), preset.id);
+    assert.equal(draft.enabled, true);
+    assert.equal(draft.kind === 'cron' || draft.kind === 'interval', false, 'schedules use the section schedule, not a trigger');
+  }
+  const byId = Object.fromEntries(WAKE_PRESETS.map((preset) => [preset.id, preset.make()]));
+  assert.equal(byId.rss.kind === 'watch' && byId.rss.adapter, 'rss');
+  assert.equal(byId.folder.kind === 'watch' && byId.folder.adapter, 'directory');
+  assert.equal(byId.github.kind === 'watch' && byId.github.adapter, 'github');
+  assert.equal(byId.json.kind === 'watch' && byId.json.adapter, 'http_json');
+  assert.equal(byId.kanban.event, 'task.done', 'a board task finishing is the kanban task.done event');
+  // Event presets with no required field are valid straight away; the others ask for their first field.
+  assert.equal(validateDraft(byId.run), null);
+  assert.equal(validateDraft(byId.interrupt), null);
+  assert.equal(validateDraft(byId.kanban), null);
+  assert.match(validateDraft(byId.plain) ?? '', /Describe the schedule/);
+  assert.match(validateDraft(byId.webhook) ?? '', /secret/);
+  assert.match(validateDraft(byId.rss) ?? '', /feed URL/);
+  assert.match(COALESCING_EXPLANATION, /merged into one wake-up/);
 });

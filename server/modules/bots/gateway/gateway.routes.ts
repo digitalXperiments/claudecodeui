@@ -14,8 +14,12 @@ import { gatewaySessions } from './sessions.js';
 
 export const BOT_GATEWAY_MCP_SERVER_NAME = 'cloudcli-tool-gateway';
 const MCP_TOKEN_CONFIG_KEY = 'bot_gateway_mcp_token';
-/** Providers the gateway entry is projected to (Antigravity has no MCP facet to project into). */
-const GATEWAY_PROVIDERS = ['claude', 'cursor', 'codex', 'opencode', 'kilo', 'cline', 'grok', 'kimi', 'qwencode', 'pi', 'omp'] as const;
+/**
+ * Providers the gateway entry is bound to. Antigravity has no on-disk MCP config to project into: its
+ * binding is only recorded in the catalog and attached per run through ACP `session/new`
+ * (opencode-cli.js), which is exactly how a gateway-bound run receives it.
+ */
+const GATEWAY_PROVIDERS = ['claude', 'cursor', 'codex', 'opencode', 'kilo', 'cline', 'grok', 'kimi', 'qwencode', 'pi', 'omp', 'antigravity'] as const;
 
 export function getBotGatewayMcpToken(): string {
   const existing = appConfigDb.get(MCP_TOKEN_CONFIG_KEY)?.trim();
@@ -67,6 +71,27 @@ function registrationSkipReason(): string | null {
   if (process.env.CLOUDCLI_BOT_GATEWAY_REGISTER === '0') return 'CLOUDCLI_BOT_GATEWAY_REGISTER=0';
   if (isIsolatedServer()) return 'isolated server (non-default DATABASE_PATH under tmp/)';
   return null;
+}
+
+/**
+ * How to launch the gateway stdio proxy, independent of catalog registration (isolated servers skip
+ * it). Runtimes that build their own per-run MCP config (codex-gateway-strict.js) use this instead of
+ * reading the catalog; they add the session id and binding secret themselves.
+ */
+export function getBotGatewayMcpLaunchSpec(): {
+  command: string;
+  args: string[];
+  env: { CLOUDCLI_BOT_GATEWAY_API_URL: string; CLOUDCLI_BOT_GATEWAY_MCP_TOKEN: string };
+} {
+  const { command, args } = getMcpCommand();
+  return {
+    command,
+    args,
+    env: {
+      CLOUDCLI_BOT_GATEWAY_API_URL: getApiUrl(),
+      CLOUDCLI_BOT_GATEWAY_MCP_TOKEN: getBotGatewayMcpToken(),
+    },
+  };
 }
 
 /** Upserts the `cloudcli-tool-gateway` catalog entry (stdio proxy) and projects it to providers. */

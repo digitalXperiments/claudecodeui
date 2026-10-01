@@ -14,9 +14,12 @@ import { AppError } from '@/shared/utils.js';
  *
  * Antigravity's ACP `session/new` does accept an `mcpServers` array, and the
  * chat runtime passes the resolved catalog through there for providers that
- * support it. If a native config file is confirmed later, implement
- * `readScopedServers`/`writeScopedServers` against it and widen the scope list;
- * nothing else in this provider needs to change.
+ * support it. Catalog bindings for `antigravity` are recorded without a
+ * projection; gateway-bound bot runs use exactly this path to receive the
+ * `cloudcli-tool-gateway` entry (see antigravity-gateway.ts). If a native
+ * config file is confirmed later, implement `readScopedServers` /
+ * `writeScopedServers` against it and widen the scope list; nothing else in
+ * this provider needs to change.
  */
 const UNSUPPORTED = 'Antigravity does not expose a CloudCLI-writable MCP config file. Attach MCP servers per session instead.';
 

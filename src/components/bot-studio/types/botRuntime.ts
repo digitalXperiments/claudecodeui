@@ -317,6 +317,15 @@ export type BotEnforcement = {
   phases: Array<{ phase: 'perceive' | 'act' | 'reflect'; provider: string; level: BotEnforcementLevel }>;
 };
 
+/** GET /enforcement/preview?provider=: the level a bot would get on a provider (no bot needed). */
+export type BotEnforcementPreview = {
+  provider: string;
+  level: BotEnforcementLevel;
+  /** Server-written technical explanation; the wizard shows its own plain sentence and keeps this as detail. */
+  detail: string;
+  builtin_tool_gate: boolean;
+};
+
 // ---- channels + thread --------------------------------------------------------------------------
 
 export type BotChannelPolicy = {

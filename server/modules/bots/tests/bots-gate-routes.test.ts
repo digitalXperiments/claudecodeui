@@ -39,7 +39,7 @@ async function withApp(run: (ctx: { request: Request; botId: string; otherBotId:
   const { port } = server.address() as AddressInfo;
   try {
     const bot = missionControlDb.createSection({ title: 'Gate bot', produce_prompt: 'Go', provider: 'claude' });
-    const other = missionControlDb.createSection({ title: 'Codex bot', produce_prompt: 'Go', provider: 'codex' });
+    const other = missionControlDb.createSection({ title: 'Cursor bot', produce_prompt: 'Go', provider: 'cursor' });
     await run({
       botId: bot.section_id,
       otherBotId: other.section_id,
@@ -254,6 +254,22 @@ test('budget status reflects executed actions and a hard limit', async () => {
   });
 });
 
+test('enforcement preview: answers per provider without a bot and matches the per-bot route', async () => {
+  await withApp(async ({ request, botId, otherBotId }) => {
+    const claude = (await request('GET', '/enforcement/preview?provider=claude')).json().enforcement;
+    const perBot = (await request('GET', `/${botId}/enforcement`)).json().enforcement;
+    assert.equal(claude.provider, 'claude');
+    assert.equal(claude.level, perBot.level);
+    assert.equal(claude.builtin_tool_gate, perBot.builtin_tool_gate);
+    assert.equal(typeof claude.detail, 'string');
+    const cursor = (await request('GET', '/enforcement/preview?provider=cursor')).json().enforcement;
+    assert.equal(cursor.level, (await request('GET', `/${otherBotId}/enforcement`)).json().enforcement.level);
+    // An unknown provider is advisory, never a 404 or an accidental "enforced".
+    assert.equal((await request('GET', '/enforcement/preview?provider=mystery')).json().enforcement.level, 'advisory');
+    assert.equal((await request('GET', '/enforcement/preview')).status, 400);
+  });
+});
+
 test('enforcement: claude is enforced with the built-in tool gate, others advisory', async () => {
   await withApp(async ({ request, botId, otherBotId }) => {
     const claude = (await request('GET', `/${botId}/enforcement`)).json().enforcement;
@@ -262,10 +278,10 @@ test('enforcement: claude is enforced with the built-in tool gate, others adviso
     assert.equal(claude.builtin_tool_gate, true);
     assert.equal(claude.gateway, true);
     assert.equal(claude.phases.length, 3);
-    const codex = (await request('GET', `/${otherBotId}/enforcement`)).json().enforcement;
-    assert.equal(codex.provider, 'codex');
-    assert.equal(codex.level, 'advisory');
-    assert.equal(codex.builtin_tool_gate, false);
+    const cursor = (await request('GET', `/${otherBotId}/enforcement`)).json().enforcement;
+    assert.equal(cursor.provider, 'cursor');
+    assert.equal(cursor.level, 'advisory');
+    assert.equal(cursor.builtin_tool_gate, false);
     assert.equal((await request('GET', '/ghost/enforcement')).status, 404);
   });
 });

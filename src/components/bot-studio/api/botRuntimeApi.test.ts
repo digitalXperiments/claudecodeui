@@ -134,3 +134,9 @@ test('exec host unwraps and the failover chain round-trips', async () => {
   assert.deepEqual(await botRuntimeApi.exec.setFallback('b1', [{ provider: 'codex', model: 'm' }]), [{ provider: 'codex' }]);
   assert.deepEqual(calls.at(-1), { url: '/api/bots/b1/routing/fallback', method: 'PUT', body: { fallback: [{ provider: 'codex', model: 'm' }] } });
 });
+
+test('enforcement preview needs no bot and unwraps the envelope', async () => {
+  reset(() => ({ body: { enforcement: { provider: 'codex', level: 'advisory', detail: 'd', builtin_tool_gate: false } } }));
+  assert.equal((await botRuntimeApi.runtime.enforcementPreview('codex')).level, 'advisory');
+  assert.deepEqual(calls.at(-1), { url: '/api/bots/enforcement/preview?provider=codex', method: 'GET', body: undefined });
+});

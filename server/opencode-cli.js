@@ -37,6 +37,14 @@ import {
   scheduleAntigravityHistoryRefresh,
   setAntigravityHistoryBusyCheck,
 } from './modules/providers/list/antigravity/antigravity-history.js';
+import {
+  ANTIGRAVITY_GATEWAY_MCP_NAME,
+  antigravityGatewayPolicy,
+  createAntigravityGatewayGuard,
+  isAntigravityGatewayStrict,
+  prepareAntigravityStrictHome,
+  selectGatewayOnlyServers,
+} from './modules/providers/list/antigravity/antigravity-gateway.js';
 
 // cross-spawn resolves .cmd shims/PATHEXT on Windows and delegates to
 // child_process.spawn everywhere else.
@@ -107,19 +115,28 @@ function toOpenCodeAcpMcpServers(resolvedServers = [], extraEnv = {}) {
 }
 
 async function resolveOpenCodeAcpMcpServers(runtime, options = {}) {
-  const requested = Array.isArray(options.mcpServers)
-    ? options.mcpServers.filter((name) => typeof name === 'string' && name.trim()).map((name) => name.trim())
-    : [];
+  // A gateway-bound Antigravity run (options.botGatewayStrict) may see the gateway and nothing else,
+  // whatever else the options list; the check below then fails closed if the gateway is not bound.
+  const gatewayStrict = runtime.provider === 'antigravity' && isAntigravityGatewayStrict(options);
+  const requested = gatewayStrict
+    ? [ANTIGRAVITY_GATEWAY_MCP_NAME]
+    : Array.isArray(options.mcpServers)
+      ? options.mcpServers.filter((name) => typeof name === 'string' && name.trim()).map((name) => name.trim())
+      : [];
   const names = new Set(requested);
   // OpenCode ACP does not load ~/.config/opencode/opencode.json `mcp` on
   // session/new — the catalog has to be passed here or a lead has no Relay
   // tools. Kilo/Cline/Qwen share this runtime; only attach the OpenCode
   // catalog to OpenCode chats so those other providers keep their own
   // native-config path.
-  if (!options.relayWorker && !options.strictMcpSelection && (runtime.provider === 'opencode' || runtime.provider === 'antigravity')) {
+  if (!options.relayWorker && !options.strictMcpSelection && !gatewayStrict && (runtime.provider === 'opencode' || runtime.provider === 'antigravity')) {
     try {
       const enabled = await mcpCatalogService.listEnabledNames(runtime.provider);
-      for (const name of enabled) names.add(name);
+      for (const name of enabled) {
+        // The gateway only means something to a bound bot run; an ordinary Antigravity chat must not spawn it.
+        if (runtime.provider === 'antigravity' && name === ANTIGRAVITY_GATEWAY_MCP_NAME && !requested.includes(name)) continue;
+        names.add(name);
+      }
     } catch {
       // Tests and first-boot have no catalog; session/new still works with [].
     }
@@ -128,12 +145,12 @@ async function resolveOpenCodeAcpMcpServers(runtime, options = {}) {
   if (names.size === 0) return [];
   try {
     const resolved = await mcpCatalogService.resolveForProvider(runtime.provider, [...names]);
-    if (options.strictMcpSelection && [...names].some((name) => !resolved.some((server) => server.name === name))) {
+    if ((options.strictMcpSelection || gatewayStrict) && [...names].some((name) => !resolved.some((server) => server.name === name))) {
       throw new Error('A required work-session MCP server is unavailable.');
     }
     return resolved;
   } catch (error) {
-    if (options.strictMcpSelection) throw error;
+    if (options.strictMcpSelection || gatewayStrict) throw error;
     return [];
   }
 }
@@ -698,6 +715,8 @@ export async function updateAcpPermissionMode(provider, sessionId, mode, appSess
   const handle = acpSessions.get(sessionMapKey(provider, sessionId))
     || [...acpSessions.values()].find((entry) => entry.provider === provider && appSessionId && entry.appSessionId === appSessionId);
   if (!handle?.livePermissionPolicy || handle.child.killed || handle.child.exitCode !== null) return false;
+  // A gateway-bound run never leaves ask mode, whatever the live switch asks for.
+  if (handle.botGatewayStrict) return false;
   const policy = handle.runtime.resolvePermissionPolicy(mode);
   // Environment-backed restrictions cannot be tightened on a running process.
   // Bypass can approve the existing asks locally; stricter modes need a restart.
@@ -826,6 +845,20 @@ export async function handleAcpFsRequest(rpc, message, workingDir, options = {})
   // session cwd is strictly better than an ENOENT the agent cannot explain.
   const target = path.isAbsolute(requested) ? requested : path.resolve(workingDir || process.cwd(), requested);
 
+  // Gateway-bound runs: the built-in tool gate decides every client file read/write.
+  if (typeof options.fsGuard === 'function') {
+    let verdict;
+    try {
+      verdict = await options.fsGuard(message.method, target);
+    } catch (error) {
+      verdict = { allow: false, reason: error?.message || String(error) };
+    }
+    if (!verdict?.allow) {
+      rpc.respondError(message.id, `Permission denied: ${verdict?.reason || 'blocked by the built-in tool gate'}`, -32603);
+      return;
+    }
+  }
+
   try {
     if (message.method === 'fs/read_text_file') {
       const text = await fs.readFile(target, 'utf8');
@@ -874,7 +907,11 @@ async function spawnAcpProvider(runtime, command, options = {}, ws) {
       CLOUDCLI_PROJECT_PATH: workingDir,
     }
     : {};
-  const policy = { ...runtime.resolvePermissionPolicy(permissionMode) };
+  // Gateway-bound Antigravity run: ask mode, no auto-approval, whatever permissionMode says.
+  const gatewayStrict = runtime.provider === 'antigravity' && isAntigravityGatewayStrict(options);
+  const policy = gatewayStrict
+    ? antigravityGatewayPolicy()
+    : { ...runtime.resolvePermissionPolicy(permissionMode) };
   // Plan is the provider's read-only agent. Unattended explorers still asked
   // on every bash call (`bash: ask`); auto-approve those asks so inspect
   // commands run, while the plan agent itself still refuses writes.
@@ -897,11 +934,23 @@ async function spawnAcpProvider(runtime, command, options = {}, ws) {
   const extraEnv = {
     ...leadSessionEnv(options.appSessionId),
     ...(options.relayWorker ? workerGitGuardEnv() : {}),
+    // Relocated GEMINI_HOME (no global MCP/hooks/skills, no readable token) for a gateway-bound run.
+    ...(gatewayStrict ? prepareAntigravityStrictHome(appSessionId || '', process.env).env : {}),
   };
   const resolvedMcp = await resolveOpenCodeAcpMcpServers(runtime, options);
-  const acpMcpServers = toOpenCodeAcpMcpServers(resolvedMcp, extraEnv);
+  const gatewayServers = gatewayStrict
+    ? selectGatewayOnlyServers(resolvedMcp, { appSessionId, bindingSecret: options.botGatewaySecret })
+    : resolvedMcp;
+  const acpMcpServers = toOpenCodeAcpMcpServers(gatewayServers, extraEnv);
   const relaySandbox = options.relayWorker ? options.relaySandbox ?? null : null;
-  const mcpKey = `${JSON.stringify(acpMcpServers)}|sandbox:${relaySandbox ? JSON.stringify(relaySandbox) : ''}`;
+  const mcpKey = `${JSON.stringify(acpMcpServers)}|sandbox:${relaySandbox ? JSON.stringify(relaySandbox) : ''}${gatewayStrict ? '|gateway-strict' : ''}`;
+  const gatewayGuard = gatewayStrict
+    ? createAntigravityGatewayGuard({
+      gate: typeof options.builtinToolGate === 'function' ? options.builtinToolGate : null,
+      workingDir,
+      log: (line) => console.warn(line),
+    })
+    : null;
 
   // OPENCODE_PERMISSION is read once at process start, so a permission-mode
   // change cannot be applied to a live child — retire it and resume the same
@@ -920,6 +969,7 @@ async function spawnAcpProvider(runtime, command, options = {}, ws) {
   if (!handle || handle.child.exitCode !== null || handle.child.killed) {
     handle = await createAcpSession(workingDir, sessionId, { ...policy.env, ...identityEnv }, runtime, extraEnv, acpMcpServers, relaySandbox);
     handle.permissionEnvKey = JSON.stringify(policy.env ?? {});
+    handle.botGatewayStrict = gatewayStrict;
     acpSessions.set(processKey, handle);
 
     if (!capturedSessionId) {
@@ -1017,7 +1067,19 @@ async function spawnAcpProvider(runtime, command, options = {}, ws) {
   // so reassigning `handle` retargets respond()/session filtering too.
   const onAcpMessage = async (message, isRequest) => {
     if (isRequest && ACP_FS_METHODS.has(message.method)) {
-      await handleAcpFsRequest(handle.rpc, message, workingDir, { permissionMode: handle.permissionMode, policy });
+      await handleAcpFsRequest(handle.rpc, message, workingDir, {
+        permissionMode: handle.permissionMode,
+        policy,
+        fsGuard: gatewayGuard ? (method, target) => gatewayGuard.guardFs(method, target) : undefined,
+      });
+      return;
+    }
+
+    if (isRequest && message.method === 'session/request_permission' && gatewayGuard) {
+      // Gateway-bound run: the built-in tool gate decides; no human prompt here, no auto-approval,
+      // and never an "always" option (see antigravity-gateway.ts).
+      const hintId = message.params?.toolCall?.toolCallId;
+      handle.rpc.respond(message.id, await gatewayGuard.respondToPermission(message.params, toolNames.get(hintId)));
       return;
     }
 
@@ -1208,6 +1270,7 @@ async function spawnAcpProvider(runtime, command, options = {}, ws) {
       disposeSession(handle);
       const fresh = await createAcpSession(workingDir, resumeId, { ...policy.env, ...identityEnv }, runtime, extraEnv, acpMcpServers, relaySandbox);
       fresh.permissionEnvKey = JSON.stringify(policy.env ?? {});
+      fresh.botGatewayStrict = gatewayStrict;
       acpSessions.set(key, fresh);
       fresh.child.on('exit', () => {
         if (acpSessions.get(key) === fresh) {

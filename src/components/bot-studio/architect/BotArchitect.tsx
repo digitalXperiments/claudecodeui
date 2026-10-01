@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Bot,
   Check,
@@ -18,6 +18,7 @@ import {
   X,
 } from 'lucide-react';
 
+import { useAppFeatures } from '../../../hooks/useAppFeatures';
 import { MC_PROVIDERS, missionControlApi } from '../../mission-control/api/missionControlApi';
 import { useMcpCatalog } from '../../mcp/hooks/useMcpCatalog';
 import type { McpInventoryItem } from '../../mcp/types';
@@ -26,6 +27,22 @@ import { botStudioApi } from '../api/botStudioApi';
 import BotIcon from '../ui/BotIcon';
 import { autoApproveLabel, pipelineLabel, pipelineStages, pipelineSummary } from '../types';
 
+import AgentExtras from './AgentExtras';
+import GoalsStep from './GoalsStep';
+import GuardrailsPanel from './GuardrailsPanel';
+import { isPristineDraft, parseDraft, serializeDraft } from './draftStorage';
+import { useEnforcementPreview, useGlobalChannels } from './hooks';
+import { Callout, FieldLabel, StepPanel } from './parts';
+import ReachStep from './ReachStep';
+import { emptyRuntimeDraft, validateRuntimeDraft, type RuntimeDraft } from './runtimeDraft';
+import { runtimeReviewRows, scheduleSummary } from './reviewRows';
+import {
+  buildSetupPlan, createSetupApi, initialSetupState, needsDeferredEnable, runSetup, summarizeSetup,
+  type SetupState, type SetupTask,
+} from './setupPlan';
+import SetupProgress from './SetupProgress';
+import { architectSteps, stepEyebrow, stepNumber, type ArchitectStepId } from './steps';
+import WakeUps from './WakeUps';
 import {
   applyReadOnlyPreset,
   applyWorkshopDraft,
@@ -48,24 +65,17 @@ export interface BotArchitectProps {
   projects: Array<{ id: string; name: string; path: string }>;
   onSaved: (section: McSection) => void;
   onCancel: () => void;
+  /** The `bots.runtimeV2` flag. When omitted the architect reads it itself (useAppFeatures). */
+  runtimeV2?: boolean;
+  /** Open on this step (deep links and tests). Falls back to the first step when this wizard has no such step. */
+  initialStep?: ArchitectStepId;
 }
 
-type Step = { title: string; hint: string };
 type ChatTurn = { role: 'user' | 'assistant'; content: string };
 type ToolInfo = { name: string; description?: string; fromPolicy?: boolean };
 type ModelOption = { value: string; label: string };
 
 const ICONS = ['🤖', '✨', '📬', '🧭', '🛠️', '📝', '🔎', '📚', '🎯', '⚡', '🌱', '🧠', '🗂️', '🧪', '🛰️', '🧹'];
-const STEPS: Step[] = [
-  { title: 'Purpose', hint: 'Name, scope, and outcome' },
-  { title: 'Agent', hint: 'Provider and safety' },
-  { title: 'Brief', hint: 'What to look for and resolve' },
-  { title: 'Tools', hint: 'MCP servers and policies' },
-  { title: 'Triggers', hint: 'When a tick runs' },
-  { title: 'Outputs & actions', hint: 'Approval and dry run' },
-  { title: 'Guardrails', hint: 'Safety recap' },
-  { title: 'Review', hint: 'Check and create' },
-];
 
 const DEFAULT_ACTIONS: McAction[] = [
   { id: 'approve', label: 'Approve', kind: 'approve', style: 'primary', terminal: true },
@@ -145,15 +155,6 @@ function statusForInventory(item: McpInventoryItem): { label: string; className:
   return { label: 'Not connected', className: 'text-muted-foreground' };
 }
 
-function FieldLabel({ children, detail }: { children: ReactNode; detail?: string }) {
-  return (
-    <div className="mb-1.5 flex items-baseline justify-between gap-3">
-      <label className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">{children}</label>
-      {detail ? <span className="text-[10px] text-muted-foreground/75">{detail}</span> : null}
-    </div>
-  );
-}
-
 /** Pipeline helpers need concrete values; the wizard form keeps them optional. */
 function pipelineSource(form: CreateMcSectionInput) {
   return { resolve_prompt: form.resolve_prompt ?? '', auto_approve: Boolean(form.auto_approve), work_profile: form.work_profile ?? null };
@@ -189,10 +190,16 @@ function ArchitectCard({ form }: { form: CreateMcSectionInput }) {
   );
 }
 
-export default function BotArchitect({ mode, initialSection, projects, onSaved, onCancel }: BotArchitectProps): JSX.Element {
+export default function BotArchitect({ mode, initialSection, projects, onSaved, onCancel, runtimeV2: runtimeV2Prop, initialStep }: BotArchitectProps): JSX.Element {
   const storageKey = `bot-studio:architect:${mode}:${initialSection?.section_id ?? 'new'}`;
+  const { features } = useAppFeatures();
+  const runtimeV2 = runtimeV2Prop ?? features.botsRuntimeV2;
+  /** A NEW bot with runtime v2 on gets the full wizard; editing keeps today's steps (runtime state lives on the bot's tabs). */
+  const runtimeWizard = runtimeV2 && mode === 'create';
+  const steps = useMemo(() => architectSteps(runtimeWizard), [runtimeWizard]);
   const [form, setForm] = useState<CreateMcSectionInput>(() => sectionInput(initialSection));
-  const [step, setStep] = useState(1);
+  const [runtime, setRuntime] = useState<RuntimeDraft>(() => emptyRuntimeDraft());
+  const [step, setStep] = useState(() => stepNumber(architectSteps(runtimeV2Prop === true && mode === 'create'), initialStep ?? 'purpose'));
   const [showRestore, setShowRestore] = useState(false);
   const [savedSnapshot, setSavedSnapshot] = useState<string | null>(null);
   const [models, setModels] = useState<ModelOption[]>([]);
@@ -213,10 +220,15 @@ export default function BotArchitect({ mode, initialSection, projects, onSaved, 
   const [createdSection, setCreatedSection] = useState<McSection | null>(null);
   const [runResult, setRunResult] = useState<{ created: number; skipped?: number; message?: string } | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
+  const [setupTasks, setSetupTasks] = useState<SetupTask[]>([]);
+  const [setupState, setSetupState] = useState<SetupState>({});
+  const [setupBusy, setSetupBusy] = useState(false);
   const activeRequest = useRef<AbortController | null>(null);
   const initialFormRef = useRef(form);
   const restorePendingRef = useRef(false);
   const { items: catalogItems } = useMcpCatalog();
+  const enforcement = useEnforcementPreview(form.provider ?? 'claude', runtimeV2);
+  const globalChannels = useGlobalChannels(runtimeWizard);
 
   useEffect(() => {
     setInventory(catalogItems);
@@ -224,10 +236,14 @@ export default function BotArchitect({ mode, initialSection, projects, onSaved, 
 
   // Check for a recoverable draft once per wizard/storage key. Dismissing or
   // restoring clears the pending ref so the debounced writer can resume.
+  const restoreCheckedFor = useRef<string | null>(null);
   useEffect(() => {
+    // Once per storage key: a late-arriving feature flag must not re-offer the draft the user is already editing.
+    if (restoreCheckedFor.current === storageKey) return;
+    restoreCheckedFor.current = storageKey;
     try {
       const saved = window.localStorage.getItem(storageKey);
-      if (saved && saved !== JSON.stringify(initialFormRef.current)) {
+      if (saved && !isPristineDraft(saved, initialFormRef.current, runtimeWizard)) {
         setSavedSnapshot(saved);
         setShowRestore(true);
         restorePendingRef.current = true;
@@ -235,19 +251,19 @@ export default function BotArchitect({ mode, initialSection, projects, onSaved, 
     } catch {
       // localStorage is optional in private browsing and embedded previews.
     }
-  }, [storageKey]);
+  }, [storageKey, runtimeWizard]);
 
   useEffect(() => {
     if (restorePendingRef.current) return undefined;
     const timeout = window.setTimeout(() => {
       try {
-        window.localStorage.setItem(storageKey, JSON.stringify(form));
+        window.localStorage.setItem(storageKey, serializeDraft(form, runtimeWizard ? runtime : null));
       } catch {
         // Keep the wizard usable when storage is unavailable.
       }
     }, 350);
     return () => window.clearTimeout(timeout);
-  }, [form, storageKey]);
+  }, [form, runtime, runtimeWizard, storageKey]);
 
   /* istanbul ignore next -- kept separate from the restore check for clarity */
   useEffect(() => {
@@ -292,6 +308,15 @@ export default function BotArchitect({ mode, initialSection, projects, onSaved, 
   const attachedServers = useMemo(() => Array.from(new Set([...(form.produce_tools ?? []), ...(form.resolve_tools ?? [])])), [form]);
   const inventoryByName = useMemo(() => new Map(inventory.map((item) => [item.name, item])), [inventory]);
   const project = projects.find((candidate) => candidate.id === form.project_id);
+  const stepId: ArchitectStepId = (steps[Math.min(step, steps.length) - 1] ?? steps[0]).id;
+  const goTo = useCallback((id: ArchitectStepId) => setStep(stepNumber(steps, id)), [steps]);
+  /** Choices for servers the user has since detached must not become rules. */
+  const effectiveRuntime = useMemo<RuntimeDraft>(() => ({ ...runtime, rules: { ...runtime.rules, allow: runtime.rules.allow.filter((choice) => attachedServers.includes(choice.server)) } }), [runtime, attachedServers]);
+
+  const updateRuntime = useCallback((patch: Partial<RuntimeDraft>) => {
+    setRuntime((current) => ({ ...current, ...patch }));
+    setError(null);
+  }, []);
 
   const updateForm = useCallback((patch: Partial<CreateMcSectionInput>) => {
     setForm((current) => ({ ...current, ...patch }));
@@ -304,8 +329,8 @@ export default function BotArchitect({ mode, initialSection, projects, onSaved, 
     setForm({ ...next, manual_schedule: draft.scheduleCron === null });
     setChanged(nextChanged.map((key) => key.split('_').join(' ')));
     setNotice(`Architect updated ${nextChanged.length || 1} field${nextChanged.length === 1 ? '' : 's'}.`);
-    setStep(3);
-  }, [form, inventory]);
+    goTo('brief');
+  }, [form, goTo, inventory]);
 
   const sendToArchitect = useCallback(async (textOverride?: string) => {
     const text = (textOverride ?? chatDraft).trim();
@@ -341,7 +366,7 @@ export default function BotArchitect({ mode, initialSection, projects, onSaved, 
   const draftFromPurpose = () => {
     if (!form.produce_prompt?.trim()) {
       setError('Add a purpose before asking the Architect to draft the brief.');
-      setStep(1);
+      goTo('purpose');
       return;
     }
     void sendToArchitect(`Design this bot from my purpose: ${form.produce_prompt.trim()}`);
@@ -374,16 +399,48 @@ export default function BotArchitect({ mode, initialSection, projects, onSaved, 
     }
   };
 
+  const setupApi = useMemo(() => createSetupApi({
+    enableBot: async (sectionId) => {
+      const enabledSection = await missionControlApi.updateSection(sectionId, { enabled: true });
+      setCreatedSection((current) => (current ? { ...current, ...enabledSection } : current));
+    },
+  }), []);
+
+  /** Runs (or re-runs) the not-yet-done setup tasks for a created bot, publishing progress as it goes. */
+  const executeSetup = async (sectionId: string, tasks: SetupTask[], previous?: SetupState) => {
+    setSetupBusy(true);
+    try {
+      await runSetup({ botId: sectionId, tasks, api: setupApi, previous, onChange: setSetupState });
+    } finally {
+      setSetupBusy(false);
+    }
+  };
+
   const save = async () => {
     setError(null);
-    if (!form.title?.trim()) { setError('Bot name is required.'); setStep(1); return; }
-    if (form.scope === 'project' && !form.project_id) { setError('Select a project for a project-scoped bot.'); setStep(1); return; }
-    if (!isValidCron(form.schedule_cron, Boolean(form.manual_schedule))) { setError('Choose Manual only (no schedule) or enter exactly five cron fields.'); setStep(5); return; }
+    if (!form.title?.trim()) { setError('Bot name is required.'); goTo('purpose'); return; }
+    if (form.scope === 'project' && !form.project_id) { setError('Select a project for a project-scoped bot.'); goTo('purpose'); return; }
+    if (!isValidCron(form.schedule_cron, Boolean(form.manual_schedule))) { setError('Choose Manual only (no schedule) or enter exactly five cron fields.'); goTo('triggers'); return; }
+    let tasks: SetupTask[] = [];
+    if (runtimeWizard) {
+      const problems = validateRuntimeDraft(effectiveRuntime);
+      if (problems.length > 0) { setError(problems[0].message); goTo(problems[0].step); return; }
+      const needsSharedChannels = effectiveRuntime.channels.skipGlobal.length > 0 || effectiveRuntime.channels.quiet.enabled;
+      if (needsSharedChannels && globalChannels.data === null) {
+        setError(globalChannels.error ? `Could not load your shared channels (${globalChannels.error}). Refresh them in Reach me, or turn off quiet hours and the channel opt-outs.` : 'Your shared channels are still loading. Wait a moment and try again.');
+        goTo('reach');
+        return;
+      }
+      const plan = buildSetupPlan({ runtime: effectiveRuntime, globalChannels: globalChannels.data ?? [], enableAfter: Boolean(form.enabled) });
+      if (plan.errors.length > 0) { setError(plan.errors[0]); goTo('reach'); return; }
+      tasks = plan.tasks;
+    }
     setSaving(true);
     try {
       const sectionFields = { ...form } as CreateMcSectionInput & Record<string, unknown>;
       for (const key of STRIPPED_KEYS) delete sectionFields[key];
-      const payload: CreateMcSectionInput = { ...sectionFields, title: form.title.trim(), schedule_cron: form.schedule_cron?.trim() || null };
+      // With runtime setup pending, create the bot paused: a final task turns it on once its budget and rules exist.
+      const payload: CreateMcSectionInput = { ...sectionFields, title: form.title.trim(), schedule_cron: form.schedule_cron?.trim() || null, ...(needsDeferredEnable(tasks) ? { enabled: false } : {}) };
       const saved = mode === 'edit' && initialSection?.section_id
         ? await missionControlApi.updateSection(initialSection.section_id, payload)
         : await missionControlApi.createSection(payload);
@@ -394,6 +451,10 @@ export default function BotArchitect({ mode, initialSection, projects, onSaved, 
         setCreatedSection(saved as McSection);
         setRunResult(null);
         setRunError(null);
+        setSetupTasks(tasks);
+        setSetupState(initialSetupState(tasks));
+        setSaving(false);
+        if (tasks.length > 0) await executeSetup((saved as McSection).section_id, tasks);
       }
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Could not save this bot.');
@@ -418,7 +479,7 @@ export default function BotArchitect({ mode, initialSection, projects, onSaved, 
   };
 
   const renderPurpose = () => (
-    <StepPanel eyebrow="01 · Purpose" title="What should this bot do?" description="A clear outcome gives the Architect enough signal to draft the rest. You can refine every field later.">
+    <StepPanel eyebrow={stepEyebrow(steps, 'purpose')} title="What should this bot do?" description="A clear outcome gives the Architect enough signal to draft the rest. You can refine every field later.">
       <div><FieldLabel>Bot name</FieldLabel><input autoFocus className="field" value={form.title ?? ''} onChange={(event) => updateForm({ title: event.target.value })} placeholder="e.g. Jira triage" /></div>
       <div><FieldLabel detail="one sentence is enough">Purpose / what to look for</FieldLabel><textarea className="field min-h-32 resize-y" value={form.produce_prompt ?? ''} onChange={(event) => updateForm({ produce_prompt: event.target.value })} placeholder="Watch new support tickets, classify urgency, and draft the next useful action with evidence." /></div>
       <div className="grid gap-4 md:grid-cols-[1fr_1.4fr]">
@@ -430,16 +491,29 @@ export default function BotArchitect({ mode, initialSection, projects, onSaved, 
     </StepPanel>
   );
 
-  const renderAgent = () => (
-    <StepPanel eyebrow="02 · Agent" title="Choose the mind and the safety boundary" description="Provider and model are loaded from the same model registry used by Mission Control.">
-      <div className="grid gap-4 md:grid-cols-2"><div><FieldLabel>Provider</FieldLabel><select className="field" value={form.provider ?? 'claude'} onChange={(event) => updateForm({ provider: event.target.value, model: null, effort: null })}>{MC_PROVIDERS.map((provider) => <option key={provider} value={provider}>{provider}</option>)}</select></div><div><FieldLabel detail={modelsLoading ? 'loading…' : undefined}>Model</FieldLabel><select className="field" value={form.model ?? ''} onChange={(event) => updateForm({ model: event.target.value || null, effort: event.target.value === (form.model ?? '') ? form.effort ?? null : null })}><option value="">Provider default</option>{models.map((modelOption) => <option key={modelOption.value} value={modelOption.value}>{modelOption.label}</option>)}</select></div></div>
+  const renderAgent = () => {
+    const classicPermissionMode = (
       <div><FieldLabel>Permission mode</FieldLabel><select className="field" value={form.permission_mode ?? 'bypassPermissions'} onChange={(event) => updateForm({ permission_mode: event.target.value })}><option value="default">Default · ask when needed</option><option value="acceptEdits">Accept edits · no destructive approval</option><option value="bypassPermissions">Bypass permissions · MCP policy still applies</option><option value="plan">Plan · read-only agent</option></select><p className="mt-2 flex items-start gap-2 text-xs leading-relaxed text-muted-foreground"><ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-primary" />The per-tool policy in Tools is the final boundary. Start with Propose or Dry run while you learn the bot’s behavior.</p></div>
+    );
+    const permissionModeAdvanced = (
+      <details className="rounded-xl border border-border/60 bg-muted/20 p-4">
+        <summary className="cursor-pointer select-none text-xs font-semibold text-foreground">Advanced: provider permission mode</summary>
+        <p className="mt-2 text-xs leading-relaxed text-muted-foreground">This is the provider's own permission setting. With runtime v2 the action gate decides which tools can run (reads go through, risky actions ask), so it mostly matters where the gate can only advise. Bots have nobody to answer a provider prompt, so most keep the default.</p>
+        <select aria-label="Provider permission mode" className="field mt-3" value={form.permission_mode ?? 'bypassPermissions'} onChange={(event) => updateForm({ permission_mode: event.target.value })}><option value="default">Ask when needed (the provider prompts)</option><option value="acceptEdits">Accept file edits without asking</option><option value="bypassPermissions">Skip the provider's prompts (the action gate still applies)</option><option value="plan">Plan only, read-only agent</option></select>
+      </details>
+    );
+    return (
+    <StepPanel eyebrow={stepEyebrow(steps, 'agent')} title="Choose the mind and the safety boundary" description="Provider and model are loaded from the same model registry used by Mission Control.">
+      <div className="grid gap-4 md:grid-cols-2"><div><FieldLabel>Provider</FieldLabel><select className="field" value={form.provider ?? 'claude'} onChange={(event) => updateForm({ provider: event.target.value, model: null, effort: null })}>{MC_PROVIDERS.map((provider) => <option key={provider} value={provider}>{provider}</option>)}</select></div><div><FieldLabel detail={modelsLoading ? 'loading…' : undefined}>Model</FieldLabel><select className="field" value={form.model ?? ''} onChange={(event) => updateForm({ model: event.target.value || null, effort: event.target.value === (form.model ?? '') ? form.effort ?? null : null })}><option value="">Provider default</option>{models.map((modelOption) => <option key={modelOption.value} value={modelOption.value}>{modelOption.label}</option>)}</select></div></div>
+      {runtimeV2 ? permissionModeAdvanced : classicPermissionMode}
+      {runtimeWizard ? <AgentExtras provider={form.provider ?? 'claude'} runtime={runtime} onChange={updateRuntime} enforcement={enforcement} /> : null}
       <div className="rounded-xl border border-primary/20 bg-primary/[0.06] p-4"><p className="text-xs font-semibold text-foreground">A useful default</p><p className="mt-1 text-xs leading-relaxed text-muted-foreground">Use a strong model for ambiguous classification, then keep Resolve manual (or Dry run on) until the inbox proves the brief.</p></div>
     </StepPanel>
-  );
+    );
+  };
 
   const renderBrief = () => (
-    <StepPanel eyebrow="03 · Brief" title="Give each tick a beginning and an ending" description="The produce brief finds and frames work. The resolve brief explains what an approved item means. Both are editable.">
+    <StepPanel eyebrow={stepEyebrow(steps, 'brief')} title="Give each tick a beginning and an ending" description="The produce brief finds and frames work. The resolve brief explains what an approved item means. Both are editable.">
       <div className="grid gap-4 lg:grid-cols-2"><div><FieldLabel>Brief · what to look for each tick</FieldLabel><textarea className="field min-h-48 resize-y" value={form.produce_prompt ?? ''} onChange={(event) => updateForm({ produce_prompt: event.target.value })} placeholder="Search for… Include evidence… Do not emit when…" /></div><div><FieldLabel>Brief · how to resolve an approved item</FieldLabel><textarea className="field min-h-48 resize-y" value={form.resolve_prompt ?? ''} onChange={(event) => updateForm({ resolve_prompt: event.target.value })} placeholder="Use the approved action… Return a concise result…" /></div></div>
       {changed.length > 0 ? <div className="rounded-xl border border-emerald-500/25 bg-emerald-500/[0.07] p-3 text-xs text-emerald-700 dark:text-emerald-300"><p className="font-semibold">Architect changed</p><p className="mt-1">{changed.join(' · ')}</p></div> : null}
       <div className="flex flex-wrap gap-2"><button type="button" className="button button-primary" onClick={draftFromPurpose} disabled={chatBusy}><WandSparkles className="h-4 w-4" />Draft it from my purpose</button><button type="button" className="button" onClick={() => { setChanged([]); setNotice('Blank brief ready for your own outline.'); }}>Write it myself</button></div>
@@ -448,50 +522,73 @@ export default function BotArchitect({ mode, initialSection, projects, onSaved, 
 
   const renderTools = () => {
     const names = Array.from(new Set([...inventory.map((item) => item.name), ...attachedServers]));
-    return <StepPanel eyebrow="04 · Tools" title="Attach capabilities with a policy you can explain" description="Servers are capabilities. Every tool can be allowed, held for approval, or denied.">
+    return <StepPanel eyebrow={stepEyebrow(steps, 'tools')} title="Attach capabilities with a policy you can explain" description="Servers are capabilities. Every tool can be allowed, held for approval, or denied.">
       <div className="flex items-center justify-between gap-3 rounded-xl border border-border/60 bg-muted/25 p-3"><div><p className="text-xs font-semibold">Read-only preset</p><p className="mt-0.5 text-[11px] text-muted-foreground">Write-like names become Ask; reading tools keep their current policy.</p></div><button type="button" className={`button ${form.read_only_preset ? 'button-primary' : ''}`} onClick={() => updateForm({ read_only_preset: true, tool_policy: applyReadOnlyPreset(form.tool_policy ?? {}, Object.fromEntries(Object.entries(toolLists).map(([server, tools]) => [server, tools.map((tool) => tool.name)]))) })}>{form.read_only_preset ? 'Preset applied' : 'Apply preset'}</button></div>
       <div className="space-y-2">{names.length === 0 ? <div className="rounded-xl border border-dashed border-border p-5 text-center text-xs text-muted-foreground">No MCP servers are visible yet. Connect one in the MCP catalog, then return here.<a className="mt-2 inline-flex items-center gap-1 text-primary" href="/settings/mcp">Open MCP catalog <ExternalLink className="h-3 w-3" /></a></div> : names.map((server) => { const item = inventoryByName.get(server); const status = item ? statusForInventory(item) : { label: 'Not connected', className: 'text-muted-foreground' }; const open = expandedServers[server]; const serverTools = toolsWithPolicyEntries(toolLists[server] ?? [], getServerTools(form.tool_policy ?? {}, server)); return <div key={server} className="overflow-hidden rounded-xl border border-border/70 bg-card"><div className="flex flex-wrap items-center gap-3 p-3"><button type="button" aria-label={`${open ? 'Collapse' : 'Expand'} ${server} tools`} className="text-muted-foreground" onClick={() => void loadTools(server)}>{open ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}</button><div className="min-w-0 flex-1"><p className="truncate text-xs font-semibold text-foreground">{prettyServerName(server)}</p><p className={`text-[10px] ${status.className}`}>{status.label}{item?.needsAuth ? ' · connect in MCP catalog' : ''}</p></div><button type="button" className={`button min-h-8 px-2.5 text-[11px] ${attachedServers.includes(server) ? 'button-primary' : ''}`} onClick={() => toggleServer(server)}>{attachedServers.includes(server) ? <><Check className="h-3.5 w-3.5" />Attached</> : 'Attach'}</button></div><div className="flex flex-wrap gap-1 border-t border-border/50 px-3 py-2"><label className="inline-flex items-center gap-1.5 text-[10px] text-muted-foreground"><input type="checkbox" checked={form.produce_tools?.includes(server) ?? false} onChange={() => updateForm({ produce_tools: form.produce_tools?.includes(server) ? form.produce_tools.filter((name) => name !== server) : [...(form.produce_tools ?? []), server] })} />produce</label><label className="inline-flex items-center gap-1.5 text-[10px] text-muted-foreground"><input type="checkbox" checked={form.resolve_tools?.includes(server) ?? false} onChange={() => updateForm({ resolve_tools: form.resolve_tools?.includes(server) ? form.resolve_tools.filter((name) => name !== server) : [...(form.resolve_tools ?? []), server] })} />resolve</label></div>{open ? <div className="border-t border-border/50 bg-muted/15 p-3">{toolLoading[server] ? <div className="flex items-center gap-2 text-xs text-muted-foreground"><Loader2 className="h-3.5 w-3.5 animate-spin" />Loading tools…</div> : <>{toolErrors[server] ? <div className="mb-3 flex items-center justify-between gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-800 dark:text-amber-200" role="alert"><span>Not in the MCP catalog — connect it in Settings → MCP</span><button type="button" className="rounded underline" onClick={() => void loadTools(server, true)}>Retry</button></div> : null}{serverTools.length === 0 ? <p className="text-[11px] text-muted-foreground">No catalog tools reported for this server.</p> : <div className="space-y-1.5">{serverTools.map((tool) => { const decision = getServerTools(form.tool_policy ?? {}, server)[tool.name] ?? defaultToolDecision(tool.name, Boolean(form.read_only_preset)); return <div key={tool.name} className="flex flex-wrap items-center gap-2 rounded-lg border border-border/50 bg-background/60 px-2.5 py-2"><div className="min-w-0 flex-1"><div className="flex items-center gap-2"><p className="truncate font-mono text-[10px] text-foreground">{tool.name}</p>{tool.fromPolicy ? <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[9px] text-muted-foreground">from policy</span> : null}</div><p className="truncate text-[10px] text-muted-foreground">{tool.description || 'No description provided.'}</p></div><select aria-label={`Policy for ${tool.name}`} className="field h-8 w-24 px-2 text-[10px]" value={decision} onChange={(event) => updateForm({ tool_policy: updateToolPolicy(form.tool_policy ?? {}, server, tool.name, event.target.value as ToolPolicyDecision | 'default') })}><option value="default">Default</option><option value="allow">Allow</option><option value="ask">Ask</option><option value="deny">Deny</option></select></div>; })}</div>}</>}</div> : null}</div>; })}</div>
       <p className="text-[11px] text-muted-foreground">Need another capability? <a href="/settings/mcp" className="font-medium text-primary">Connect it in the MCP catalog</a>; Bot Studio does not manage accounts here.</p>
     </StepPanel>;
   };
 
-  const renderTriggers = () => <StepPanel eyebrow="05 · Triggers" title="When should this bot tick?" description="A tick is a fresh run. Keep the schedule explicit and easy to inspect.">
-    <div><FieldLabel>Schedule</FieldLabel><div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">{CRON_PRESETS.map((preset) => <button key={preset.value} type="button" className={`choice ${form.schedule_cron === preset.value && !form.manual_schedule ? 'choice-active' : ''}`} onClick={() => updateForm({ schedule_cron: preset.value, manual_schedule: false })}><Clock3 className="h-4 w-4" />{preset.label}<span>{preset.value}</span></button>)}<button type="button" className={`choice ${form.manual_schedule && !form.schedule_cron ? 'choice-active' : ''}`} onClick={() => updateForm({ schedule_cron: null, manual_schedule: true })}><Clock3 className="h-4 w-4" />Manual only<span>No schedule</span></button></div></div>
-    <div><FieldLabel detail="five fields unless Manual only">Raw cron</FieldLabel><input className={`field font-mono ${!isValidCron(form.schedule_cron, Boolean(form.manual_schedule)) ? 'border-red-500' : ''}`} value={form.schedule_cron ?? ''} onChange={(event) => updateForm({ schedule_cron: event.target.value, manual_schedule: false })} placeholder="*/30 * * * *" /><p className="mt-1.5 text-[11px] text-muted-foreground">{form.manual_schedule ? 'Manual only (no schedule)' : cronSummary(form.schedule_cron)}</p></div>
+  const renderTriggers = () => <StepPanel eyebrow={stepEyebrow(steps, 'triggers')} title={runtimeV2 ? 'When should this bot wake up?' : 'When should this bot tick?'} description={runtimeV2 ? 'A wake-up is a fresh run. Pick a schedule, add anything else that should start it, or let it wait until you message it.' : 'A tick is a fresh run. Keep the schedule explicit and easy to inspect.'}>
+    <div><FieldLabel>Schedule</FieldLabel><div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">{CRON_PRESETS.map((preset) => <button key={preset.value} type="button" className={`choice ${form.schedule_cron === preset.value && !form.manual_schedule ? 'choice-active' : ''}`} onClick={() => updateForm({ schedule_cron: preset.value, manual_schedule: false })}><Clock3 className="h-4 w-4" />{preset.label}<span>{preset.value}</span></button>)}<button type="button" className={`choice ${form.manual_schedule && !form.schedule_cron ? 'choice-active' : ''}`} onClick={() => updateForm({ schedule_cron: null, manual_schedule: true })}><Clock3 className="h-4 w-4" />{runtimeV2 ? 'Only when I message it' : 'Manual only'}<span>{runtimeV2 ? 'No schedule' : 'No schedule'}</span></button></div></div>
+    <div><FieldLabel detail="five fields unless Manual only">Raw cron</FieldLabel><input className={`field font-mono ${!isValidCron(form.schedule_cron, Boolean(form.manual_schedule)) ? 'border-red-500' : ''}`} value={form.schedule_cron ?? ''} onChange={(event) => updateForm({ schedule_cron: event.target.value, manual_schedule: false })} placeholder="*/30 * * * *" /><p className="mt-1.5 text-[11px] text-muted-foreground">{form.manual_schedule ? (runtimeV2 ? 'Only when you message it (no schedule)' : 'Manual only (no schedule)') : cronSummary(form.schedule_cron)}</p></div>
+    {runtimeWizard ? <WakeUps triggers={runtime.triggers} scheduleActive={!form.manual_schedule && Boolean(form.schedule_cron?.trim())} onChange={(triggers) => updateRuntime({ triggers })} /> : null}
+    {runtimeV2 && !runtimeWizard ? <Callout>Webhooks, watchers, plain-English schedules and automation filters are managed on the bot's Triggers tab.</Callout> : null}
     <div className="flex items-center justify-between rounded-xl border border-border/60 bg-muted/20 p-4"><div><p className="text-xs font-semibold">Enabled after save</p><p className="mt-1 text-[11px] text-muted-foreground">Keep new bots paused while you review their first tick.</p></div><button type="button" role="switch" aria-checked={Boolean(form.enabled)} className={`toggle ${form.enabled ? 'toggle-on' : ''}`} onClick={() => updateForm({ enabled: !form.enabled })}><span /></button></div>
   </StepPanel>;
 
   const updateAction = (index: number, patch: Partial<McAction>) => updateForm({ actions: (form.actions ?? []).map((action, actionIndex) => actionIndex === index ? { ...action, ...patch } : action) });
-  const renderOutputs = () => <StepPanel eyebrow="06 · Outputs & actions" title="Decide what approval means" description="Each bot is one pipeline: Propose → Resolve (optional) → Work (optional). Work sessions are configured on the bot’s Outputs & actions tab after it is saved.">
+  const renderOutputs = () => <StepPanel eyebrow={stepEyebrow(steps, 'outputs')} title="Decide what approval means" description="Each bot is one pipeline: Propose → Resolve (optional) → Work (optional). Work sessions are configured on the bot’s Outputs & actions tab after it is saved.">
     <label className="flex items-start gap-3 rounded-xl border border-violet-500/30 bg-violet-500/[0.06] p-3 text-xs"><input type="checkbox" checked={Boolean(form.dry_run)} onChange={(event) => updateForm({ dry_run: event.target.checked })} className="mt-0.5" /><span><span className="font-semibold text-foreground">Dry run</span><span className="mt-1 block text-muted-foreground">Test switch: ticks create items for review, but approving them resolves nothing and no work starts.</span></span></label>
     {autoApprove ? <label className="flex items-start gap-3 rounded-xl border border-amber-500/30 bg-amber-500/[0.08] p-3 text-xs"><input type="checkbox" checked={Boolean(form.auto_approve)} onChange={(event) => updateForm({ auto_approve: event.target.checked })} className="mt-0.5" /><span><span className="font-semibold text-foreground">{autoApprove.label}</span><span className="mt-1 block text-muted-foreground">{autoApprove.description} Only Approve actions ever run automatically; use it only when the action set is genuinely safe.</span></span></label> : <p className="rounded-xl border border-border/60 bg-muted/20 p-3 text-xs text-muted-foreground">No resolve prompt: new items go straight to the Work stage.</p>}
     <div className="space-y-2"><div className="flex items-center justify-between"><FieldLabel>Action set</FieldLabel><button type="button" className="button min-h-8 px-2.5 text-[11px]" onClick={() => updateForm({ actions: [...(form.actions ?? []), { id: `action-${Date.now()}`, label: 'New action', kind: 'approve', style: 'secondary', terminal: true }] })}><Plus className="h-3.5 w-3.5" />Add action</button></div>{(form.actions ?? []).map((action, index) => <div key={action.id} className="grid gap-2 rounded-xl border border-border/60 bg-muted/15 p-3 sm:grid-cols-[1fr_1fr_120px_28px]"><input className="field h-9" value={action.label} aria-label="Action label" onChange={(event) => updateAction(index, { label: event.target.value })} /><input className="field h-9" value={action.kind} aria-label="Action kind" onChange={(event) => updateAction(index, { kind: event.target.value })} /><select className="field h-9" aria-label="Action style" value={action.style} onChange={(event) => updateAction(index, { style: event.target.value as McAction['style'] })}><option value="primary">Primary</option><option value="secondary">Secondary</option><option value="destructive">Destructive</option></select><button type="button" aria-label={`Remove ${action.label}`} className="flex h-9 items-center justify-center rounded-lg text-muted-foreground hover:bg-red-500/10 hover:text-red-600" onClick={() => updateForm({ actions: (form.actions ?? []).filter((_, actionIndex) => actionIndex !== index) })}><Trash2 className="h-4 w-4" /></button><label className="flex items-center gap-2 text-[10px] text-muted-foreground sm:col-span-4"><input type="checkbox" checked={Boolean(action.terminal)} onChange={(event) => updateAction(index, { terminal: event.target.checked })} />Terminal action</label></div>)}</div>
   </StepPanel>;
 
-  const renderGuardrails = () => <StepPanel eyebrow="07 · Guardrails" title="Make the safe path visible" description="These are the guardrails supported by the section model today; no hidden budgets or phantom controls.">
+  const renderGuardrails = () => <StepPanel eyebrow={stepEyebrow(steps, 'guardrails')} title="Make the safe path visible" description={runtimeV2 ? 'Risky actions always ask first. Decide what this bot may do on its own, how much it may spend, and how to test it safely.' : 'These are the guardrails supported by the section model today; no hidden budgets or phantom controls.'}>
+    {runtimeV2 ? (
+      <GuardrailsPanel provider={form.provider ?? 'claude'} enforcement={enforcement} servers={attachedServers} runtime={runtime} onChange={updateRuntime} dryRun={Boolean(form.dry_run)} onDryRun={(dry_run) => updateForm({ dry_run })} permissionMode={form.permission_mode ?? 'bypassPermissions'} configurable={runtimeWizard} />
+    ) : (
     <div className="grid gap-3 sm:grid-cols-2"><div className="rounded-xl border border-border/60 p-4"><p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">Permission mode</p><p className="mt-2 text-sm font-semibold">{form.permission_mode || 'default'}</p><p className="mt-1 text-xs leading-relaxed text-muted-foreground">The model can only use attached MCP capabilities, each with its own allow / ask / deny policy.</p></div><div className="rounded-xl border border-border/60 p-4"><p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">Dry-run-first recommendation</p><p className="mt-2 text-sm font-semibold">{form.dry_run ? 'Enabled' : 'Recommended before automatic stages'}</p><p className="mt-1 text-xs leading-relaxed text-muted-foreground">Preview a few ticks before letting Resolve or Work run automatically. Dry run is a switch; the brief stays the same.</p></div></div>
+    )}
     {stages.resolve === 'auto' || (autoApprove && form.auto_approve) ? <div className="rounded-xl border border-amber-500/30 bg-amber-500/[0.08] p-4"><p className="flex items-center gap-2 text-sm font-semibold text-amber-800 dark:text-amber-200"><CircleHelp className="h-4 w-4" />Automatic approval risks to check</p><ul className="mt-2 space-y-1.5 text-xs leading-relaxed text-amber-800/80 dark:text-amber-100/80"><li>• Write-like tools may change external systems.</li><li>• Auto-approve skips the inbox review gate.</li><li>• A broad brief can create noisy or duplicate items.</li></ul></div> : null}
     <div className="rounded-xl border border-border/60 bg-muted/20 p-4"><p className="text-xs font-semibold">Current policy summary</p><p className="mt-1 text-xs text-muted-foreground">{attachedServers.length} MCP server{attachedServers.length === 1 ? '' : 's'} attached · {Object.values(form.tool_policy ?? {}).reduce((count, server) => count + Object.keys(server).length, 0)} tool decisions loaded · {form.dry_run ? 'no external actions' : form.auto_approve && autoApprove ? 'approve actions run automatically' : 'actions held for approval'}</p></div>
   </StepPanel>;
 
-  const renderReview = () => <StepPanel eyebrow="08 · Review" title="Ready to create this bot?" description="New bots start paused by default in this flow. Create it, inspect the first result, then enable it when it earns trust.">
-    <div className="divide-y divide-border/60 overflow-hidden rounded-xl border border-border/70">{[['Name', form.title || 'Untitled bot'], ['Purpose', form.produce_prompt || 'Not set'], ['Bot run project', form.scope === 'project' ? project?.name || 'Project not selected' : 'User home (global)'], ['Work this project', form.work_project_id ? projects.find((candidate) => candidate.id === form.work_project_id)?.name || 'Project not found' : 'Choose per item'], ['Agent', `${form.provider || 'claude'}${form.model ? ` · ${form.model}` : ''}`], ['Pipeline', pipelineSummary(pipeline)], ['Dry run', form.dry_run ? 'On' : 'Off'], ['Trigger', cronSummary(form.schedule_cron)], ['Tools', attachedServers.length ? attachedServers.join(', ') : 'No MCP servers attached'], ['Actions', `${form.actions?.length ?? 0} action${form.actions?.length === 1 ? '' : 's'}`]].map(([label, value]) => <div key={label} className="grid gap-1 px-4 py-3 sm:grid-cols-[150px_1fr]"><span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">{label}</span><span className="truncate text-xs text-foreground">{value}</span></div>)}</div>
+  const reviewRuntimeRows: Array<[string, string]> = runtimeWizard
+    ? runtimeReviewRows({ runtime: effectiveRuntime, cron: form.schedule_cron, manualSchedule: Boolean(form.manual_schedule), provider: form.provider ?? 'claude', enforcement: enforcement.data?.level ?? null, globalChannels: globalChannels.data ?? [] })
+    : [];
+  const reviewPlan = runtimeWizard ? buildSetupPlan({ runtime: effectiveRuntime, globalChannels: globalChannels.data ?? [], enableAfter: Boolean(form.enabled) }) : null;
+
+  const renderGoals = () => <StepPanel eyebrow={stepEyebrow(steps, 'goals')} title="What does good look like?" description="Optional. A goal tells the bot what it is working toward and how you will both know it is done. Skip it if the brief says enough.">
+    <GoalsStep title={form.title ?? ''} purpose={form.produce_prompt ?? ''} runtime={runtime} onChange={updateRuntime} />
+  </StepPanel>;
+
+  const renderReach = () => <StepPanel eyebrow={stepEyebrow(steps, 'reach')} title="How should it reach you, and learn from you?" description="Pick where pings go and when to hold them, and decide how much the bot may learn on its own. Every default here is the cautious one.">
+    <ReachStep runtime={runtime} onChange={updateRuntime} globals={globalChannels} />
+  </StepPanel>;
+
+  const renderReview = () => <StepPanel eyebrow={stepEyebrow(steps, 'review')} title="Ready to create this bot?" description="New bots start paused by default in this flow. Create it, inspect the first result, then enable it when it earns trust.">
+    <div className="divide-y divide-border/60 overflow-hidden rounded-xl border border-border/70">{[['Name', form.title || 'Untitled bot'], ['Purpose', form.produce_prompt || 'Not set'], ['Bot run project', form.scope === 'project' ? project?.name || 'Project not selected' : 'User home (global)'], ['Work this project', form.work_project_id ? projects.find((candidate) => candidate.id === form.work_project_id)?.name || 'Project not found' : 'Choose per item'], ['Agent', `${form.provider || 'claude'}${form.model ? ` · ${form.model}` : ''}`], ['Pipeline', pipelineSummary(pipeline)], ['Dry run', form.dry_run ? 'On' : 'Off'], [runtimeWizard ? 'Schedule' : 'Trigger', runtimeWizard ? scheduleSummary(form.schedule_cron, Boolean(form.manual_schedule)) : cronSummary(form.schedule_cron)], ['Tools', attachedServers.length ? attachedServers.join(', ') : 'No MCP servers attached'], ['Actions', `${form.actions?.length ?? 0} action${form.actions?.length === 1 ? '' : 's'}`], ...(runtimeWizard ? reviewRuntimeRows : [])].map(([label, value]) => <div key={label} className="grid gap-1 px-4 py-3 sm:grid-cols-[150px_1fr]"><span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">{label}</span><span className="truncate text-xs text-foreground">{value}</span></div>)}</div>
+    {reviewPlan && reviewPlan.errors.length > 0 ? <ul role="alert" className="space-y-1 rounded-xl border border-red-500/25 bg-red-500/[0.07] px-3 py-2 text-xs text-red-700 dark:text-red-300">{reviewPlan.errors.map((message) => <li key={message}>{message}</li>)}</ul> : null}
+    {reviewPlan && reviewPlan.tasks.length > 0 ? <Callout title={`After the bot is created, ${reviewPlan.tasks.length} setup step${reviewPlan.tasks.length === 1 ? '' : 's'} run`} tone="info"><ul className="mt-1 list-inside list-disc space-y-0.5">{reviewPlan.tasks.map((task) => <li key={task.id}>{task.label}</li>)}</ul><p className="mt-2">You will see each one finish. If any fail the bot stays paused and you can retry just those.</p></Callout> : null}
     {!form.enabled ? <p className="text-xs text-muted-foreground">This bot will be created paused. You can enable it from Bot Studio after reviewing the brief.</p> : <p className="text-xs text-amber-700 dark:text-amber-300">This bot is enabled on save. Consider switching it off until after a dry run.</p>}
     {mode === 'edit' && initialSection?.section_id ? <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border/60 bg-muted/20 p-3"><button type="button" className="button" onClick={() => void runFirstTick(initialSection.section_id!)}><Sparkles className="h-4 w-4" />Run first tick now</button>{runResult ? <span className="text-xs text-muted-foreground">{runResult.created} created{runResult.skipped ? ` · ${runResult.skipped} skipped` : ''}{runResult.message ? ` · ${runResult.message}` : ''}</span> : null}{runError ? <span className="text-xs text-red-600 dark:text-red-300">{runError}</span> : null}</div> : null}
   </StepPanel>;
 
-  const currentStep = [renderPurpose, renderAgent, renderBrief, renderTools, renderTriggers, renderOutputs, renderGuardrails, renderReview][step - 1]();
+  const stepRenderers: Record<ArchitectStepId, () => JSX.Element> = {
+    purpose: renderPurpose, agent: renderAgent, brief: renderBrief, goals: renderGoals, tools: renderTools,
+    triggers: renderTriggers, outputs: renderOutputs, guardrails: renderGuardrails, reach: renderReach, review: renderReview,
+  };
+  const currentStep = stepRenderers[stepId]();
+  const setupSummary = summarizeSetup(setupTasks, setupState);
+  const setupIncomplete = setupTasks.length > 0 && !setupSummary.allDone;
   const createdPanel = createdSection ? <StepPanel eyebrow="Bot created" title={createdSection.title} description="Your bot is saved. Run one tick now to inspect what it would create, or finish and let Bot Studio take over.">
-    <div className="rounded-2xl border border-emerald-500/25 bg-emerald-500/[0.07] p-5"><div className="flex items-center gap-2"><BotIcon icon={createdSection.icon} size={20} className="text-emerald-700 dark:text-emerald-300" /><p className="text-sm font-semibold text-emerald-700 dark:text-emerald-300">Created successfully</p></div><p className="mt-1 text-xs leading-relaxed text-muted-foreground">The bot is {createdSection.enabled ? 'enabled' : 'paused'} and its tool policy was saved with the section.</p><div className="mt-4 flex flex-wrap gap-2"><button type="button" className="button button-primary" onClick={() => void runFirstTick(createdSection.section_id)}><Sparkles className="h-4 w-4" />{createdSection.enabled ? 'Run first tick now' : 'Enable and run first tick'}</button><button type="button" className="button" onClick={() => onSaved(createdSection)}>Done</button></div>{runResult ? <p className="mt-3 text-xs text-foreground">{runResult.created} created · {runResult.skipped ?? 0} skipped{runResult.message ? ` · ${runResult.message}` : ''}</p> : null}{runError ? <p role="alert" className="mt-3 text-xs text-red-600 dark:text-red-300">{runError}</p> : null}</div>
+    <div className="rounded-2xl border border-emerald-500/25 bg-emerald-500/[0.07] p-5"><div className="flex items-center gap-2"><BotIcon icon={createdSection.icon} size={20} className="text-emerald-700 dark:text-emerald-300" /><p className="text-sm font-semibold text-emerald-700 dark:text-emerald-300">Created successfully</p></div><p className="mt-1 text-xs leading-relaxed text-muted-foreground">The bot is {createdSection.enabled ? 'enabled' : 'paused'} and its tool policy was saved with the section.</p><SetupProgress tasks={setupTasks} state={setupState} botEnabled={createdSection.enabled} busy={setupBusy} onRetry={() => void executeSetup(createdSection.section_id, setupTasks, setupState)} /><div className="mt-4 flex flex-wrap gap-2"><button type="button" className="button button-primary" disabled={setupBusy || setupIncomplete} title={setupIncomplete ? 'Finish setup first' : undefined} onClick={() => void runFirstTick(createdSection.section_id)}><Sparkles className="h-4 w-4" />{createdSection.enabled ? 'Run first tick now' : 'Enable and run first tick'}</button><button type="button" className="button" onClick={() => onSaved(createdSection)}>Done</button></div>{runResult ? <p className="mt-3 text-xs text-foreground">{runResult.created} created · {runResult.skipped ?? 0} skipped{runResult.message ? ` · ${runResult.message}` : ''}</p> : null}{runError ? <p role="alert" className="mt-3 text-xs text-red-600 dark:text-red-300">{runError}</p> : null}</div>
   </StepPanel> : null;
 
   return <div className="bot-studio-controls flex min-h-[min(900px,calc(100vh-2rem))] flex-col overflow-hidden rounded-2xl border border-border/70 bg-background text-foreground shadow-sm lg:flex-row">
-    <aside className="w-full shrink-0 border-b border-border/70 bg-card/60 p-4 lg:w-[220px] lg:border-b-0 lg:border-r"><div className="flex items-center justify-between gap-2 lg:block"><div><p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-primary">Bot Studio</p><h1 className="mt-1 text-lg font-semibold">Bot Architect</h1><p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">{mode === 'edit' ? 'Edit and save a new version.' : 'Shape a bot in eight small decisions.'}</p></div><button type="button" aria-label="Close architect" className="icon-button lg:hidden" onClick={onCancel}><X className="h-4 w-4" /></button></div><nav className="mt-5 flex flex-col gap-1.5">{STEPS.map((item, index) => <button key={item.title} type="button" className={`step-button ${step === index + 1 ? 'step-active' : ''}`} onClick={() => setStep(index + 1)}><span className="step-number">{index + 1}</span><span className="min-w-0 text-left"><span className="block truncate text-xs font-semibold">{item.title}</span><span className="hidden truncate text-[10px] text-muted-foreground lg:block">{item.hint}</span></span>{index + 1 < step ? <Check className="ml-auto h-3.5 w-3.5 text-emerald-600" /> : null}</button>)}</nav><div className="mt-5 hidden rounded-xl border border-border/60 bg-background/60 p-3 text-[10px] leading-relaxed text-muted-foreground lg:block"><p className="font-semibold text-foreground">Autosaved</p><p className="mt-1">Your in-progress draft is stored in this browser.</p></div></aside>
-    <main className="min-w-0 flex-1 overflow-y-auto"><div className="mx-auto max-w-[820px] px-5 py-6 pb-28 sm:px-8 lg:px-10">{showRestore && savedSnapshot ? <div className="mb-5 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-primary/25 bg-primary/[0.06] p-3 text-xs"><span><span className="font-semibold">Restore your in-progress draft?</span><span className="ml-1 text-muted-foreground">A newer local draft was found for this bot.</span></span><span className="flex gap-2"><button type="button" className="button min-h-8 px-2.5 text-[11px]" onClick={() => { try { setForm(JSON.parse(savedSnapshot) as CreateMcSectionInput); } catch { /* ignore invalid local state */ } restorePendingRef.current = false; setShowRestore(false); }}>Restore</button><button type="button" className="button min-h-8 px-2.5 text-[11px]" onClick={() => { restorePendingRef.current = false; setShowRestore(false); setSavedSnapshot(null); try { window.localStorage.removeItem(storageKey); } catch { /* optional */ } }}>Dismiss</button></span></div> : null}{notice ? <div className="mb-4 rounded-xl border border-emerald-500/25 bg-emerald-500/[0.07] px-3 py-2 text-xs text-emerald-700 dark:text-emerald-300">{notice}</div> : null}{error ? <div role="alert" className="mb-4 rounded-xl border border-red-500/25 bg-red-500/[0.07] px-3 py-2 text-xs text-red-700 dark:text-red-300">{error}</div> : null}{createdPanel ?? currentStep}</div><footer className="sticky bottom-0 z-10 border-t border-border/70 bg-background/95 px-5 py-3 backdrop-blur sm:px-8 lg:px-10"><div className="mx-auto flex max-w-[820px] items-center justify-between gap-3"><button type="button" className="button" onClick={() => step > 1 ? setStep(step - 1) : onCancel()}>{step > 1 ? 'Back' : 'Cancel'}</button><div className="flex gap-2">{createdSection ? <button type="button" className="button button-primary" onClick={() => onSaved(createdSection)}>Done</button> : <>{<button type="button" className="button hidden sm:inline-flex" onClick={() => setStep(Math.min(8, step + 1))}>{step < 8 ? 'Skip' : 'Review again'}</button>}{step < 8 ? <button type="button" className="button button-primary" onClick={() => setStep(step + 1)}>Continue <ChevronRight className="h-4 w-4" /></button> : <button type="button" className="button button-primary" onClick={() => void save()} disabled={saving}>{saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Bot className="h-4 w-4" />}{saving ? 'Creating…' : mode === 'edit' ? 'Save bot' : 'Create bot'}</button>}</>}</div></div></footer></main>
+    <aside className="w-full shrink-0 border-b border-border/70 bg-card/60 p-4 lg:w-[220px] lg:border-b-0 lg:border-r"><div className="flex items-center justify-between gap-2 lg:block"><div><p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-primary">Bot Studio</p><h1 className="mt-1 text-lg font-semibold">Bot Architect</h1><p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">{mode === 'edit' ? 'Edit and save a new version.' : `Shape a bot in ${steps.length === 8 ? 'eight' : 'ten'} small decisions.`}</p></div><button type="button" aria-label="Close architect" className="icon-button lg:hidden" onClick={onCancel}><X className="h-4 w-4" /></button></div><nav className="mt-5 flex flex-col gap-1.5">{steps.map((item, index) => <button key={item.id} type="button" className={`step-button ${step === index + 1 ? 'step-active' : ''}`} onClick={() => setStep(index + 1)}><span className="step-number">{index + 1}</span><span className="min-w-0 text-left"><span className="block truncate text-xs font-semibold">{item.title}</span><span className="hidden truncate text-[10px] text-muted-foreground lg:block">{item.hint}</span></span>{index + 1 < step ? <Check className="ml-auto h-3.5 w-3.5 text-emerald-600" /> : null}</button>)}</nav><div className="mt-5 hidden rounded-xl border border-border/60 bg-background/60 p-3 text-[10px] leading-relaxed text-muted-foreground lg:block"><p className="font-semibold text-foreground">Autosaved</p><p className="mt-1">Your in-progress draft is stored in this browser.</p></div></aside>
+    <main className="min-w-0 flex-1 overflow-y-auto"><div className="mx-auto max-w-[820px] px-5 py-6 pb-28 sm:px-8 lg:px-10">{showRestore && savedSnapshot ? <div className="mb-5 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-primary/25 bg-primary/[0.06] p-3 text-xs"><span><span className="font-semibold">Restore your in-progress draft?</span><span className="ml-1 text-muted-foreground">A newer local draft was found for this bot.</span></span><span className="flex gap-2"><button type="button" className="button min-h-8 px-2.5 text-[11px]" onClick={() => { const restored = parseDraft(savedSnapshot); if (restored) { setForm(restored.form); if (runtimeWizard) setRuntime(restored.runtime); } restorePendingRef.current = false; setShowRestore(false); }}>Restore</button><button type="button" className="button min-h-8 px-2.5 text-[11px]" onClick={() => { restorePendingRef.current = false; setShowRestore(false); setSavedSnapshot(null); try { window.localStorage.removeItem(storageKey); } catch { /* optional */ } }}>Dismiss</button></span></div> : null}{notice ? <div className="mb-4 rounded-xl border border-emerald-500/25 bg-emerald-500/[0.07] px-3 py-2 text-xs text-emerald-700 dark:text-emerald-300">{notice}</div> : null}{error ? <div role="alert" className="mb-4 rounded-xl border border-red-500/25 bg-red-500/[0.07] px-3 py-2 text-xs text-red-700 dark:text-red-300">{error}</div> : null}{createdPanel ?? currentStep}</div><footer className="sticky bottom-0 z-10 border-t border-border/70 bg-background/95 px-5 py-3 backdrop-blur sm:px-8 lg:px-10"><div className="mx-auto flex max-w-[820px] items-center justify-between gap-3"><button type="button" className="button" onClick={() => step > 1 ? setStep(step - 1) : onCancel()}>{step > 1 ? 'Back' : 'Cancel'}</button><div className="flex gap-2">{createdSection ? <button type="button" className="button button-primary" onClick={() => onSaved(createdSection)}>Done</button> : <>{<button type="button" className="button hidden sm:inline-flex" onClick={() => setStep(Math.min(steps.length, step + 1))}>{step < steps.length ? 'Skip' : 'Review again'}</button>}{step < steps.length ? <button type="button" className="button button-primary" onClick={() => setStep(step + 1)}>Continue <ChevronRight className="h-4 w-4" /></button> : <button type="button" className="button button-primary" onClick={() => void save()} disabled={saving}>{saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Bot className="h-4 w-4" />}{saving ? 'Creating…' : mode === 'edit' ? 'Save bot' : 'Create bot'}</button>}</>}</div></div></footer></main>
     <aside className="hidden w-[360px] shrink-0 flex-col border-l border-border/70 bg-card/40 lg:flex"><div className="border-b border-border/70 px-5 py-4"><p className="flex items-center gap-2 text-xs font-semibold"><Sparkles className="h-4 w-4 text-primary" />Architect</p><p className="mt-1 text-[11px] text-muted-foreground">A live preview and a conversation that keeps your draft moving.</p></div><div className="space-y-4 overflow-y-auto p-5"><ArchitectCard form={form} /><div className="rounded-2xl border border-border/70 bg-card p-4"><div className="flex items-center gap-2"><MessageSquareText className="h-4 w-4 text-primary" /><p className="text-xs font-semibold">Talk to the Architect</p></div><div className="mt-3 max-h-64 space-y-2 overflow-y-auto">{turns.length === 0 ? <div className="space-y-2"><p className="text-[11px] leading-relaxed text-muted-foreground">Start with the purpose, then ask for a brief, a stricter rule, or a safer default.</p><button type="button" className="w-full rounded-xl border border-border/60 bg-muted/25 p-2 text-left text-[10px] text-muted-foreground hover:bg-muted" onClick={draftFromPurpose}>✨ Draft from my purpose</button></div> : turns.map((turn, index) => <div key={`${turn.role}-${index}`} className={`whitespace-pre-wrap rounded-xl px-3 py-2 text-[11px] leading-relaxed ${turn.role === 'user' ? 'ml-5 bg-foreground text-background' : 'mr-2 border border-primary/15 bg-primary/[0.07]'}`}>{turn.content.replace(/```mission-section[\s\S]*?```/i, '').trim()}</div>)}</div><div className="mt-3 rounded-xl border border-border/70 bg-background p-2 focus-within:ring-2 focus-within:ring-primary/20"><textarea className="min-h-16 w-full resize-y bg-transparent px-1 text-xs outline-none placeholder:text-muted-foreground" value={chatDraft} onChange={(event) => setChatDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); void sendToArchitect(); } }} disabled={chatBusy} placeholder="Refine the bot…" /><div className="flex items-center justify-between border-t border-border/50 pt-2"><span className="text-[9px] text-muted-foreground">⌘/Ctrl + Enter</span><button type="button" aria-label="Send to Architect" className="button button-primary min-h-8 px-2.5 text-[11px]" onClick={() => void sendToArchitect()} disabled={chatBusy || !chatDraft.trim()}>{chatBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}Send</button></div></div>{chatError ? <p role="alert" className="mt-2 text-[10px] text-red-600 dark:text-red-300">{chatError}</p> : null}</div></div></aside>
   </div>;
-}
-
-function StepPanel({ eyebrow, title, description, children }: { eyebrow: string; title: string; description: string; children: ReactNode }) {
-  return <section className="space-y-6"><div><p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-primary">{eyebrow}</p><h2 className="mt-2 text-2xl font-semibold tracking-tight">{title}</h2><p className="mt-2 max-w-2xl text-sm leading-relaxed text-muted-foreground">{description}</p></div><div className="space-y-5">{children}</div></section>;
 }

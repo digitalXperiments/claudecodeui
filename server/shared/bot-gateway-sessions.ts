@@ -15,8 +15,8 @@ export interface GatewaySessionBinding {
   secretRequired: boolean;
 }
 
-/** Providers whose runtime stamps the binding secret onto the gateway stdio entry (claude-sdk.js). */
-export const SECRET_STAMPING_PROVIDERS: readonly string[] = ['claude'];
+/** Providers whose runtime stamps the binding secret onto the gateway stdio entry (claude-sdk.js, openai-codex.js, grok-cli.js, opencode-cli.js for antigravity). */
+export const SECRET_STAMPING_PROVIDERS: readonly string[] = ['claude', 'codex', 'grok', 'antigravity'];
 
 export type GatewaySessionBindInput = Omit<GatewaySessionBinding, 'tainted' | 'secret' | 'secretRequired'> & { tainted?: boolean };
 

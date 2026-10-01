@@ -31,6 +31,9 @@ const OPS = ['eq', 'contains', 'regex', 'in'] as const;
 const OUTCOMES = ['executed', 'denied', 'approved', 'rejected', 'expired', 'error', 'pending'];
 const FLOOR_LIST = SAFETY_FLOOR.join(', ');
 
+/** Every gateway-bound run carries the built-in tool gate; the provider adapter decides whether it can honour it. */
+const GATED_RUN = { builtinToolGate: true } as const;
+
 const MAX_PATTERN = 200;
 const MAX_PREDICATES = 10;
 const MAX_NOTE = 500;
@@ -254,6 +257,27 @@ botGateRouter.get(
   }),
 );
 
+/**
+ * How firmly the gate would govern a bot running on `provider`. Needs no bot, so the wizard can show it
+ * before the bot exists. Same adapters and the same GATED_RUN options as /:botId/enforcement below.
+ */
+botGateRouter.get(
+  '/enforcement/preview',
+  asyncHandler(async (req, res) => {
+    const provider = queryText(req.query.provider).trim();
+    if (!provider) throw invalid('provider is required');
+    const level = getGatewayEnforcement(provider, GATED_RUN);
+    res.json({
+      enforcement: {
+        provider,
+        level,
+        detail: describeGatewayEnforcement(provider, GATED_RUN),
+        builtin_tool_gate: level === 'enforced',
+      },
+    });
+  }),
+);
+
 // ---- gate decisions ----------------------------------------------------------------------------
 
 /** Masks secret-looking keys and truncates long values for display (exported for other routers). */
@@ -372,7 +396,6 @@ botGateRouter.get(
  * How strongly the gate governs this bot: 'enforced' only when every phase runs on a provider with
  * a full enforcement path (Claude with the built-in tool gate); otherwise 'advisory'.
  */
-const GATED_RUN = { builtinToolGate: true } as const;
 
 botGateRouter.get(
   '/:botId/enforcement',

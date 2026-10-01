@@ -1,6 +1,7 @@
 export { default as botGatewayMcpRoutes } from './gateway.routes.js';
 export {
   BOT_GATEWAY_MCP_SERVER_NAME,
+  getBotGatewayMcpLaunchSpec,
   getBotGatewayMcpToken,
   isIsolatedServer,
   registerBotGatewayMcp,

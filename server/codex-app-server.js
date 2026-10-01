@@ -34,6 +34,17 @@ export function resolveCodexLauncher() {
   }
 }
 
+// TOML bare keys are limited to [A-Za-z0-9_-]. Anything else (an absolute path used as a
+// permissions-profile entry) must be quoted. Codex splits a dotted `--config` key on every `.`,
+// quoted or not, so a table with such keys is sent as ONE inline table instead of dotted paths.
+function isBareTomlKey(key) {
+  return /^[A-Za-z0-9_-]+$/.test(key);
+}
+
+function tomlKeySegment(key) {
+  return isBareTomlKey(key) ? key : JSON.stringify(key);
+}
+
 function toTomlValue(value, keyPath) {
   if (typeof value === 'string') {
     return JSON.stringify(value);
@@ -49,13 +60,13 @@ function toTomlValue(value, keyPath) {
   }
   if (value && typeof value === 'object') {
     return `{${Object.entries(value)
-      .map(([key, child]) => `${key} = ${toTomlValue(child, `${keyPath}.${key}`)}`)
+      .map(([key, child]) => `${tomlKeySegment(key)} = ${toTomlValue(child, `${keyPath}.${key}`)}`)
       .join(', ')}}`;
   }
   throw new Error(`Unsupported Codex config value at ${keyPath}`);
 }
 
-function flattenConfigOverrides(value, prefix = '', output = []) {
+export function flattenConfigOverrides(value, prefix = '', output = []) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     if (prefix) {
       output.push(`${prefix}=${toTomlValue(value, prefix)}`);
@@ -67,7 +78,11 @@ function flattenConfigOverrides(value, prefix = '', output = []) {
   for (const [key, child] of Object.entries(value)) {
     const nextPath = prefix ? `${prefix}.${key}` : key;
     if (child && typeof child === 'object' && !Array.isArray(child)) {
-      flattenConfigOverrides(child, nextPath, output);
+      if (Object.keys(child).some((childKey) => !isBareTomlKey(childKey))) {
+        output.push(`${nextPath}=${toTomlValue(child, nextPath)}`);
+      } else {
+        flattenConfigOverrides(child, nextPath, output);
+      }
     } else {
       output.push(`${nextPath}=${toTomlValue(child, nextPath)}`);
     }
